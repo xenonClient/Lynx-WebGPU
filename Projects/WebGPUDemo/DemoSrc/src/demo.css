@@ -63,9 +63,9 @@ page {
 /* 캔버스 위에 얹힌 카드. Lynx가 히트 테스트에서 캔버스보다 먼저 잡아야 한다. */
 .layer-card {
   position: absolute;
-  left: 32px;
-  top: 300px;
-  width: 230px;
+  left: 24px;
+  bottom: 118px;
+  width: 220px;
   padding: 16px;
   border-radius: 16px;
   background-color: #1b2540;

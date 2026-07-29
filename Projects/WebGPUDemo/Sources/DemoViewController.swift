@@ -78,7 +78,16 @@ final class DemoViewController: UIViewController {
         ])
         self.lynxView = lynxView
 
-        lynxView.loadTemplate(fromURL: templatePath, initData: nil)
+        lynxView.loadTemplate(fromURL: templatePath, initData: initialData)
+    }
+
+    /// 자동화 하네스: `-cardTilt 0.45` 를 주면 홀로 카드가 그 각도로 고정된다.
+    /// 시뮬레이터에는 터치를 주입할 방법이 없어, **기울인 상태를 회귀 확인하려면** 이 경로가 필요하다.
+    ///   xcrun simctl launch <device> org.lynxwebgpu.demo -demo interactive -cardTilt 0.45
+    private var initialData: LynxTemplateData? {
+        let tilt = UserDefaults.standard.double(forKey: "cardTilt")
+        guard tilt != 0 else { return nil }
+        return LynxTemplateData(dictionary: ["forceTilt": tilt])
     }
 
     override func viewDidLayoutSubviews() {

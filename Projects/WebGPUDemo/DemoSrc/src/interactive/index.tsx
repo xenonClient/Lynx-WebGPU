@@ -1,38 +1,186 @@
-import { root, useEffect, useRef, useState } from '@lynx-js/react'
-import gpu, { GPUBufferUsage, startFrameLoop } from '../webgpu.js'
+import { root, useEffect, useInitData, useRef, useState } from '@lynx-js/react'
+import gpu, { GPUBufferUsage } from '../webgpu.js'
+import { startFrameLoop } from '../webgpu.js'
+import * as mat from '../matrix.js'
 import '../demo.css'
 import '../elements.d.ts'
 
 /**
- * 셰이더를 입힌 인터랙티브 표면 + 그 위아래에 놓인 평범한 Lynx 컴포넌트.
+ * 홀로그래픽 트레이딩 카드 — 잡고 움직이면 포일 무늬가 각도를 따라 흐른다.
  *
- * 확인하려는 것 두 가지:
- * 1. 터치가 셰이더 유니폼까지 흘러가 프레임에 반영되는가
- * 2. **캔버스 위에 겹친 Lynx 컴포넌트가 터치를 먼저 가져가는가** (웹의 z-order/pointer-events와 같은가)
+ * 카드는 화면 중앙에 고정되고 **기울기만** 손가락을 따라간다 (실물 카드를 손에 들고
+ * 빛에 비춰 보는 동작). 포일은 눈속임이 아니라 실제 3D 자세에서 계산한다 —
+ * 프래그먼트마다 시선 벡터와 법선을 구해 그 각도로 무지개 띠·정반사·반짝임을 만든다.
+ * 그래서 기울일 때 무늬가 "따라 도는" 게 아니라 **표면 위를 흐른다**.
  *
- * 터치는 `<webgpu-canvas>`가 따로 만든 이벤트가 아니라 **Lynx 표준 터치 이벤트**를 쓴다.
- * 그래야 히트 테스트·버블링·`catch` 접두사·스크롤 제스처가 전부 Lynx 규칙(=웹 규칙)을 따른다.
+ * 위아래로 겹친 Lynx 컴포넌트는 그대로 두었다 — 입력 라우팅이 웹과 같은지
+ * 눈으로 확인하는 장치다 (`docs/LYNX-INTEGRATION.md` §5).
  */
 
-const RIPPLES = 6
+/** 실물 포켓몬 카드 비율 (63mm × 88mm). */
+const CARD_ASPECT = 63 / 88
 
-const SHADER = /* wgsl */ `
-struct Ripple {
-  origin: vec2f,
-  start: f32,
+const CARD_SHADER = /* wgsl */ `
+struct Uniforms {
+  mvp: mat4x4<f32>,
+  model: mat4x4<f32>,
+  cameraPosition: vec3f,
+  time: f32,
+  halfSize: vec2f,
+  held: f32,
   _pad: f32,
 };
+@group(0) @binding(0) var<uniform> u: Uniforms;
 
-struct Uniforms {
-  resolution: vec2f,
-  time: f32,
-  pressed: f32,
-  pointer: vec2f,
-  _pad: vec2f,
-  ripples: array<Ripple, ${RIPPLES}>,
+struct VertexOutput {
+  @builtin(position) position: vec4f,
+  @location(0) uv: vec2f,
+  @location(1) worldPosition: vec3f,
+  @location(2) normal: vec3f,
 };
 
-@group(0) @binding(0) var<uniform> u: Uniforms;
+@vertex
+fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
+  var corners = array<vec2f, 6>(
+    vec2f(-1.0, -1.0), vec2f(1.0, -1.0), vec2f(-1.0, 1.0),
+    vec2f(-1.0, 1.0), vec2f(1.0, -1.0), vec2f(1.0, 1.0),
+  );
+  let corner = corners[index];
+  let local = vec4f(corner.x * u.halfSize.x, corner.y * u.halfSize.y, 0.0, 1.0);
+
+  var out: VertexOutput;
+  out.position = u.mvp * local;
+  out.uv = corner * 0.5 + vec2f(0.5, 0.5);
+  out.worldPosition = (u.model * local).xyz;
+  // 카드는 평면이라 법선이 상수다 — 모델 행렬로 돌리기만 하면 된다.
+  out.normal = (u.model * vec4f(0.0, 0.0, 1.0, 0.0)).xyz;
+  return out;
+}
+
+// ── 보조 ─────────────────────────────────────────────────────────────
+
+/// 둥근 사각형까지의 부호 있는 거리.
+fn rounded_box(point: vec2f, half: vec2f, radius: f32) -> f32 {
+  let q = abs(point) - half + vec2f(radius, radius);
+  return length(max(q, vec2f(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - radius;
+}
+
+/// SDF를 0~1 채움으로 바꾼다 (경계에서 부드럽게).
+fn fill(distance: f32, softness: f32) -> f32 {
+  return 1.0 - smoothstep(-softness, softness, distance);
+}
+
+/// 코사인 팔레트 무지개 — HSV 변환보다 싸고 이어짐이 매끄럽다.
+fn spectrum(t: f32) -> vec3f {
+  return 0.5 + 0.5 * cos(6.2831853 * (vec3f(t) + vec3f(0.0, 0.33, 0.67)));
+}
+
+fn hash21(p: vec2f) -> f32 {
+  var q = fract(p * vec2f(123.34, 456.21));
+  q = q + vec2f(dot(q, q + 45.32));
+  return fract(q.x * q.y);
+}
+
+/// 아트 창 안에 그리는 절차적 그림 (에너지 코어).
+fn artwork(p: vec2f, time: f32) -> vec3f {
+  let radius = length(p);
+  let angle = atan2(p.y, p.x);
+  let swirl = sin(angle * 5.0 + radius * 13.0 - time * 0.9);
+  let core = exp(-radius * 3.4);
+
+  var color = mix(vec3f(0.04, 0.08, 0.20), vec3f(0.16, 0.42, 0.86), exp(-radius * 1.4));
+  color = color + vec3f(1.0, 0.82, 0.42) * core * 0.9;
+  color = color + vec3f(0.30, 0.62, 1.00) * max(swirl, 0.0) * exp(-radius * 2.2) * 0.55;
+  return color;
+}
+
+// ── 프래그먼트 ────────────────────────────────────────────────────────
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4f {
+  let aspect = u.halfSize.x / u.halfSize.y;
+  // p.y ∈ [-1, 1], p.x ∈ [-aspect, aspect] — 카드 비율을 그대로 쓴다.
+  let p = (in.uv - vec2f(0.5, 0.5)) * vec2f(2.0 * aspect, 2.0);
+
+  let normal = normalize(in.normal);
+  let viewDirection = normalize(u.cameraPosition - in.worldPosition);
+  let lightDirection = normalize(vec3f(-0.30, 0.50, 0.81));
+  // 정면일수록 1, 기울일수록 작아진다. 포일 무늬를 흐르게 하는 핵심 값.
+  let facing = clamp(dot(normal, viewDirection), 0.0, 1.0);
+  let halfway = normalize(viewDirection + lightDirection);
+
+  // ── 1) 카드 인쇄면
+  var color = vec3f(0.86, 0.72, 0.30);                       // 금색 테두리
+  let borderNoise = hash21(floor(in.uv * 180.0)) * 0.04;
+  color = color - vec3f(borderNoise);
+
+  // 안쪽 판
+  let innerPlate = fill(rounded_box(p, vec2f(aspect - 0.10, 0.90), 0.05), 0.006);
+  color = mix(color, vec3f(0.10, 0.13, 0.22), innerPlate);
+
+  // 아트 창
+  let artBox = rounded_box(p - vec2f(0.0, 0.22), vec2f(aspect - 0.17, 0.42), 0.03);
+  let artMask = fill(artBox, 0.005);
+  color = mix(color, artwork((p - vec2f(0.0, 0.22)) * vec2f(1.6, 1.9), u.time), artMask);
+
+  // 제목 바 / 설명 바 / 하단 텍스트 줄 — 카드처럼 보이게 하는 최소 요소
+  let titleBar = fill(rounded_box(p - vec2f(0.0, 0.78), vec2f(aspect - 0.17, 0.09), 0.03), 0.005);
+  color = mix(color, vec3f(0.20, 0.26, 0.42), titleBar);
+
+  let statBox = fill(rounded_box(p - vec2f(0.0, -0.30), vec2f(aspect - 0.17, 0.14), 0.03), 0.005);
+  color = mix(color, vec3f(0.14, 0.18, 0.30), statBox);
+
+  for (var line = 0u; line < 4u; line = line + 1u) {
+    let y = -0.55 - f32(line) * 0.10;
+    let width = aspect - 0.22 - f32(line % 2u) * 0.12;
+    let bar = fill(rounded_box(p - vec2f(0.0, y), vec2f(width, 0.018), 0.018), 0.004);
+    color = mix(color, vec3f(0.42, 0.48, 0.62), bar * 0.75);
+  }
+
+  // ── 2) 홀로 포일
+  // 포일은 인쇄면 전체가 아니라 아트 창 + 제목 바에만 입힌다 (실물 홀로 카드와 같다).
+  let foilMask = clamp(artMask + titleBar * 0.7, 0.0, 1.0);
+
+  // 시선각(facing)을 무늬 위상에 섞으면, 기울일 때 띠가 표면 위를 흐른다.
+  let bandA = in.uv.x * 1.7 + in.uv.y * 0.9 + facing * 2.8 + u.time * 0.02;
+  let bandB = in.uv.x * -3.3 + in.uv.y * 2.6 + facing * 5.2;
+  let foil = spectrum(fract(bandA)) * 0.62 + spectrum(fract(bandB)) * 0.38;
+  // 기울일수록 강해진다 — 정면에서는 은은하고, 눕히면 확 산다.
+  let sheen = pow(1.0 - facing, 1.3);
+  color = color + foil * foilMask * (0.38 + sheen * 1.6);
+
+  // ── 3) 반짝이 — 셀 안의 작은 점 하나. 각도가 바뀔 때만 깜빡인다.
+  let grid = in.uv * vec2f(44.0, 62.0);
+  let cell = floor(grid);
+  let seed = hash21(cell);
+  // 셀마다 점 위치를 흩어 격자로 보이지 않게 한다.
+  let jitter = (vec2f(hash21(cell + vec2f(3.7, 1.3)), hash21(cell + vec2f(9.1, 5.5))) - vec2f(0.5)) * 0.7;
+  let speck = exp(-length(fract(grid) - vec2f(0.5) - jitter) * 22.0);
+  let twinkle = pow(max(sin(seed * 44.0 + facing * 26.0 + u.time * 0.7), 0.0), 30.0);
+  color = color + speck * twinkle * foilMask * vec3f(1.0, 0.97, 0.88) * 2.2;
+
+  // ── 4) 라미네이트 정반사 — 광원이 표면에 비친 하이라이트
+  let specular = pow(max(dot(normal, halfway), 0.0), 60.0);
+  color = color + specular * vec3f(1.0, 0.98, 0.94) * (0.7 + u.held * 0.6);
+
+  // ── 5) 가장자리 프레넬
+  color = color + pow(1.0 - facing, 3.2) * vec3f(0.45, 0.60, 1.0) * 0.30;
+
+  // 카드 바깥은 잘라 낸다 (둥근 모서리 + 안티에일리어싱).
+  let alpha = fill(rounded_box(p, vec2f(aspect, 1.0), 0.10), 0.008);
+  return vec4f(color, alpha);
+}
+`
+
+const BACKGROUND_SHADER = /* wgsl */ `
+struct Background {
+  resolution: vec2f,
+  shadowCenter: vec2f,
+  shadowScale: vec2f,
+  held: f32,
+  time: f32,
+};
+@group(0) @binding(0) var<uniform> b: Background;
 
 @vertex
 fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f {
@@ -40,78 +188,41 @@ fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f {
   return vec4f(corners[index], 0.0, 1.0);
 }
 
-/// 둥근 사각형까지의 부호 있는 거리 (음수면 안쪽).
-fn rounded_box(point: vec2f, half: vec2f, radius: f32) -> f32 {
-  let q = abs(point) - half + vec2f(radius, radius);
-  return length(max(q, vec2f(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - radius;
-}
-
 @fragment
 fn fs_main(@builtin(position) fragment: vec4f) -> @location(0) vec4f {
-  let pixel = fragment.xy;
-  let uv = pixel / u.resolution;
-  let short = min(u.resolution.x, u.resolution.y);
+  let uv = fragment.xy / b.resolution;
+  // 바탕 — 가운데가 살짝 밝은 무대 조명
+  let toCenter = (uv - vec2f(0.5, 0.45)) * vec2f(b.resolution.x / b.resolution.y, 1.0);
+  var color = mix(vec3f(0.10, 0.12, 0.19), vec3f(0.030, 0.035, 0.055), clamp(length(toCenter) * 1.1, 0.0, 1.0));
 
-  // 카드 모양으로 잘라 낸다 — 화면 전체가 아니라 "컴포넌트"로 보이게.
-  let center = u.resolution * 0.5;
-  let half = center - vec2f(u.resolution.x * 0.06, u.resolution.y * 0.05);
-  let distanceToCard = rounded_box(pixel - center, half, short * 0.09);
-  let inside = smoothstep(1.5, -1.5, distanceToCard);
-
-  // 천천히 흐르는 바탕 그라디언트.
-  let flow = uv.y + 0.18 * sin(uv.x * 3.4 + u.time * 0.5);
-  var surface = mix(vec3f(0.09, 0.16, 0.38), vec3f(0.40, 0.15, 0.50), clamp(flow, 0.0, 1.0));
-  surface = surface + 0.06 * vec3f(
-    sin(u.time * 0.7 + uv.x * 3.0),
-    sin(u.time * 0.9 + uv.y * 3.0),
-    sin(u.time * 1.1)
-  );
-
-  // 누르고 있는 동안 손가락을 따라다니는 하이라이트.
-  let pointerPixel = u.pointer * u.resolution;
-  let glow = exp(-length(pixel - pointerPixel) / (short * 0.18));
-  surface = surface + glow * u.pressed * vec3f(0.5, 0.62, 0.95);
-
-  // 누른 자리에서 퍼져 나가는 물결.
-  for (var i = 0u; i < ${RIPPLES}u; i = i + 1u) {
-    let ripple = u.ripples[i];
-    let age = u.time - ripple.start;
-    if (ripple.start <= 0.0 || age < 0.0 || age > 1.8) {
-      continue;
-    }
-    let radius = age * short * 0.9;
-    let width = short * 0.025;
-    let ring = exp(-abs(length(pixel - ripple.origin * u.resolution) - radius) / width);
-    let fade = 1.0 - age / 1.8;
-    surface = surface + ring * fade * fade * vec3f(0.85, 0.93, 1.0) * 0.9;
-  }
-
-  // 카드 테두리 하이라이트.
-  let rim = exp(-abs(distanceToCard) / 2.0) * 0.6;
-  var color = mix(vec3f(0.043, 0.055, 0.08), surface, inside);
-  color = color + vec3f(0.4, 0.5, 0.75) * rim * inside;
+  // 카드 아래 그림자 — 들어 올리면 흐려지고 넓어진다
+  let offset = (uv - b.shadowCenter) / b.shadowScale;
+  let shadow = exp(-dot(offset, offset) * (2.6 - b.held * 0.9));
+  color = color * (1.0 - shadow * (0.55 - b.held * 0.15));
 
   return vec4f(color, 1.0);
 }
 `
 
-interface Pointer {
+interface Tilt {
   x: number
   y: number
-  pressed: boolean
+  velocityX: number
+  velocityY: number
 }
 
-function InteractiveScene() {
+function HoloCardScene() {
   const [fps, setFps] = useState(0)
   const [status, setStatus] = useState('')
-  // 어떤 엘리먼트가 마지막 입력을 가져갔는지 — 레이어링 확인용.
-  const [routed, setRouted] = useState('아직 없음')
+  const [routed, setRouted] = useState('카드를 잡고 기울여 보세요')
 
-  // 터치 상태는 렌더 루프가 매 프레임 읽으므로 ref에 둔다 (setState는 리렌더를 부른다).
-  const pointer = useRef<Pointer>({ x: 0.5, y: 0.5, pressed: false })
-  const ripples = useRef<Array<{ x: number; y: number; start: number }>>([])
+  // 렌더 루프가 매 프레임 읽는 값 — setState를 쓰면 리렌더가 붙으므로 ref에 둔다.
+  const pointer = useRef({ x: 0.5, y: 0.5, held: false })
+  // 하네스용 고정 기울기 (`-cardTilt` 런치 인자). 0이면 평소대로 터치를 따른다.
+  const initData = useInitData() as { forceTilt?: number } | undefined
+  const forcedTilt = useRef(0)
+  forcedTilt.current = typeof initData?.forceTilt === 'number' ? initData.forceTilt : 0
   const canvasCss = useRef({ width: 1, height: 1 })
-  const elapsed = useRef(0)
 
   /** Lynx 터치 이벤트의 엘리먼트 기준 좌표(CSS px)를 0~1로 정규화한다. */
   function normalize(event: any) {
@@ -124,23 +235,21 @@ function InteractiveScene() {
     }
   }
 
-  function handleTouchStart(event: any) {
+  function grab(event: any) {
     const point = normalize(event)
     if (!point) return
-    pointer.current = { ...point, pressed: true }
-    ripples.current.push({ ...point, start: elapsed.current })
-    if (ripples.current.length > RIPPLES) ripples.current.shift()
-    setRouted(`캔버스 — (${point.x.toFixed(2)}, ${point.y.toFixed(2)})`)
+    pointer.current = { ...point, held: true }
+    setRouted(`카드 — (${point.x.toFixed(2)}, ${point.y.toFixed(2)})`)
   }
 
-  function handleTouchMove(event: any) {
+  function move(event: any) {
     const point = normalize(event)
     if (!point) return
-    pointer.current = { ...point, pressed: true }
+    pointer.current = { ...point, held: true }
   }
 
-  function handleTouchEnd() {
-    pointer.current = { ...pointer.current, pressed: false }
+  function release() {
+    pointer.current = { ...pointer.current, held: false }
   }
 
   useEffect(() => {
@@ -158,23 +267,56 @@ function InteractiveScene() {
       const format = gpu.getPreferredCanvasFormat()
       context.configure({ device, format })
 
-      const module = device.createShaderModule({ code: SHADER, label: 'interactive' })
-      // resolution(8) + time(4) + pressed(4) + pointer(8) + pad(8) + ripples(6 × 16) = 128B
-      const uniformBuffer = device.createBuffer({
-        size: 128,
+      // ── 배경 (무대 + 그림자)
+      const backgroundModule = device.createShaderModule({ code: BACKGROUND_SHADER, label: 'stage' })
+      const backgroundBuffer = device.createBuffer({
+        size: 32,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       })
-      const pipeline = device.createRenderPipeline({
+      const backgroundPipeline = device.createRenderPipeline({
         layout: 'auto',
-        vertex: { module, entryPoint: 'vs_main' },
-        fragment: { module, entryPoint: 'fs_main', targets: [{ format }] },
+        vertex: { module: backgroundModule, entryPoint: 'vs_main' },
+        fragment: { module: backgroundModule, entryPoint: 'fs_main', targets: [{ format }] },
       })
-      const bindGroup = device.createBindGroup({
-        layout: pipeline.getBindGroupLayout(0),
-        entries: [{ binding: 0, resource: { buffer: uniformBuffer } }],
+      const backgroundBind = device.createBindGroup({
+        layout: backgroundPipeline.getBindGroupLayout(0),
+        entries: [{ binding: 0, resource: { buffer: backgroundBuffer } }],
       })
 
-      const uniforms = new Float32Array(32)
+      // ── 카드
+      const cardModule = device.createShaderModule({ code: CARD_SHADER, label: 'holo-card' })
+      const cardBuffer = device.createBuffer({
+        size: 160,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      })
+      const cardPipeline = device.createRenderPipeline({
+        layout: 'auto',
+        vertex: { module: cardModule, entryPoint: 'vs_main' },
+        fragment: {
+          module: cardModule,
+          entryPoint: 'fs_main',
+          targets: [{
+            format,
+            // 둥근 모서리를 알파로 깎으므로 일반(비 premultiplied) 알파 합성.
+            blend: {
+              color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+              alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+            },
+          }],
+        },
+        primitive: { topology: 'triangle-list' },
+      })
+      const cardBind = device.createBindGroup({
+        layout: cardPipeline.getBindGroupLayout(0),
+        entries: [{ binding: 0, resource: { buffer: cardBuffer } }],
+      })
+
+      const cardUniforms = new Float32Array(40)
+      const backgroundUniforms = new Float32Array(8)
+      const cameraZ = 3.4
+
+      const tilt: Tilt = { x: 0, y: 0, velocityX: 0, velocityY: 0 }
+      let time = 0
       let size = context.getSize()
       let sizeCheck = 0
       let frames = 0
@@ -188,23 +330,73 @@ function InteractiveScene() {
         }
         if (size.width === 0 || size.height === 0) return
 
-        elapsed.current += delta / 1000
-        uniforms[0] = size.width
-        uniforms[1] = size.height
-        uniforms[2] = elapsed.current
-        uniforms[3] = pointer.current.pressed ? 1 : 0
-        uniforms[4] = pointer.current.x
-        uniforms[5] = pointer.current.y
+        const step = Math.min(delta, 33) / 1000
+        time += step
 
-        for (let index = 0; index < RIPPLES; index++) {
-          const base = 8 + index * 4
-          const ripple = ripples.current[index]
-          uniforms[base + 0] = ripple ? ripple.x : 0
-          uniforms[base + 1] = ripple ? ripple.y : 0
-          uniforms[base + 2] = ripple ? ripple.start : -1
-          uniforms[base + 3] = 0
-        }
-        device.queue.writeBuffer(uniformBuffer, 0, uniforms)
+        // ── 기울기 스프링
+        // 잡고 있으면 손가락 쪽으로 기울고, 놓으면 평평하게 돌아온다.
+        // 놓았을 때도 아주 약하게 흔들려 포일이 죽어 보이지 않게 한다.
+        const forced = forcedTilt.current
+        const targetY = forced !== 0
+          ? forced
+          : pointer.current.held
+            ? (pointer.current.x - 0.5) * 0.85
+            : Math.sin(time * 0.55) * 0.075
+        const targetX = forced !== 0
+          ? -forced * 0.66
+          : pointer.current.held
+            ? (pointer.current.y - 0.5) * 0.85
+            : Math.sin(time * 0.4 + 1.0) * 0.05
+
+        const stiffness = 150
+        const damping = 17
+        tilt.velocityX += ((targetX - tilt.x) * stiffness - tilt.velocityX * damping) * step
+        tilt.velocityY += ((targetY - tilt.y) * stiffness - tilt.velocityY * damping) * step
+        tilt.x += tilt.velocityX * step
+        tilt.y += tilt.velocityY * step
+
+        // ── 행렬
+        const aspect = size.width / size.height
+        // 카메라에서 본 화면의 실제 크기로 카드를 맞춘다 — 가로/세로 어느 쪽으로도 넘치지 않게.
+        const fovY = Math.PI / 4.4
+        const viewHalfHeight = Math.tan(fovY / 2) * cameraZ
+        const viewHalfWidth = viewHalfHeight * aspect
+        const halfHeight = Math.min(viewHalfHeight * 0.72, (viewHalfWidth * 0.80) / CARD_ASPECT)
+        const halfWidth = halfHeight * CARD_ASPECT
+        const lift = pointer.current.held || forced !== 0 ? 0.22 : 0
+
+        const projection = mat.perspective(fovY, aspect, 0.1, 100)
+        const view = mat.translation(0, 0, -cameraZ)
+        const model = mat.multiplyAll(
+          mat.translation(0, 0, lift),
+          mat.rotationY(tilt.y),
+          mat.rotationX(tilt.x)
+        )
+        const mvp = mat.multiplyAll(projection, view, model)
+
+        cardUniforms.set(mvp, 0)
+        cardUniforms.set(model, 16)
+        cardUniforms[32] = 0
+        cardUniforms[33] = 0
+        cardUniforms[34] = cameraZ         // cameraPosition
+        cardUniforms[35] = time
+        cardUniforms[36] = halfWidth       // halfSize
+        cardUniforms[37] = halfHeight
+        cardUniforms[38] = pointer.current.held ? 1 : 0
+        cardUniforms[39] = 0
+        device.queue.writeBuffer(cardBuffer, 0, cardUniforms)
+
+        // 그림자: 카드 중심을 화면에 투영해 그 아래에 깐다.
+        const center = mat.project(mvp, 0, -0.12, 0)
+        backgroundUniforms[0] = size.width
+        backgroundUniforms[1] = size.height
+        backgroundUniforms[2] = center.x * 0.5 + 0.5
+        backgroundUniforms[3] = -center.y * 0.5 + 0.5 + 0.06
+        backgroundUniforms[4] = (halfWidth / viewHalfWidth) * 0.62
+        backgroundUniforms[5] = (halfHeight / viewHalfHeight) * 0.42
+        backgroundUniforms[6] = pointer.current.held ? 1 : 0
+        backgroundUniforms[7] = time
+        device.queue.writeBuffer(backgroundBuffer, 0, backgroundUniforms)
 
         const encoder = device.createCommandEncoder()
         const pass = encoder.beginRenderPass({
@@ -212,12 +404,16 @@ function InteractiveScene() {
             view: context.getCurrentTexture().createView(),
             loadOp: 'clear',
             storeOp: 'store',
-            clearValue: { r: 0.043, g: 0.055, b: 0.08, a: 1 },
+            clearValue: { r: 0.03, g: 0.035, b: 0.055, a: 1 },
           }],
         })
-        pass.setPipeline(pipeline)
-        pass.setBindGroup(0, bindGroup)
+        pass.setPipeline(backgroundPipeline)
+        pass.setBindGroup(0, backgroundBind)
         pass.draw(3)
+
+        pass.setPipeline(cardPipeline)
+        pass.setBindGroup(0, cardBind)
+        pass.draw(6)
         pass.end()
         device.queue.submit([encoder.finish()])
 
@@ -241,7 +437,6 @@ function InteractiveScene() {
 
   return (
     <view className="page">
-      {/* 셰이더 표면 — 페이지 전체를 덮는다 */}
       <webgpu-canvas
         canvas-id="main"
         className="canvas"
@@ -249,30 +444,25 @@ function InteractiveScene() {
           const { width, height, pixelRatio } = event.detail
           canvasCss.current = { width: width / pixelRatio, height: height / pixelRatio }
         }}
-        bindtouchstart={handleTouchStart}
-        bindtouchmove={handleTouchMove}
-        bindtouchend={handleTouchEnd}
-        bindtouchcancel={handleTouchEnd}
+        bindtouchstart={grab}
+        bindtouchmove={move}
+        bindtouchend={release}
+        bindtouchcancel={release}
       />
 
-      {/* 캔버스 "위"에 겹친 평범한 Lynx 컴포넌트 — 여길 누르면 캔버스로 가면 안 된다 */}
-      <view
-        className="layer-card"
-        bindtap={() => setRouted('겹친 Lynx 카드 (캔버스로 안 감)')}
-      >
+      {/* 캔버스 위에 겹친 평범한 Lynx 카드 — 여길 누르면 카드가 기울면 안 된다 */}
+      <view className="layer-card" bindtap={() => setRouted('겹친 Lynx 카드 (캔버스로 안 감)')}>
         <text className="layer-title">겹친 Lynx 카드</text>
-        <text className="layer-hint">여길 누르면 물결이 생기지 않아야 한다</text>
+        <text className="layer-hint">여길 누르면 카드가 안 움직여야 한다</text>
       </view>
 
-      {/* 화면 위쪽 컴포넌트 */}
       <view className="hud">
-        <text className="title">인터랙티브 표면</text>
-        <text className="subtitle">Lynx 표준 터치 → 셰이더 유니폼 · {fps} fps</text>
+        <text className="title">홀로그래픽 카드</text>
+        <text className="subtitle">Lynx 터치 → 3D 기울기 → 포일 · {fps} fps</text>
         <text className="note">마지막 입력: {routed}</text>
         {status ? <text className="status">{status}</text> : null}
       </view>
 
-      {/* 화면 아래쪽 컴포넌트 — 캔버스를 덮고 있으므로 여기도 터치를 먼저 가져간다 */}
       <view className="bottom-bar" bindtap={() => setRouted('아래쪽 Lynx 바 (캔버스로 안 감)')}>
         <text className="bottom-text">아래쪽 Lynx 바 — 탭해 보세요</text>
       </view>
@@ -280,4 +470,4 @@ function InteractiveScene() {
   )
 }
 
-root.render(<InteractiveScene />)
+root.render(<HoloCardScene />)

@@ -151,7 +151,7 @@ LYNXWEBGPU_WGSL_CORPUS=… LYNXWEBGPU_WGSL_DUMP=/tmp/msl swift test --filter Sam
 | `readback` | 컴퓨트 결과를 `mapAsync`로 CPU가 읽어 화면에 표시 |
 | `constants` | 같은 셰이더 모듈 + 다른 `override` 값 → 파이프라인 3개 |
 | `msl` | `language: 'msl'` 직접 주입 + 명시적 파이프라인 레이아웃 |
-| `interactive` | Lynx 표준 터치 → 셰이더 유니폼 + **위아래로 겹친 Lynx 컴포넌트의 입력 라우팅** |
+| `interactive` | 홀로그래픽 카드 — Lynx 표준 터치 → 3D 자세 → 포일/정반사/반짝임. **위아래로 겹친 Lynx 컴포넌트의 입력 라우팅**도 함께 확인 |
 
 목록 ↔ 씬을 오갈 때마다 LynxView와 WebGPU 런타임이 새로 만들어지고 해제되므로,
 **생성/해제 경로까지 함께 확인된다.**
@@ -165,6 +165,9 @@ arch -arm64 xcodebuild -workspace LynxWebGPUDemo.xcworkspace -scheme WebGPUDemo 
 xcrun simctl install <device> .derivedData-cli/Build/Products/Debug-iphonesimulator/WebGPUDemo.app
 xcrun simctl launch <device> org.lynxwebgpu.demo                # 씬 목록
 xcrun simctl launch <device> org.lynxwebgpu.demo -demo cube      # 목록을 건너뛰고 바로 진입
+
+# 시뮬레이터에는 터치를 주입할 방법이 없다. 기울인 카드를 회귀 확인하려면 각도를 고정한다:
+xcrun simctl launch <device> org.lynxwebgpu.demo -demo interactive -cardTilt 0.42
 xcrun simctl io <device> screenshot .tmp/demo-cube.png
 ```
 
