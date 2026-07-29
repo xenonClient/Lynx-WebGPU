@@ -74,7 +74,12 @@ function setup({ device, context, format }: SceneContext) {
       entryPoint: 'fs_main',
       targets: [{
         format,
-        // 미리 곱해진 알파(premultiplied) 합성.
+        // 미리 곱해진 알파(premultiplied) 합성 — 프래그먼트가 이미 RGB에 알파를 곱해 내보내므로
+        // srcFactor는 `src-alpha`가 아니라 `one`이다. 결과는 src·a + dst·(1−a).
+        //
+        // 캔버스 포맷이 `bgra8unorm`(비 sRGB)이라 합성이 **감마 인코딩된 값 위에서** 일어난다.
+        // 브라우저에서 비 sRGB 캔버스를 쓸 때와 같은 동작이지만, 물리적으로 정확한 선형 공간
+        // 합성보다 겹친 부분이 탁해 보인다. 선형 합성을 원하면 `bgra8unorm-srgb`를 쓸 것.
         blend: {
           color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
           alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },

@@ -34,7 +34,7 @@ enum DemoScene: String, CaseIterable {
         case .cube: return "인덱스 드로우 + 깊이 테스트 + 백페이스 컬링 + MVP"
         case .particles: return "컴퓨트 셰이더 + 스토리지 버퍼 + 인스턴싱 + 가산 블렌딩"
         case .texture: return "createTexture + writeTexture + 샘플러 + textureSample"
-        case .blending: return "src-alpha 블렌딩 + 겹치는 반투명 도형"
+        case .blending: return "미리 곱해진 알파 합성 + 겹치는 반투명 도형"
         case .readback: return "컴퓨트 결과를 mapAsync로 CPU에서 읽어 표시"
         case .constants: return "같은 셰이더를 override 값만 바꿔 여러 파이프라인으로"
         case .msl: return "language: 'msl' — 트랜스파일러 우회 + 명시적 레이아웃"

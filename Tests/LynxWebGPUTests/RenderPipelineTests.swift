@@ -218,6 +218,93 @@ final class RenderPipelineTests: XCTestCase {
         try harness.assertPixel(x: 32, y: 32, equals: (128, 0, 128, 255), tolerance: 3)
     }
 
+    /// 데모(`blending` 씬)와 **같은 블렌드 설정·같은 색**으로 두 겹을 쌓고,
+    /// 미리 곱해진 알파 src-over 공식이 내는 값과 픽셀이 일치하는지 본다.
+    ///
+    ///   result = src·a + dst·(1 − a)
+    ///
+    /// 겹친 색이 "이상해 보인다"는 판단은 눈으로 하면 틀리기 쉬우므로 수치로 고정한다.
+    func test_미리곱해진알파_합성이_공식과_일치한다() throws {
+        let shader = """
+        struct Layer { color: vec4f };
+        @group(0) @binding(0) var<uniform> layer: Layer;
+
+        @vertex
+        fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f {
+            var corners = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
+            return vec4f(corners[index], 0.0, 1.0);
+        }
+
+        @fragment
+        fn fs_main() -> @location(0) vec4f {
+            // 데모와 같이 RGB에 알파를 미리 곱해 내보낸다.
+            return vec4f(layer.color.rgb * layer.color.a, layer.color.a);
+        }
+        """
+        // 데모의 색·배경 그대로.
+        let background: [Double] = [0.043, 0.055, 0.08]
+        let first: [Float] = [1.0, 0.25, 0.3, 0.55]
+        let second: [Float] = [0.25, 0.9, 0.45, 0.55]
+
+        harness.executeExpectingSuccess([
+            ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
+            ["op": "createShaderModule", "id": 1, "code": shader],
+            ["op": "createBuffer", "id": 2, "size": 16,
+             "usage": TestUsage.uniform | TestUsage.copyDst, "data": first.base64],
+            ["op": "createBuffer", "id": 3, "size": 16,
+             "usage": TestUsage.uniform | TestUsage.copyDst, "data": second.base64],
+            ["op": "createRenderPipeline", "id": 4, "layout": "auto",
+             "vertex": ["module": 1, "entryPoint": "vs_main"],
+             "fragment": ["module": 1, "entryPoint": "fs_main", "targets": [[
+                "format": "rgba8unorm",
+                "blend": [
+                    "color": ["srcFactor": "one", "dstFactor": "one-minus-src-alpha", "operation": "add"],
+                    "alpha": ["srcFactor": "one", "dstFactor": "one-minus-src-alpha", "operation": "add"],
+                ],
+             ]]]],
+            ["op": "getBindGroupLayout", "id": 5, "pipeline": 4, "index": 0],
+            ["op": "createBindGroup", "id": 6, "layout": 5,
+             "entries": [["binding": 0, "resource": ["buffer": 2]]]],
+            ["op": "createBindGroup", "id": 7, "layout": 5,
+             "entries": [["binding": 0, "resource": ["buffer": 3]]]],
+            ["op": "getCurrentTexture", "id": 10, "canvas": "test"],
+            ["op": "createTextureView", "id": 11, "texture": 10],
+            ["op": "beginRenderPass", "colorAttachments": [[
+                "view": 11, "loadOp": "clear", "storeOp": "store",
+                "clearValue": ["r": background[0], "g": background[1], "b": background[2], "a": 1.0],
+            ]]],
+            ["op": "setPipeline", "pipeline": 4],
+            ["op": "setBindGroup", "index": 0, "bindGroup": 6],
+            ["op": "draw", "vertexCount": 3],
+            // 오른쪽 절반에만 둘째 겹을 올린다 — 한 패스에서 1겹/2겹을 같이 본다.
+            ["op": "setScissorRect", "x": 32, "y": 0, "width": 32, "height": 64],
+            ["op": "setBindGroup", "index": 0, "bindGroup": 7],
+            ["op": "draw", "vertexCount": 3],
+            ["op": "endPass"],
+        ])
+
+        /// src-over(미리 곱해진 알파)를 CPU에서 계산한다.
+        func over(_ source: [Float], on destination: [Double]) -> [Double] {
+            let alpha = Double(source[3])
+            return (0..<3).map { Double(source[$0]) * alpha + destination[$0] * (1 - alpha) }
+        }
+        func bytes(_ color: [Double]) -> (r: Int, g: Int, b: Int, a: Int) {
+            (Int((color[0] * 255).rounded()), Int((color[1] * 255).rounded()),
+             Int((color[2] * 255).rounded()), 255)
+        }
+
+        let oneLayer = over(first, on: background)
+        let twoLayers = over(second, on: oneLayer)
+
+        // 한 겹: 빨강 55% over 배경 → (145, 41, 51)
+        try harness.assertPixel(x: 16, y: 32, equals: bytes(oneLayer), "한 겹")
+        // 두 겹: 초록 55% over 그 결과 → (100, 145, 86)
+        try harness.assertPixel(x: 48, y: 32, equals: bytes(twoLayers), "두 겹")
+
+        // 불투명 배경 위에 그렸으므로 알파는 1로 남아야 한다 (캔버스가 비쳐 보이면 안 된다).
+        XCTAssertEqual(try harness.pixel(x: 48, y: 32).a, 255)
+    }
+
     // MARK: - 컴퓨트
 
     func test_컴퓨트셰이더가_스토리지버퍼를_계산한다() throws {
