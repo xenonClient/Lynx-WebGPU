@@ -57,3 +57,48 @@ page {
   color: #ffd88a;
   margin-top: 6px;
 }
+
+/* --- interactive 씬: 캔버스 위에 겹치는 Lynx 컴포넌트들 --- */
+
+/* 캔버스 위에 얹힌 카드. Lynx가 히트 테스트에서 캔버스보다 먼저 잡아야 한다. */
+.layer-card {
+  position: absolute;
+  left: 32px;
+  top: 300px;
+  width: 230px;
+  padding: 16px;
+  border-radius: 16px;
+  background-color: #1b2540;
+  border: 1px solid #3a4a72;
+  display: flex;
+  flex-direction: column;
+}
+
+.layer-title {
+  font-size: 15px;
+  font-weight: bold;
+  color: #ffffff;
+}
+
+.layer-hint {
+  font-size: 12px;
+  color: #8aa0c0;
+  margin-top: 4px;
+}
+
+.bottom-bar {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: 96px;
+  background-color: #141a28;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.bottom-text {
+  font-size: 14px;
+  color: #8aa0c0;
+}

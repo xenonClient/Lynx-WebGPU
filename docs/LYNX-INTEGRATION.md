@@ -108,7 +108,41 @@ UI 메서드 `getInfo()` → `{ canvasId, width, height, pixelRatio }` (resize �
 
 내부적으로 뷰의 백킹 레이어 자체가 `CAMetalLayer`다 (`layerClass` 교체) — 서브레이어가 없어 합성 단계가 하나 줄어든다.
 
-## 5. 스레딩 계약
+## 5. 터치·제스처 — 웹과 같은 규칙
+
+`<webgpu-canvas>`는 **터치 이벤트를 따로 만들지 않는다.** Lynx 표준 이벤트를 그대로 쓴다:
+
+```tsx
+<webgpu-canvas
+  canvas-id="main"
+  bindtouchstart={(e) => { const t = e.touches[0]; /* t.x, t.y = 엘리먼트 기준 CSS px */ }}
+  bindtouchmove={…}
+  bindtouchend={…}
+/>
+```
+
+이유가 중요하다. `UIView.touchesBegan`을 가로채면 동작은 하지만 **Lynx의 이벤트 라우팅을 통째로 우회한다** —
+그러면 웹과 다르게 동작한다. Lynx의 `LynxEventHandler`는 자체 `hitTest`로 UI 트리를 훑으며
+`pointer-events`, 페인트 순서(z-order), 버블링, `catch` 접두사, 제스처 아레나(스크롤 경쟁)를 모두 반영한다.
+그 경로를 타야 다른 엘리먼트와 똑같이 굴러간다.
+
+따라서 다음이 **웹과 같게** 보장된다:
+
+| 상황 | 동작 |
+|---|---|
+| 캔버스 **위에 겹친** Lynx 엘리먼트를 누름 | 위 엘리먼트가 가져간다. 캔버스는 못 받는다 |
+| 겹친 엘리먼트에 `pointer-events: none` | 통과해서 캔버스가 받는다 |
+| 캔버스 이벤트에서 `stopPropagation()` | 부모로 버블링하지 않는다 |
+| `catchtouchstart`로 바인딩 | 버블링이 그 지점에서 멈춘다 |
+| `<scroll-view>` 안의 캔버스 | 스크롤 제스처가 이기면 터치가 취소된다 |
+
+좌표 변환은 웹과 같다 — `touches[0].x/y`가 **엘리먼트 기준**이므로 캔버스 CSS 크기로 나누면 0~1이 된다.
+CSS 크기는 `bindcanvasresize`의 `width / pixelRatio`로 얻는다 (detail의 크기는 **드로어블 픽셀**이다).
+
+> 확인은 `interactive` 데모 씬으로 한다 — 캔버스 위에 Lynx 카드와 하단 바를 겹쳐 두고,
+> 어떤 엘리먼트가 마지막 입력을 가져갔는지 화면에 표시한다.
+
+## 6. 스레딩 계약
 
 | 일 | 스레드 |
 |---|---|
@@ -119,7 +153,7 @@ UI 메서드 `getInfo()` → `{ canvasId, width, height, pixelRatio }` (resize �
 
 호스트 코드에서 `LynxWebGPUHost`의 메서드는 어느 스레드에서 불러도 안전하다.
 
-## 6. 확인
+## 7. 확인
 
 시뮬레이터에서 번들을 띄우고 다음을 본다:
 

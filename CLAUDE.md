@@ -128,6 +128,10 @@ git tag -a 0.2.0 -m "0.2.0 — 요약"
   로컬 테스트는 통과하는데 실제 셰이더 통과율이 내려가는 변경이 실제로 있었다.
 - WGSL 식별자가 MSL 예약어(`texture` `sampler` `device` `char` …)와 충돌하면 방출기가 이름을 바꾼다.
   **선언과 사용처가 같은 `MSLTypeMapping.identifier(_:)`를 거쳐야** 한다 — 한쪽만 고치면 조용히 깨진다.
-- 데모 앱에 **소스 파일을 추가/삭제한 뒤에는 반드시 `mise exec -- tuist generate`** 로 프로젝트를 재생성한다
-  (안 하면 "cannot find type in scope"로 빌드가 깨진다). 라이브러리 쪽 소스는 SPM이라 재생성이 필요 없다.
+- 데모 앱에 **소스나 리소스 파일을 추가/삭제한 뒤에는 반드시 `mise exec -- tuist generate`** 로 재생성한다.
+  소스를 빠뜨리면 "cannot find type in scope"로 깨지고, **번들(.lynx.bundle)을 빠뜨리면 앱이 조용히
+  "번들이 없다"를 띄운다** — glob은 생성 시점에 펼쳐진다. 라이브러리 쪽은 SPM이라 재생성이 필요 없다.
+- **`<webgpu-canvas>`의 터치는 Lynx 표준 이벤트를 쓴다** (`bindtouchstart` 등). UIKit `touchesBegan`을
+  가로채면 Lynx의 hitTest·pointer-events·버블링·제스처 아레나를 우회해 웹과 다르게 동작한다
+  (`docs/LYNX-INTEGRATION.md` §5).
 - 임시 산출물(빌드 로그, 렌더 덤프 PNG 등)은 `.tmp/` 아래에 둔다 (git-ignored).

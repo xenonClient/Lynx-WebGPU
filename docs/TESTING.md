@@ -151,6 +151,7 @@ LYNXWEBGPU_WGSL_CORPUS=… LYNXWEBGPU_WGSL_DUMP=/tmp/msl swift test --filter Sam
 | `readback` | 컴퓨트 결과를 `mapAsync`로 CPU가 읽어 화면에 표시 |
 | `constants` | 같은 셰이더 모듈 + 다른 `override` 값 → 파이프라인 3개 |
 | `msl` | `language: 'msl'` 직접 주입 + 명시적 파이프라인 레이아웃 |
+| `interactive` | Lynx 표준 터치 → 셰이더 유니폼 + **위아래로 겹친 Lynx 컴포넌트의 입력 라우팅** |
 
 목록 ↔ 씬을 오갈 때마다 LynxView와 WebGPU 런타임이 새로 만들어지고 해제되므로,
 **생성/해제 경로까지 함께 확인된다.**

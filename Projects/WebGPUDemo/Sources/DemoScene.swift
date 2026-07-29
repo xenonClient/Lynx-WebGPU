@@ -13,6 +13,7 @@ enum DemoScene: String, CaseIterable {
     case readback
     case constants
     case msl
+    case interactive
 
     var title: String {
         switch self {
@@ -24,6 +25,7 @@ enum DemoScene: String, CaseIterable {
         case .readback: return "컴퓨트 · 리드백"
         case .constants: return "파이프라인 상수"
         case .msl: return "MSL 탈출구"
+        case .interactive: return "인터랙티브 표면"
         }
     }
 
@@ -38,6 +40,7 @@ enum DemoScene: String, CaseIterable {
         case .readback: return "컴퓨트 결과를 mapAsync로 CPU에서 읽어 표시"
         case .constants: return "같은 셰이더를 override 값만 바꿔 여러 파이프라인으로"
         case .msl: return "language: 'msl' — 트랜스파일러 우회 + 명시적 레이아웃"
+        case .interactive: return "Lynx 표준 터치 → 셰이더 + 위아래로 겹친 Lynx 컴포넌트"
         }
     }
 }

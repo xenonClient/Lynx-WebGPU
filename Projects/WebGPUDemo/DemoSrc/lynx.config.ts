@@ -14,6 +14,7 @@ export default defineConfig({
       readback: './src/readback/index.tsx',
       constants: './src/constants/index.tsx',
       msl: './src/msl/index.tsx',
+      interactive: './src/interactive/index.tsx',
     },
   },
   output: {
