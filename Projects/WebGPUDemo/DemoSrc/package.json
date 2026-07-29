@@ -1,0 +1,24 @@
+{
+  "name": "webgpu-demo-src",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "rspeedy build",
+    "dev": "rspeedy dev",
+    "sync": "npm run build && cp dist/*.lynx.bundle ../Resources/"
+  },
+  "dependencies": {
+    "@lynx-js/react": "^0.122.1"
+  },
+  "devDependencies": {
+    "@lynx-js/react-rsbuild-plugin": "^0.17.2",
+    "@lynx-js/rspeedy": "^0.15.2",
+    "@lynx-js/types": "4.0.0",
+    "@types/react": "^18.3.28",
+    "typescript": "~5.9.3"
+  },
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  }
+}

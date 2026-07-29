@@ -1,3 +1,5 @@
 [tools]
-# 예제 Lynx 번들(rspeedy) 빌드용. Swift/Xcode는 시스템 툴체인을 쓴다 (Xcode 26.2 / Swift 6.2).
+# 데모 Lynx 번들(rspeedy) 빌드용. Swift/Xcode는 시스템 툴체인을 쓴다 (Xcode 26.2 / Swift 6.2).
 node = "22"
+# 데모 호스트 앱(Projects/WebGPUDemo) 프로젝트 생성용. 라이브러리 자체는 SPM만으로 빌드된다.
+tuist = "4.52.0"

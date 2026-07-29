@@ -59,7 +59,7 @@ enum MSLTypeMapping {
         case .texture(let texture):
             return try textureType(texture, module: module)
         case .named(let name):
-            return name
+            return identifier(name)
         }
     }
 
@@ -127,20 +127,41 @@ enum MSLTypeMapping {
 
     // MARK: - 이름 충돌
 
-    /// WGSL에서는 쓸 수 있지만 MSL(C++)에서는 함수 이름으로 못 쓰는 이름들.
-    /// `main`이 대표적이다 — WGSL 컴퓨트 진입점 이름으로 흔한데 Metal은 거부한다.
-    private static let reservedFunctionNames: Set<String> = [
-        "main", "kernel", "vertex", "fragment", "device", "constant", "threadgroup", "thread",
-        "class", "template", "namespace", "using", "public", "private", "protected",
-        "operator", "new", "delete", "this", "throw", "try", "catch", "typename",
+    /// WGSL에서는 평범한 식별자지만 MSL(C++14 + Metal 확장)에서는 예약어인 것들.
+    ///
+    /// 그래픽스 셰이더에서 `texture` `sampler` `device` `char` 같은 이름은 아주 흔하다.
+    /// 그대로 내보내면 컴파일이 깨지거나(운 나쁘면) 다른 의미로 해석되므로 전부 접두사를 붙인다.
+    private static let reservedIdentifiers: Set<String> = [
+        // Metal 주소 공간 / 함수 한정자
+        "device", "constant", "threadgroup", "thread", "kernel", "vertex", "fragment",
+        "texture", "sampler", "access", "ray_data", "object_data",
+        // C++ 키워드 (WGSL이 금지하지 않는 것만)
+        "char", "short", "long", "signed", "unsigned", "class", "union", "enum",
+        "template", "typename", "namespace", "using", "public", "private", "protected",
+        "virtual", "operator", "new", "delete", "this", "throw", "try", "catch", "friend",
+        "inline", "static", "extern", "register", "volatile", "mutable", "explicit",
+        "export", "typedef", "sizeof", "alignof", "decltype", "auto", "constexpr", "nullptr",
+        "goto", "do", "typeid", "and", "or", "not", "xor", "compl", "bitand", "bitor",
+        // MSL 스칼라/벡터 타입 이름
+        "half", "uchar", "ushort", "size_t", "ptrdiff_t",
     ]
+
+    /// 함수 이름으로 쓸 수 없는 것 (`main`은 C++ 키워드는 아니지만 Metal이 거부한다).
+    private static let reservedFunctionNames: Set<String> = ["main"]
 
     /// 진입점·함수 이름을 MSL에서 안전한 이름으로 바꾼다.
     ///
     /// 런타임이 `MTLLibrary.makeFunction(name:)`에 넘길 이름도 이 함수를 거쳐야 한다
     /// (`WGSLShaderModule.mslFunctionName(for:)`).
     static func functionName(_ name: String) -> String {
-        reservedFunctionNames.contains(name) ? "wgpu_fn_\(name)" : name
+        if reservedFunctionNames.contains(name) { return "wgpu_fn_\(name)" }
+        return identifier(name)
+    }
+
+    /// 변수·매개변수·구조체·멤버 이름을 MSL에서 안전한 이름으로 바꾼다.
+    /// **선언과 모든 사용처가 같은 함수를 거쳐야** 이름이 어긋나지 않는다.
+    static func identifier(_ name: String) -> String {
+        reservedIdentifiers.contains(name) ? "wgpu_id_\(name)" : name
     }
 
     // MARK: - 내장 함수
@@ -208,6 +229,7 @@ enum MSLTypeMapping {
         case "front_facing": return ("[[front_facing]]", "bool")
         case "frag_depth": return ("[[depth(any)]]", "float")
         case "sample_index": return ("[[sample_id]]", "uint")
+        case "primitive_index": return ("[[primitive_id]]", "uint")
         case "sample_mask": return ("[[sample_mask]]", "uint")
         case "local_invocation_id": return ("[[thread_position_in_threadgroup]]", "uint3")
         case "local_invocation_index": return ("[[thread_index_in_threadgroup]]", "uint")

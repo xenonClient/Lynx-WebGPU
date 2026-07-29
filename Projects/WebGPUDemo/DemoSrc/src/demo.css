@@ -1,0 +1,59 @@
+/* 데모 3종 공통 스타일 — 캔버스가 화면을 채우고 HUD가 그 위에 얹힌다. */
+page {
+  --bg: #0b0e14;
+}
+
+.page {
+  width: 100%;
+  height: 100%;
+  background-color: #0b0e14;
+}
+
+/* <webgpu-canvas> 는 flex 축소에 민감하다 — 절대 배치로 크기를 확정해 준다. */
+.canvas {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.hud {
+  position: absolute;
+  left: 20px;
+  top: 120px;
+  display: flex;
+  flex-direction: column;
+}
+
+.title {
+  font-size: 22px;
+  font-weight: bold;
+  color: #ffffff;
+}
+
+.subtitle {
+  font-size: 14px;
+  color: #8aa0c0;
+  margin-top: 4px;
+}
+
+.status {
+  font-size: 13px;
+  color: #ff8a8a;
+  margin-top: 8px;
+}
+
+.badge {
+  position: absolute;
+  right: 20px;
+  top: 120px;
+  font-size: 13px;
+  color: #6de1a0;
+}
+
+.note {
+  font-size: 13px;
+  color: #ffd88a;
+  margin-top: 6px;
+}

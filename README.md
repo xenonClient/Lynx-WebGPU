@@ -88,9 +88,24 @@ WGSL을 MSL로 번역하는 용도로만 가져다 써도 된다.
 **오류는 모아서 돌려준다** — 잘못된 호출이 프로세스를 죽이지 않는다. `commands[3].vertex.buffers[0].format`
 같은 경로가 붙고, 셰이더 컴파일 실패에는 생성된 MSL 전문이 함께 온다.
 
+## 실제 WebGPU 셰이더 호환성
+
+공식 [webgpu-samples](https://github.com/webgpu/webgpu-samples)의 WGSL 68개를 **손대지 않고** 통과시켜
+본 결과 (번역 + 실제 Metal 컴파일까지):
+
+| 결과 | 수 |
+|---|---|
+| 그대로 통과 | **54 / 67 (80%)** |
+| 호스트가 `constants`만 주면 동작 | 4 |
+| 미지원 기능 (외부 텍스처 2, `arrayLength` 1) | 3 |
+| 타입 추론 한계 | 2 |
+| 코퍼스 자체가 단독 파일이 아님 | 3 |
+
+측정은 저장소 안에 하네스로 들어 있어 언제든 다시 잴 수 있다 ([docs/TESTING.md](docs/TESTING.md) §7).
+
 ## 검증
 
-60개 테스트가 3초 안에 돈다 — 시뮬레이터도 기기도 필요 없다.
+65개 테스트가 4초 안에 돈다 — 시뮬레이터도 기기도 필요 없다.
 
 - 트랜스파일러 테스트는 생성된 MSL을 **실제 Metal 컴파일러로** 통과시킨다.
 - 렌더 테스트는 오프스크린 텍스처에 그린 뒤 **픽셀 값을 단언**한다 (삼각형, 유니폼, 인덱스 드로우,
@@ -98,6 +113,20 @@ WGSL을 MSL로 번역하는 용도로만 가져다 써도 된다.
 
 ```zsh
 swift test
+```
+
+## 데모 앱
+
+`Projects/WebGPUDemo`에 Tuist 데모 호스트 앱과 Lynx 번들 **8종**이 들어 있다. 앱을 켜면 씬 목록이 뜨고,
+각 씬은 오프스크린 하네스가 자동 검증하는 기능과 1:1로 대응한다 — 회전 삼각형, 3D 큐브(깊이 테스트),
+입자 4096개(컴퓨트 + 인스턴싱), 텍스처·샘플러, 알파 블렌딩, 컴퓨트 리드백(`mapAsync`),
+파이프라인 상수(`override`), MSL 탈출구. 전부 60fps로 돌며 Lynx의 `<text>` HUD가 캔버스 위에 합성된다.
+
+```zsh
+mise exec -- tuist generate --no-open
+# Xcode에서 WebGPUDemo 실행, 또는
+xcrun simctl launch <device> org.lynxwebgpu.demo                  # 씬 목록
+xcrun simctl launch <device> org.lynxwebgpu.demo -demo particles  # 바로 진입
 ```
 
 ## 요구 사항

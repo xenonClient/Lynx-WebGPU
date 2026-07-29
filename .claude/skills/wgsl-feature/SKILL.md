@@ -118,3 +118,26 @@ func test_새기능이_MSL로_번역된다() throws {
 swift test --filter LynxWebGPUShaderTests     # 트랜스파일러 (Metal 컴파일 포함)
 swift test                                    # 전체 — 렌더 결과 회귀까지
 ```
+
+**크게 고쳤다면 외부 코퍼스 통과율을 반드시 다시 잰다:**
+
+```zsh
+git clone --depth 1 https://github.com/webgpu/webgpu-samples.git /tmp/webgpu-samples
+LYNXWEBGPU_WGSL_CORPUS=/tmp/webgpu-samples/sample swift test --filter SampleCorpus
+LYNXWEBGPU_WGSL_DUMP=/tmp/msl …               # 생성된 MSL을 눈으로 볼 때
+```
+
+로컬 테스트는 전부 통과하는데 코퍼스 통과율만 내려가는 변경이 실제로 있었다 —
+WGSL의 AbstractInt 리터럴은 문맥 타입을 따르므로, 타입 추론 없이 "정확해 보이는" 규칙을 넣으면
+오히려 더 자주 틀린다. **수치로 확인하고 들어갈 것.**
+
+## 9. 프렐류드 (`MSLPrelude`)
+
+타입 추론이 필요한 자리는 C++ 템플릿의 `decltype`에 넘긴다 (`wgpu_mod` `wgpu_vec2` `wgpu_max` …).
+새 헬퍼를 더할 때는:
+
+1. `MSLPrelude.source`에 오버로드를 넣고 **`xcrun -sdk macosx metal -c`로 먼저 컴파일해 본다**
+   (템플릿 오버로드 해소는 눈으로 맞히기 어렵다).
+2. `redirectedBuiltins`에 WGSL 이름 → 헬퍼 이름을 등록한다.
+3. `inferredType(of:)`이 같은 규칙을 쓰는지 확인한다 — **방출기와 추론기가 어긋나면**
+   구조체 타입과 초기값 타입이 달라져 조용히 깨진다 (실제로 겪은 회귀다).

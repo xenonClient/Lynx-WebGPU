@@ -231,9 +231,12 @@ public final class WGPUShaderModuleObject {
     func library(
         entryPoints: [String],
         bindings: WGSLBindingAssignment,
+        constants: [String: Double] = [:],
         device: MTLDevice
     ) throws -> MTLLibrary {
-        let key = "\(entryPoints.sorted().joined(separator: "|"))#\(bindings.signature)"
+        // 파이프라인 상수까지 캐시 키에 넣는다 — 같은 셰이더라도 상수가 다르면 다른 MSL이 나온다.
+        let constantsKey = constants.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")
+        let key = "\(entryPoints.sorted().joined(separator: "|"))#\(bindings.signature)#\(constantsKey)"
         lock.lock()
         let cached = libraryCache[key]
         lock.unlock()
@@ -241,7 +244,7 @@ public final class WGPUShaderModuleObject {
 
         let source: String
         if let wgsl {
-            source = try wgsl.translateToMSL(entryPoints: entryPoints, bindings: bindings)
+            source = try wgsl.translateToMSL(entryPoints: entryPoints, bindings: bindings, constants: constants)
         } else {
             source = rawSource
         }

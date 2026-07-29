@@ -25,9 +25,41 @@ public final class WGSLShaderModule {
     /// - Parameters:
     ///   - entryPoints: 이 파이프라인이 쓰는 진입점 이름 (버텍스/프래그먼트 또는 컴퓨트 1개).
     ///   - bindings: `@group/@binding` → Metal 인덱스 배정.
-    public func translateToMSL(entryPoints: [String], bindings: WGSLBindingAssignment) throws -> String {
-        var emitter = MSLEmitter(module: ast, reflection: reflection, bindings: bindings)
+    ///   - constants: 파이프라인 상수(`override`) 값. 셰이더의 기본값을 덮어쓴다.
+    public func translateToMSL(
+        entryPoints: [String],
+        bindings: WGSLBindingAssignment,
+        constants: [String: Double] = [:]
+    ) throws -> String {
+        var emitter = MSLEmitter(
+            module: Self.applying(constants, to: ast), reflection: reflection, bindings: bindings
+        )
         return try emitter.emit(entryPoints: entryPoints)
+    }
+
+    /// 파이프라인 상수를 AST에 미리 반영한다.
+    ///
+    /// 방출기와 배치 계산기가 같은 상수 테이블을 보게 하려면, 값을 따로 들고 다니는 것보다
+    /// **AST에 심어 두는 편**이 안전하다 (배열 길이가 override에 걸린 경우까지 자연히 풀린다).
+    private static func applying(_ constants: [String: Double], to module: WGSLModule) -> WGSLModule {
+        guard !constants.isEmpty else { return module }
+        var updated = module
+        updated.constants = module.constants.map { constant in
+            guard constant.isOverride, let supplied = constants[constant.name] else { return constant }
+            var replaced = constant
+            replaced.value = literal(supplied, type: constant.type)
+            return replaced
+        }
+        return updated
+    }
+
+    private static func literal(_ value: Double, type: WGSLType?) -> WGSLExpression {
+        let isFloatType: Bool
+        if case .scalar(let name)? = type { isFloatType = name == "f32" || name == "f16" } else { isFloatType = false }
+        if !isFloatType, value == value.rounded() {
+            return .intLiteral(String(Int(value)))
+        }
+        return .floatLiteral(String(value))
     }
 
     /// `layout: "auto"` 파이프라인이 쓸 바인드 그룹 레이아웃을 셰이더 선언에서 유도한다.

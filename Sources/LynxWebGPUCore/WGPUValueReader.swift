@@ -173,6 +173,12 @@ public struct WGPUValueReader {
         try numbers(key).map { Int($0) }
     }
 
+    /// `{ "name": 값 }` 형태의 숫자 맵 (파이프라인 상수 `constants`).
+    public func numberMap(_ key: String) -> [String: Double] {
+        guard let raw = value(key) as? [String: Any] else { return [:] }
+        return raw.compactMapValues { ($0 as? NSNumber)?.doubleValue }
+    }
+
     public func handles(_ key: String) throws -> [WGPUHandle] {
         try integers(key).map(WGPUHandle.init)
     }

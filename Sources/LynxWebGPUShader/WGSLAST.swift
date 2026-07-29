@@ -142,12 +142,13 @@ struct WGSLGlobalVariable: Equatable {
     var isResource: Bool { group != nil && binding != nil }
 }
 
-/// 모듈 스코프 상수 (`const PI = 3.14;`).
+/// 모듈 스코프 상수 (`const PI = 3.14;`) 또는 파이프라인 상수 (`override scale: f32 = 1.0;`).
 struct WGSLModuleConstant: Equatable {
     var name: String
     var type: WGSLType?
-    var value: WGSLExpression
-    /// `override`는 파이프라인 상수 — 이 구현은 기본값만 사용한다.
+    /// `override`는 기본값 없이 선언될 수 있다 (`override size: f32;`).
+    /// 그 경우 파이프라인 생성 시 `constants`로 값을 받아야 한다.
+    var value: WGSLExpression?
     var isOverride: Bool
 }
 

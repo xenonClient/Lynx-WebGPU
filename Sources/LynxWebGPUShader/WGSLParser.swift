@@ -28,6 +28,9 @@ struct WGSLParser {
     /// 제네릭 인자 안에서는 이 토큰들이 이항 연산자가 아니라 템플릿 닫기다.
     private static let templateClosers: Set<String> = ["<", ">", "<=", ">=", ">>"]
 
+    /// MSL로 옮길 것이 없는 모듈 스코프 지시자.
+    private static let moduleDirectives: Set<String> = ["enable", "requires", "diagnostic"]
+
     private static let statementKeywords: Set<String> = [
         "let", "var", "const", "if", "for", "while", "loop", "switch",
         "return", "break", "continue", "discard", "const_assert",
@@ -131,6 +134,11 @@ struct WGSLParser {
                 // 컴파일 타임 단언은 번역 대상이 아니다 — 세미콜론까지 건너뛴다.
                 while !isAtEnd, !check(";") { advance() }
                 try expect(";", "const_assert")
+            } else if Self.moduleDirectives.contains(current.text) {
+                // `enable f16;` `requires readonly_and_readwrite_storage_textures;` `diagnostic(off, …);`
+                // 확장 선언은 MSL로 옮길 것이 없다 — 세미콜론까지 건너뛴다.
+                while !isAtEnd, !check(";") { advance() }
+                try expect(";", "확장 선언")
             } else {
                 throw error("모듈 스코프에 올 수 없는 토큰 '\(current.text)'")
             }
@@ -209,8 +217,12 @@ struct WGSLParser {
         let name = try expectIdentifier("상수 이름")
         var type: WGSLType?
         if match(":") { type = try parseType() }
-        try expect("=", "상수 초기값")
-        let value = try parseExpression()
+        var value: WGSLExpression?
+        if match("=") {
+            value = try parseExpression()
+        } else if !isOverride {
+            throw error("'=' 이(가) 필요하다 (상수 초기값) — 실제: '\(current.text)'")
+        }
         try expect(";", "상수")
         return WGSLModuleConstant(name: name, type: type, value: value, isOverride: isOverride)
     }

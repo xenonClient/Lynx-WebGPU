@@ -370,11 +370,14 @@ public struct WGPUVertexState {
     public var module: WGPUHandle
     public var entryPoint: String
     public var buffers: [WGPUVertexBufferLayout]
+    /// 파이프라인 상수 (`override`) 값.
+    public var constants: [String: Double]
 
     public init(from reader: WGPUValueReader) throws {
         module = try reader.requiredHandle("module")
         entryPoint = reader.string("entryPoint", default: "main")
         buffers = try reader.objects("buffers").map(WGPUVertexBufferLayout.init(from:))
+        constants = reader.numberMap("constants")
     }
 }
 
@@ -422,11 +425,14 @@ public struct WGPUFragmentState {
     public var module: WGPUHandle
     public var entryPoint: String
     public var targets: [WGPUColorTargetState]
+    /// 파이프라인 상수 (`override`) 값.
+    public var constants: [String: Double]
 
     public init(from reader: WGPUValueReader) throws {
         module = try reader.requiredHandle("module")
         entryPoint = reader.string("entryPoint", default: "main")
         targets = try reader.requiredObjects("targets").map(WGPUColorTargetState.init(from:))
+        constants = reader.numberMap("constants")
     }
 }
 
@@ -508,6 +514,8 @@ public struct WGPUComputePipelineDescriptor {
     public var layout: WGPUPipelineLayoutRef
     public var module: WGPUHandle
     public var entryPoint: String
+    /// 파이프라인 상수 (`override`) 값.
+    public var constants: [String: Double]
     public var label: String?
 
     public init(from reader: WGPUValueReader) throws {
@@ -515,6 +523,7 @@ public struct WGPUComputePipelineDescriptor {
         let compute = try reader.requiredObject("compute")
         module = try compute.requiredHandle("module")
         entryPoint = compute.string("entryPoint", default: "main")
+        constants = compute.numberMap("constants")
         label = reader.optionalString("label")
     }
 }

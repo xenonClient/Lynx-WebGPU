@@ -10,7 +10,7 @@
 |---|---|
 | `struct S { … }` | `struct alignas(N) S { … }` (WGSL 배치에 맞춘 패딩 삽입 — §3) |
 | `alias T = …;` | `using T = …;` |
-| `const X = …;` / `override X = …;` | `constant … X = …;` (override는 기본값만) |
+| `const X = …;` / `override X = …;` | `constant … X = …;` (override는 파이프라인 `constants`로 대체 — §2-2) |
 | `fn f(a: T) -> R { … }` | `R f(T a, /* 스레딩된 리소스 */) { … }` |
 | `@vertex` / `@fragment` / `@compute` | `vertex` / `fragment` / `kernel` 래퍼 + `…_inner` |
 | `var<uniform> u: T` | `constant T& u [[buffer(n)]]` |
@@ -21,6 +21,7 @@
 | `var<private> p: T` | 진입점 안의 지역 변수 + `thread T&` 인자 |
 | `var t: texture_2d<f32>` | `texture2d<float> t [[texture(n)]]` |
 | `var s: sampler` | `sampler s [[sampler(n)]]` |
+| `enable f16;` / `requires …;` / `diagnostic(…);` | 무시 (MSL로 옮길 것이 없다) |
 
 ### 타입
 
@@ -94,9 +95,49 @@
 
 ## 2. 이름 규칙
 
-`main`처럼 MSL이 함수 이름으로 거부하는 이름은 방출 시 `wgpu_fn_main`으로 바뀐다.
-JS에서는 원래 이름(`entryPoint: 'main'`)을 그대로 쓰면 되고, 런타임이
+WGSL에서는 평범한 식별자가 MSL(C++14 + Metal 확장)에서는 예약어인 경우가 있다 —
+그래픽스 셰이더에서 흔한 `texture` `sampler` `device` `char` `vertex` 같은 이름이 대표적이다.
+방출기가 **선언과 모든 사용처를 함께** 바꾸므로 셰이더를 고칠 필요는 없다:
+
+| 대상 | 변환 |
+|---|---|
+| 진입점·함수 이름 중 `main` | `wgpu_fn_main` |
+| 그 외 예약어 충돌 (변수·매개변수·구조체·멤버·상수) | `wgpu_id_<이름>` |
+
+JS에서는 원래 이름(`entryPoint: 'main'`)을 그대로 쓴다. 런타임이
 `WGSLShaderModule.mslFunctionName(for:)`으로 변환해 `MTLLibrary`에서 찾는다.
+
+## 2-1. 셰이더 프렐류드
+
+생성된 MSL 맨 앞에 헬퍼 템플릿 묶음이 붙는다 (`MSLPrelude`). 이 트랜스파일러는 타입 추론기가
+아니라 **구문 번역기**라서, WGSL이 타입으로 결정하는 것들을 C++ 템플릿의 `decltype`에 넘긴다:
+
+| WGSL | 프렐류드가 하는 일 |
+|---|---|
+| `a % b` (부동소수) | `wgpu_mod` — 정수는 `%`, 부동소수는 `fmod`로 갈라 보낸다 |
+| `vec2(x, 4)` (성분 타입 생략) | `wgpu_vec2` — 인자 타입에서 성분 타입을 추론한다 |
+| `max(x, 0)` (리터럴 승격) | `wgpu_max` 등 — 두 인자의 공통 타입으로 맞춘 뒤 호출한다 |
+| `radians(d)` / `degrees(r)` | MSL에 없어 직접 정의한다 |
+
+인스턴스화되지 않은 템플릿은 코드를 만들지 않으므로 런타임 비용은 없다.
+
+## 2-2. 파이프라인 상수 (`override`)
+
+```wgsl
+override blockSize: u32 = 16;
+override intensity: f32;          // 기본값 없음 — 호스트가 반드시 줘야 한다
+@group(0) @binding(0) var<storage, read> data: array<f32, blockSize>;
+```
+
+```js
+device.createComputePipeline({
+  layout: 'auto',
+  compute: { module, entryPoint: 'main', constants: { blockSize: 32, intensity: 0.8 } },
+})
+```
+
+값은 **MSL 방출 시점에 상수로 박힌다**. 배열 길이가 `override`에 걸린 경우까지 자연히 풀린다.
+기본값도 없고 `constants`로도 주지 않으면 파이프라인 생성이 명확한 오류로 실패한다.
 
 ## 3. 구조체 배치
 
@@ -135,14 +176,34 @@ struct alignas(16) Light {
 | `modf` / `frexp` | 반환 구조체를 옮기지 못한다. `floor`/`fract`로 나눠 쓸 것 |
 | `workgroupUniformLoad` | 미지원 |
 | `break if cond;` | `continuing` 블록 전용 구문. `if (cond) { break; }`로 바꿔 쓸 것 |
+| `textureSampleBaseClampToEdge` | 외부 텍스처(비디오)를 지원하지 않는다 |
 | `continuing` + `continue` 조합 | `continue`가 `continuing` 블록을 건너뛰게 되어 의미가 달라진다. `for`로 바꿀 것 |
 | 런타임 크기 배열이 **구조체 멤버**인 경우 | 길이 1 배열로 방출된다. 저장 타입을 `array<T>` 자체로 선언할 것 |
 
-암묵적 제약 (Metal 컴파일러가 잡는다):
-- **부동소수 `%`** — WGSL은 f32에 `%`를 허용하지만 MSL은 정수만 받는다. `fmod(a, b)`를 쓸 것.
-- 성분 타입을 생략한 `vec3(…)` 생성자는 **f32로 가정**한다. `vec3u(…)`처럼 명시할 것.
+암묵적 제약:
+- **성분 타입이 생략되고 인자가 전부 정수 리터럴인 벡터 생성자**(`vec2(4, 1)`)는 추론 근거가 없어
+  **f32로 본다**. 정수 벡터가 필요하면 `vec2u(4, 1)`처럼 명시할 것.
+  인자에 타입이 있는 식이 하나라도 있으면(`vec2(count, 4)`) 정확히 추론된다.
+- 같은 이유로 `vec4(1741651 * 1009, …)`처럼 **정수 상수식만으로 이루어진 부호 없는 벡터**는
+  타입이 어긋난다. `vec4u(…)`로 명시할 것.
 - 여기 표에 없는 내장 함수는 **이름 그대로 통과**한다. MSL에 같은 이름이 없으면 파이프라인 생성 시
   "MSL 컴파일 실패" 오류와 함께 생성된 MSL 전문이 나온다.
+
+## 4-1. 실제 셰이더로 재 본 호환성
+
+공식 [webgpu-samples](https://github.com/webgpu/webgpu-samples)의 WGSL 68개를 그대로 통과시켜 본 결과
+(번역 + **실제 Metal 컴파일**까지):
+
+| 결과 | 수 |
+|---|---|
+| 그대로 통과 | **54 / 67 (80%)** |
+| 호스트가 `constants`를 주면 동작 (`override` 사용) | 4 |
+| 외부 텍스처(비디오) 미지원 | 2 |
+| `arrayLength()` 미지원 | 1 |
+| 타입 추론 한계 (위 암묵적 제약) | 2 |
+| 코퍼스 자체가 단독 파일이 아님 (다른 파일과 이어 붙여 쓰는 조각) | 3 |
+
+재현 방법은 `docs/TESTING.md` §7.
 
 ## 5. MSL 탈출구
 

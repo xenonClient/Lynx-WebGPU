@@ -43,15 +43,15 @@ struct MSLEmitter {
         line("#include <simd/simd.h>")
         line("using namespace metal;")
         line("")
+        output += MSLPrelude.source + "\n\n"
 
         for alias in module.aliases {
-            line("using \(alias.name) = \(try MSLTypeMapping.type(alias.type, module: module));")
+            line("using \(MSLTypeMapping.identifier(alias.name)) = \(try MSLTypeMapping.type(alias.type, module: module));")
         }
         if !module.aliases.isEmpty { line("") }
 
         for constant in module.constants {
-            let type = try constant.type.map { try MSLTypeMapping.type($0, module: module) } ?? "auto"
-            line("constant \(type) \(constant.name) = \(try expression(constant.value));")
+            try emitModuleConstant(constant)
         }
         if !module.constants.isEmpty { line("") }
 
@@ -73,6 +73,73 @@ struct MSLEmitter {
             try emitEntryPoint(function)
         }
         return output
+    }
+
+    /// 모듈 스코프 상수 / 파이프라인 상수.
+    ///
+    /// MSL은 `constant auto x = …`를 허용하지 않는다. 타입 주석이 없으면 매크로로 편다 —
+    /// WGSL의 모듈 상수는 컴파일 타임 값이라 의미가 같다.
+    private mutating func emitModuleConstant(_ constant: WGSLModuleConstant) throws {
+        guard let value = constant.value else {
+            throw WGPUError.validation(
+                "override '\(constant.name)'에 값이 없다 — 파이프라인 생성 시 "
+                    + "`constants: { \(constant.name): … }` 로 넘겨야 한다"
+            )
+        }
+        if let type = constant.type ?? inferredType(of: value) {
+            line("constant \(try MSLTypeMapping.type(type, module: module)) \(MSLTypeMapping.identifier(constant.name)) = \(try expression(value));")
+        } else {
+            line("#define \(MSLTypeMapping.identifier(constant.name)) (\(try expression(value)))")
+        }
+    }
+
+    /// 인자가 전부 정수 리터럴인가 — 성분 타입 추론의 근거가 없다는 뜻이다.
+    private static func isAllIntegerLiterals(_ arguments: [WGSLExpression]) -> Bool {
+        guard !arguments.isEmpty else { return false }
+        return arguments.allSatisfy {
+            if case .intLiteral = $0 { return true }
+            return false
+        }
+    }
+
+    /// 초기값의 **구문**만 보고 타입을 짚어 본다 (타입 추론기가 아니라 생성자 이름을 읽는 것).
+    /// 모듈 상수와 성분 타입이 생략된 `array(…)` 생성자에 쓴다.
+    private func inferredType(of expression: WGSLExpression) -> WGSLType? {
+        switch expression {
+        case .floatLiteral:
+            return .scalar("f32")
+        case .intLiteral(let text):
+            return .scalar(text.hasSuffix("u") ? "u32" : "i32")
+        case .boolLiteral:
+            return .scalar("bool")
+        case .paren(let inner), .unary(_, let inner):
+            return inferredType(of: inner)
+        case .call(let callee, let typeArguments, let arguments):
+            if structNames.contains(callee) { return .named(callee) }
+            if MSLTypeMapping.scalarConstructors.contains(callee) { return .scalar(callee) }
+            if let shorthand = WGSLParser.shorthandType(callee) { return shorthand }
+            if callee.hasPrefix("vec"), let size = Int(callee.dropFirst(3)) {
+                if case .scalar? = typeArguments.first {
+                    return .vector(size: size, element: typeArguments[0])
+                }
+                // 성분 타입이 생략되면 인자에서 짚어 본다 (`vec2(-1.0, -1.0)` → vec2<f32>).
+                // **방출기의 규칙과 같아야 한다** — 인자가 전부 정수 리터럴이면 f32로 본다.
+                if Self.isAllIntegerLiterals(arguments) {
+                    return .vector(size: size, element: .scalar("f32"))
+                }
+                guard let element = arguments.first.flatMap(inferredType(of:)),
+                      case .scalar = element else { return nil }
+                return .vector(size: size, element: element)
+            }
+            if callee == "array" {
+                let element = typeArguments.first ?? arguments.first.flatMap(inferredType(of:))
+                guard let element else { return nil }
+                return .array(element: element, count: .intLiteral(String(arguments.count)))
+            }
+            return nil
+        default:
+            return nil
+        }
     }
 
     // MARK: - 출력 보조
@@ -97,7 +164,7 @@ struct MSLEmitter {
         let isUniform = uniformStructs.contains(structure.name)
         let placement = WGSLLayout.layout(of: structure, module: module, uniform: isUniform)
 
-        line("struct alignas(\(placement.align)) \(structure.name) {")
+        line("struct alignas(\(placement.align)) \(MSLTypeMapping.identifier(structure.name)) {")
         var cursor = 0
         var padIndex = 0
         try indented { emitter in
@@ -128,17 +195,17 @@ struct MSLEmitter {
         // 실제 길이는 호출 측이 보장한다 (docs/WGSL.md §4).
         if case .array(let element, nil) = member.type {
             let elementType = try MSLTypeMapping.type(element, module: module)
-            return ("\(elementType) \(member.name)[1];", member.size)
+            return ("\(elementType) \(MSLTypeMapping.identifier(member.name))[1];", member.size)
         }
         if member.needsPackedVector, case .vector(3, .scalar(let scalar)) = member.type {
             // WGSL vec3는 크기 12 — MSL float3(16바이트)로는 뒤 멤버 자리를 못 맞춘다.
-            return ("packed_\(MSLTypeMapping.scalar(scalar))3 \(member.name);", 12)
+            return ("packed_\(MSLTypeMapping.scalar(scalar))3 \(MSLTypeMapping.identifier(member.name));", 12)
         }
         let type = try MSLTypeMapping.type(member.type, module: module)
         if case .vector(3, _) = member.type {
-            return ("\(type) \(member.name);", 16)
+            return ("\(type) \(MSLTypeMapping.identifier(member.name));", 16)
         }
-        return ("\(type) \(member.name);", member.size)
+        return ("\(type) \(MSLTypeMapping.identifier(member.name));", member.size)
     }
 
     // MARK: - 리소스 스레딩
@@ -158,7 +225,7 @@ struct MSLEmitter {
     private func parameterDeclaration(for global: WGSLGlobalVariable) throws -> String {
         switch global.type {
         case .texture, .sampler:
-            return "\(try MSLTypeMapping.type(global.type, module: module)) \(global.name)"
+            return "\(try MSLTypeMapping.type(global.type, module: module)) \(MSLTypeMapping.identifier(global.name))"
         default:
             break
         }
@@ -168,9 +235,9 @@ struct MSLEmitter {
 
         // storage 버퍼의 저장 타입이 런타임 배열이면 포인터로 받는다.
         if case .array(let element, nil) = global.type {
-            return "\(qualifier) \(try MSLTypeMapping.type(element, module: module))* \(global.name)"
+            return "\(qualifier) \(try MSLTypeMapping.type(element, module: module))* \(MSLTypeMapping.identifier(global.name))"
         }
-        return "\(qualifier) \(try MSLTypeMapping.type(global.type, module: module))& \(global.name)"
+        return "\(qualifier) \(try MSLTypeMapping.type(global.type, module: module))& \(MSLTypeMapping.identifier(global.name))"
     }
 
     /// 진입점에서 리소스를 받을 때 붙는 Metal 인덱스 속성.
@@ -198,7 +265,7 @@ struct MSLEmitter {
         registerTextures(of: function)
 
         var parameters = try function.parameters.map { parameter in
-            "\(try MSLTypeMapping.type(parameter.type, module: module)) \(parameter.name)"
+            "\(try MSLTypeMapping.type(parameter.type, module: module)) \(MSLTypeMapping.identifier(parameter.name))"
         }
         parameters += try threadedGlobals(for: function.name).map(parameterDeclaration(for:))
 
@@ -243,7 +310,7 @@ struct MSLEmitter {
 
         // 1) 원래 시그니처를 유지한 내부 함수.
         var innerParameters = try function.parameters.map { parameter in
-            "\(try MSLTypeMapping.type(parameter.type, module: module)) \(parameter.name)"
+            "\(try MSLTypeMapping.type(parameter.type, module: module)) \(MSLTypeMapping.identifier(parameter.name))"
         }
         innerParameters += try resources.map(parameterDeclaration(for:))
         let returnType = try function.returnType.map { try MSLTypeMapping.type($0, module: module) } ?? "void"
@@ -307,7 +374,7 @@ struct MSLEmitter {
             }
             for statement in interface.prelude { emitter.line(statement) }
 
-            let arguments = interface.innerArguments + resources.map(\.name)
+            let arguments = interface.innerArguments + resources.map { MSLTypeMapping.identifier($0.name) }
             let call = "\(innerName)(\(arguments.joined(separator: ", ")))"
             if interface.outFields.isEmpty {
                 emitter.line("\(call);")
@@ -325,11 +392,11 @@ struct MSLEmitter {
     private mutating func emitLocalGlobal(_ global: WGSLGlobalVariable) throws {
         let type = try MSLTypeMapping.type(global.type, module: module)
         if global.addressSpace == "workgroup" {
-            line("threadgroup \(type) \(global.name);")
+            line("threadgroup \(type) \(MSLTypeMapping.identifier(global.name));")
         } else if let initializer = global.initializer {
-            line("\(type) \(global.name) = \(try expression(initializer));")
+            line("\(type) \(MSLTypeMapping.identifier(global.name)) = \(try expression(initializer));")
         } else {
-            line("\(type) \(global.name){};")
+            line("\(type) \(MSLTypeMapping.identifier(global.name)){};")
         }
     }
 
@@ -341,8 +408,8 @@ struct MSLEmitter {
         for parameter in function.parameters {
             if case .named(let typeName) = parameter.type,
                let structure = WGSLLayout.resolveStruct(typeName, module: module) {
-                let local = "wgpu_arg_\(parameter.name)"
-                interface.prelude.append("\(typeName) \(local){};")
+                let local = "wgpu_arg_\(MSLTypeMapping.identifier(parameter.name))"
+                interface.prelude.append("\(MSLTypeMapping.identifier(typeName)) \(local){};")
                 for member in structure.members {
                     let source = try inputSource(
                         attributes: member.attributes,
@@ -350,10 +417,16 @@ struct MSLEmitter {
                         stage: stage,
                         into: &interface
                     )
-                    interface.prelude.append("\(local).\(member.name) = \(source);")
+                    interface.prelude.append("\(local).\(MSLTypeMapping.identifier(member.name)) = \(source);")
                 }
                 interface.innerArguments.append(local)
             } else {
+                if case .named(let typeName) = parameter.type {
+                    throw WGPUError.validation(
+                        "진입점 매개변수 '\(parameter.name)'의 타입 '\(typeName)'을(를) 찾을 수 없다 "
+                            + "— 구조체 선언이 같은 셰이더 모듈 안에 있어야 한다"
+                    )
+                }
                 let source = try inputSource(
                     attributes: parameter.attributes,
                     type: parameter.type,
@@ -406,7 +479,7 @@ struct MSLEmitter {
             for member in structure.members {
                 let field = try outputField(attributes: member.attributes, type: member.type, stage: stage)
                 interface.outFields.append(field.declaration)
-                interface.packStatements.append("wgpu_out.\(field.name) = wgpu_result.\(member.name);")
+                interface.packStatements.append("wgpu_out.\(field.name) = wgpu_result.\(MSLTypeMapping.identifier(member.name));")
             }
             return
         }
@@ -548,18 +621,18 @@ struct MSLEmitter {
         switch statement {
         case .letDeclaration(let name, let type, let value), .constDeclaration(let name, let type, let value):
             let typeText = try type.map { try MSLTypeMapping.type($0, module: module) } ?? "auto"
-            return "const \(typeText) \(name) = \(try expression(value))"
+            return "const \(typeText) \(MSLTypeMapping.identifier(name)) = \(try expression(value))"
 
         case .varDeclaration(let name, let type, let value):
             guard let type else {
                 guard let value else {
                     throw WGPUError.validation("WGSL: var '\(name)'에 타입도 초기값도 없다")
                 }
-                return "auto \(name) = \(try expression(value))"
+                return "auto \(MSLTypeMapping.identifier(name)) = \(try expression(value))"
             }
             let typeText = try MSLTypeMapping.type(type, module: module)
-            guard let value else { return "\(typeText) \(name){}" }
-            return "\(typeText) \(name) = \(try expression(value))"
+            guard let value else { return "\(typeText) \(MSLTypeMapping.identifier(name)){}" }
+            return "\(typeText) \(MSLTypeMapping.identifier(name)) = \(try expression(value))"
 
         case .assignment(let target, let op, let value):
             return "\(try expression(target)) \(op) \(try expression(value))"
@@ -610,15 +683,19 @@ struct MSLEmitter {
         case .boolLiteral(let value):
             return value ? "true" : "false"
         case .identifier(let name):
-            return name
+            return MSLTypeMapping.identifier(name)
         case .unary(let op, let operand):
             return "\(op)\(try self.expression(operand))"
         case .binary(let op, let left, let right):
+            // WGSL의 `%`는 부동소수에도 정의된다 — MSL의 `%`는 정수 전용이라 헬퍼로 우회한다.
+            if op == "%" {
+                return "wgpu_mod(\(try self.expression(left)), \(try self.expression(right)))"
+            }
             return "\(try self.expression(left)) \(op) \(try self.expression(right))"
         case .paren(let inner):
             return "(\(try self.expression(inner)))"
         case .member(let base, let name):
-            return "\(try self.expression(base)).\(name)"
+            return "\(try self.expression(base)).\(MSLTypeMapping.identifier(name))"
         case .index(let base, let subscriptExpression):
             return "\(try self.expression(base))[\(try self.expression(subscriptExpression))]"
         case .addressOf(let operand):
@@ -685,12 +762,32 @@ struct MSLEmitter {
 
         // 구조체 생성자는 MSL(C++)에서 집합 초기화다.
         if structNames.contains(callee) {
-            return "\(callee){\(emitted.joined(separator: ", "))}"
+            return "\(MSLTypeMapping.identifier(callee)){\(emitted.joined(separator: ", "))}"
+        }
+        // 성분 타입이 생략된 벡터 생성자.
+        if MSLPrelude.inferredVectorConstructors.contains(callee), typeArguments.isEmpty {
+            // 인자가 전부 정수 리터럴이면 추론할 근거가 없다. WGSL의 AbstractInt는 문맥 타입을
+            // 따르는데, 벡터 생성자에서는 f32 문맥이 압도적으로 흔하므로 그쪽을 택한다
+            // (`vec3(1)` = 흰색). 정수 벡터가 필요하면 `vec3u(…)`처럼 명시할 것 — docs/WGSL.md §4.
+            if Self.isAllIntegerLiterals(arguments) {
+                let size = Int(callee.dropFirst(3)) ?? 4
+                return "float\(size)(\(emitted.joined(separator: ", ")))"
+            }
+            return "wgpu_\(callee)(\(emitted.joined(separator: ", ")))"
+        }
+        // 리터럴 승격이 필요한 내장 함수도 마찬가지 (`max(x, 0)`).
+        if let helper = MSLPrelude.redirectedBuiltins[callee] {
+            return "\(helper)(\(emitted.joined(separator: ", ")))"
         }
         if callee == "array" {
-            let elementType = typeArguments.first.map { try? MSLTypeMapping.type($0, module: module) } ?? nil
-            let type = elementType.map { "array<\($0), \(emitted.count)>" } ?? "array"
-            return "\(type){\(emitted.joined(separator: ", "))}"
+            // 성분 타입이 생략되면 첫 인자의 생성자 이름에서 짚어 낸다 (`array(vec2f(…), …)`).
+            let element = typeArguments.first ?? arguments.first.flatMap(inferredType(of:))
+            guard let element, let elementType = try? MSLTypeMapping.type(element, module: module) else {
+                throw WGPUError.unsupported(
+                    "WGSL: array(…) 생성자의 성분 타입을 알 수 없다 — `array<T, N>(…)`로 명시할 것"
+                )
+            }
+            return "array<\(elementType), \(emitted.count)>{\(emitted.joined(separator: ", "))}"
         }
         if let constructor = try vectorOrMatrixConstructor(callee, typeArguments: typeArguments) {
             return "\(constructor)(\(emitted.joined(separator: ", ")))"
@@ -701,7 +798,7 @@ struct MSLEmitter {
 
         // 사용자 함수는 스레딩된 리소스를 뒤에 덧붙여 넘긴다.
         if module.functionNamed(callee) != nil {
-            let extra = threadedGlobals(for: callee).map(\.name)
+            let extra = threadedGlobals(for: callee).map { MSLTypeMapping.identifier($0.name) }
             return "\(MSLTypeMapping.functionName(callee))(\((emitted + extra).joined(separator: ", ")))"
         }
 

@@ -146,8 +146,9 @@ enum WGSLLayout {
         case .paren(let inner):
             return constantValue(inner, module: module)
         case .identifier(let name):
-            guard let constant = module.constants.first(where: { $0.name == name }) else { return nil }
-            return constantValue(constant.value, module: module)
+            guard let constant = module.constants.first(where: { $0.name == name }),
+                  let value = constant.value else { return nil }
+            return constantValue(value, module: module)
         case .binary(let op, let left, let right):
             guard let l = constantValue(left, module: module), let r = constantValue(right, module: module) else {
                 return nil

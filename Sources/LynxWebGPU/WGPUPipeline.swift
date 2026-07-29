@@ -105,8 +105,15 @@ public final class WGPURenderPipelineObject {
             ? [descriptor.vertex.entryPoint, descriptor.fragment!.entryPoint]
             : [descriptor.vertex.entryPoint]
 
+        // 정점/프래그먼트가 같은 모듈이면 상수도 합쳐서 한 번에 방출한다.
+        let sharedConstants = descriptor.vertex.constants.merging(
+            descriptor.fragment?.constants ?? [:]
+        ) { _, fragment in fragment }
         let vertexLibrary = try vertexModule.library(
-            entryPoints: vertexEntryPoints, bindings: layout.assignment, device: device
+            entryPoints: vertexEntryPoints,
+            bindings: layout.assignment,
+            constants: sharesModule ? sharedConstants : descriptor.vertex.constants,
+            device: device
         )
         let vertexName = vertexModule.metalFunctionName(for: descriptor.vertex.entryPoint)
         guard let vertexFunction = vertexLibrary.makeFunction(name: vertexName) else {
@@ -118,7 +125,10 @@ public final class WGPURenderPipelineObject {
             let fragmentLibrary = sharesModule
                 ? vertexLibrary
                 : try fragmentModule.library(
-                    entryPoints: [fragment.entryPoint], bindings: layout.assignment, device: device
+                    entryPoints: [fragment.entryPoint],
+                    bindings: layout.assignment,
+                    constants: fragment.constants,
+                    device: device
                 )
             let fragmentName = fragmentModule.metalFunctionName(for: fragment.entryPoint)
             guard let fragmentFunction = fragmentLibrary.makeFunction(name: fragmentName) else {
@@ -211,7 +221,10 @@ public final class WGPUComputePipelineObject {
         self.layout = layout
 
         let library = try module.library(
-            entryPoints: [descriptor.entryPoint], bindings: layout.assignment, device: device
+            entryPoints: [descriptor.entryPoint],
+            bindings: layout.assignment,
+            constants: descriptor.constants,
+            device: device
         )
         let name = module.metalFunctionName(for: descriptor.entryPoint)
         guard let function = library.makeFunction(name: name) else {

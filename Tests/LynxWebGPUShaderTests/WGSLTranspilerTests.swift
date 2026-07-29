@@ -329,6 +329,103 @@ final class WGSLTranspilerTests: XCTestCase {
         }
     }
 
+    // MARK: - 이름 충돌 / 리터럴 / 파이프라인 상수
+
+    func test_MSL_예약어와_겹치는_식별자는_선언과_사용처가_함께_바뀐다() throws {
+        // `texture` `sampler` `device` `char` 는 그래픽스 셰이더에서 흔한 이름이지만 MSL 예약어다.
+        let source = """
+        struct Glyph {
+            device: f32,
+            char: f32,
+        };
+        @group(0) @binding(0) var<uniform> texture: Glyph;
+
+        @fragment
+        fn fs_main() -> @location(0) vec4f {
+            let sampler = texture.device + texture.char;
+            return vec4f(sampler, 0.0, 0.0, 1.0);
+        }
+        """
+        let msl = try translate(source, entryPoints: ["fs_main"])
+
+        XCTAssertTrue(msl.contains("wgpu_id_texture"), "전역 이름이 바뀌지 않았다:\n\(msl)")
+        XCTAssertTrue(msl.contains("wgpu_id_device"), "구조체 멤버 이름이 바뀌지 않았다")
+        XCTAssertTrue(msl.contains("wgpu_id_char"))
+        XCTAssertTrue(msl.contains("wgpu_id_sampler"), "지역 변수 이름이 바뀌지 않았다")
+        // 선언과 사용처가 어긋나면 Metal 컴파일에서 잡힌다 (translate 헬퍼가 검증한다).
+    }
+
+    func test_부동소수_나머지연산은_fmod로_보내진다() throws {
+        let source = """
+        @fragment
+        fn fs_main(@location(0) uv: vec2f) -> @location(0) vec4f {
+            let f = uv.x % 2.0;
+            let i = i32(uv.y) % 3;
+            return vec4f(f, f32(i), 0.0, 1.0);
+        }
+        """
+        let msl = try translate(source, entryPoints: ["fs_main"])
+        XCTAssertTrue(msl.contains("wgpu_mod("), "% 가 헬퍼로 우회되지 않았다:\n\(msl)")
+    }
+
+    func test_성분타입이_생략된_벡터생성자는_인자에서_추론한다() throws {
+        let source = """
+        @compute @workgroup_size(1)
+        fn main(@builtin(global_invocation_id) id: vec3u) {
+            let inferred = vec2(id.x, 4u);   // 인자에 타입이 있으면 정확히 추론
+            let literals = vec3(1);          // 전부 정수 리터럴이면 f32로 본다
+            let combined = f32(inferred.x) + literals.y;
+        }
+        """
+        let msl = try translate(source, entryPoints: ["main"])
+        XCTAssertTrue(msl.contains("wgpu_vec2("), "추론 가능한 생성자는 템플릿으로 나가야 한다")
+        XCTAssertTrue(msl.contains("float3(1)"), "정수 리터럴만 있으면 f32 벡터여야 한다:\n\(msl)")
+    }
+
+    func test_파이프라인_상수가_MSL에_박힌다() throws {
+        let source = """
+        override scale: f32 = 1.0;
+        override count: u32;
+
+        @group(0) @binding(0) var<storage, read> data: array<f32, count>;
+
+        @compute @workgroup_size(1)
+        fn main() {
+            let x = data[0] * scale;
+        }
+        """
+        let module = try WGSLShaderModule(source: source)
+        let bindings = try WGSLBindingAssigner.assign(groups: module.autoBindGroupLayouts(entryPoints: ["main"]))
+
+        // 값을 주지 않으면 무엇을 줘야 하는지 알려 주며 실패한다.
+        XCTAssertThrowsError(try module.translateToMSL(entryPoints: ["main"], bindings: bindings)) { error in
+            let message = (error as? WGPUError)?.message ?? ""
+            XCTAssertTrue(message.contains("count"), "어떤 상수가 빠졌는지 알려 줘야 한다: \(message)")
+            XCTAssertTrue(message.contains("constants"))
+        }
+
+        let msl = try module.translateToMSL(
+            entryPoints: ["main"], bindings: bindings, constants: ["count": 8, "scale": 2.5]
+        )
+        // 배열 길이가 override에 걸린 경우까지 풀린다.
+        XCTAssertTrue(msl.contains("array<float, 8>"), "override 배열 길이가 반영되지 않았다:\n\(msl)")
+        XCTAssertTrue(msl.contains("2.5"))
+        MetalCompilerHarness.assertCompiles(msl)
+    }
+
+    func test_확장선언은_무시된다() throws {
+        let source = """
+        enable f16;
+        diagnostic(off, derivative_uniformity);
+
+        @fragment
+        fn fs_main() -> @location(0) vec4f {
+            return vec4f(1.0);
+        }
+        """
+        _ = try translate(source, entryPoints: ["fs_main"])
+    }
+
     // MARK: - 바인딩 배정
 
     func test_바인딩배정은_그룹_바인딩_순으로_결정적이다() throws {

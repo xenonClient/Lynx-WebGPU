@@ -153,6 +153,8 @@ const compute = device.createComputePipeline({                // createComputePi
 })
 ```
 
+- `vertex` / `fragment` / `compute` 각각 `constants: { name: value }` 로 셰이더의 `override` 값을 준다
+  (`docs/WGSL.md` §2-2). 같은 셰이더라도 상수가 다르면 별도로 컴파일·캐시된다.
 - 정점 버퍼 슬롯은 **최대 8개**, `arrayStride: 0`은 미지원.
 - 컴퓨트 워크그룹 크기는 WGSL의 `@workgroup_size`에서 리플렉션으로 가져온다 (MSL 모듈은 (1,1,1)).
 - 스텐실 상태(`stencilFront`/`stencilBack`)는 미지원 — 깊이만 반영된다.
@@ -225,7 +227,7 @@ device.onError((error, text) => console.error(text))
 | 블록 압축 텍스처 (BC/ETC/ASTC) | 미지원 |
 | `GPUExternalTexture` (비디오) | 미지원 |
 | `pushErrorScope` / `popErrorScope` | `submit()` 반환의 `errors` 배열로 대체 |
-| 파이프라인 상수 (`override` / `constants`) | 기본값만 사용 |
+| 파이프라인 상수 (`override` / `constants`) | **지원** (§5) |
 | `writeTimestamp`, `resolveQuerySet` | 미지원 |
 
 새 명령을 추가하는 절차는 `.claude/skills/webgpu-command/SKILL.md` 참고.
