@@ -1,0 +1,3 @@
+[tools]
+# 예제 Lynx 번들(rspeedy) 빌드용. Swift/Xcode는 시스템 툴체인을 쓴다 (Xcode 26.2 / Swift 6.2).
+node = "22"

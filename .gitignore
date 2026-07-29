@@ -1,0 +1,23 @@
+# SwiftPM
+.build/
+.swiftpm/
+Package.resolved.bak
+
+# Xcode
+*.xcodeproj
+*.xcworkspace
+Derived/
+DerivedData/
+.derivedData-cli/
+.derivedData-device/
+
+# rspeedy (예제 Lynx 번들 소스) — dist 산출물은 커밋하지 않는다
+node_modules/
+dist/
+.rspeedy/
+
+# macOS
+.DS_Store
+
+# Claude Code scratch (빌드 로그, 렌더 덤프 PNG 등)
+.tmp/

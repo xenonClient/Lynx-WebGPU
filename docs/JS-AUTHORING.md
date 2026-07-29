@@ -1,0 +1,146 @@
+# Lynx 번들(JS)에서 WebGPU 쓰기
+
+## 1. 설치
+
+`JS/` 아래 세 파일을 rspeedy 프로젝트의 `src/`로 복사한다:
+
+```
+src/
+├── webgpu.js       — 클라이언트 shim (런타임)
+├── webgpu.d.ts     — 타입 선언
+└── elements.d.ts   — <webgpu-canvas> TSX 선언
+```
+
+```tsx
+import gpu, { GPUBufferUsage, GPUTextureUsage, GPUShaderStage, startFrameLoop } from './webgpu.js'
+import './elements.d.ts'
+```
+
+호스트 앱이 `LynxWebGPU.register(in:host:)` + `host.attach(to:)`를 해 두어야 한다
+(`docs/LYNX-INTEGRATION.md`). 안 되어 있으면 첫 호출에서
+`NativeModules.WebGPU 를 찾을 수 없다` 오류가 난다.
+
+## 2. 최소 골격
+
+```tsx
+<webgpu-canvas canvas-id="main" style={{ width: '100%', height: '100%' }} />
+```
+
+```js
+const adapter = await gpu.requestAdapter()
+const device  = await adapter.requestDevice()
+device.onError((e, text) => console.error(text))     // 켜 두면 디버깅이 훨씬 빠르다
+
+const context = gpu.getCanvasContext('main')
+const format  = gpu.getPreferredCanvasFormat()
+context.configure({ device, format })
+```
+
+이후는 브라우저 WebGPU와 같다. 전체 예제는 `Examples/HelloTriangle.tsx`.
+
+## 3. 브라우저 WebGPU와 다른 점
+
+| 항목 | 브라우저 | 여기 |
+|---|---|---|
+| 캔버스 얻기 | `canvas.getContext('webgpu')` | `gpu.getCanvasContext('main')` — `<webgpu-canvas canvas-id>` 이름 |
+| 프레임 루프 | `requestAnimationFrame` | `startFrameLoop(handler)` (§4) |
+| 버퍼 읽기 | `mapAsync` + `getMappedRange` | `await buffer.mapAsync()` 가 ArrayBuffer를 바로 돌려준다 |
+| 오류 | `pushErrorScope` / `uncapturederror` | `device.onError()` + `submit()` 반환의 `errors` |
+| 캔버스 크기 | `canvas.width/height` | `context.getSize()` 또는 `bindcanvasresize` |
+| 미지원 기능 | — | `docs/WEBGPU-API.md` §8 |
+
+셰이더(WGSL)는 `docs/WGSL.md`의 서브셋 안이면 그대로 옮겨진다.
+
+## 4. 프레임 루프
+
+`setInterval`은 화면 갱신과 어긋나 프레임이 뭉치거나 버려진다. 네이티브 `CADisplayLink`가
+몰아 주는 `startFrameLoop`를 쓴다.
+
+```js
+const stop = startFrameLoop(({ timestamp, delta }) => {
+  // delta: 직전 프레임과의 간격(ms)
+  render(delta)
+}, { fps: 60 })
+
+// 페이지를 떠날 때 반드시
+stop()
+```
+
+`stop()`을 부르지 않으면 디스플레이 링크가 계속 돌며 배터리를 먹는다.
+ReactLynx라면 `useEffect`의 정리 함수에서 부를 것.
+
+## 5. 성능 — 프레임당 브리지 왕복 1회
+
+이 구현의 핵심 계약은 **`queue.submit()`이 한 프레임의 모든 명령을 한 번에 넘긴다**는 것이다.
+그 계약을 깨는 호출은 프레임 안에서 피한다:
+
+| 프레임 안에서 피할 것 | 이유 | 대안 |
+|---|---|---|
+| `context.getSize()` | 동기 네이티브 호출 | `bindcanvasresize`로 받아 캐시 |
+| `buffer.mapAsync()` | GPU 완료를 기다린다 | 결과가 필요한 프레임에만 |
+| `gpu.requestAdapter()` | 동기 네이티브 호출 | 초기화에서 1회 |
+| `device.createRenderPipeline()` | 셰이더 컴파일이 붙는다 | 초기화에서 1회 |
+
+반대로 **얼마든지 해도 되는 것**: `setPipeline`, `setBindGroup`, `draw`, `writeBuffer` —
+전부 JS 배열에 push만 하고 submit에서 한 번에 나간다.
+
+큰 데이터를 매 프레임 올린다면 base64 인코딩 비용이 붙는다. 유니폼(수십~수백 바이트)은 문제없지만
+매 프레임 수 MB를 올린다면 스토리지 버퍼 + 컴퓨트 셰이더로 GPU 안에서 갱신하는 편이 낫다.
+
+## 6. 캔버스 크기 다루기
+
+드로어블 크기는 **화면 배율이 곱해진 픽셀 값**이다 (CSS px이 아니다).
+
+```tsx
+<webgpu-canvas
+  canvas-id="main"
+  pixel-ratio={1}                 /* 부하가 크면 1로 낮춘다 (3배 → 1배면 픽셀 수 1/9) */
+  bindcanvasresize={(e) => {
+    const { width, height, pixelRatio } = e.detail
+    aspect = width / height        // 투영행렬 갱신
+  }}
+/>
+```
+
+크기가 0인 동안(레이아웃 전) `getCurrentTexture()`는 오류를 낸다 — `getSize()`가 0을 주면
+그 프레임은 그냥 건너뛰는 것이 맞다.
+
+## 7. 유니폼 패킹
+
+WGSL 배치 규칙대로 채우면 된다. 네이티브가 MSL 구조체를 WGSL 오프셋에 맞춰 패딩하므로,
+브라우저에서 쓰던 패킹 코드가 그대로 동작한다 (`docs/WGSL.md` §3).
+
+주의할 것은 WGSL 자체의 규칙이다:
+
+```wgsl
+struct Uniforms {
+  mvp: mat4x4<f32>,   // offset 0,  size 64
+  tint: vec4f,        // offset 64, size 16
+  time: f32,          // offset 80
+};                    // size 96 (16 정렬)
+```
+
+```js
+const data = new Float32Array(24)   // 96 / 4
+data.set(mvp, 0)
+data.set(tint, 16)
+data[20] = time
+device.queue.writeBuffer(uniformBuffer, 0, data)
+```
+
+- `vec3f`는 정렬 16이다. `vec3f` 다음 `f32`는 offset 12에 붙지만, `vec3f` 다음 `vec3f`는 16으로 밀린다.
+- uniform 주소 공간의 배열 원소는 스트라이드가 **16의 배수**여야 한다 — `array<f32, N>` 대신 `array<vec4f, N>`을 쓸 것.
+
+## 8. 디버깅
+
+```js
+device.onError((error, text) => {
+  console.error(text)      // "[WebGPU:validation] commands[3].vertex.buffers[0].format — 알 수 없는 값 …"
+})
+```
+
+- `path`가 커맨드 스트림 상 위치를 정확히 짚어 준다.
+- 셰이더 컴파일 실패(`kind: 'backend'`)는 **생성된 MSL 전문**이 메시지에 들어 있다.
+  WGSL이 어떻게 번역됐는지 그대로 볼 수 있다.
+- 화면이 검게만 나오면: (1) `getSize()`가 0인지, (2) `configure` 했는지,
+  (3) `submit()`을 불렀는지 순서로 확인한다.

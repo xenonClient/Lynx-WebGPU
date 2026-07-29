@@ -1,0 +1,161 @@
+#if canImport(Lynx)
+import Foundation
+import UIKit
+import QuartzCore
+import Lynx
+import LynxWebGPUCore
+import LynxWebGPU
+
+/// `CAMetalLayer`를 백킹 레이어로 쓰는 뷰.
+///
+/// `layerClass`를 바꿔 서브레이어 없이 뷰 자체가 스왑체인이 되게 한다 — 레이어 하나가 줄면
+/// 합성 단계도 한 번 줄어든다.
+public final class WebGPUCanvasView: UIView {
+    public override class var layerClass: AnyClass { CAMetalLayer.self }
+
+    var metalLayer: CAMetalLayer { layer as! CAMetalLayer }
+    /// 드로어블 크기(픽셀)가 바뀌면 알린다.
+    var onDrawableSizeChange: ((CGSize) -> Void)?
+    /// CSS px → 픽셀 배율. 지정하지 않으면 화면 배율을 쓴다.
+    var pixelRatioOverride: CGFloat?
+
+    private var lastReportedSize: CGSize = .zero
+
+    public override init(frame: CGRect) {
+        super.init(frame: frame)
+        isOpaque = true
+        // 기본 포맷을 미리 맞춰 둔다. JS의 configure는 메인 스레드에 비동기로 반영되므로,
+        // getPreferredCanvasFormat()(= bgra8unorm)을 쓰는 일반적인 경우 첫 프레임부터 일치한다.
+        metalLayer.pixelFormat = .bgra8Unorm
+        metalLayer.framebufferOnly = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    var pixelRatio: CGFloat {
+        pixelRatioOverride ?? window?.screen.scale ?? traitCollection.displayScale
+    }
+
+    public override func layoutSubviews() {
+        super.layoutSubviews()
+        let scale = pixelRatio
+        let size = CGSize(
+            width: (bounds.width * scale).rounded(),
+            height: (bounds.height * scale).rounded()
+        )
+        guard size.width > 0, size.height > 0, size != lastReportedSize else { return }
+        lastReportedSize = size
+        onDrawableSizeChange?(size)
+    }
+}
+
+/// `<webgpu-canvas>` — WebGPU가 그리는 화면 표면.
+///
+/// props: `canvas-id`(JS가 `configure({canvas})`에서 쓰는 이름, 필수) `pixel-ratio`(배율 강제)
+/// events: `bindcanvasresize`(detail: width/height/pixelRatio — 픽셀 크기가 바뀔 때)
+/// UI 메서드: `getInfo()` → `{width, height, pixelRatio}`
+///
+/// 등록/해제는 뷰 수명이 아니라 **prop 수명**을 따른다 — `canvas-id`가 정해지는 시점에 등록하고,
+/// 바뀌거나 엘리먼트가 사라질 때 해제한다.
+public final class WebGPUCanvasUI: LynxUI<WebGPUCanvasView> {
+    private var canvasIdentifier: String?
+    private var surface: WGPUMetalLayerSurface?
+    private var pendingPixelRatio: CGFloat?
+    private var propsDirty = false
+
+    public override func createView() -> WebGPUCanvasView? {
+        let view = WebGPUCanvasView()
+        view.onDrawableSizeChange = { [weak self] size in
+            guard let self else { return }
+            self.surface?.updateDrawableSize(size)
+            self.emit("canvasresize", detail: [
+                "width": Int(size.width),
+                "height": Int(size.height),
+                "pixelRatio": Double(view.pixelRatio),
+            ])
+        }
+        return view
+    }
+
+    deinit {
+        // deinit은 임의 스레드일 수 있으나, 해제 자체는 컨텍스트 락으로 보호된다.
+        if let canvasIdentifier {
+            host?.unregisterCanvas(identifier: canvasIdentifier)
+        }
+    }
+
+    private var host: LynxWebGPUHost? {
+        LynxWebGPUHostRegistry.host(for: context?.rootView)
+    }
+
+    // MARK: - Props
+
+    @objc(__lynx_prop_config__webgpuCanvasId)
+    public static func propConfigCanvasId() -> [String] { ["canvas-id", "setCanvasId", "NSString*"] }
+
+    @objc(setCanvasId:requestReset:)
+    public func setCanvasId(_ value: NSString?, requestReset: Bool) {
+        let next = requestReset ? nil : (value as String?)
+        guard next != canvasIdentifier else { return }
+        if let canvasIdentifier { host?.unregisterCanvas(identifier: canvasIdentifier) }
+        canvasIdentifier = next
+        surface = nil
+        propsDirty = true
+    }
+
+    @objc(__lynx_prop_config__webgpuCanvasPixelRatio)
+    public static func propConfigPixelRatio() -> [String] { ["pixel-ratio", "setPixelRatio", "CGFloat"] }
+
+    @objc(setPixelRatio:requestReset:)
+    public func setPixelRatio(_ value: CGFloat, requestReset: Bool) {
+        pendingPixelRatio = requestReset || value <= 0 ? nil : value
+        propsDirty = true
+    }
+
+    public override func propsDidUpdate() {
+        super.propsDidUpdate()
+        guard propsDirty else { return }
+        propsDirty = false
+
+        let canvasView = view()
+        canvasView.pixelRatioOverride = pendingPixelRatio
+        canvasView.setNeedsLayout()
+
+        guard let canvasIdentifier, let host else { return }
+        let surface = WGPUMetalLayerSurface(identifier: canvasIdentifier, layer: canvasView.metalLayer)
+        surface.updateDrawableSize(CGSize(
+            width: (canvasView.bounds.width * canvasView.pixelRatio).rounded(),
+            height: (canvasView.bounds.height * canvasView.pixelRatio).rounded()
+        ))
+        self.surface = surface
+        host.registerCanvas(surface)
+        WGPULog.canvas.info("<webgpu-canvas> 등록 — \(canvasIdentifier, privacy: .public)")
+    }
+
+    // MARK: - UI 메서드
+
+    @objc(__lynx_ui_method_config__webgpuCanvasGetInfo)
+    public static func uiMethodConfigGetInfo() -> String { "getInfo" }
+
+    /// 현재 드로어블 크기를 돌려준다 (`bindcanvasresize`를 놓쳤을 때의 폴백).
+    @objc(getInfo:withResult:)
+    public func getInfo(_ params: [AnyHashable: Any]?, withResult callback: LynxUIMethodCallbackBlock?) {
+        let canvasView = view()
+        let scale = canvasView.pixelRatio
+        callback?(Int32(kUIMethodSuccess.rawValue), [
+            "canvasId": canvasIdentifier ?? "",
+            "width": Int((canvasView.bounds.width * scale).rounded()),
+            "height": Int((canvasView.bounds.height * scale).rounded()),
+            "pixelRatio": Double(scale),
+        ])
+    }
+
+    // MARK: - 이벤트
+
+    private func emit(_ name: String, detail: [String: Any]) {
+        guard let emitter = context?.eventEmitter else { return }
+        emitter.send(LynxCustomEvent(name: name, targetSign: sign, params: detail))
+    }
+}
+#endif
