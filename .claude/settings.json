@@ -1,0 +1,18 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/sync-readme-version.sh\"",
+            "if": "Bash(git tag *)",
+            "statusMessage": "SPM 버전 표기 동기화",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

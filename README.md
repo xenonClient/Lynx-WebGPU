@@ -33,7 +33,7 @@ startFrameLoop(() => {
 
 ```swift
 // Package.swift
-.package(url: "https://github.com/<org>/Lynx-WebGPU", from: "1.0.0")
+.package(url: "https://github.com/xenonClient/Lynx-WebGPU", from: "0.1.0")
 ```
 
 호스트 앱 연동은 세 단계다:

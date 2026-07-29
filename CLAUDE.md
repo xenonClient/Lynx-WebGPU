@@ -89,6 +89,20 @@ docs/                   — ARCHITECTURE / WEBGPU-API / WGSL / LYNX-INTEGRATION 
 .claude/skills/         — webgpu-command / wgsl-feature / gpu-smoke
 ```
 
+## Release
+
+버전은 semver 태그로만 매긴다 (`0.1.0` — `v` 접두사 없이, Lynx-XCFramework와 같은 규칙).
+
+```zsh
+git tag -a 0.2.0 -m "0.2.0 — 요약"
+```
+
+태그를 만들면 **PostToolUse 훅이 `README.md`와 `docs/LYNX-INTEGRATION.md`의 SPM 버전 표기를
+최신 태그로 맞춘다** (`.claude/hooks/sync-readme-version.sh`). 손으로 돌려도 되고, 멱등이다.
+훅은 `.claude/settings.json`에 `if: "Bash(git tag *)"` 필터로 걸려 있어 태그 명령에만 붙는다.
+
+태그를 문서 갱신 커밋 **뒤에** 옮기는 것을 잊지 말 것 (`git tag -f <버전> HEAD`).
+
 ## Git Conventions
 
 - Commit format: `type: Korean description` (예: `feat: 컴퓨트 파이프라인 지원`, `fix: vec3 유니폼 배치 오류 수정`)
