@@ -89,6 +89,15 @@ public final class WGSLShaderModule {
         MSLTypeMapping.functionName(entryPoint)
     }
 
+    /// 이 진입점들이 `arrayLength()`를 (전이적으로) 쓰는가.
+    ///
+    /// 쓰면 런타임이 예약 인덱스에 버퍼 크기 표를 꽂아 줘야 한다
+    /// (`WGSLMetalLimits.bufferSizesIndex`).
+    public func usesArrayLength(entryPoints: [String]) -> Bool {
+        let users = WGSLReflectionBuilder.functionsCalling("arrayLength", in: ast)
+        return entryPoints.contains(where: users.contains)
+    }
+
     /// 진입점의 `@workgroup_size` — 컴퓨트 디스패치에서 threadsPerThreadgroup으로 쓴다.
     public func workgroupSize(of entryPoint: String) -> (x: Int, y: Int, z: Int)? {
         reflection.entryPoint(named: entryPoint)?.workgroupSize

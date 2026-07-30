@@ -33,7 +33,8 @@ public final class WGPUPipelineLayoutObject {
 
 /// 바인드 그룹이 실제로 가리키는 Metal 객체.
 enum WGPUResolvedBinding {
-    case buffer(MTLBuffer, offset: Int)
+    /// `boundSize`는 이 바인딩이 보는 바이트 수 — `arrayLength()`가 이 값을 쓴다.
+    case buffer(MTLBuffer, offset: Int, boundSize: Int)
     case sampler(MTLSamplerState)
     case texture(MTLTexture)
 }
@@ -51,9 +52,11 @@ public final class WGPUBindGroupObject {
             }
             let resolved: WGPUResolvedBinding
             switch entry.resource {
-            case .buffer(let handle, let offset, _):
+            case .buffer(let handle, let offset, let size):
                 let object = try registry.lookup(handle, as: WGPUBufferObject.self, kind: "GPUBuffer")
-                resolved = .buffer(object.buffer, offset: offset)
+                resolved = .buffer(
+                    object.buffer, offset: offset, boundSize: size ?? max(object.size - offset, 0)
+                )
             case .sampler(let handle):
                 let object = try registry.lookup(handle, as: WGPUSamplerObject.self, kind: "GPUSampler")
                 resolved = .sampler(object.sampler)
@@ -78,6 +81,8 @@ public final class WGPURenderPipelineObject {
     let depthBias: Float
     let depthBiasSlopeScale: Float
     let depthBiasClamp: Float
+    /// 셰이더가 `arrayLength()`를 쓰는가 — 쓰면 버퍼 크기 표를 바인딩해야 한다.
+    let needsBufferSizes: Bool
 
     init(
         device: MTLDevice,
@@ -94,6 +99,15 @@ public final class WGPURenderPipelineObject {
         self.depthBias = Float(descriptor.depthStencil?.depthBias ?? 0)
         self.depthBiasSlopeScale = Float(descriptor.depthStencil?.depthBiasSlopeScale ?? 0)
         self.depthBiasClamp = Float(descriptor.depthStencil?.depthBiasClamp ?? 0)
+        var wantsBufferSizes = vertexModule.wgsl?.usesArrayLength(
+            entryPoints: [descriptor.vertex.entryPoint]
+        ) ?? false
+        if let fragment = descriptor.fragment, let fragmentModule {
+            wantsBufferSizes = wantsBufferSizes || (fragmentModule.wgsl?.usesArrayLength(
+                entryPoints: [fragment.entryPoint]
+            ) ?? false)
+        }
+        self.needsBufferSizes = wantsBufferSizes
 
         let metalDescriptor = MTLRenderPipelineDescriptor()
         // Metal 검증 레이어는 label에 nil을 넣으면 단언으로 죽는다 — 있을 때만 설정한다.
@@ -211,6 +225,7 @@ public final class WGPUComputePipelineObject {
     let state: MTLComputePipelineState
     let layout: WGPUPipelineLayoutObject
     let threadsPerThreadgroup: MTLSize
+    let needsBufferSizes: Bool
 
     init(
         device: MTLDevice,
@@ -219,6 +234,7 @@ public final class WGPUComputePipelineObject {
         module: WGPUShaderModuleObject
     ) throws {
         self.layout = layout
+        self.needsBufferSizes = module.wgsl?.usesArrayLength(entryPoints: [descriptor.entryPoint]) ?? false
 
         let library = try module.library(
             entryPoints: [descriptor.entryPoint],

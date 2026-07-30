@@ -58,8 +58,15 @@ public enum WGSLMetalLimits {
         bufferSlotCount - 1 - slot
     }
 
-    /// 바인드 그룹이 쓸 수 있는 버퍼 인덱스 상한 (정점 버퍼 영역 제외).
-    public static let maxBindGroupBuffers = bufferSlotCount - maxVertexBufferSlots
+    /// `arrayLength()`용 버퍼 크기 표가 쓰는 예약 인덱스.
+    ///
+    /// Metal 셰이더는 버퍼 크기를 알 수 없다. 그래서 바인딩된 버퍼의 바이트 크기를 담은
+    /// 작은 표를 이 인덱스에 꽂아 주고, `arrayLength(&x)`를 그 표 조회로 번역한다
+    /// (Dawn도 같은 방식을 쓴다).
+    public static let bufferSizesIndex = bufferSlotCount - maxVertexBufferSlots - 1
+
+    /// 바인드 그룹이 쓸 수 있는 버퍼 인덱스 상한 (정점 버퍼 영역 + 크기 표 제외).
+    public static let maxBindGroupBuffers = bufferSizesIndex
 }
 
 public enum WGSLBindingAssigner {

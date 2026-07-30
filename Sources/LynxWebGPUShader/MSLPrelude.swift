@@ -103,6 +103,52 @@ enum MSLPrelude {
         using T = decltype(a + b + c);
         return smoothstep(T(a), T(b), T(c));
     }
+    // WGSL의 정수 상수식(AbstractInt)은 **문맥 타입으로 굳는다** — `vec2(4, 1)`이 uint2 자리에
+    // 오면 uint2, float2 자리에 오면 float2다. 타입 추론 없이 그 결정을 C++ 변환 연산자에 넘긴다.
+    template<int N> struct wgpu_aint {
+        vec<int, N> value;
+        template<typename T> operator vec<T, N>() const { return vec<T, N>(value); }
+    };
+    inline wgpu_aint<2> wgpu_aint2(int x) { return wgpu_aint<2>{ int2(x) }; }
+    inline wgpu_aint<2> wgpu_aint2(int x, int y) { return wgpu_aint<2>{ int2(x, y) }; }
+    inline wgpu_aint<3> wgpu_aint3(int x) { return wgpu_aint<3>{ int3(x) }; }
+    inline wgpu_aint<3> wgpu_aint3(int x, int y, int z) { return wgpu_aint<3>{ int3(x, y, z) }; }
+    inline wgpu_aint<4> wgpu_aint4(int x) { return wgpu_aint<4>{ int4(x) }; }
+    inline wgpu_aint<4> wgpu_aint4(int x, int y, int z, int w) {
+        return wgpu_aint<4>{ int4(x, y, z, w) };
+    }
+    // 연산자는 다섯 모양이 필요하다. C++는 벡터 피연산자 하나만 보고 변환 연산자의 T를 추론하지
+    // 못하므로(그래서 그냥 "invalid operands"가 난다) 각 자리를 명시해 준다.
+    // 벡터 쪽이 `vec<T,N>`로 더 특수화되어 있어 스칼라 템플릿 S와 겹쳐도 모호하지 않다.
+    // aint ⊗ aint는 정수 그대로 두어 **상수식이 계속 추상 상태로** 남게 한다.
+    template<int N, typename T> inline vec<T,N> operator*(vec<T,N> a, wgpu_aint<N> b) { return a * vec<T,N>(b.value); }
+    template<int N, typename T> inline vec<T,N> operator*(wgpu_aint<N> a, vec<T,N> b) { return vec<T,N>(a.value) * b; }
+    template<int N, typename S> inline vec<S,N> operator*(S a, wgpu_aint<N> b) { return vec<S,N>(a) * vec<S,N>(b.value); }
+    template<int N, typename S> inline vec<S,N> operator*(wgpu_aint<N> a, S b) { return vec<S,N>(a.value) * vec<S,N>(b); }
+    template<int N> inline wgpu_aint<N> operator*(wgpu_aint<N> a, wgpu_aint<N> b) { return wgpu_aint<N>{ a.value * b.value }; }
+    template<int N, typename T> inline vec<T,N> operator+(vec<T,N> a, wgpu_aint<N> b) { return a + vec<T,N>(b.value); }
+    template<int N, typename T> inline vec<T,N> operator+(wgpu_aint<N> a, vec<T,N> b) { return vec<T,N>(a.value) + b; }
+    template<int N, typename S> inline vec<S,N> operator+(S a, wgpu_aint<N> b) { return vec<S,N>(a) + vec<S,N>(b.value); }
+    template<int N, typename S> inline vec<S,N> operator+(wgpu_aint<N> a, S b) { return vec<S,N>(a.value) + vec<S,N>(b); }
+    template<int N> inline wgpu_aint<N> operator+(wgpu_aint<N> a, wgpu_aint<N> b) { return wgpu_aint<N>{ a.value + b.value }; }
+    template<int N, typename T> inline vec<T,N> operator-(vec<T,N> a, wgpu_aint<N> b) { return a - vec<T,N>(b.value); }
+    template<int N, typename T> inline vec<T,N> operator-(wgpu_aint<N> a, vec<T,N> b) { return vec<T,N>(a.value) - b; }
+    template<int N, typename S> inline vec<S,N> operator-(S a, wgpu_aint<N> b) { return vec<S,N>(a) - vec<S,N>(b.value); }
+    template<int N, typename S> inline vec<S,N> operator-(wgpu_aint<N> a, S b) { return vec<S,N>(a.value) - vec<S,N>(b); }
+    template<int N> inline wgpu_aint<N> operator-(wgpu_aint<N> a, wgpu_aint<N> b) { return wgpu_aint<N>{ a.value - b.value }; }
+    template<int N> inline wgpu_aint<N> operator-(wgpu_aint<N> a) { return wgpu_aint<N>{ -a.value }; }
+    template<int N, typename T> inline vec<T,N> operator/(vec<T,N> a, wgpu_aint<N> b) { return a / vec<T,N>(b.value); }
+    template<int N, typename T> inline vec<T,N> operator/(wgpu_aint<N> a, vec<T,N> b) { return vec<T,N>(a.value) / b; }
+    template<int N, typename S> inline vec<S,N> operator/(S a, wgpu_aint<N> b) { return vec<S,N>(a) / vec<S,N>(b.value); }
+    template<int N, typename S> inline vec<S,N> operator/(wgpu_aint<N> a, S b) { return vec<S,N>(a.value) / vec<S,N>(b); }
+    template<int N> inline wgpu_aint<N> operator/(wgpu_aint<N> a, wgpu_aint<N> b) { return wgpu_aint<N>{ a.value / b.value }; }
+
+    // `textureSampleBaseClampToEdge` — 밉 0에서, 좌표를 텍셀 절반만큼 안쪽으로 물려 샘플한다.
+    template<typename T> inline vec<T,4> wgpu_sample_base_clamp(texture2d<T> tex, sampler smp, float2 coord) {
+        float2 size = float2(tex.get_width(), tex.get_height());
+        float2 halfTexel = 0.5 / size;
+        return tex.sample(smp, clamp(coord, halfTexel, float2(1.0) - halfTexel), level(0.0));
+    }
     // ──────────────────────────────────────────────────────────────────────
     """
 

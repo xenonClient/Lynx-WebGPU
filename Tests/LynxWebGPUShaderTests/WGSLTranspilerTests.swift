@@ -306,7 +306,7 @@ final class WGSLTranspilerTests: XCTestCase {
         @group(0) @binding(0) var<storage, read> data: array<f32>;
         @compute @workgroup_size(1)
         fn main() {
-            let n = arrayLength(&data);
+            let parts = modf(data[0]);
         }
         """
         let module = try WGSLShaderModule(source: source)
@@ -372,14 +372,19 @@ final class WGSLTranspilerTests: XCTestCase {
         let source = """
         @compute @workgroup_size(1)
         fn main(@builtin(global_invocation_id) id: vec3u) {
-            let inferred = vec2(id.x, 4u);   // 인자에 타입이 있으면 정확히 추론
-            let literals = vec3(1);          // 전부 정수 리터럴이면 f32로 본다
-            let combined = f32(inferred.x) + literals.y;
+            let inferred = vec2(id.x, 4u);            // 인자에 타입이 있으면 정확히 추론
+            let scaled: vec2u = id.xy * vec2(4, 1);   // AbstractInt 상수식 → 문맥(u32)에서 굳는다
+            let asFloat: vec3f = vec3(1);             // 같은 상수식이 f32 문맥에서는 f32로
+            let component = vec3(1, 2, 3).y;          // 성분 접근 자리에서는 구체 타입으로
+            let combined = f32(scaled.x) + asFloat.y + component;
         }
         """
         let msl = try translate(source, entryPoints: ["main"])
-        XCTAssertTrue(msl.contains("wgpu_vec2("), "추론 가능한 생성자는 템플릿으로 나가야 한다")
-        XCTAssertTrue(msl.contains("float3(1)"), "정수 리터럴만 있으면 f32 벡터여야 한다:\n\(msl)")
+        XCTAssertTrue(msl.contains("wgpu_vec2(id.x, 4u)"), "타입이 있으면 템플릿 추론:\n\(msl)")
+        XCTAssertTrue(msl.contains("wgpu_aint2(4, 1)"), "AbstractInt 상수식은 프록시로:\n\(msl)")
+        XCTAssertTrue(msl.contains("wgpu_aint3(1)"), "인자 하나여도 프록시로")
+        // 프록시에는 성분 접근이 없다 — 그 자리에서는 f32 벡터로 확정한다.
+        XCTAssertTrue(msl.contains("float3(1, 2, 3).y"), "스위즐 대상은 구체 타입으로:\n\(msl)")
     }
 
     func test_파이프라인_상수가_MSL에_박힌다() throws {
@@ -460,5 +465,115 @@ final class WGSLTranspilerTests: XCTestCase {
             WGSLMetalLimits.maxBindGroupBuffers,
             WGSLMetalLimits.vertexBufferIndex(slot: WGSLMetalLimits.maxVertexBufferSlots - 1) + 1
         )
+        // 크기 표 인덱스는 양쪽 어디와도 겹치지 않는다.
+        XCTAssertEqual(WGSLMetalLimits.bufferSizesIndex, 22)
+        XCTAssertLessThan(
+            WGSLMetalLimits.bufferSizesIndex,
+            WGSLMetalLimits.vertexBufferIndex(slot: WGSLMetalLimits.maxVertexBufferSlots - 1)
+        )
+    }
+
+    // MARK: - arrayLength
+
+    func test_런타임_크기_배열의_길이는_크기표_조회로_번역된다() throws {
+        let source = """
+        @group(0) @binding(0) var<storage, read> data: array<f32>;
+        @group(0) @binding(1) var<storage, read_write> out: array<u32>;
+
+        @compute @workgroup_size(1)
+        fn cs(@builtin(global_invocation_id) id: vec3u) {
+            out[0] = arrayLength(&data);
+        }
+        """
+        let msl = try translate(source, entryPoints: ["cs"])
+
+        // 예약 인덱스로 크기 표가 들어온다.
+        XCTAssertTrue(
+            msl.contains("constant uint* wgpu_buffer_sizes [[buffer(\(WGSLMetalLimits.bufferSizesIndex))]]"),
+            msl
+        )
+        // 길이 = 바인딩 바이트 수 / 원소 크기. data는 버퍼 인덱스 0.
+        XCTAssertTrue(msl.contains("(wgpu_buffer_sizes[0] / uint(sizeof(float)))"), msl)
+    }
+
+    func test_구조체_말미의_런타임_배열은_앞쪽_멤버_크기를_빼고_센다() throws {
+        let source = """
+        struct Particles {
+            count: u32,
+            items: array<vec4f>,
+        }
+        @group(0) @binding(0) var<storage, read_write> particles: Particles;
+
+        @compute @workgroup_size(1)
+        fn cs() {
+            particles.count = arrayLength(&particles.items);
+        }
+        """
+        let msl = try translate(source, entryPoints: ["cs"])
+
+        // items는 16바이트 정렬이므로 오프셋 16에서 시작한다 (count 4B + 패딩 12B).
+        XCTAssertTrue(msl.contains("((wgpu_buffer_sizes[0] - 16u) / uint(sizeof(float4)))"), msl)
+    }
+
+    func test_arrayLength를_쓰지_않으면_크기표를_넘기지_않는다() throws {
+        let msl = try translate(Self.triangleShader, entryPoints: ["vs_main", "fs_main"])
+        XCTAssertFalse(msl.contains("wgpu_buffer_sizes"), msl)
+    }
+
+    // MARK: - 컴파일 타임 상수
+
+    func test_함수_안에서_선언한_const도_배열_크기로_쓸_수_있다() throws {
+        let source = """
+        @fragment
+        fn fs() -> @location(0) vec4f {
+            const maxLayers = 4u;
+            var layers: array<vec4f, maxLayers>;
+            for (var i = 0u; i < maxLayers; i++) {
+                layers[i] = vec4f(f32(i));
+            }
+            return layers[0];
+        }
+        """
+        let msl = try translate(source, entryPoints: ["fs"])
+        XCTAssertTrue(msl.contains("array<float4, 4>"), msl)
+    }
+
+    func test_같은_이름의_지역_const가_함수마다_다르면_배열_크기로_쓰지_않는다() throws {
+        // 배열 크기를 정할 때는 함수 문맥이 없으므로, 값이 하나로 정해지지 않으면 거부해야 한다.
+        let source = """
+        fn a() -> f32 {
+            const n = 4;
+            var xs: array<f32, n>;
+            return xs[0];
+        }
+        fn b() -> f32 {
+            const n = 8;
+            var ys: array<f32, n>;
+            return ys[0];
+        }
+        @fragment fn fs() -> @location(0) vec4f { return vec4f(a() + b()); }
+        """
+        let module = try WGSLShaderModule(source: source)
+        let groups = module.autoBindGroupLayouts(entryPoints: ["fs"])
+        let bindings = try WGSLBindingAssigner.assign(groups: groups)
+        XCTAssertThrowsError(try module.translateToMSL(entryPoints: ["fs"], bindings: bindings))
+    }
+
+    // MARK: - 외부 텍스처
+
+    func test_외부_텍스처는_가장자리_클램프_샘플링으로_번역된다() throws {
+        let source = """
+        @group(0) @binding(0) var s: sampler;
+        @group(0) @binding(1) var frame: texture_external;
+
+        @fragment
+        fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
+            return textureSampleBaseClampToEdge(frame, s, uv);
+        }
+        """
+        let msl = try translate(source, entryPoints: ["fs"])
+        XCTAssertTrue(msl.contains("wgpu_sample_base_clamp("), msl)
+        // texture_external은 샘플링 가능한 2D 텍스처로 내려간다.
+        XCTAssertTrue(msl.contains("texture2d<float>"), msl)
     }
 }

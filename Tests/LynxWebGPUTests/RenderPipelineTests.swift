@@ -352,6 +352,66 @@ final class RenderPipelineTests: XCTestCase {
         XCTAssertEqual(output, [2, 4, 6, 8, 10, 12, 14, 16])
     }
 
+    func test_arrayLength가_바인딩된_크기를_돌려준다() throws {
+        // 셰이더는 버퍼 크기를 알 수 없으므로 런타임이 예약 인덱스에 크기 표를 꽂아 준다.
+        // 여기서 보는 것: (1) 전체 바인딩, (2) 일부만 바인딩, (3) 구조체 말미 배열.
+        let shader = """
+        struct Particles {
+            count: u32,
+            items: array<vec4f>,
+        };
+
+        @group(0) @binding(0) var<storage, read> whole: array<f32>;
+        @group(0) @binding(1) var<storage, read> part: array<vec4f>;
+        @group(0) @binding(2) var<storage, read> particles: Particles;
+        @group(0) @binding(3) var<storage, read_write> out: array<u32>;
+
+        @compute @workgroup_size(1)
+        fn probe() {
+            out[0] = arrayLength(&whole);
+            out[1] = arrayLength(&part);
+            out[2] = arrayLength(&particles.items);
+        }
+        """
+        harness.executeExpectingSuccess([
+            ["op": "createShaderModule", "id": 1, "code": shader],
+            // 10개 f32 = 40바이트 → 길이 10
+            ["op": "createBuffer", "id": 2, "size": 40, "usage": TestUsage.storage],
+            // 96바이트 버퍼지만 48바이트만 바인딩 → vec4f 3개
+            ["op": "createBuffer", "id": 3, "size": 96, "usage": TestUsage.storage],
+            // count(4) + 패딩(12) + vec4f 2개(32) = 48바이트 → items 길이 2
+            ["op": "createBuffer", "id": 4, "size": 48, "usage": TestUsage.storage],
+            ["op": "createBuffer", "id": 5, "size": 16,
+             "usage": TestUsage.storage | TestUsage.copySrc | TestUsage.mapRead],
+            ["op": "createComputePipeline", "id": 6, "layout": "auto",
+             "compute": ["module": 1, "entryPoint": "probe"]],
+            ["op": "getBindGroupLayout", "id": 7, "pipeline": 6, "index": 0],
+            ["op": "createBindGroup", "id": 8, "layout": 7, "entries": [
+                ["binding": 0, "resource": ["buffer": 2]],
+                ["binding": 1, "resource": ["buffer": 3, "size": 48]],
+                ["binding": 2, "resource": ["buffer": 4]],
+                ["binding": 3, "resource": ["buffer": 5]],
+            ]],
+            ["op": "beginComputePass"],
+            ["op": "setPipeline", "pipeline": 6],
+            ["op": "setBindGroup", "index": 0, "bindGroup": 8],
+            ["op": "dispatchWorkgroups", "x": 1],
+            ["op": "endPass"],
+        ])
+
+        let expectation = expectation(description: "readBuffer")
+        var lengths: [UInt32] = []
+        harness.context.readBuffer(handle: 5, offset: 0, size: 16) { result in
+            if let base64 = result["data"] as? String, let data = Data(base64Encoded: base64) {
+                lengths = data.withUnsafeBytes { Array($0.bindMemory(to: UInt32.self)) }
+            }
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 10)
+
+        XCTAssertEqual(Array(lengths.prefix(3)), [10, 3, 2])
+    }
+
     // MARK: - 텍스처
 
     func test_텍스처_샘플링이_동작한다() throws {
@@ -418,6 +478,74 @@ final class RenderPipelineTests: XCTestCase {
         ])
 
         try harness.assertPixel(x: 32, y: 32, equals: (255, 0, 255, 255), "샘플링한 텍셀 색")
+    }
+
+    func test_외부텍스처를_가장자리_클램프로_샘플링한다() throws {
+        // `textureSampleBaseClampToEdge`는 좌표를 텍셀 절반만큼 안쪽으로 물린다. 그래서 uv가
+        // 0이나 1로 가도 **반대쪽 텍셀이 섞이지 않는다** — 비디오 프레임 경계가 번지는 것을 막는 장치다.
+        // 여기서는 일부러 repeat 샘플러를 써서, 클램프가 없으면 반대쪽이 섞이는 상황을 만든다.
+        let shader = """
+        @group(0) @binding(0) var frame: texture_external;
+        @group(0) @binding(1) var samp: sampler;
+
+        struct Out {
+            @builtin(position) position: vec4f,
+            @location(0) uv: vec2f,
+        };
+
+        @vertex
+        fn vs_main(@builtin(vertex_index) index: u32) -> Out {
+            var positions = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
+            var out: Out;
+            out.position = vec4f(positions[index], 0.0, 1.0);
+            // 화면 전체를 uv 1.0(오른쪽 아래 끝)으로 채운다.
+            out.uv = vec2f(1.0, 1.0);
+            return out;
+        }
+
+        @fragment
+        fn fs_main(in: Out) -> @location(0) vec4f {
+            return textureSampleBaseClampToEdge(frame, samp, in.uv);
+        }
+        """
+        // 2x2: (0,0) 빨강, 나머지는 파랑. uv=1.0에서 클램프가 동작하면 순수 파랑이 나오고,
+        // 없으면 repeat로 감싸며 빨강이 1/4 섞인다.
+        let texels: [UInt8] = [
+            255, 0, 0, 255,   0, 0, 255, 255,
+            0, 0, 255, 255,   0, 0, 255, 255,
+        ]
+
+        harness.executeExpectingSuccess([
+            ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
+            ["op": "createShaderModule", "id": 1, "code": shader],
+            ["op": "createTexture", "id": 2, "size": ["width": 2, "height": 2],
+             "format": "rgba8unorm", "usage": TestUsage.textureBinding | TestUsage.copyDst],
+            ["op": "writeTexture", "texture": 2, "data": Data(texels).base64EncodedString(),
+             "size": ["width": 2, "height": 2], "bytesPerRow": 8],
+            ["op": "createTextureView", "id": 3, "texture": 2],
+            ["op": "createSampler", "id": 4, "magFilter": "linear", "minFilter": "linear",
+             "addressModeU": "repeat", "addressModeV": "repeat"],
+            ["op": "createRenderPipeline", "id": 5, "layout": "auto",
+             "vertex": ["module": 1, "entryPoint": "vs_main"],
+             "fragment": ["module": 1, "entryPoint": "fs_main", "targets": [["format": "rgba8unorm"]]]],
+            ["op": "getBindGroupLayout", "id": 6, "pipeline": 5, "index": 0],
+            ["op": "createBindGroup", "id": 7, "layout": 6, "entries": [
+                ["binding": 0, "resource": ["textureView": 3]],
+                ["binding": 1, "resource": ["sampler": 4]],
+            ]],
+            ["op": "getCurrentTexture", "id": 10, "canvas": "test"],
+            ["op": "createTextureView", "id": 11, "texture": 10],
+            ["op": "beginRenderPass", "colorAttachments": [[
+                "view": 11, "loadOp": "clear", "storeOp": "store",
+                "clearValue": ["r": 0, "g": 0, "b": 0, "a": 1],
+            ]]],
+            ["op": "setPipeline", "pipeline": 5],
+            ["op": "setBindGroup", "index": 0, "bindGroup": 7],
+            ["op": "draw", "vertexCount": 3],
+            ["op": "endPass"],
+        ])
+
+        try harness.assertPixel(x: 32, y: 32, equals: (0, 0, 255, 255), "가장자리 텍셀만 나와야 한다")
     }
 
     // MARK: - 깊이 버퍼

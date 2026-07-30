@@ -20,7 +20,7 @@ GPU 코드는 "돌려 보고 눈으로 확인"에 기대기 쉽다. 이 저장�
 ## 2. 실행
 
 ```zsh
-swift test                                      # 전체 (65개, 약 4초)
+swift test                                      # 전체 (74개, 약 6초)
 swift test --filter LynxWebGPUCoreTests         # 디스크립터/핸들
 swift test --filter LynxWebGPUShaderTests       # 트랜스파일러 (+ Metal 컴파일 검증)
 swift test --filter LynxWebGPUTests             # GPU 렌더 + 해석기
@@ -90,7 +90,7 @@ try harness.assertPixel(x: 1, y: 1, equals: (0, 0, 255, 255), "삼각형 외부(
 - 비동기 경로(`readBuffer`)는 `XCTestExpectation`으로 검증한다.
 - 테스트 더블은 손으로 만든다 (모킹 라이브러리 없음).
 
-## 6. 커버리지 대상 (현재 65개)
+## 6. 커버리지 대상 (현재 74개)
 
 | 영역 | 파일 | 주요 케이스 |
 |---|---|---|
@@ -98,9 +98,9 @@ try harness.assertPixel(x: 1, y: 1, equals: (0, 0, 255, 255), "삼각형 외부(
 | 디스크립터 | `WGPUDescriptorTests` | 크기 유추, 범위 검증, 명세 기본값, auto/명시 레이아웃, 블렌드 기본값 |
 | 핸들 레지스트리 | `WGPUObjectRegistryTests` | 등록/조회/해제, 타입 불일치 진단 |
 | JS↔Swift 상수 | `JSConstantParityTests` | `JS/webgpu.js`의 사용 플래그·스테이지·컬러마스크가 Swift OptionSet과 같은 값인지 |
-| WGSL 트랜스파일 | `WGSLTranspilerTests` | 삼각형(정점속성+유니폼+헬퍼), 리소스 스레딩, 리플렉션, vec3 배치, 컴퓨트/스토리지, 텍스처/샘플러/스토리지텍스처, 제어흐름, workgroup 변수, 오류 보고, 바인딩 배정, **MSL 예약어 맹글링**, **부동소수 `%`**, **벡터 성분 추론**, **파이프라인 상수**, **확장 선언** |
+| WGSL 트랜스파일 | `WGSLTranspilerTests` | 삼각형(정점속성+유니폼+헬퍼), 리소스 스레딩, 리플렉션, vec3 배치, 컴퓨트/스토리지, 텍스처/샘플러/스토리지텍스처, 제어흐름, workgroup 변수, 오류 보고, 바인딩 배정, **MSL 예약어 맹글링**, **부동소수 `%`**, **벡터 성분 추론**, **추상 정수 벡터(문맥으로 굳는 `vec3(1)`)**, **파이프라인 상수**, **확장 선언**, **`arrayLength()` 크기 표**, **외부 텍스처**, **함수 지역 `const` 배열 크기** |
 | 외부 코퍼스 | `SampleCorpusTests` | 공식 webgpu-samples 셰이더 통과율 리포트 (§7, 기본 스킵) |
-| GPU 렌더 | `RenderPipelineTests` | 삼각형, 유니폼, 인덱스 드로우, 알파 블렌딩, 컴퓨트+readback, 텍스처 샘플링, 깊이 테스트 |
+| GPU 렌더 | `RenderPipelineTests` | 삼각형, 유니폼, 인덱스 드로우, 알파 블렌딩, 컴퓨트+readback, 텍스처 샘플링, **`arrayLength()`가 바인딩된 크기를 돌려주는지**, **가장자리 클램프 샘플링**, 깊이 테스트 |
 | 커맨드 해석기 | `CommandInterpreterTests` | 알 수 없는 명령, 없는 핸들, 오류 누적, 패스 상태, 캔버스 진단, 셰이더 실패 시 MSL 첨부, 드로어블 핸들 수명, 복사/읽기, 범위 검증, reset, 어댑터 정보 |
 
 새 기능을 넣으면 위 표에 행을 추가하고 같은 컨벤션으로 테스트를 쓴다.
@@ -119,12 +119,15 @@ LYNXWEBGPU_WGSL_CORPUS=/tmp/webgpu-samples/sample swift test --filter SampleCorp
 통과율과 실패 원인을 한 화면에 출력한다. 리포트가 목적이므로 실패해도 테스트를 깨지 않는다.
 
 ```
-│ 그대로 통과: 54/67  (80%)
+│ 그대로 통과: 60/67  (89%)
 │ 호스트가 constants를 줘야 하는 것: 4건 — …
-├─ 실패 9건 ───────────────────────────────
-│ ✗ computeBoids/updateSprites.wgsl
-│     번역[main]: WGSL: arrayLength() — …
+├─ 실패 3건 ───────────────────────────────
+│ ✗ cornell/rasterizer.wgsl
+│     MSL[vs_main]: error: use of undeclared identifier 'common_uniforms'
 ```
+
+남은 3건은 **코퍼스 쪽 사정**이다 (다른 `.wgsl`과 이어 붙여 쓰거나, 호스트가 문자열을
+치환해 쓰는 조각 — `docs/WGSL.md` §4-1).
 
 번역 결과를 눈으로 보려면 덤프를 켠다:
 
@@ -152,6 +155,10 @@ LYNXWEBGPU_WGSL_CORPUS=… LYNXWEBGPU_WGSL_DUMP=/tmp/msl swift test --filter Sam
 | `constants` | 같은 셰이더 모듈 + 다른 `override` 값 → 파이프라인 3개 |
 | `msl` | `language: 'msl'` 직접 주입 + 명시적 파이프라인 레이아웃 |
 | `interactive` | 홀로그래픽 카드 — Lynx 표준 터치 → 3D 자세 → 포일/정반사/반짝임. **위아래로 겹친 Lynx 컴포넌트의 입력 라우팅**도 함께 확인 |
+| `wgsl` | `arrayLength()`로 센 칸 수 + 외부 텍스처(왼쪽만 가장자리 클램프) + 타입 없는 상수식. 셰이더가 센 길이를 CPU가 리드백으로 되짚어 HUD에 ✓/✗로 띄운다 |
+
+`interactive`만 **모달 전체 화면**으로 올라온다 (닫기 버튼은 화면 왼쪽 위).
+밀어서 뒤로 가기 제스처가 카드를 끄는 드래그를 가로채기 때문이다 — `DemoScene.coversFullScreen`.
 
 목록 ↔ 씬을 오갈 때마다 LynxView와 WebGPU 런타임이 새로 만들어지고 해제되므로,
 **생성/해제 경로까지 함께 확인된다.**

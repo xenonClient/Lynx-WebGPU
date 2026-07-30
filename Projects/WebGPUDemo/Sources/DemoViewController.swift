@@ -78,7 +78,38 @@ final class DemoViewController: UIViewController {
         ])
         self.lynxView = lynxView
 
+        // 모달로 올라온 씬은 네비게이션 바가 없으니 닫기 버튼을 직접 얹는다.
+        // LynxView보다 **나중에** 붙여야 UIKit 히트 테스트에서 위로 온다.
+        if scene.coversFullScreen { addDismissButton() }
+
         lynxView.loadTemplate(fromURL: templatePath, initData: initialData)
+    }
+
+    private func addDismissButton() {
+        var configuration = UIButton.Configuration.filled()
+        configuration.image = UIImage(systemName: "xmark")
+        configuration.baseBackgroundColor = UIColor(white: 1, alpha: 0.14)
+        configuration.baseForegroundColor = .white
+        configuration.cornerStyle = .capsule
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12)
+
+        let button = UIButton(configuration: configuration)
+        button.accessibilityLabel = "닫기"
+        button.addTarget(self, action: #selector(dismissScene), for: .touchUpInside)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(button)
+        NSLayoutConstraint.activate([
+            button.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            button.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16),
+        ])
+    }
+
+    @objc private func dismissScene() {
+        if presentingViewController != nil {
+            dismiss(animated: true)
+        } else {
+            navigationController?.popViewController(animated: true)
+        }
     }
 
     /// 자동화 하네스: `-cardTilt 0.45` 를 주면 홀로 카드가 그 각도로 고정된다.

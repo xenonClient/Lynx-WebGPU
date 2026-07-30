@@ -212,7 +212,6 @@ enum MSLTypeMapping {
 
     /// 이 구현이 아직 옮기지 못하는 내장 함수 — 조용히 틀리게 번역하지 않고 명시적으로 거부한다.
     static let unsupportedBuiltins: [String: String] = [
-        "arrayLength": "런타임 배열 길이는 버퍼 크기를 셰이더가 알아야 해서 지원하지 않는다. 길이를 유니폼으로 넘길 것",
         "atomicCompareExchangeWeak": "반환 구조체(__atomic_compare_exchange_result)를 옮기지 못한다",
         "modf": "반환 구조체를 옮기지 못한다. floor/fract로 나눠 쓸 것",
         "frexp": "반환 구조체를 옮기지 못한다",

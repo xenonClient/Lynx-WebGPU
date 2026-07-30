@@ -15,6 +15,7 @@ export default defineConfig({
       constants: './src/constants/index.tsx',
       msl: './src/msl/index.tsx',
       interactive: './src/interactive/index.tsx',
+      wgsl: './src/wgsl/index.tsx',
     },
   },
   output: {

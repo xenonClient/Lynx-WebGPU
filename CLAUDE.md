@@ -16,7 +16,7 @@ Lynx 연동: `docs/LYNX-INTEGRATION.md` · 번들(JS) 작성: `docs/JS-AUTHORING
 ```zsh
 # macOS 개발 루프 — Lynx 없이 엔진/트랜스파일러만 빌드·테스트 (가장 빠르다)
 swift build
-swift test                                   # 65개 테스트, 4초
+swift test                                   # 74개 테스트, 6초
 swift test --filter LynxWebGPUShaderTests    # WGSL → MSL 트랜스파일러만
 swift test --filter RenderPipelineTests      # GPU 오프스크린 렌더 검증
 
@@ -35,7 +35,7 @@ arch -arm64 xcodebuild -workspace LynxWebGPUDemo.xcworkspace -scheme WebGPUDemo 
   -configuration Debug -sdk iphonesimulator \
   -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' -derivedDataPath .derivedData-cli build
 xcrun simctl launch <device> org.lynxwebgpu.demo               # 씬 목록 화면
-xcrun simctl launch <device> org.lynxwebgpu.demo -demo cube    # 바로 진입 (스크린샷 자동화용)
+xcrun simctl launch <device> org.lynxwebgpu.demo -demo wgsl    # 바로 진입 (스크린샷 자동화용)
 xcrun simctl launch <device> org.lynxwebgpu.demo -demo interactive -cardTilt 0.42  # 카드를 고정 각도로
 
 # 데모 Lynx 번들 다시 만들기
@@ -123,8 +123,9 @@ git tag -a 0.2.0 -m "0.2.0 — 요약"
 - 트랜스파일러를 고칠 때는 **반드시 `MetalCompilerHarness.assertCompiles`가 붙은 테스트**를 추가한다.
   문자열만 맞고 컴파일이 안 되는 MSL을 막기 위한 장치다.
 - Metal 검증 레이어는 디스크립터 `label`에 nil을 넣으면 단언으로 죽는다. `if let label = …` 로 감쌀 것.
-- 정점 버퍼는 Metal 버퍼 인자 테이블의 **위쪽(30번부터 역순)**, 바인드 그룹 버퍼는 **0번부터** 배정한다
-  (`WGSLMetalLimits`). 이 규칙을 바꾸면 셰이더 방출과 인코딩을 **함께** 고쳐야 한다.
+- 정점 버퍼는 Metal 버퍼 인자 테이블의 **위쪽(30번부터 역순)**, 바인드 그룹 버퍼는 **0번부터** 배정하고,
+  **22번은 `arrayLength()`용 버퍼 크기 표로 예약**한다 (`WGSLMetalLimits`).
+  이 규칙을 바꾸면 셰이더 방출과 인코딩을 **함께** 고쳐야 한다.
 - 트랜스파일러를 고친 뒤에는 **외부 코퍼스 통과율을 다시 잰다** (`docs/TESTING.md` §7).
   로컬 테스트는 통과하는데 실제 셰이더 통과율이 내려가는 변경이 실제로 있었다.
 - WGSL 식별자가 MSL 예약어(`texture` `sampler` `device` `char` …)와 충돌하면 방출기가 이름을 바꾼다.

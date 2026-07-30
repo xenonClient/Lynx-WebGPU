@@ -19,7 +19,7 @@ const format  = gpu.getPreferredCanvasFormat()      // "bgra8unorm"
 | 키 | 뜻 |
 |---|---|
 | `maxVertexBuffers` | 8 — 정점 버퍼 슬롯 |
-| `maxBindGroupBuffers` | 23 — 바인드 그룹이 쓸 수 있는 버퍼 (정점 버퍼 8슬롯 예약분 제외) |
+| `maxBindGroupBuffers` | 22 — 바인드 그룹이 쓸 수 있는 버퍼 (정점 버퍼 8슬롯 + `arrayLength()` 크기 표 1슬롯 예약분 제외) |
 | `maxTexturesPerStage` / `maxSamplersPerStage` | 31 / 16 |
 | `maxBufferSize` | `MTLDevice.maxBufferLength` |
 | `maxThreadsPerThreadgroup` | 컴퓨트 워크그룹 상한 |
@@ -104,6 +104,10 @@ const bindGroup = device.createBindGroup({                    // getBindGroupLay
     { binding: 2, resource: sampler },
   ],
 })
+
+// 셰이더가 `array<T>`(런타임 크기)를 쓰면 길이는 **바인딩된 크기**에서 나온다.
+// `size`를 주면 그만큼만, 안 주면 버퍼 끝까지다 — `arrayLength()`가 그 값을 본다.
+{ binding: 0, resource: { buffer: particles, offset: 0, size: 48 } }   // arrayLength → 48 / sizeof(T)
 
 // 명시적 레이아웃
 const layout = device.createBindGroupLayout({                 // createBindGroupLayout
@@ -225,7 +229,7 @@ device.onError((error, text) => console.error(text))
 | `GPURenderBundle` | 미지원 |
 | 스텐실 테스트 상태 | 미지원 (깊이만) |
 | 블록 압축 텍스처 (BC/ETC/ASTC) | 미지원 |
-| `GPUExternalTexture` (비디오) | 미지원 |
+| `GPUExternalTexture` (`importExternalTexture`) | 미지원 — Lynx에 비디오 엘리먼트 핸들이 없다. 다만 WGSL `texture_external` + `textureSampleBaseClampToEdge`는 **지원**하므로, 프레임을 텍스처로 올려 그 자리에 `GPUTextureView`를 묶으면 된다 |
 | `pushErrorScope` / `popErrorScope` | `submit()` 반환의 `errors` 배열로 대체 |
 | 파이프라인 상수 (`override` / `constants`) | **지원** (§5) |
 | `writeTimestamp`, `resolveQuerySet` | 미지원 |

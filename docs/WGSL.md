@@ -118,6 +118,8 @@ JS에서는 원래 이름(`entryPoint: 'main'`)을 그대로 쓴다. 런타임�
 | `vec2(x, 4)` (성분 타입 생략) | `wgpu_vec2` — 인자 타입에서 성분 타입을 추론한다 |
 | `max(x, 0)` (리터럴 승격) | `wgpu_max` 등 — 두 인자의 공통 타입으로 맞춘 뒤 호출한다 |
 | `radians(d)` / `degrees(r)` | MSL에 없어 직접 정의한다 |
+| `vec3(1)` (인자가 전부 정수 상수식) | `wgpu_aint<N>` — 문맥 타입으로 굳는 **추상 정수 벡터** 대역. 변환 연산자와 산술 연산자 오버로드로 f32/u32/i32 어느 자리에나 들어간다 |
+| `textureSampleBaseClampToEdge(t, s, uv)` | `wgpu_sample_base_clamp` — 밉 0에서 좌표를 텍셀 절반만큼 물려 샘플한다 |
 
 인스턴스화되지 않은 템플릿은 코드를 만들지 않으므로 런타임 비용은 없다.
 
@@ -165,27 +167,51 @@ struct alignas(16) Light {
 
 **따라서 JS는 WGSL 규칙대로 버퍼를 채우면 된다.** 브라우저에서 쓰던 유니폼 패킹 코드가 그대로 동작한다.
 
+## 3-1. 런타임 크기 배열과 외부 텍스처
+
+```wgsl
+struct Particles {
+  count: u32,
+  items: array<vec4f>,      // 구조체 말미의 런타임 크기 배열도 된다
+}
+@group(0) @binding(0) var<storage, read_write> particles: Particles;
+@group(0) @binding(1) var frame: texture_external;
+@group(0) @binding(2) var frameSampler: sampler;
+
+fn count_and_sample(uv: vec2f) -> vec4f {
+  let n = arrayLength(&particles.items);                              // 바인딩된 크기 기준
+  return textureSampleBaseClampToEdge(frame, frameSampler, uv) * f32(n);
+}
+```
+
+**`arrayLength()`** — Metal 셰이더는 버퍼 크기를 알 수 없다. 그래서 바인딩된 버퍼의 바이트 수를 담은
+작은 표를 예약 인덱스(`WGSLMetalLimits.bufferSizesIndex` = 22)에 꽂아 주고, `arrayLength(&g)`를
+`(크기표[i] - 멤버오프셋) / sizeof(원소)`로 번역한다 (Dawn과 같은 방식). 길이는 **바인딩된 크기**를
+따르므로 `{ buffer, offset, size }`로 일부만 묶으면 그만큼만 센다. 쓰지 않는 셰이더에는 표를 넘기지 않는다.
+
+**`texture_external`** — 샘플링 가능한 2D 텍스처로 내려간다. 바인드 그룹에는 보통
+`GPUTextureView`를 묶으면 된다 (한 면짜리 비디오 프레임과 같은 모양).
+`textureSampleBaseClampToEdge`는 밉 0에서 좌표를 텍셀 절반만큼 안쪽으로 물려 샘플하므로,
+`repeat` 샘플러라도 프레임 경계에서 반대쪽이 감겨 들어오지 않는다.
+
 ## 4. 지원하지 않는 것
 
 명시적으로 **거부**한다 (조용히 틀리게 번역하지 않는다):
 
 | 기능 | 이유 / 대안 |
 |---|---|
-| `arrayLength(&buf)` | 셰이더가 버퍼 크기를 알아야 한다. 길이를 유니폼으로 넘길 것 |
 | `atomicCompareExchangeWeak` | 반환 구조체를 옮기지 못한다 |
 | `modf` / `frexp` | 반환 구조체를 옮기지 못한다. `floor`/`fract`로 나눠 쓸 것 |
 | `workgroupUniformLoad` | 미지원 |
 | `break if cond;` | `continuing` 블록 전용 구문. `if (cond) { break; }`로 바꿔 쓸 것 |
-| `textureSampleBaseClampToEdge` | 외부 텍스처(비디오)를 지원하지 않는다 |
 | `continuing` + `continue` 조합 | `continue`가 `continuing` 블록을 건너뛰게 되어 의미가 달라진다. `for`로 바꿀 것 |
-| 런타임 크기 배열이 **구조체 멤버**인 경우 | 길이 1 배열로 방출된다. 저장 타입을 `array<T>` 자체로 선언할 것 |
 
 암묵적 제약:
-- **성분 타입이 생략되고 인자가 전부 정수 리터럴인 벡터 생성자**(`vec2(4, 1)`)는 추론 근거가 없어
-  **f32로 본다**. 정수 벡터가 필요하면 `vec2u(4, 1)`처럼 명시할 것.
-  인자에 타입이 있는 식이 하나라도 있으면(`vec2(count, 4)`) 정확히 추론된다.
-- 같은 이유로 `vec4(1741651 * 1009, …)`처럼 **정수 상수식만으로 이루어진 부호 없는 벡터**는
-  타입이 어긋난다. `vec4u(…)`로 명시할 것.
+- **성분 타입이 생략되고 인자가 전부 정수 상수식인 벡터 생성자**(`vec2(4, 1)`, `vec3(1)`)는
+  WGSL 명세대로 **쓰이는 자리의 타입으로 굳는다** — f32 자리에서는 f32, u32 자리에서는 u32.
+  프렐류드의 `wgpu_aint<N>` 대역이 그 결정을 C++ 오버로드 해석에 넘긴다 (§2-1).
+  단 대역 값을 **Metal 내장 함수에 그대로 넘기는 자리**(`normalize(vec3(1))`)는 타입 추론이
+  걸릴 수 있다. 그럴 때는 `vec3f(1)`처럼 성분 타입을 적으면 된다.
 - 여기 표에 없는 내장 함수는 **이름 그대로 통과**한다. MSL에 같은 이름이 없으면 파이프라인 생성 시
   "MSL 컴파일 실패" 오류와 함께 생성된 MSL 전문이 나온다.
 
@@ -196,12 +222,13 @@ struct alignas(16) Light {
 
 | 결과 | 수 |
 |---|---|
-| 그대로 통과 | **54 / 67 (80%)** |
+| 그대로 통과 | **60 / 67 (89%)** |
 | 호스트가 `constants`를 주면 동작 (`override` 사용) | 4 |
-| 외부 텍스처(비디오) 미지원 | 2 |
-| `arrayLength()` 미지원 | 1 |
-| 타입 추론 한계 (위 암묵적 제약) | 2 |
-| 코퍼스 자체가 단독 파일이 아님 (다른 파일과 이어 붙여 쓰는 조각) | 3 |
+| 코퍼스 자체가 단독 파일이 아님 (다른 파일과 이어 붙이거나 호스트가 문자열을 치환해 쓰는 조각) | 3 |
+
+**남은 3건은 트랜스파일러의 빈틈이 아니다**: `cornell/rasterizer.wgsl`과 `skinnedMesh/gltf.wgsl`은
+선언이 다른 `.wgsl` 파일에 있고(샘플이 이어 붙여 쓴다), `cornell/tonemapper.wgsl`은
+`texture_storage_2d<{OUTPUT_FORMAT}, write>`처럼 JS가 치환할 자리를 그대로 담고 있다.
 
 재현 방법은 `docs/TESTING.md` §7.
 

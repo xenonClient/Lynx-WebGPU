@@ -51,8 +51,15 @@ final class LauncherViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        navigationController?.pushViewController(
-            DemoViewController(scene: scenes[indexPath.row]), animated: true
-        )
+        let scene = scenes[indexPath.row]
+        let controller = DemoViewController(scene: scene)
+
+        // 제스처가 겹치면 안 되는 씬은 모달 전체 화면으로 (`DemoScene.coversFullScreen` 참고).
+        guard scene.coversFullScreen else {
+            navigationController?.pushViewController(controller, animated: true)
+            return
+        }
+        controller.modalPresentationStyle = .fullScreen
+        present(controller, animated: true)
     }
 }

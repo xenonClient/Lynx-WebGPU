@@ -19,6 +19,11 @@ struct MSLEmitter {
     private let usage: [String: Set<String>]
     private let globalsByName: [String: WGSLGlobalVariable]
     private let structNames: Set<String>
+    /// `arrayLength()`를 (전이적으로) 쓰는 함수들 — 버퍼 크기 표를 인자로 받아야 한다.
+    private let needsBufferSizes: Set<String>
+
+    /// 버퍼 크기 표 인자 이름.
+    private static let bufferSizesName = "wgpu_buffer_sizes"
 
     /// 현재 함수 스코프에서 이름 → 텍스처 타입 (텍스처 내장 함수를 메서드 호출로 바꿀 때 필요).
     private var textureScope: [String: WGSLTextureType] = [:]
@@ -33,6 +38,7 @@ struct MSLEmitter {
         self.usage = WGSLReflectionBuilder.transitiveGlobalUsage(module)
         self.globalsByName = Dictionary(uniqueKeysWithValues: module.globals.map { ($0.name, $0) })
         self.structNames = Set(module.structs.map(\.name))
+        self.needsBufferSizes = WGSLReflectionBuilder.functionsCalling("arrayLength", in: module)
     }
 
     // MARK: - 진입
@@ -93,13 +99,83 @@ struct MSLEmitter {
         }
     }
 
-    /// 인자가 전부 정수 리터럴인가 — 성분 타입 추론의 근거가 없다는 뜻이다.
-    private static func isAllIntegerLiterals(_ arguments: [WGSLExpression]) -> Bool {
+    /// 인자가 전부 **접미사 없는 정수 상수식**인가 (WGSL의 AbstractInt).
+    ///
+    /// `vec2(4, 1)`, `vec4(1741651 * 1009, …)` 처럼 성분 타입을 정할 근거가 인자에 없는 경우다.
+    /// `4u`처럼 접미사가 붙었거나 식별자가 섞이면 타입이 정해지므로 템플릿 추론에 맡긴다.
+    private static func isAbstractIntegerArguments(_ arguments: [WGSLExpression]) -> Bool {
         guard !arguments.isEmpty else { return false }
-        return arguments.allSatisfy {
-            if case .intLiteral = $0 { return true }
+        return arguments.allSatisfy(isAbstractInteger)
+    }
+
+    private static func isAbstractInteger(_ expression: WGSLExpression) -> Bool {
+        switch expression {
+        case .intLiteral(let text):
+            return !text.hasSuffix("u")
+        case .paren(let inner):
+            return isAbstractInteger(inner)
+        case .unary(let op, let inner):
+            return (op == "-" || op == "+") && isAbstractInteger(inner)
+        case .binary(let op, let left, let right):
+            return ["+", "-", "*", "/", "%"].contains(op)
+                && isAbstractInteger(left) && isAbstractInteger(right)
+        default:
             return false
         }
+    }
+
+    /// `arrayLength(&buffer)` / `arrayLength(&buffer.member)` → 버퍼 크기 표 조회.
+    ///
+    /// Metal 셰이더는 버퍼 크기를 알 수 없다. 런타임이 예약 인덱스에 크기 표를 꽂아 주고,
+    /// 여기서 (표에 담긴 바이트 수 − 배열 시작 오프셋) ÷ 원소 크기로 계산한다.
+    private func arrayLengthExpression(_ arguments: [WGSLExpression]) throws -> String {
+        var target = arguments.first ?? .identifier("")
+        if case .addressOf(let inner) = target { target = inner }
+
+        var globalName = ""
+        var memberName: String?
+        switch target {
+        case .identifier(let name):
+            globalName = name
+        case .member(.identifier(let name), let field):
+            globalName = name
+            memberName = field
+        default:
+            throw WGPUError.unsupported(
+                "WGSL: arrayLength()는 스토리지 버퍼 변수(또는 그 멤버)에만 쓸 수 있다"
+            )
+        }
+
+        guard let global = globalsByName[globalName],
+              let group = global.group, let binding = global.binding,
+              let index = bindings.index(group: group, binding: binding) else {
+            throw WGPUError.validation("arrayLength(): '\(globalName)'은(는) 바인딩된 스토리지 버퍼가 아니다")
+        }
+
+        var element: WGSLType
+        var offset = 0
+        if case .array(let inner, nil) = global.type, memberName == nil {
+            element = inner
+        } else if case .named(let structName) = global.type, let memberName,
+                  let structure = WGSLLayout.resolveStruct(structName, module: module) {
+            let placement = WGSLLayout.layout(
+                of: structure, module: module, uniform: uniformStructs.contains(structName)
+            )
+            guard let member = placement.members.first(where: { $0.name == memberName }),
+                  case .array(let inner, nil) = member.type else {
+                throw WGPUError.unsupported("WGSL: arrayLength()의 대상이 런타임 크기 배열이 아니다")
+            }
+            element = inner
+            offset = member.offset
+        } else {
+            throw WGPUError.unsupported("WGSL: arrayLength()의 대상이 런타임 크기 배열이 아니다")
+        }
+
+        let elementType = try MSLTypeMapping.type(element, module: module)
+        let total = offset == 0
+            ? "\(Self.bufferSizesName)[\(index)]"
+            : "(\(Self.bufferSizesName)[\(index)] - \(offset)u)"
+        return "(\(total) / uint(sizeof(\(elementType))))"
     }
 
     /// 초기값의 **구문**만 보고 타입을 짚어 본다 (타입 추론기가 아니라 생성자 이름을 읽는 것).
@@ -123,10 +199,9 @@ struct MSLEmitter {
                     return .vector(size: size, element: typeArguments[0])
                 }
                 // 성분 타입이 생략되면 인자에서 짚어 본다 (`vec2(-1.0, -1.0)` → vec2<f32>).
-                // **방출기의 규칙과 같아야 한다** — 인자가 전부 정수 리터럴이면 f32로 본다.
-                if Self.isAllIntegerLiterals(arguments) {
-                    return .vector(size: size, element: .scalar("f32"))
-                }
+                // 인자가 전부 AbstractInt 상수식이면 방출기가 프록시를 내보내므로 타입을 못 적는다
+                // (매크로/auto 경로로 흘려보내야 문맥에서 굳는다).
+                if Self.isAbstractIntegerArguments(arguments) { return nil }
                 guard let element = arguments.first.flatMap(inferredType(of:)),
                       case .scalar = element else { return nil }
                 return .vector(size: size, element: element)
@@ -268,6 +343,9 @@ struct MSLEmitter {
             "\(try MSLTypeMapping.type(parameter.type, module: module)) \(MSLTypeMapping.identifier(parameter.name))"
         }
         parameters += try threadedGlobals(for: function.name).map(parameterDeclaration(for:))
+        if needsBufferSizes.contains(function.name) {
+            parameters.append("constant uint* \(Self.bufferSizesName)")
+        }
 
         let returnType = try function.returnType.map { try MSLTypeMapping.type($0, module: module) } ?? "void"
         line("\(returnType) \(MSLTypeMapping.functionName(function.name))(\(parameters.joined(separator: ", ")))")
@@ -313,6 +391,9 @@ struct MSLEmitter {
             "\(try MSLTypeMapping.type(parameter.type, module: module)) \(MSLTypeMapping.identifier(parameter.name))"
         }
         innerParameters += try resources.map(parameterDeclaration(for:))
+        if needsBufferSizes.contains(function.name) {
+            innerParameters.append("constant uint* \(Self.bufferSizesName)")
+        }
         let returnType = try function.returnType.map { try MSLTypeMapping.type($0, module: module) } ?? "void"
         line("\(returnType) \(innerName)(\(innerParameters.joined(separator: ", ")))")
         line("{")
@@ -356,6 +437,13 @@ struct MSLEmitter {
         for global in resources where global.isResource {
             wrapperParameters.append("\(try parameterDeclaration(for: global))\(try bindingAttribute(for: global))")
         }
+        if needsBufferSizes.contains(function.name) {
+            // 런타임이 바인딩된 버퍼들의 바이트 크기를 이 인덱스에 꽂아 준다.
+            wrapperParameters.append(
+                "constant uint* \(Self.bufferSizesName) "
+                    + "[[buffer(\(WGSLMetalLimits.bufferSizesIndex))]]"
+            )
+        }
 
         let qualifier: String
         switch stage {
@@ -374,7 +462,8 @@ struct MSLEmitter {
             }
             for statement in interface.prelude { emitter.line(statement) }
 
-            let arguments = interface.innerArguments + resources.map { MSLTypeMapping.identifier($0.name) }
+            var arguments = interface.innerArguments + resources.map { MSLTypeMapping.identifier($0.name) }
+            if emitter.needsBufferSizes.contains(function.name) { arguments.append(Self.bufferSizesName) }
             let call = "\(innerName)(\(arguments.joined(separator: ", ")))"
             if interface.outFields.isEmpty {
                 emitter.line("\(call);")
@@ -695,9 +784,9 @@ struct MSLEmitter {
         case .paren(let inner):
             return "(\(try self.expression(inner)))"
         case .member(let base, let name):
-            return "\(try self.expression(base)).\(MSLTypeMapping.identifier(name))"
+            return "\(try concreteExpression(base)).\(MSLTypeMapping.identifier(name))"
         case .index(let base, let subscriptExpression):
-            return "\(try self.expression(base))[\(try self.expression(subscriptExpression))]"
+            return "\(try concreteExpression(base))[\(try self.expression(subscriptExpression))]"
         case .addressOf(let operand):
             return "&\(try self.expression(operand))"
         case .dereference(let operand):
@@ -705,6 +794,22 @@ struct MSLEmitter {
         case .call(let callee, let typeArguments, let arguments):
             return try call(callee: callee, typeArguments: typeArguments, arguments: arguments)
         }
+    }
+
+    /// 스위즐·인덱싱의 대상으로 쓸 표현식.
+    ///
+    /// AbstractInt 상수식 벡터는 보통 프록시로 내보내지만(문맥에서 타입이 굳도록), 프록시에는
+    /// `.xyz` 같은 성분 접근이 없다. 그 자리에서는 f32 벡터로 확정해 내보낸다.
+    private mutating func concreteExpression(_ expression: WGSLExpression) throws -> String {
+        if case .call(let callee, let typeArguments, let arguments) = expression,
+           MSLPrelude.inferredVectorConstructors.contains(callee),
+           typeArguments.isEmpty,
+           Self.isAbstractIntegerArguments(arguments) {
+            let size = Int(callee.dropFirst(3)) ?? 4
+            let emitted = try arguments.map { try self.expression($0) }
+            return "float\(size)(\(emitted.joined(separator: ", ")))"
+        }
+        return try self.expression(expression)
     }
 
     /// `1u` → `1u`, `1i` → `1`, `0xFFi` → `0xFF`.
@@ -739,6 +844,9 @@ struct MSLEmitter {
             return "as_type<\(try MSLTypeMapping.type(target, module: module))>(\(try expression(arguments[0])))"
         }
 
+        if callee == "arrayLength" {
+            return try arrayLengthExpression(arguments)
+        }
         if callee.hasPrefix("texture") {
             return try textureCall(callee: callee, arguments: arguments)
         }
@@ -769,9 +877,11 @@ struct MSLEmitter {
             // 인자가 전부 정수 리터럴이면 추론할 근거가 없다. WGSL의 AbstractInt는 문맥 타입을
             // 따르는데, 벡터 생성자에서는 f32 문맥이 압도적으로 흔하므로 그쪽을 택한다
             // (`vec3(1)` = 흰색). 정수 벡터가 필요하면 `vec3u(…)`처럼 명시할 것 — docs/WGSL.md §4.
-            if Self.isAllIntegerLiterals(arguments) {
+            if Self.isAbstractIntegerArguments(arguments) {
+                // WGSL의 AbstractInt 상수식은 문맥 타입으로 굳는다. 프록시로 내보내
+                // 그 결정을 C++ 변환 연산자에 넘긴다 (docs/WGSL.md §2-1).
                 let size = Int(callee.dropFirst(3)) ?? 4
-                return "float\(size)(\(emitted.joined(separator: ", ")))"
+                return "wgpu_aint\(size)(\(emitted.joined(separator: ", ")))"
             }
             return "wgpu_\(callee)(\(emitted.joined(separator: ", ")))"
         }
@@ -798,7 +908,8 @@ struct MSLEmitter {
 
         // 사용자 함수는 스레딩된 리소스를 뒤에 덧붙여 넘긴다.
         if module.functionNamed(callee) != nil {
-            let extra = threadedGlobals(for: callee).map { MSLTypeMapping.identifier($0.name) }
+            var extra = threadedGlobals(for: callee).map { MSLTypeMapping.identifier($0.name) }
+            if needsBufferSizes.contains(callee) { extra.append(Self.bufferSizesName) }
             return "\(MSLTypeMapping.functionName(callee))(\((emitted + extra).joined(separator: ", ")))"
         }
 
@@ -911,6 +1022,14 @@ struct MSLEmitter {
             default:
                 return "uint2(\(receiver).get_width(\(level)), \(receiver).get_height(\(level)))"
             }
+
+        case "textureSampleBaseClampToEdge":
+            guard rest.count >= 2 else {
+                throw WGPUError.validation("WGSL: textureSampleBaseClampToEdge(t, s, coords) 형태여야 한다")
+            }
+            let clampSampler = rest.removeFirst()
+            let clampCoordinates = rest.removeFirst()
+            return "wgpu_sample_base_clamp(\(receiver), \(clampSampler), \(clampCoordinates))"
 
         case "textureNumLayers":
             return "\(receiver).get_array_size()"

@@ -136,6 +136,39 @@ enum WGSLReflectionBuilder {
         return result
     }
 
+    /// 특정 내장 함수를 (전이적으로) 호출하는 함수 이름들.
+    ///
+    /// `arrayLength`처럼 **추가 인자가 필요한** 내장 함수를 위해 쓴다 —
+    /// 그 인자를 진입점에서 받아 호출 그래프를 따라 내려보내야 하기 때문이다.
+    static func functionsCalling(_ builtin: String, in module: WGSLModule) -> Set<String> {
+        var callees: [String: Set<String>] = [:]
+        var directly = Set<String>()
+        let functionNames = Set(module.functions.map(\.name))
+
+        for function in module.functions {
+            var identifiers = Set<String>()
+            var calls = Set<String>()
+            for statement in function.body {
+                collect(statement, identifiers: &identifiers, calls: &calls)
+            }
+            if calls.contains(builtin) { directly.insert(function.name) }
+            callees[function.name] = calls.intersection(functionNames)
+        }
+
+        var result = directly
+        var changed = true
+        while changed {
+            changed = false
+            for function in module.functions where !result.contains(function.name) {
+                if (callees[function.name] ?? []).contains(where: result.contains) {
+                    result.insert(function.name)
+                    changed = true
+                }
+            }
+        }
+        return result
+    }
+
     // MARK: - 식별자 수집
 
     private static func collect(_ statement: WGSLStatement, identifiers: inout Set<String>, calls: inout Set<String>) {

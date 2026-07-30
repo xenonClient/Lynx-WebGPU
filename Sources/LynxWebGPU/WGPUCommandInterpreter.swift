@@ -26,6 +26,9 @@ final class WGPUCommandInterpreter {
     private var currentComputePipeline: WGPUComputePipelineObject?
     private var boundGroups: [Int: (group: WGPUBindGroupObject, offsets: [Int])] = [:]
     private var dirtyGroups: Set<Int> = []
+    /// Metal 버퍼 인덱스별 바인딩 크기 — `arrayLength()`가 이 표를 조회한다.
+    /// 바인드 그룹을 적용할 때마다 갱신하고, 셰이더가 쓸 때만 인코더에 올린다.
+    private var bufferSizes = [UInt32](repeating: 0, count: WGSLMetalLimits.maxBindGroupBuffers)
     private var indexBinding: (buffer: MTLBuffer, offset: Int, type: MTLIndexType, stride: Int)?
     private var acquiredDrawables: [(handle: WGPUHandle, drawable: WGPUDrawable)] = []
     /// 프레임이 끝나면 무효해지는 핸들 (드로어블 텍스처와 그 뷰).
@@ -527,18 +530,20 @@ final class WGPUCommandInterpreter {
     }
 
     private func applyBindGroups() throws {
-        guard !dirtyGroups.isEmpty else { return }
         let layout: WGPUPipelineLayoutObject
+        let needsSizes: Bool
         if renderEncoder != nil {
             guard let pipeline = currentRenderPipeline else {
                 throw WGPUError.validation("draw 전에 setPipeline이 필요하다")
             }
             layout = pipeline.layout
+            needsSizes = pipeline.needsBufferSizes
         } else {
             guard let pipeline = currentComputePipeline else {
                 throw WGPUError.validation("dispatch 전에 setPipeline이 필요하다")
             }
             layout = pipeline.layout
+            needsSizes = pipeline.needsBufferSizes
         }
 
         for groupIndex in dirtyGroups.sorted() {
@@ -546,6 +551,20 @@ final class WGPUCommandInterpreter {
             try apply(bound.group, at: groupIndex, dynamicOffsets: bound.offsets, layout: layout)
         }
         dirtyGroups.removeAll()
+
+        // `arrayLength()`용 버퍼 크기 표. 88바이트라 setBytes로 매 드로우 올려도 부담이 없다.
+        guard needsSizes else { return }
+        let byteLength = bufferSizes.count * MemoryLayout<UInt32>.stride
+        let index = WGSLMetalLimits.bufferSizesIndex
+        bufferSizes.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            if let encoder = renderEncoder {
+                encoder.setVertexBytes(base, length: byteLength, index: index)
+                encoder.setFragmentBytes(base, length: byteLength, index: index)
+            } else if let encoder = computeEncoder {
+                encoder.setBytes(base, length: byteLength, index: index)
+            }
+        }
     }
 
     private func apply(
@@ -562,7 +581,9 @@ final class WGPUCommandInterpreter {
                 )
             }
             switch binding.resource {
-            case .buffer(let buffer, let offset):
+            case .buffer(let buffer, let offset, let boundSize):
+                // `arrayLength()`가 볼 크기 표를 채운다 (셰이더가 쓸 때만 업로드한다).
+                if metalIndex < bufferSizes.count { bufferSizes[metalIndex] = UInt32(boundSize) }
                 var finalOffset = offset
                 if group.layout.entry(binding: binding.binding).map(Self.hasDynamicOffset) == true {
                     guard offsetCursor < dynamicOffsets.count else {

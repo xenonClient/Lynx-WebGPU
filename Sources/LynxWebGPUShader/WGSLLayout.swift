@@ -146,9 +146,12 @@ enum WGSLLayout {
         case .paren(let inner):
             return constantValue(inner, module: module)
         case .identifier(let name):
-            guard let constant = module.constants.first(where: { $0.name == name }),
-                  let value = constant.value else { return nil }
-            return constantValue(value, module: module)
+            if let constant = module.constants.first(where: { $0.name == name }),
+               let value = constant.value {
+                return constantValue(value, module: module)
+            }
+            // 함수 안에서 선언한 `const`도 컴파일 타임 상수다 (`var a: array<T, maxLayers>;`).
+            return uniqueLocalConstant(named: name, module: module)
         case .binary(let op, let left, let right):
             guard let l = constantValue(left, module: module), let r = constantValue(right, module: module) else {
                 return nil
@@ -162,6 +165,60 @@ enum WGSLLayout {
             }
         default:
             return nil
+        }
+    }
+
+    /// 모듈 전체에서 이 이름으로 선언된 함수 지역 `const`의 값.
+    ///
+    /// 지역 상수라 원칙적으로는 선언한 함수 안에서만 보이지만, 배열 크기를 정할 때는 함수 문맥이
+    /// 없다. 그래서 **모듈 안에서 값이 하나로 정해질 때만** 쓴다 — 같은 이름이 함수마다 다른 값이면
+    /// 어느 쪽인지 알 수 없으니 포기하고 종전처럼 오류를 낸다.
+    private static func uniqueLocalConstant(named name: String, module: WGSLModule) -> Int? {
+        var found: Int?
+        for function in module.functions {
+            for expression in localConstants(named: name, in: function.body) {
+                guard let value = constantValue(expression, module: module) else { return nil }
+                if let found, found != value { return nil }
+                found = value
+            }
+        }
+        return found
+    }
+
+    private static func localConstants(named name: String, in statements: [WGSLStatement]) -> [WGSLExpression] {
+        var values: [WGSLExpression] = []
+        for statement in statements {
+            if case .constDeclaration(let declared, _, let value) = statement, declared == name {
+                values.append(value)
+            }
+            for block in nestedBlocks(of: statement) {
+                values.append(contentsOf: localConstants(named: name, in: block))
+            }
+        }
+        return values
+    }
+
+    /// 중첩 블록만 훑는다 (지역 `const`가 어디에 있어도 찾을 수 있게).
+    private static func nestedBlocks(of statement: WGSLStatement) -> [[WGSLStatement]] {
+        switch statement {
+        case .ifStatement(_, let then, let elseBranch):
+            switch elseBranch {
+            case .block(let statements)?: return [then, statements]
+            case .chained(let nested)?: return [then, [nested]]
+            case nil: return [then]
+            }
+        case .forStatement(let initializer, _, _, let body):
+            return initializer.map { [[$0], body] } ?? [body]
+        case .whileStatement(_, let body):
+            return [body]
+        case .loopStatement(let body, let continuing):
+            return continuing.map { [body, $0] } ?? [body]
+        case .switchStatement(_, let cases):
+            return cases.map(\.body)
+        case .block(let statements):
+            return [statements]
+        default:
+            return []
         }
     }
 

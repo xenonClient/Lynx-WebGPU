@@ -14,6 +14,14 @@ enum DemoScene: String, CaseIterable {
     case constants
     case msl
     case interactive
+    case wgsl
+
+    /// 화면 전체를 덮어 띄울 씬 — 네비게이션 컨트롤러가 아니라 **모달로 표시**한다.
+    ///
+    /// 밀어서 뒤로 가기(`interactivePopGestureRecognizer`)가 화면 왼쪽에서 시작하는 드래그를
+    /// 가로채기 때문에, 캔버스를 잡고 끄는 씬은 그 제스처와 경쟁한다. 모달 전체 화면에는
+    /// 그런 제스처가 없어서 터치가 온전히 Lynx로 간다 (뒤로가기는 직접 붙인 버튼으로).
+    var coversFullScreen: Bool { self == .interactive }
 
     var title: String {
         switch self {
@@ -26,6 +34,7 @@ enum DemoScene: String, CaseIterable {
         case .constants: return "파이프라인 상수"
         case .msl: return "MSL 탈출구"
         case .interactive: return "홀로그래픽 카드"
+        case .wgsl: return "WGSL 호환성"
         }
     }
 
@@ -41,6 +50,7 @@ enum DemoScene: String, CaseIterable {
         case .constants: return "같은 셰이더를 override 값만 바꿔 여러 파이프라인으로"
         case .msl: return "language: 'msl' — 트랜스파일러 우회 + 명시적 레이아웃"
         case .interactive: return "잡고 기울이면 포일이 흐른다 — Lynx 터치 → 3D 자세 → 셰이더"
+        case .wgsl: return "arrayLength + 외부 텍스처 + 타입 없는 상수식"
         }
     }
 }
