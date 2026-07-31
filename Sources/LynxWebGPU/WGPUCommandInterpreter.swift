@@ -32,7 +32,7 @@ final class WGPUCommandInterpreter {
     /// 바인드 그룹을 적용할 때마다 갱신하고, 셰이더가 쓸 때만 인코더에 올린다.
     private var bufferSizes = [UInt32](repeating: 0, count: WGSLMetalLimits.maxBindGroupBuffers)
     private var indexBinding: (buffer: MTLBuffer, offset: Int, type: MTLIndexType, stride: Int)?
-    private var acquiredDrawables: [(handle: WGPUHandle, drawable: WGPUDrawable)] = []
+    private var acquiredDrawables: [(handle: WGPUHandle, drawable: WGPUDrawable, surface: WGPUSurface)] = []
     /// 이번 프레임 업로드에 쓴 스테이징 버퍼 — 커맨드 버퍼 완료 시 풀로 돌아간다.
     private var frameStagingBuffers: [MTLBuffer] = []
     /// 프레임이 끝나면 무효해지는 핸들 (드로어블 텍스처와 그 뷰).
@@ -117,6 +117,14 @@ final class WGPUCommandInterpreter {
                 let pool = stagingPool
                 commandBuffer.addCompletedHandler { _ in pool.recycle(buffers) }
             }
+            // in-flight 회계 — 프레임 티커가 이 수를 보고 포화 시 틱을 건너뛴다.
+            let presentedSurfaces = uniquePresentedSurfaces()
+            if !presentedSurfaces.isEmpty {
+                for surface in presentedSurfaces { surface.noteFrameCommitted() }
+                commandBuffer.addCompletedHandler { _ in
+                    for surface in presentedSurfaces { surface.noteFrameCompleted() }
+                }
+            }
             commandBuffer.commit()
             lastCommittedBuffer = commandBuffer
         } else if !frameStagingBuffers.isEmpty {
@@ -129,6 +137,16 @@ final class WGPUCommandInterpreter {
             registry.remove(handle)
         }
         commandBuffer = nil
+    }
+
+    /// 이번 프레임에 드로어블을 내준 표면들 (중복 제거 — 한 표면에서 여러 번 얻어도 프레임은 하나다).
+    private func uniquePresentedSurfaces() -> [WGPUSurface] {
+        var seen = Set<ObjectIdentifier>()
+        var surfaces: [WGPUSurface] = []
+        for acquired in acquiredDrawables where seen.insert(ObjectIdentifier(acquired.surface)).inserted {
+            surfaces.append(acquired.surface)
+        }
+        return surfaces
     }
 
     // MARK: - 인코더 수명
@@ -451,7 +469,7 @@ final class WGPUCommandInterpreter {
             ?? surface.configuredFormat
         let texture = WGPUTextureObject(drawableTexture: drawable.texture, format: format)
         registry.insert(texture, at: handle)
-        acquiredDrawables.append((handle, drawable))
+        acquiredDrawables.append((handle, drawable, surface))
         frameScopedHandles.append(handle)
     }
 

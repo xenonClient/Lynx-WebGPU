@@ -64,6 +64,18 @@ public final class LynxWebGPUContext {
         return Array(surfaces.keys).sorted()
     }
 
+    /// 등록된 모든 표면이 새 프레임을 받을 수 있는가.
+    ///
+    /// 프레임 티커가 이 값을 보고 포화 시 `webgpu:frame` 틱을 건너뛴다 — GPU가 in-flight
+    /// 한도(표면당 3프레임)만큼 밀려 있을 때 JS가 프레임을 만들면 `nextDrawable()`이
+    /// JS 스레드 전체(터치 핸들러·타이머 포함)를 최대 1초까지 세우기 때문이다.
+    /// 완료 핸들러가 돌아오면 다음 틱부터 자연히 재개된다.
+    public var isReadyForNextFrame: Bool {
+        surfaceLock.lock()
+        defer { surfaceLock.unlock() }
+        return surfaces.values.allSatisfy { $0.isReadyForNextFrame }
+    }
+
     // MARK: - 커맨드 실행
 
     /// 커맨드 스트림 하나를 실행한다.

@@ -30,7 +30,12 @@ public final class LynxWebGPUHost: NSObject {
         self.lynxView = lynxView
         LynxWebGPUHostRegistry.register(self, for: lynxView)
         ticker.onFrame = { [weak self] timestamp, deltaSeconds in
-            self?.lynxView?.sendGlobalEvent("webgpu:frame", withParams: [[
+            guard let self else { return }
+            // GPU가 in-flight 한도만큼 밀려 있으면 이 틱을 건너뛴다. 여기서 이벤트를 보내면
+            // JS가 프레임을 만들다 nextDrawable()에서 **JS 스레드 전체가** 서기 때문이다 —
+            // 프레임을 거르는 쪽이 낫다. 완료가 돌아오면 다음 틱부터 재개된다.
+            guard self.context.isReadyForNextFrame else { return }
+            self.lynxView?.sendGlobalEvent("webgpu:frame", withParams: [[
                 "timestamp": timestamp * 1000,
                 "delta": deltaSeconds * 1000,
             ]])
