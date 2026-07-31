@@ -60,6 +60,7 @@ host.attach(to: lynxView)
 - [docs/JS-AUTHORING.md](docs/JS-AUTHORING.md) — 번들(JS) 작성 가이드, 성능 규칙
 - [docs/LYNX-INTEGRATION.md](docs/LYNX-INTEGRATION.md) — 호스트 앱 연동
 - [docs/TESTING.md](docs/TESTING.md) — 테스트 전략/하네스/컨벤션
+- [docs/ROADMAP.md](docs/ROADMAP.md) — 다음 기능 계획 (압축 텍스처 → 스텐실 → 간접 드로우)
 - [Examples/HelloTriangle.tsx](Examples/HelloTriangle.tsx) — ReactLynx 최소 예제
 
 ## 모듈
@@ -88,6 +89,16 @@ WGSL을 MSL로 번역하는 용도로만 가져다 써도 된다.
 **오류는 모아서 돌려준다** — 잘못된 호출이 프로세스를 죽이지 않는다. `commands[3].vertex.buffers[0].format`
 같은 경로가 붙고, 셰이더 컴파일 실패에는 생성된 MSL 전문이 함께 온다.
 
+**프레임 경로에서 기다리지 않는다** — 캔버스 크기는 제출 응답으로 갱신되는 캐시를 읽어
+프레임당 브리지 왕복이 정확히 1회다. `writeBuffer`/`writeTexture`는 스테이징(풀로 재사용) + blit으로
+큐 순서를 타므로 GPU 완주를 기다리지 않는다 — **동적 텍스처를 매 프레임 올릴 수 있다.**
+GPU가 밀리면 in-flight 3프레임 제한이 프레임 티커를 건너뛰어, `nextDrawable()` 블로킹이
+JS 스레드(터치·타이머 포함)로 번지지 않는다.
+
+**수명은 손으로, 감시는 자동으로** — 핸들은 정수라 JS GC가 네이티브 수명을 모른다.
+`submit()` 반환의 `objects`(live 객체 수)와 네이티브 경고 로그(4096개 초과)로 destroy 누락을
+잡고, 엔진이 `FinalizationRegistry`를 지원하면 GC 자동 해제 안전망이 켜진다.
+
 ## 실제 WebGPU 셰이더 호환성
 
 공식 [webgpu-samples](https://github.com/webgpu/webgpu-samples)의 WGSL 68개를 **손대지 않고** 통과시켜
@@ -108,24 +119,30 @@ WGSL을 MSL로 번역하는 용도로만 가져다 써도 된다.
 
 ## 검증
 
-74개 테스트가 6초 안에 돈다 — 시뮬레이터도 기기도 필요 없다.
+Swift 92개 + JS 16개 테스트가 몇 초 안에 돈다 — 시뮬레이터도 기기도 필요 없다.
 
 - 트랜스파일러 테스트는 생성된 MSL을 **실제 Metal 컴파일러로** 통과시킨다.
 - 렌더 테스트는 오프스크린 텍스처에 그린 뒤 **픽셀 값을 단언**한다 (삼각형, 유니폼, 인덱스 드로우,
   알파 블렌딩, 컴퓨트 + 리드백, 텍스처 샘플링, 가장자리 클램프 샘플링, 깊이 테스트).
+- 커맨드 스트림의 계약도 단언한다 — `writeTexture`가 같은 배치의 앞선 렌더 패스 **뒤에**
+  실행되는지(큐 순서), 스테이징 풀이 프레임을 거듭해도 자라지 않는지, in-flight 카운터가
+  커밋/완료로 오르내리는지.
 - `arrayLength()`처럼 런타임이 셰이더에 몰래 넘기는 값도 GPU에서 되짚어 **숫자로 단언**한다.
+- JS shim은 node 내장 러너로 검증한다 — base64 코덱을 Node `Buffer`와 대조하고,
+  프레임당 브리지 왕복이 1회인지 목으로 센다.
 
 ```zsh
-swift test
+swift test           # 엔진·트랜스파일러·GPU 렌더
+cd JS && npm test    # JS shim (의존성 없음)
 ```
 
 ## 데모 앱
 
-`Projects/WebGPUDemo`에 Tuist 데모 호스트 앱과 Lynx 번들 **10종**이 들어 있다. 앱을 켜면 씬 목록이 뜨고,
+`Projects/WebGPUDemo`에 Tuist 데모 호스트 앱과 Lynx 번들 **11종**이 들어 있다. 앱을 켜면 씬 목록이 뜨고,
 각 씬은 오프스크린 하네스가 자동 검증하는 기능과 1:1로 대응한다 — 회전 삼각형, 3D 큐브(깊이 테스트),
-입자 4096개(컴퓨트 + 인스턴싱), 텍스처·샘플러, 알파 블렌딩, 컴퓨트 리드백(`mapAsync`),
-파이프라인 상수(`override`), MSL 탈출구, 홀로그래픽 카드(터치 → 3D 자세 → 포일),
-WGSL 호환성(`arrayLength` · 외부 텍스처 · 타입 없는 상수식).
+입자 4096개(컴퓨트 + 인스턴싱), 텍스처·샘플러, **동적 텍스처(CPU 플라스마를 매 프레임 `writeTexture`로)**,
+알파 블렌딩, 컴퓨트 리드백(`mapAsync`), 파이프라인 상수(`override`), MSL 탈출구,
+홀로그래픽 카드(터치 → 3D 자세 → 포일), WGSL 호환성(`arrayLength` · 외부 텍스처 · 타입 없는 상수식).
 전부 60fps로 돌며 Lynx의 `<text>` HUD가 캔버스 위에 합성된다.
 
 ```zsh

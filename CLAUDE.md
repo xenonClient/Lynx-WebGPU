@@ -9,7 +9,8 @@ Lynx-WebGPU — [Lynx](https://lynxjs.org) 렌더 엔진 위에서, Lynx 번들�
 Swift 6.2 / iOS 17.0+ / macOS 14.0+, Lynx는 [xenonClient/Lynx-XCFramework](https://github.com/xenonClient/Lynx-XCFramework) 4.0.0을 SPM `binaryTarget`으로 연동한다.
 
 설계: `docs/ARCHITECTURE.md` · 지원 API: `docs/WEBGPU-API.md` · WGSL 서브셋: `docs/WGSL.md` ·
-Lynx 연동: `docs/LYNX-INTEGRATION.md` · 번들(JS) 작성: `docs/JS-AUTHORING.md` · 테스트: `docs/TESTING.md`
+Lynx 연동: `docs/LYNX-INTEGRATION.md` · 번들(JS) 작성: `docs/JS-AUTHORING.md` ·
+테스트: `docs/TESTING.md` · 로드맵: `docs/ROADMAP.md`
 
 ## Build & Test
 
