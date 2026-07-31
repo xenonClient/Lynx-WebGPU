@@ -61,7 +61,8 @@ const bytes = await buffer.mapAsync(GPUMapMode.READ)   // readBuffer (콜백형 
 (`INDIRECT`/`QUERY_RESOLVE`는 값만 있고 기능은 미지원).
 
 > `writeBuffer`는 스테이징 버퍼 + blit으로 큐에 **순서를 태워** 올라간다. 직접 memcpy 하면
-> 직전 프레임 GPU 작업과 경쟁하기 때문이다. 매 프레임 큰 데이터를 올린다면 JS 쪽에서 링 버퍼를 쓸 것.
+> 직전 프레임 GPU 작업과 경쟁하기 때문이다. 스테이징 버퍼는 네이티브가 풀로 재사용하므로
+> (프레임 완료 시 회수, 총량 상한) 매 프레임 불러도 할당이 쌓이지 않는다.
 
 ### 텍스처 · 샘플러
 

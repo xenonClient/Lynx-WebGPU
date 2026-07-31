@@ -16,6 +16,8 @@ final class WGPUCommandInterpreter {
     private let queue: MTLCommandQueue
     private let registry: WGPUObjectRegistry
     private let surfaceProvider: (String) -> WGPUSurface?
+    /// 업로드 스테이징 버퍼 재사용 풀 (writeBuffer/writeTexture 공용).
+    let stagingPool: WGPUStagingPool
 
     // 실행 중 상태 — execute() 하나의 수명 동안만 유효하다.
     private var commandBuffer: MTLCommandBuffer?
@@ -31,6 +33,8 @@ final class WGPUCommandInterpreter {
     private var bufferSizes = [UInt32](repeating: 0, count: WGSLMetalLimits.maxBindGroupBuffers)
     private var indexBinding: (buffer: MTLBuffer, offset: Int, type: MTLIndexType, stride: Int)?
     private var acquiredDrawables: [(handle: WGPUHandle, drawable: WGPUDrawable)] = []
+    /// 이번 프레임 업로드에 쓴 스테이징 버퍼 — 커맨드 버퍼 완료 시 풀로 돌아간다.
+    private var frameStagingBuffers: [MTLBuffer] = []
     /// 프레임이 끝나면 무효해지는 핸들 (드로어블 텍스처와 그 뷰).
     private var frameScopedHandles: [WGPUHandle] = []
     private var touchedCanvases: [String: WGPUSurface] = [:]
@@ -46,6 +50,7 @@ final class WGPUCommandInterpreter {
         self.queue = queue
         self.registry = registry
         self.surfaceProvider = surfaceProvider
+        self.stagingPool = WGPUStagingPool(device: device)
     }
 
     /// 마지막으로 커밋한 커맨드 버퍼 — `readBuffer`가 GPU 완료를 기다릴 때 쓴다.
@@ -106,9 +111,19 @@ final class WGPUCommandInterpreter {
             for acquired in acquiredDrawables {
                 acquired.drawable.present(with: commandBuffer)
             }
+            // 완료 핸들러는 commit 전에만 붙일 수 있다 (Metal 단언).
+            if !frameStagingBuffers.isEmpty {
+                let buffers = frameStagingBuffers
+                let pool = stagingPool
+                commandBuffer.addCompletedHandler { _ in pool.recycle(buffers) }
+            }
             commandBuffer.commit()
             lastCommittedBuffer = commandBuffer
+        } else if !frameStagingBuffers.isEmpty {
+            // 커밋할 커맨드 버퍼가 없으면 GPU가 이 버퍼들을 참조하지 않는다 — 바로 회수한다.
+            stagingPool.recycle(frameStagingBuffers)
         }
+        frameStagingBuffers.removeAll()
         // 드로어블 텍스처와 그 뷰는 이번 프레임에서만 유효하다 (WebGPU도 같은 규칙).
         for handle in frameScopedHandles {
             registry.remove(handle)
@@ -284,16 +299,10 @@ final class WGPUCommandInterpreter {
         )
     }
 
-    /// 업로드용 shared 스테이징 버퍼를 만들고 데이터를 채운다.
+    /// 풀에서 스테이징 버퍼를 받아 데이터를 채우고, 프레임 완료 시 회수 목록에 올린다.
     private func makeStagingBuffer(_ data: Data, minimumLength: Int = 0) throws -> MTLBuffer {
-        let length = max(data.count, minimumLength, 1)
-        guard let staging = device.makeBuffer(length: length, options: .storageModeShared) else {
-            throw WGPUError.outOfMemory("업로드 staging 버퍼 생성 실패 (\(length)B)")
-        }
-        data.withUnsafeBytes { raw in
-            guard let base = raw.baseAddress else { return }
-            staging.contents().copyMemory(from: base, byteCount: data.count)
-        }
+        let staging = try stagingPool.acquire(data, minimumLength: minimumLength)
+        frameStagingBuffers.append(staging)
         return staging
     }
 

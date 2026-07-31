@@ -177,4 +177,7 @@ public final class LynxWebGPUContext {
     }
 
     public var liveObjectCount: Int { registry.count }
+
+    /// 테스트 관찰용 — 업로드 스테이징 풀.
+    var stagingPool: WGPUStagingPool { interpreter.stagingPool }
 }
