@@ -1,0 +1,10 @@
+{
+  "name": "lynx-webgpu-js",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Lynx-WebGPU JS shim — 테스트는 `npm test` (node:test, 의존성 없음)",
+  "scripts": {
+    "test": "node --expose-gc --test 'tests/*.test.mjs'"
+  }
+}

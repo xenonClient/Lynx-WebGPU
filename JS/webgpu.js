@@ -46,34 +46,89 @@ export const GPUMapMode = { READ: 0x1, WRITE: 0x2 };
 // ---------------------------------------------------------------------------
 
 const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+const BASE64_PAD = 61; // '='
 
+/** 6비트 값 → 문자 코드. */
+const BASE64_CODES = (() => {
+  const codes = new Uint8Array(64);
+  for (let index = 0; index < 64; index += 1) codes[index] = BASE64_ALPHABET.charCodeAt(index);
+  return codes;
+})();
+
+/** 문자 코드 → 6비트 값 (유효하지 않으면 0xff). */
+const BASE64_VALUES = (() => {
+  const values = new Uint8Array(128).fill(0xff);
+  for (let index = 0; index < 64; index += 1) values[BASE64_ALPHABET.charCodeAt(index)] = index;
+  return values;
+})();
+
+// 텍스처 업로드처럼 수십 KB~수 MB가 지나가는 경로다. 문자열 누적(`+=`)과 문자당
+// `indexOf` 스캔은 여기서 바로 병목이 되므로, 룩업 테이블로 문자 코드를 만든 뒤
+// `String.fromCharCode`를 청크 단위로 호출해 O(n)으로 처리한다.
 function encodeBase64(bytes) {
-  let output = '';
-  for (let index = 0; index < bytes.length; index += 3) {
+  const length = bytes.length;
+  const parts = [];
+  const codes = [];
+  let index = 0;
+  const tripleEnd = length - (length % 3);
+  while (index < tripleEnd) {
     const a = bytes[index];
-    const b = index + 1 < bytes.length ? bytes[index + 1] : 0;
-    const c = index + 2 < bytes.length ? bytes[index + 2] : 0;
-    output += BASE64_ALPHABET[a >> 2];
-    output += BASE64_ALPHABET[((a & 0x03) << 4) | (b >> 4)];
-    output += index + 1 < bytes.length ? BASE64_ALPHABET[((b & 0x0f) << 2) | (c >> 6)] : '=';
-    output += index + 2 < bytes.length ? BASE64_ALPHABET[c & 0x3f] : '=';
+    const b = bytes[index + 1];
+    const c = bytes[index + 2];
+    index += 3;
+    codes.push(
+      BASE64_CODES[a >> 2],
+      BASE64_CODES[((a & 0x03) << 4) | (b >> 4)],
+      BASE64_CODES[((b & 0x0f) << 2) | (c >> 6)],
+      BASE64_CODES[c & 0x3f]
+    );
+    // apply의 인자 개수 제한을 넘지 않도록 잘라서 문자열로 바꾼다.
+    if (codes.length >= 4096) {
+      parts.push(String.fromCharCode.apply(null, codes));
+      codes.length = 0;
+    }
   }
-  return output;
+  const remainder = length - index;
+  if (remainder === 1) {
+    const a = bytes[index];
+    codes.push(BASE64_CODES[a >> 2], BASE64_CODES[(a & 0x03) << 4], BASE64_PAD, BASE64_PAD);
+  } else if (remainder === 2) {
+    const a = bytes[index];
+    const b = bytes[index + 1];
+    codes.push(
+      BASE64_CODES[a >> 2],
+      BASE64_CODES[((a & 0x03) << 4) | (b >> 4)],
+      BASE64_CODES[(b & 0x0f) << 2],
+      BASE64_PAD
+    );
+  }
+  if (codes.length > 0) parts.push(String.fromCharCode.apply(null, codes));
+  return parts.join('');
 }
 
 function decodeBase64(text) {
-  const clean = text.replace(/[^A-Za-z0-9+/]/g, '');
-  const bytes = new Uint8Array(Math.floor((clean.length * 3) / 4));
+  const length = text.length;
+  // 유효 문자 수를 먼저 세어 정확한 크기로 할당한다 (패딩·공백·개행은 건너뛴다).
+  let effective = 0;
+  for (let index = 0; index < length; index += 1) {
+    const code = text.charCodeAt(index);
+    if (code < 128 && BASE64_VALUES[code] !== 0xff) effective += 1;
+  }
+  const bytes = new Uint8Array(Math.floor((effective * 3) / 4));
+  let accumulator = 0;
+  let bits = 0;
   let byteIndex = 0;
-  for (let index = 0; index < clean.length; index += 4) {
-    const chunk =
-      (BASE64_ALPHABET.indexOf(clean[index]) << 18) |
-      (BASE64_ALPHABET.indexOf(clean[index + 1]) << 12) |
-      ((index + 2 < clean.length ? BASE64_ALPHABET.indexOf(clean[index + 2]) : 0) << 6) |
-      (index + 3 < clean.length ? BASE64_ALPHABET.indexOf(clean[index + 3]) : 0);
-    if (byteIndex < bytes.length) bytes[byteIndex++] = (chunk >> 16) & 0xff;
-    if (byteIndex < bytes.length) bytes[byteIndex++] = (chunk >> 8) & 0xff;
-    if (byteIndex < bytes.length) bytes[byteIndex++] = chunk & 0xff;
+  for (let index = 0; index < length; index += 1) {
+    const code = text.charCodeAt(index);
+    if (code >= 128) continue;
+    const value = BASE64_VALUES[code];
+    if (value === 0xff) continue;
+    accumulator = (accumulator << 6) | value;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      if (byteIndex < bytes.length) bytes[byteIndex++] = (accumulator >> bits) & 0xff;
+    }
   }
   return bytes;
 }

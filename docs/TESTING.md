@@ -12,7 +12,7 @@ GPU 코드는 "돌려 보고 눈으로 확인"에 기대기 쉽다. 이 저장�
 | Metal 백엔드 | 오프스크린 렌더 후 **픽셀 값 단언** | `RenderHarness` |
 | 커맨드 해석기 | 오류 누적·경로·핸들 수명 계약 | `RenderHarness` |
 | Lynx 브리지 | 컴파일 검증 + 호스트 앱 수동 확인 | `xcodebuild` |
-| JS 클라이언트 | Swift 상수와의 값 일치 | `JSConstantParityTests` |
+| JS 클라이언트 | Swift 상수와의 값 일치 + 동작 검증(코덱·캐시·수명) | `JSConstantParityTests`, `JS/tests` (node:test) |
 
 브리지는 Lynx 런타임이 있어야 의미가 있으므로 단위 테스트 대상이 아니다 —
 로직이 생기면 `LynxWebGPU`로 내리는 것이 원칙이다.
@@ -26,6 +26,16 @@ swift test --filter LynxWebGPUShaderTests       # 트랜스파일러 (+ Metal �
 swift test --filter LynxWebGPUTests             # GPU 렌더 + 해석기
 swift test --filter test_삼각형이_그려지고        # 개별 테스트
 ```
+
+JS 클라이언트(shim) 테스트 — 의존성 없이 node 내장 러너로 돈다.
+`NativeModules.WebGPU`를 목으로 바꿔 커맨드 페이로드·왕복 횟수를 단언한다:
+
+```zsh
+cd JS && npm test        # node --expose-gc --test 'tests/*.test.mjs'
+```
+
+base64 코덱은 Node의 `Buffer` 구현과 대조한다 — 패딩(0~2바이트 꼬리)과
+인코더 청크 경계(3072바이트)를 모두 밟는 길이들로 라운드트립을 검증한다.
 
 Lynx 브리지 컴파일 확인 (iOS 시뮬레이터 고정: iPhone 17 / iOS 26.2):
 
