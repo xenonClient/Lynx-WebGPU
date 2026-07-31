@@ -46,34 +46,89 @@ export const GPUMapMode = { READ: 0x1, WRITE: 0x2 };
 // ---------------------------------------------------------------------------
 
 const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+const BASE64_PAD = 61; // '='
 
+/** 6비트 값 → 문자 코드. */
+const BASE64_CODES = (() => {
+  const codes = new Uint8Array(64);
+  for (let index = 0; index < 64; index += 1) codes[index] = BASE64_ALPHABET.charCodeAt(index);
+  return codes;
+})();
+
+/** 문자 코드 → 6비트 값 (유효하지 않으면 0xff). */
+const BASE64_VALUES = (() => {
+  const values = new Uint8Array(128).fill(0xff);
+  for (let index = 0; index < 64; index += 1) values[BASE64_ALPHABET.charCodeAt(index)] = index;
+  return values;
+})();
+
+// 텍스처 업로드처럼 수십 KB~수 MB가 지나가는 경로다. 문자열 누적(`+=`)과 문자당
+// `indexOf` 스캔은 여기서 바로 병목이 되므로, 룩업 테이블로 문자 코드를 만든 뒤
+// `String.fromCharCode`를 청크 단위로 호출해 O(n)으로 처리한다.
 function encodeBase64(bytes) {
-  let output = '';
-  for (let index = 0; index < bytes.length; index += 3) {
+  const length = bytes.length;
+  const parts = [];
+  const codes = [];
+  let index = 0;
+  const tripleEnd = length - (length % 3);
+  while (index < tripleEnd) {
     const a = bytes[index];
-    const b = index + 1 < bytes.length ? bytes[index + 1] : 0;
-    const c = index + 2 < bytes.length ? bytes[index + 2] : 0;
-    output += BASE64_ALPHABET[a >> 2];
-    output += BASE64_ALPHABET[((a & 0x03) << 4) | (b >> 4)];
-    output += index + 1 < bytes.length ? BASE64_ALPHABET[((b & 0x0f) << 2) | (c >> 6)] : '=';
-    output += index + 2 < bytes.length ? BASE64_ALPHABET[c & 0x3f] : '=';
+    const b = bytes[index + 1];
+    const c = bytes[index + 2];
+    index += 3;
+    codes.push(
+      BASE64_CODES[a >> 2],
+      BASE64_CODES[((a & 0x03) << 4) | (b >> 4)],
+      BASE64_CODES[((b & 0x0f) << 2) | (c >> 6)],
+      BASE64_CODES[c & 0x3f]
+    );
+    // apply의 인자 개수 제한을 넘지 않도록 잘라서 문자열로 바꾼다.
+    if (codes.length >= 4096) {
+      parts.push(String.fromCharCode.apply(null, codes));
+      codes.length = 0;
+    }
   }
-  return output;
+  const remainder = length - index;
+  if (remainder === 1) {
+    const a = bytes[index];
+    codes.push(BASE64_CODES[a >> 2], BASE64_CODES[(a & 0x03) << 4], BASE64_PAD, BASE64_PAD);
+  } else if (remainder === 2) {
+    const a = bytes[index];
+    const b = bytes[index + 1];
+    codes.push(
+      BASE64_CODES[a >> 2],
+      BASE64_CODES[((a & 0x03) << 4) | (b >> 4)],
+      BASE64_CODES[(b & 0x0f) << 2],
+      BASE64_PAD
+    );
+  }
+  if (codes.length > 0) parts.push(String.fromCharCode.apply(null, codes));
+  return parts.join('');
 }
 
 function decodeBase64(text) {
-  const clean = text.replace(/[^A-Za-z0-9+/]/g, '');
-  const bytes = new Uint8Array(Math.floor((clean.length * 3) / 4));
+  const length = text.length;
+  // 유효 문자 수를 먼저 세어 정확한 크기로 할당한다 (패딩·공백·개행은 건너뛴다).
+  let effective = 0;
+  for (let index = 0; index < length; index += 1) {
+    const code = text.charCodeAt(index);
+    if (code < 128 && BASE64_VALUES[code] !== 0xff) effective += 1;
+  }
+  const bytes = new Uint8Array(Math.floor((effective * 3) / 4));
+  let accumulator = 0;
+  let bits = 0;
   let byteIndex = 0;
-  for (let index = 0; index < clean.length; index += 4) {
-    const chunk =
-      (BASE64_ALPHABET.indexOf(clean[index]) << 18) |
-      (BASE64_ALPHABET.indexOf(clean[index + 1]) << 12) |
-      ((index + 2 < clean.length ? BASE64_ALPHABET.indexOf(clean[index + 2]) : 0) << 6) |
-      (index + 3 < clean.length ? BASE64_ALPHABET.indexOf(clean[index + 3]) : 0);
-    if (byteIndex < bytes.length) bytes[byteIndex++] = (chunk >> 16) & 0xff;
-    if (byteIndex < bytes.length) bytes[byteIndex++] = (chunk >> 8) & 0xff;
-    if (byteIndex < bytes.length) bytes[byteIndex++] = chunk & 0xff;
+  for (let index = 0; index < length; index += 1) {
+    const code = text.charCodeAt(index);
+    if (code >= 128) continue;
+    const value = BASE64_VALUES[code];
+    if (value === 0xff) continue;
+    accumulator = (accumulator << 6) | value;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      if (byteIndex < bytes.length) bytes[byteIndex++] = (accumulator >> bits) & 0xff;
+    }
   }
   return bytes;
 }
@@ -115,6 +170,19 @@ function nativeModule() {
 }
 
 // ---------------------------------------------------------------------------
+// 캔버스 크기 캐시
+// ---------------------------------------------------------------------------
+
+/**
+ * canvasId → `{width, height}` (픽셀).
+ *
+ * `execute` 응답의 `canvases`가 **제출할 때마다** 갱신하므로, 프레임 안에서 크기를 읽어도
+ * 동기 네이티브 왕복이 생기지 않는다. 동기 조회(`canvasInfo`)는 캐시가 비어 있을 때
+ * (= `configure` 직후 첫 조회) 한 번만 일어난다.
+ */
+const canvasSizeCache = new Map();
+
+// ---------------------------------------------------------------------------
 // 커맨드 레코더
 // ---------------------------------------------------------------------------
 
@@ -140,6 +208,14 @@ class Recorder {
     const commands = this.pending;
     this.pending = [];
     const result = nativeModule().execute({ commands }) || {};
+    if (result.canvases) {
+      for (const canvasId in result.canvases) {
+        const info = result.canvases[canvasId];
+        if (info && typeof info.width === 'number') {
+          canvasSizeCache.set(canvasId, { width: info.width, height: info.height });
+        }
+      }
+    }
     if (result.ok === false) this.report(result.errors || []);
     return result;
   }
@@ -157,16 +233,38 @@ class Recorder {
 // 리소스 객체
 // ---------------------------------------------------------------------------
 
+/**
+ * GC 연동 자동 해제 — 엔진이 FinalizationRegistry를 지원할 때만.
+ *
+ * 핸들은 정수라 JS GC가 네이티브 객체의 수명을 모른다. 래퍼가 GC로 사라지면 destroy 명령을
+ * 다음 제출에 끼워 넣어 네이티브 쪽도 따라 해제한다. 사용 명령은 래퍼가 살아 있는 동안에만
+ * 기록될 수 있으므로, 뒤늦게 붙는 destroy가 앞선 사용보다 먼저 실행될 일은 없다.
+ *
+ * PrimJS처럼 지원이 없는 엔진에서는 조용히 꺼진다 — **명시적 destroy()가 여전히 정답**이고,
+ * 이 장치는 놓친 것을 주워 담는 안전망이다 (docs/JS-AUTHORING.md §8).
+ */
+const autoReleasePool =
+  typeof FinalizationRegistry === 'function'
+    ? new FinalizationRegistry((held) => {
+        held.recorder.push({ op: 'destroy', id: held.id });
+      })
+    : null;
+
 class GPUObjectBase {
-  constructor(device, id, label) {
+  constructor(device, id, label, frameScoped) {
     this._device = device;
     this._recorder = device ? device._recorder : null;
     this.id = id;
     this.label = label || '';
+    // 프레임 스코프 핸들(스왑체인 텍스처와 그 뷰)은 네이티브가 프레임 끝에 회수한다 — 등록 제외.
+    if (autoReleasePool && this._recorder && !frameScoped) {
+      autoReleasePool.register(this, { recorder: this._recorder, id }, this);
+    }
   }
 
   destroy() {
     if (!this._recorder) return;
+    if (autoReleasePool) autoReleasePool.unregister(this);
     this._recorder.push({ op: 'destroy', id: this.id });
   }
 }
@@ -222,7 +320,8 @@ class GPUBuffer extends GPUObjectBase {
 
 class GPUTexture extends GPUObjectBase {
   constructor(device, id, descriptor) {
-    super(device, id, descriptor && descriptor.label);
+    super(device, id, descriptor && descriptor.label, descriptor && descriptor.frameScoped);
+    this._frameScoped = !!(descriptor && descriptor.frameScoped);
     this.width = descriptor && descriptor.size ? descriptor.size.width || descriptor.size[0] : 0;
     this.height = descriptor && descriptor.size ? descriptor.size.height || descriptor.size[1] || 1 : 0;
     this.format = descriptor && descriptor.format;
@@ -231,7 +330,8 @@ class GPUTexture extends GPUObjectBase {
   createView(descriptor) {
     const id = this._recorder.allocate();
     this._recorder.push({ op: 'createTextureView', id, texture: this.id, ...(descriptor || {}) });
-    return new GPUTextureView(this._device, id, descriptor);
+    // 스왑체인 텍스처의 뷰도 프레임 스코프다 — 네이티브가 프레임 끝에 함께 회수한다.
+    return new GPUTextureView(this._device, id, descriptor && descriptor.label, this._frameScoped);
   }
 }
 
@@ -570,6 +670,7 @@ class GPUDevice {
   /** 모든 GPU 객체를 버린다 (페이지 이탈 시 호출). */
   destroy() {
     this._recorder.pending = [];
+    canvasSizeCache.clear();
     nativeModule().reset();
   }
 }
@@ -605,6 +706,8 @@ class GPUCanvasContext {
       usage: configuration.usage,
       alphaMode: configuration.alphaMode,
     });
+    // 크기를 미리 캐시한다 — 이후에는 제출 응답이 갱신하므로 동기 조회는 사실상 이 1회뿐이다.
+    this._fetchSize();
   }
 
   /** 이번 프레임의 스왑체인 텍스처. 프레임이 끝나면 무효해진다 (브라우저와 같은 규칙). */
@@ -612,17 +715,36 @@ class GPUCanvasContext {
     if (!this._device) throw new Error('configure()를 먼저 호출해야 한다');
     const id = this._device._recorder.allocate();
     this._device._recorder.push({ op: 'getCurrentTexture', id, canvas: this.canvasId });
-    const info = this.getSize();
+    const info = canvasSizeCache.get(this.canvasId) || this._fetchSize();
     return new GPUTexture(this._device, id, {
       size: { width: info.width, height: info.height },
       format: this.format,
+      frameScoped: true,   // 네이티브가 프레임 끝에 회수 — GC 자동 해제 대상이 아니다
     });
   }
 
-  /** 캔버스의 현재 픽셀 크기. `<webgpu-canvas>`의 `bindcanvasresize`로도 받을 수 있다. */
+  /**
+   * 캔버스의 현재 픽셀 크기.
+   *
+   * 제출(`submit`) 응답으로 갱신되는 캐시를 읽으므로 프레임 안에서 불러도 왕복이 없다.
+   * 리사이즈 직후 아직 제출이 없었다면 한 프레임 이전 값일 수 있다 — 즉시성이 필요하면
+   * `<webgpu-canvas>`의 `bindcanvasresize` 이벤트를 쓸 것.
+   */
   getSize() {
+    const cached = canvasSizeCache.get(this.canvasId);
+    if (cached) return { width: cached.width, height: cached.height };
+    return this._fetchSize();
+  }
+
+  /** 동기 네이티브 조회 — 캐시가 비어 있을 때만 쓴다. */
+  _fetchSize() {
     const info = nativeModule().canvasInfo({ canvas: this.canvasId }) || {};
-    return { width: info.width || 0, height: info.height || 0 };
+    const size = { width: info.width || 0, height: info.height || 0 };
+    // 표면이 아직 등록 전이면(크기 0) 캐시하지 않는다 — 다음 조회가 다시 시도한다.
+    if (info.ok !== false && size.width > 0 && size.height > 0) {
+      canvasSizeCache.set(this.canvasId, { width: size.width, height: size.height });
+    }
+    return size;
   }
 }
 

@@ -131,7 +131,15 @@ export declare class GPUQueue {
     dataLayout: { bytesPerRow: number; rowsPerImage?: number },
     size: GPUExtent3D
   ): void;
-  submit(commandBuffers: GPUCommandBuffer[]): { ok: boolean; errors?: WGPUError[] };
+  submit(commandBuffers: GPUCommandBuffer[]): {
+    ok: boolean;
+    commandCount?: number;
+    errors?: WGPUError[];
+    /** 이번 제출이 건드린 캔버스의 픽셀 크기 — `context.getSize()` 캐시가 이걸로 갱신된다. */
+    canvases?: Record<string, { width: number; height: number }>;
+    /** 네이티브에 살아 있는 GPU 객체 수 — 프레임마다 늘면 destroy 누락이다 (docs/JS-AUTHORING.md §8). */
+    objects?: number;
+  };
   onSubmittedWorkDone(): Promise<void>;
 }
 

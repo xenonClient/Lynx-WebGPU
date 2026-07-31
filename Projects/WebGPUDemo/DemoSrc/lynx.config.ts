@@ -10,6 +10,7 @@ export default defineConfig({
       cube: './src/cube/index.tsx',
       particles: './src/particles/index.tsx',
       texture: './src/texture/index.tsx',
+      dynamic: './src/dynamic/index.tsx',
       blending: './src/blending/index.tsx',
       readback: './src/readback/index.tsx',
       constants: './src/constants/index.tsx',

@@ -9,6 +9,7 @@ enum DemoScene: String, CaseIterable {
     case cube
     case particles
     case texture
+    case dynamic
     case blending
     case readback
     case constants
@@ -29,6 +30,7 @@ enum DemoScene: String, CaseIterable {
         case .cube: return "3D 큐브"
         case .particles: return "입자 4096개"
         case .texture: return "텍스처 · 샘플러"
+        case .dynamic: return "동적 텍스처"
         case .blending: return "알파 블렌딩"
         case .readback: return "컴퓨트 · 리드백"
         case .constants: return "파이프라인 상수"
@@ -45,6 +47,7 @@ enum DemoScene: String, CaseIterable {
         case .cube: return "인덱스 드로우 + 깊이 테스트 + 백페이스 컬링 + MVP"
         case .particles: return "컴퓨트 셰이더 + 스토리지 버퍼 + 인스턴싱 + 가산 블렌딩"
         case .texture: return "createTexture + writeTexture + 샘플러 + textureSample"
+        case .dynamic: return "CPU 플라스마를 매 프레임 writeTexture로 — 큐 순서 업로드 검증"
         case .blending: return "미리 곱해진 알파 합성 + 겹치는 반투명 도형"
         case .readback: return "컴퓨트 결과를 mapAsync로 CPU에서 읽어 표시"
         case .constants: return "같은 셰이더를 override 값만 바꿔 여러 파이프라인으로"

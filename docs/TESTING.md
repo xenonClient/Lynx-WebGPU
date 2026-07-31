@@ -161,6 +161,7 @@ LYNXWEBGPU_WGSL_CORPUS=… LYNXWEBGPU_WGSL_DUMP=/tmp/msl swift test --filter Sam
 | `cube` | 인덱스 드로우 + 깊이 테스트 + 백페이스 컬링 + MVP |
 | `particles` | 컴퓨트 + 스토리지 버퍼 + 인스턴싱 + 가산 블렌딩 |
 | `texture` | createTexture + writeTexture + repeat 샘플러 + textureSample |
+| `dynamic` | CPU 플라스마를 **매 프레임 writeTexture**로 — 큐 순서 업로드 + 스테이징 풀 + base64 인코딩 처리량. HUD의 live 객체 수(`objects`)가 일정해야 정상 |
 | `blending` | 미리 곱해진 알파 합성 + discard + 유니폼 구조체 배열 |
 | `readback` | 컴퓨트 결과를 `mapAsync`로 CPU가 읽어 화면에 표시 |
 | `constants` | 같은 셰이더 모듈 + 다른 `override` 값 → 파이프라인 3개 |
