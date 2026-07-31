@@ -38,10 +38,12 @@ base64 코덱은 Node의 `Buffer` 구현과 대조한다 — 패딩(0~2바이트
 인코더 청크 경계(3072바이트)를 모두 밟는 길이들로 라운드트립을 검증한다.
 
 Lynx 브리지 컴파일 확인 — SPM 크로스 빌드를 쓴다 (루트의 Tuist 워크스페이스가
-`xcodebuild`의 패키지 스킴 탐색을 가리므로):
+`xcodebuild`의 패키지 스킴 탐색을 가리므로). `--scratch-path`를 꼭 준다 —
+기본 `.build`에 iOS 산출물이 섞이면 이후 macOS `swift test`가 깨진다:
 
 ```zsh
-swift build --sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" --triple arm64-apple-ios17.0-simulator
+swift build --scratch-path .build-ios --sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
+  --triple arm64-apple-ios17.0-simulator
 ```
 
 ## 3. Metal 컴파일러 하네스

@@ -26,8 +26,11 @@ cd JS && npm test
 # iOS 컴파일 확인 — Lynx 브리지 포함 (SPM 크로스 빌드)
 # 루트에 Tuist 워크스페이스(LynxWebGPUDemo.xcworkspace)가 있으면 xcodebuild가 패키지 스킴
 # (LynxWebGPUBridge)을 못 찾는다. swift build 크로스 빌드는 워크스페이스와 무관하게 동작한다.
-swift build --sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" --triple arm64-apple-ios17.0-simulator
-swift build --sdk "$(xcrun --sdk iphoneos --show-sdk-path)" --triple arm64-apple-ios17.0   # 실기기
+# --scratch-path 필수: 기본 .build를 같이 쓰면 이후 macOS `swift test`가 깨진다.
+swift build --scratch-path .build-ios --sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
+  --triple arm64-apple-ios17.0-simulator
+swift build --scratch-path .build-ios-device --sdk "$(xcrun --sdk iphoneos --show-sdk-path)" \
+  --triple arm64-apple-ios17.0   # 실기기
 
 # 데모 호스트 앱 (Tuist) — 눈으로 확인할 때만 필요하다
 mise exec -- tuist generate --no-open

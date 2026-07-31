@@ -1,5 +1,7 @@
 # SwiftPM
 .build/
+.build-ios/
+.build-ios-device/
 .swiftpm/
 Package.resolved.bak
 
