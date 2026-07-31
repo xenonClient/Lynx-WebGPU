@@ -30,11 +30,13 @@ const format  = gpu.getPreferredCanvasFormat()      // "bgra8unorm"
 context.configure({ device, format, alphaMode: 'opaque' })   // configureCanvas
 const texture = context.getCurrentTexture()                  // getCurrentTexture
 const view = texture.createView()                            // createTextureView
-const { width, height } = context.getSize()                  // canvasInfo (동기)
+const { width, height } = context.getSize()                  // 캐시 (execute 응답으로 갱신)
 ```
 
 - `configure`는 `CAMetalLayer` 설정을 메인 스레드에 **비동기**로 반영한다. `getPreferredCanvasFormat()`
   (= `bgra8unorm`)을 쓰면 엘리먼트 기본값과 같아 첫 프레임부터 일치한다.
+- `getSize()`는 **제출 응답의 `canvases`로 갱신되는 캐시**를 읽는다. 동기 네이티브 조회는
+  캐시가 빌 때(= `configure` 직후) 한 번뿐이므로 프레임 안에서 불러도 왕복이 없다.
 - `getCurrentTexture()`가 돌려준 텍스처와 그 뷰는 **그 프레임 안에서만** 유효하다.
 - present는 자동이다 — 배치가 끝날 때 획득한 드로어블이 화면에 올라간다.
 

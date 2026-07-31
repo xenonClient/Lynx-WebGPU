@@ -46,7 +46,7 @@ context.configure({ device, format })
 | 프레임 루프 | `requestAnimationFrame` | `startFrameLoop(handler)` (§4) |
 | 버퍼 읽기 | `mapAsync` + `getMappedRange` | `await buffer.mapAsync()` 가 ArrayBuffer를 바로 돌려준다 |
 | 오류 | `pushErrorScope` / `uncapturederror` | `device.onError()` + `submit()` 반환의 `errors` |
-| 캔버스 크기 | `canvas.width/height` | `context.getSize()` 또는 `bindcanvasresize` |
+| 캔버스 크기 | `canvas.width/height` | `context.getSize()` (제출 응답으로 캐시 갱신) 또는 `bindcanvasresize` |
 | 미지원 기능 | — | `docs/WEBGPU-API.md` §8 |
 
 셰이더(WGSL)는 `docs/WGSL.md`의 서브셋 안이면 그대로 옮겨진다.
@@ -76,13 +76,15 @@ ReactLynx라면 `useEffect`의 정리 함수에서 부를 것.
 
 | 프레임 안에서 피할 것 | 이유 | 대안 |
 |---|---|---|
-| `context.getSize()` | 동기 네이티브 호출 | `bindcanvasresize`로 받아 캐시 |
 | `buffer.mapAsync()` | GPU 완료를 기다린다 | 결과가 필요한 프레임에만 |
 | `gpu.requestAdapter()` | 동기 네이티브 호출 | 초기화에서 1회 |
 | `device.createRenderPipeline()` | 셰이더 컴파일이 붙는다 | 초기화에서 1회 |
 
-반대로 **얼마든지 해도 되는 것**: `setPipeline`, `setBindGroup`, `draw`, `writeBuffer` —
-전부 JS 배열에 push만 하고 submit에서 한 번에 나간다.
+반대로 **얼마든지 해도 되는 것**: `setPipeline`, `setBindGroup`, `draw`, `writeBuffer`,
+그리고 `context.getSize()`/`getCurrentTexture()` — 앞의 넷은 JS 배열에 push만 하고
+submit에서 한 번에 나가고, 크기는 **제출 응답으로 갱신되는 캐시**를 읽는다
+(동기 조회는 `configure` 시점 1회뿐이다). 리사이즈는 다음 제출 응답에 반영되므로
+한 프레임 늦을 수 있다 — 즉시성이 필요하면 `bindcanvasresize`를 쓴다.
 
 큰 데이터를 매 프레임 올린다면 base64 인코딩 비용이 붙는다. 유니폼(수십~수백 바이트)은 문제없지만
 매 프레임 수 MB를 올린다면 스토리지 버퍼 + 컴퓨트 셰이더로 GPU 안에서 갱신하는 편이 낫다.

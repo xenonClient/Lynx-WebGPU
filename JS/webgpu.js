@@ -170,6 +170,19 @@ function nativeModule() {
 }
 
 // ---------------------------------------------------------------------------
+// 캔버스 크기 캐시
+// ---------------------------------------------------------------------------
+
+/**
+ * canvasId → `{width, height}` (픽셀).
+ *
+ * `execute` 응답의 `canvases`가 **제출할 때마다** 갱신하므로, 프레임 안에서 크기를 읽어도
+ * 동기 네이티브 왕복이 생기지 않는다. 동기 조회(`canvasInfo`)는 캐시가 비어 있을 때
+ * (= `configure` 직후 첫 조회) 한 번만 일어난다.
+ */
+const canvasSizeCache = new Map();
+
+// ---------------------------------------------------------------------------
 // 커맨드 레코더
 // ---------------------------------------------------------------------------
 
@@ -195,6 +208,14 @@ class Recorder {
     const commands = this.pending;
     this.pending = [];
     const result = nativeModule().execute({ commands }) || {};
+    if (result.canvases) {
+      for (const canvasId in result.canvases) {
+        const info = result.canvases[canvasId];
+        if (info && typeof info.width === 'number') {
+          canvasSizeCache.set(canvasId, { width: info.width, height: info.height });
+        }
+      }
+    }
     if (result.ok === false) this.report(result.errors || []);
     return result;
   }
@@ -625,6 +646,7 @@ class GPUDevice {
   /** 모든 GPU 객체를 버린다 (페이지 이탈 시 호출). */
   destroy() {
     this._recorder.pending = [];
+    canvasSizeCache.clear();
     nativeModule().reset();
   }
 }
@@ -660,6 +682,8 @@ class GPUCanvasContext {
       usage: configuration.usage,
       alphaMode: configuration.alphaMode,
     });
+    // 크기를 미리 캐시한다 — 이후에는 제출 응답이 갱신하므로 동기 조회는 사실상 이 1회뿐이다.
+    this._fetchSize();
   }
 
   /** 이번 프레임의 스왑체인 텍스처. 프레임이 끝나면 무효해진다 (브라우저와 같은 규칙). */
@@ -667,17 +691,35 @@ class GPUCanvasContext {
     if (!this._device) throw new Error('configure()를 먼저 호출해야 한다');
     const id = this._device._recorder.allocate();
     this._device._recorder.push({ op: 'getCurrentTexture', id, canvas: this.canvasId });
-    const info = this.getSize();
+    const info = canvasSizeCache.get(this.canvasId) || this._fetchSize();
     return new GPUTexture(this._device, id, {
       size: { width: info.width, height: info.height },
       format: this.format,
     });
   }
 
-  /** 캔버스의 현재 픽셀 크기. `<webgpu-canvas>`의 `bindcanvasresize`로도 받을 수 있다. */
+  /**
+   * 캔버스의 현재 픽셀 크기.
+   *
+   * 제출(`submit`) 응답으로 갱신되는 캐시를 읽으므로 프레임 안에서 불러도 왕복이 없다.
+   * 리사이즈 직후 아직 제출이 없었다면 한 프레임 이전 값일 수 있다 — 즉시성이 필요하면
+   * `<webgpu-canvas>`의 `bindcanvasresize` 이벤트를 쓸 것.
+   */
   getSize() {
+    const cached = canvasSizeCache.get(this.canvasId);
+    if (cached) return { width: cached.width, height: cached.height };
+    return this._fetchSize();
+  }
+
+  /** 동기 네이티브 조회 — 캐시가 비어 있을 때만 쓴다. */
+  _fetchSize() {
     const info = nativeModule().canvasInfo({ canvas: this.canvasId }) || {};
-    return { width: info.width || 0, height: info.height || 0 };
+    const size = { width: info.width || 0, height: info.height || 0 };
+    // 표면이 아직 등록 전이면(크기 0) 캐시하지 않는다 — 다음 조회가 다시 시도한다.
+    if (info.ok !== false && size.width > 0 && size.height > 0) {
+      canvasSizeCache.set(this.canvasId, { width: size.width, height: size.height });
+    }
+    return size;
   }
 }
 
