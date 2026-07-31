@@ -131,6 +131,17 @@ final class CommandInterpreterTests: XCTestCase {
         XCTAssertTrue(((errors(result).first?["message"] as? String) ?? "").contains("범위 초과"))
     }
 
+    func test_실행_응답에_live_객체_수가_실린다() {
+        let result = harness.executeExpectingSuccess([
+            ["op": "createBuffer", "id": 1, "size": 16, "usage": TestUsage.uniform],
+            ["op": "createBuffer", "id": 2, "size": 16, "usage": TestUsage.uniform],
+        ])
+        XCTAssertEqual(result["objects"] as? Int, 2, "destroy 누락 감시용 카운트")
+
+        let afterDestroy = harness.executeExpectingSuccess([["op": "destroy", "id": 1]])
+        XCTAssertEqual(afterDestroy["objects"] as? Int, 1)
+    }
+
     func test_reset은_모든_객체를_버린다() {
         harness.executeExpectingSuccess([
             ["op": "createBuffer", "id": 1, "size": 16, "usage": TestUsage.uniform],

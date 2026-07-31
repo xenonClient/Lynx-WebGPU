@@ -18,15 +18,37 @@ public struct WGPUHandle: Hashable, CustomStringConvertible, Sendable {
 /// 커맨드 해석은 JS 스레드에서, 리소스 해제·캔버스 리사이즈는 메인 스레드에서 일어날 수 있으므로
 /// 모든 접근을 락으로 감싼다. 락 구간에서는 딕셔너리 조작만 하고 GPU 작업은 하지 않는다.
 public final class WGPUObjectRegistry {
+    /// 이 개수를 넘으면 경고를 남기기 시작한다 (이후 두 배가 될 때마다 반복).
+    /// 핸들은 정수라 JS GC가 네이티브 수명을 모른다 — 매 프레임 createView/createBindGroup을
+    /// 만들고 destroy를 빼먹는 흔한 웹 관용구가 여기서 무한히 쌓인다.
+    static let growthWarningFloor = 4096
+
     private var storage: [WGPUHandle: AnyObject] = [:]
+    private var warnedThreshold = 0
     private let lock = NSLock()
 
     public init() {}
 
     public func insert(_ object: AnyObject, at handle: WGPUHandle) {
         lock.lock()
-        defer { lock.unlock() }
         storage[handle] = object
+        var crossed: Int?
+        let threshold = warnedThreshold == 0 ? Self.growthWarningFloor : warnedThreshold * 2
+        if storage.count >= threshold {
+            warnedThreshold = threshold
+            crossed = threshold
+        }
+        lock.unlock()
+
+        if let crossed {
+            WGPULog.registry.warning(
+                """
+                live GPU 객체가 \(crossed)개를 넘었다 — destroy() 누락 가능성. \
+                매 프레임 createView/createBindGroup을 만들고 있다면 초기화 때 한 번만 만들거나 \
+                프레임 끝에 destroy() 할 것 (JS GC는 정수 핸들의 네이티브 수명을 모른다).
+                """
+            )
+        }
     }
 
     public func contains(_ handle: WGPUHandle) -> Bool {
@@ -46,6 +68,14 @@ public final class WGPUObjectRegistry {
         lock.lock()
         defer { lock.unlock() }
         storage.removeAll()
+        warnedThreshold = 0
+    }
+
+    /// 테스트 관찰용 — 마지막으로 경고를 남긴 임계값 (0이면 아직 없음).
+    var lastWarnedThreshold: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return warnedThreshold
     }
 
     public var count: Int {

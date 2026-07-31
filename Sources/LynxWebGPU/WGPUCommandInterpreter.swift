@@ -77,7 +77,12 @@ final class WGPUCommandInterpreter {
 
         finish()
 
-        var result: [String: Any] = ["ok": errors.isEmpty, "commandCount": commands.count]
+        // objects: live 네이티브 객체 수 — JS가 destroy 누락(레지스트리 증식)을 감시할 수 있게.
+        var result: [String: Any] = [
+            "ok": errors.isEmpty,
+            "commandCount": commands.count,
+            "objects": registry.count,
+        ]
         if !errors.isEmpty {
             result["errors"] = errors.map(\.payload)
         }

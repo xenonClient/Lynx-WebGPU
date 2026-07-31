@@ -211,7 +211,9 @@ device.queue.submit([encoder.finish()])   // ← 여기서 한 번에 네이티�
 
 ## 7. 오류 처리
 
-`queue.submit()`은 `{ ok, errors, canvases }`를 돌려준다. 오류는 실행을 멈추지 않고 누적된다.
+`queue.submit()`은 `{ ok, errors, canvases, objects }`를 돌려준다. 오류는 실행을 멈추지 않고
+누적된다. `objects`는 네이티브에 살아 있는 GPU 객체 수 — 프레임마다 늘고 있다면 어딘가에서
+`destroy()`를 빼먹은 것이다 (`docs/JS-AUTHORING.md` §8).
 
 ```js
 device.onError((error, text) => console.error(text))

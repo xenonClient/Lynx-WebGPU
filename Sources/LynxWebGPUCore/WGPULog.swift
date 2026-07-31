@@ -16,4 +16,5 @@ public enum WGPULog {
     public static let shader = logger(category: "Shader")
     public static let bridge = logger(category: "Bridge")
     public static let canvas = logger(category: "Canvas")
+    public static let registry = logger(category: "Registry")
 }

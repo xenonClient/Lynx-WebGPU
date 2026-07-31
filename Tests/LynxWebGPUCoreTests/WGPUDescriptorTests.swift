@@ -148,4 +148,31 @@ final class WGPUObjectRegistryTests: XCTestCase {
         XCTAssertFalse(registry.contains(WGPUHandle(3)))
         XCTAssertEqual(registry.count, 0)
     }
+
+    func test_객체가_임계값을_넘으면_경고하고_임계는_두배씩_올라간다() {
+        let registry = WGPUObjectRegistry()
+        let floor = WGPUObjectRegistry.growthWarningFloor
+        XCTAssertEqual(registry.lastWarnedThreshold, 0, "임계 아래에서는 경고하지 않는다")
+
+        for index in 0..<floor {
+            registry.insert(Dummy(), at: WGPUHandle(index))
+        }
+        XCTAssertEqual(registry.lastWarnedThreshold, floor)
+
+        for index in floor..<(floor * 2) {
+            registry.insert(Dummy(), at: WGPUHandle(index))
+        }
+        XCTAssertEqual(registry.lastWarnedThreshold, floor * 2, "같은 임계로 반복 경고하지 않는다")
+    }
+
+    func test_removeAll은_경고_임계도_리셋한다() {
+        let registry = WGPUObjectRegistry()
+        for index in 0..<WGPUObjectRegistry.growthWarningFloor {
+            registry.insert(Dummy(), at: WGPUHandle(index))
+        }
+        XCTAssertGreaterThan(registry.lastWarnedThreshold, 0)
+
+        registry.removeAll()
+        XCTAssertEqual(registry.lastWarnedThreshold, 0, "새 페이지는 깨끗한 상태에서 시작한다")
+    }
 }

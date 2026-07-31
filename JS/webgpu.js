@@ -233,16 +233,38 @@ class Recorder {
 // 리소스 객체
 // ---------------------------------------------------------------------------
 
+/**
+ * GC 연동 자동 해제 — 엔진이 FinalizationRegistry를 지원할 때만.
+ *
+ * 핸들은 정수라 JS GC가 네이티브 객체의 수명을 모른다. 래퍼가 GC로 사라지면 destroy 명령을
+ * 다음 제출에 끼워 넣어 네이티브 쪽도 따라 해제한다. 사용 명령은 래퍼가 살아 있는 동안에만
+ * 기록될 수 있으므로, 뒤늦게 붙는 destroy가 앞선 사용보다 먼저 실행될 일은 없다.
+ *
+ * PrimJS처럼 지원이 없는 엔진에서는 조용히 꺼진다 — **명시적 destroy()가 여전히 정답**이고,
+ * 이 장치는 놓친 것을 주워 담는 안전망이다 (docs/JS-AUTHORING.md §8).
+ */
+const autoReleasePool =
+  typeof FinalizationRegistry === 'function'
+    ? new FinalizationRegistry((held) => {
+        held.recorder.push({ op: 'destroy', id: held.id });
+      })
+    : null;
+
 class GPUObjectBase {
-  constructor(device, id, label) {
+  constructor(device, id, label, frameScoped) {
     this._device = device;
     this._recorder = device ? device._recorder : null;
     this.id = id;
     this.label = label || '';
+    // 프레임 스코프 핸들(스왑체인 텍스처와 그 뷰)은 네이티브가 프레임 끝에 회수한다 — 등록 제외.
+    if (autoReleasePool && this._recorder && !frameScoped) {
+      autoReleasePool.register(this, { recorder: this._recorder, id }, this);
+    }
   }
 
   destroy() {
     if (!this._recorder) return;
+    if (autoReleasePool) autoReleasePool.unregister(this);
     this._recorder.push({ op: 'destroy', id: this.id });
   }
 }
@@ -298,7 +320,8 @@ class GPUBuffer extends GPUObjectBase {
 
 class GPUTexture extends GPUObjectBase {
   constructor(device, id, descriptor) {
-    super(device, id, descriptor && descriptor.label);
+    super(device, id, descriptor && descriptor.label, descriptor && descriptor.frameScoped);
+    this._frameScoped = !!(descriptor && descriptor.frameScoped);
     this.width = descriptor && descriptor.size ? descriptor.size.width || descriptor.size[0] : 0;
     this.height = descriptor && descriptor.size ? descriptor.size.height || descriptor.size[1] || 1 : 0;
     this.format = descriptor && descriptor.format;
@@ -307,7 +330,8 @@ class GPUTexture extends GPUObjectBase {
   createView(descriptor) {
     const id = this._recorder.allocate();
     this._recorder.push({ op: 'createTextureView', id, texture: this.id, ...(descriptor || {}) });
-    return new GPUTextureView(this._device, id, descriptor);
+    // 스왑체인 텍스처의 뷰도 프레임 스코프다 — 네이티브가 프레임 끝에 함께 회수한다.
+    return new GPUTextureView(this._device, id, descriptor && descriptor.label, this._frameScoped);
   }
 }
 
@@ -695,6 +719,7 @@ class GPUCanvasContext {
     return new GPUTexture(this._device, id, {
       size: { width: info.width, height: info.height },
       format: this.format,
+      frameScoped: true,   // 네이티브가 프레임 끝에 회수 — GC 자동 해제 대상이 아니다
     });
   }
 
