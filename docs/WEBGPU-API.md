@@ -75,6 +75,11 @@ device.queue.writeTexture({ texture }, pixels, { bytesPerRow: 256 * 4 }, { width
 const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' })   // createSampler
 ```
 
+> `writeTexture`도 `writeBuffer`처럼 스테이징 + blit으로 큐에 **순서를 태워** 올라간다 —
+> 호출마다 GPU 완주를 기다리지 않으므로 동적 텍스처를 매 프레임 갱신할 수 있고, 같은 배치에서
+> 앞선 렌더 패스가 그린 내용과의 순서도 스트림 그대로 보존된다. 배열 텍스처는
+> `depthOrArrayLayers`만큼 슬라이스별로 복사된다.
+
 지원 포맷: 8/16/32비트 컬러 전 계열(`r8unorm` … `rgba32float`), `bgra8unorm(-srgb)`, `rgb10a2unorm`,
 `rg11b10ufloat`, 깊이/스텐실(`depth16unorm` `depth24plus` `depth32float` `stencil8` + `-stencil8` 조합).
 **블록 압축(BC/ETC/ASTC)은 미지원.**

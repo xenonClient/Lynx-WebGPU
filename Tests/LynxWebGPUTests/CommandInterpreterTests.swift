@@ -142,6 +142,77 @@ final class CommandInterpreterTests: XCTestCase {
         XCTAssertEqual(harness.context.liveObjectCount, 0)
     }
 
+    // MARK: - writeTexture 큐 순서
+
+    /// 한 배치에서 (1) 렌더 패스가 텍스처를 빨강으로 칠하고 (2) 그 **뒤에** writeTexture가
+    /// 초록을 올린다. 스트림 순서대로면 최종 내용은 초록이다 — writeTexture가 자체 커맨드
+    /// 버퍼를 먼저 완주시키던 구 방식에서는 빨강이 남는다.
+    func test_writeTexture는_같은_배치의_앞선_렌더패스_뒤에_실행된다() throws {
+        let green = [UInt8]([0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255])
+        harness.executeExpectingSuccess([
+            ["op": "createTexture", "id": 1, "size": ["width": 2, "height": 2], "format": "rgba8unorm",
+             "usage": TestUsage.renderAttachment | TestUsage.textureCopyDst | TestUsage.textureCopySrc],
+            ["op": "createTextureView", "id": 2, "texture": 1],
+            ["op": "beginRenderPass", "colorAttachments": [[
+                "view": 2, "loadOp": "clear", "storeOp": "store",
+                "clearValue": ["r": 1, "g": 0, "b": 0, "a": 1],
+            ]]],
+            ["op": "endPass"],
+            ["op": "writeTexture", "texture": 1, "data": Data(green).base64EncodedString(),
+             "size": ["width": 2, "height": 2], "bytesPerRow": 8],
+            ["op": "createBuffer", "id": 3, "size": 16, "usage": TestUsage.copyDst | TestUsage.mapRead],
+            ["op": "copyTextureToBuffer",
+             "source": ["texture": 1], "destination": ["buffer": 3, "bytesPerRow": 8],
+             "copySize": ["width": 2, "height": 2]],
+        ])
+
+        let expectation = expectation(description: "readBuffer")
+        var bytes: [UInt8] = []
+        harness.context.readBuffer(handle: 3) { result in
+            if let base64 = result["data"] as? String, let data = Data(base64Encoded: base64) {
+                bytes = Array(data)
+            }
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 10)
+        XCTAssertEqual(bytes, green, "스트림에서 나중에 온 writeTexture가 최종 내용이어야 한다")
+    }
+
+    func test_writeTexture가_배열_텍스처_레이어를_슬라이스별로_올린다() throws {
+        let red = [UInt8]([255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255])
+        let blue = [UInt8]([0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255])
+        harness.executeExpectingSuccess([
+            ["op": "createTexture", "id": 1,
+             "size": ["width": 2, "height": 2, "depthOrArrayLayers": 2], "format": "rgba8unorm",
+             "usage": TestUsage.textureCopyDst | TestUsage.textureCopySrc],
+            // 레이어 2장을 한 번에 — bytesPerImage(16B) 간격으로 이어 붙인 데이터.
+            ["op": "writeTexture", "texture": 1, "data": Data(red + blue).base64EncodedString(),
+             "size": ["width": 2, "height": 2, "depthOrArrayLayers": 2],
+             "bytesPerRow": 8, "rowsPerImage": 2],
+            ["op": "createBuffer", "id": 2, "size": 32, "usage": TestUsage.copyDst | TestUsage.mapRead],
+            ["op": "copyTextureToBuffer",
+             "source": ["texture": 1, "origin": ["x": 0, "y": 0, "z": 0]],
+             "destination": ["buffer": 2, "bytesPerRow": 8, "offset": 0],
+             "copySize": ["width": 2, "height": 2]],
+            ["op": "copyTextureToBuffer",
+             "source": ["texture": 1, "origin": ["x": 0, "y": 0, "z": 1]],
+             "destination": ["buffer": 2, "bytesPerRow": 8, "offset": 16],
+             "copySize": ["width": 2, "height": 2]],
+        ])
+
+        let expectation = expectation(description: "readBuffer")
+        var bytes: [UInt8] = []
+        harness.context.readBuffer(handle: 2) { result in
+            if let base64 = result["data"] as? String, let data = Data(base64Encoded: base64) {
+                bytes = Array(data)
+            }
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 10)
+        XCTAssertEqual(Array(bytes.prefix(16)), red, "레이어 0")
+        XCTAssertEqual(Array(bytes.suffix(16)), blue, "레이어 1")
+    }
+
     func test_어댑터_정보가_한계값을_보고한다() {
         let info = harness.context.adapterInfo()
 

@@ -104,45 +104,49 @@ public final class WGPUTextureObject {
         self.isDrawable = true
     }
 
-    /// CPU 데이터를 텍스처에 올린다. private 저장소이므로 staging 버퍼를 거친다.
-    func write(
-        _ data: Data,
+    /// staging 버퍼의 CPU 데이터를 텍스처로 복사하는 blit을 **프레임 커맨드 버퍼에** 인코딩한다.
+    ///
+    /// 자체 커맨드 버퍼를 만들어 완주를 기다리던 방식은 (1) 호출마다 GPU가 빌 때까지 JS 스레드를
+    /// 세웠고 (2) 아직 커밋되지 않은 프레임 버퍼보다 **먼저** 실행되어 스트림 순서를 깼다.
+    /// 같은 큐의 커밋 순서가 곧 실행 순서이므로, 프레임 blit에 태우면 둘 다 해결된다.
+    func encodeWrite(
+        from staging: MTLBuffer,
         origin: WGPUOrigin3D,
         size: WGPUExtent3D,
         mipLevel: Int,
         bytesPerRow: Int,
         rowsPerImage: Int,
-        device: MTLDevice,
-        queue: MTLCommandQueue
-    ) throws {
-        let expected = bytesPerRow * max(rowsPerImage, size.height) * size.depthOrArrayLayers
-        guard data.count >= bytesPerRow * size.height else {
-            throw WGPUError.validation("writeTexture 데이터가 부족하다 (\(data.count)B, 최소 \(expected)B 필요)")
+        blit: MTLBlitCommandEncoder
+    ) {
+        let bytesPerImage = bytesPerRow * max(rowsPerImage, size.height)
+        if texture.textureType == .type3D {
+            blit.copy(
+                from: staging,
+                sourceOffset: 0,
+                sourceBytesPerRow: bytesPerRow,
+                sourceBytesPerImage: bytesPerImage,
+                sourceSize: MTLSize(width: size.width, height: size.height, depth: size.depthOrArrayLayers),
+                to: texture,
+                destinationSlice: 0,
+                destinationLevel: mipLevel,
+                destinationOrigin: MTLOrigin(x: origin.x, y: origin.y, z: origin.z)
+            )
+        } else {
+            // 배열 텍스처는 한 번에 한 슬라이스만 복사할 수 있다 (Metal 규칙 — depth는 3D 전용).
+            for layer in 0..<max(size.depthOrArrayLayers, 1) {
+                blit.copy(
+                    from: staging,
+                    sourceOffset: layer * bytesPerImage,
+                    sourceBytesPerRow: bytesPerRow,
+                    sourceBytesPerImage: bytesPerImage,
+                    sourceSize: MTLSize(width: size.width, height: size.height, depth: 1),
+                    to: texture,
+                    destinationSlice: origin.z + layer,
+                    destinationLevel: mipLevel,
+                    destinationOrigin: MTLOrigin(x: origin.x, y: origin.y, z: 0)
+                )
+            }
         }
-        guard let staging = device.makeBuffer(length: data.count, options: .storageModeShared) else {
-            throw WGPUError.outOfMemory("writeTexture staging 버퍼 생성 실패")
-        }
-        data.withUnsafeBytes { raw in
-            guard let base = raw.baseAddress else { return }
-            staging.contents().copyMemory(from: base, byteCount: data.count)
-        }
-        guard let commandBuffer = queue.makeCommandBuffer(), let blit = commandBuffer.makeBlitCommandEncoder() else {
-            throw WGPUError.backend("writeTexture blit 인코더 생성 실패")
-        }
-        blit.copy(
-            from: staging,
-            sourceOffset: 0,
-            sourceBytesPerRow: bytesPerRow,
-            sourceBytesPerImage: bytesPerRow * max(rowsPerImage, size.height),
-            sourceSize: MTLSize(width: size.width, height: size.height, depth: size.depthOrArrayLayers),
-            to: texture,
-            destinationSlice: texture.textureType == .type3D ? 0 : origin.z,
-            destinationLevel: mipLevel,
-            destinationOrigin: MTLOrigin(x: origin.x, y: origin.y, z: texture.textureType == .type3D ? origin.z : 0)
-        )
-        blit.endEncoding()
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
     }
 }
 

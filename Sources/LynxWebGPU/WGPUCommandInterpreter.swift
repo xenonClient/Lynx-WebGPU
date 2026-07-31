@@ -238,13 +238,8 @@ final class WGPUCommandInterpreter {
                 "writeBuffer 범위 초과 — offset \(offset) + \(data.count)B > 버퍼 크기 \(target.size)B"
             )
         }
-        guard let staging = device.makeBuffer(length: data.count, options: .storageModeShared) else {
-            throw WGPUError.outOfMemory("writeBuffer staging 버퍼 생성 실패")
-        }
-        data.withUnsafeBytes { raw in
-            guard let base = raw.baseAddress else { return }
-            staging.contents().copyMemory(from: base, byteCount: data.count)
-        }
+        guard !data.isEmpty else { return }   // 크기 0은 no-op (Metal blit은 0바이트 복사를 거부한다)
+        let staging = try makeStagingBuffer(data)
         // 직접 memcpy 하면 이전 프레임 GPU 작업과 경쟁한다. blit으로 큐에 순서를 태운다.
         let encoder = try activeBlitEncoder()
         encoder.copy(
@@ -266,18 +261,40 @@ final class WGPUCommandInterpreter {
         let data = try command.requiredData("data")
         let size = try command.requiredExtent("size")
         let bytesPerRow = command.int("bytesPerRow", default: size.width * target.format.bytesPerPixel)
-        // 이 경로는 자체 커맨드 버퍼로 즉시 완료된다 (텍스처 업로드는 프레임 시작 전에 일어나므로).
-        endActiveEncoders()
-        try target.write(
-            data,
+        let rowsPerImage = command.int("rowsPerImage", default: size.height)
+        guard size.width > 0, size.height > 0, size.depthOrArrayLayers > 0 else { return }   // no-op
+        let bytesPerImage = bytesPerRow * max(rowsPerImage, size.height)
+        let layers = max(size.depthOrArrayLayers, 1)
+        let required = bytesPerImage * (layers - 1) + bytesPerRow * size.height
+        guard data.count >= required else {
+            throw WGPUError.validation("writeTexture 데이터가 부족하다 (\(data.count)B, 최소 \(required)B 필요)")
+        }
+        // 스테이징은 이미지 스트라이드 전체만큼 잡는다 — Metal 검증 레이어가 마지막 이미지도
+        // bytesPerImage 범위로 계산하기 때문이다. 남는 꼬리는 텍스처로 복사되지 않는다.
+        let staging = try makeStagingBuffer(data, minimumLength: bytesPerImage * layers)
+        // writeBuffer와 같은 이유로 blit으로 큐에 순서를 태운다 — 앞선 렌더/복사와 직렬화된다.
+        target.encodeWrite(
+            from: staging,
             origin: try command.origin("origin"),
             size: size,
             mipLevel: command.int("mipLevel", default: 0),
             bytesPerRow: bytesPerRow,
-            rowsPerImage: command.int("rowsPerImage", default: size.height),
-            device: device,
-            queue: queue
+            rowsPerImage: rowsPerImage,
+            blit: try activeBlitEncoder()
         )
+    }
+
+    /// 업로드용 shared 스테이징 버퍼를 만들고 데이터를 채운다.
+    private func makeStagingBuffer(_ data: Data, minimumLength: Int = 0) throws -> MTLBuffer {
+        let length = max(data.count, minimumLength, 1)
+        guard let staging = device.makeBuffer(length: length, options: .storageModeShared) else {
+            throw WGPUError.outOfMemory("업로드 staging 버퍼 생성 실패 (\(length)B)")
+        }
+        data.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            staging.contents().copyMemory(from: base, byteCount: data.count)
+        }
+        return staging
     }
 
     private func createTextureView(_ command: WGPUValueReader) throws {

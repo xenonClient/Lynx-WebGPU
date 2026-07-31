@@ -186,6 +186,8 @@ enum TestUsage {
     static let uniform = 0x0040
     static let storage = 0x0080
 
+    static let textureCopySrc = 0x01
+    static let textureCopyDst = 0x02
     static let textureBinding = 0x04
     static let renderAttachment = 0x10
 }
