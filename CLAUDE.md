@@ -16,18 +16,18 @@ Lynx 연동: `docs/LYNX-INTEGRATION.md` · 번들(JS) 작성: `docs/JS-AUTHORING
 ```zsh
 # macOS 개발 루프 — Lynx 없이 엔진/트랜스파일러만 빌드·테스트 (가장 빠르다)
 swift build
-swift test                                   # 74개 테스트, 6초
+swift test                                   # 92개 테스트, ~7초
 swift test --filter LynxWebGPUShaderTests    # WGSL → MSL 트랜스파일러만
 swift test --filter RenderPipelineTests      # GPU 오프스크린 렌더 검증
 
-# iOS 시뮬레이터 — Lynx 브리지까지 포함한 전체 빌드
-arch -arm64 xcodebuild -scheme LynxWebGPUBridge \
-  -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' \
-  -derivedDataPath .derivedData-cli build
+# JS 클라이언트(shim) 테스트 — 의존성 없음, node 내장 러너
+cd JS && npm test
 
-# 실기기 빌드 확인
-arch -arm64 xcodebuild -scheme LynxWebGPUBridge -destination 'generic/platform=iOS' \
-  -derivedDataPath .derivedData-device CODE_SIGNING_ALLOWED=NO build
+# iOS 컴파일 확인 — Lynx 브리지 포함 (SPM 크로스 빌드)
+# 루트에 Tuist 워크스페이스(LynxWebGPUDemo.xcworkspace)가 있으면 xcodebuild가 패키지 스킴
+# (LynxWebGPUBridge)을 못 찾는다. swift build 크로스 빌드는 워크스페이스와 무관하게 동작한다.
+swift build --sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" --triple arm64-apple-ios17.0-simulator
+swift build --sdk "$(xcrun --sdk iphoneos --show-sdk-path)" --triple arm64-apple-ios17.0   # 실기기
 
 # 데모 호스트 앱 (Tuist) — 눈으로 확인할 때만 필요하다
 mise exec -- tuist generate --no-open

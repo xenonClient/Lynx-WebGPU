@@ -20,7 +20,7 @@ GPU 코드는 "돌려 보고 눈으로 확인"에 기대기 쉽다. 이 저장�
 ## 2. 실행
 
 ```zsh
-swift test                                      # 전체 (74개, 약 6초)
+swift test                                      # 전체 (92개, 약 7초)
 swift test --filter LynxWebGPUCoreTests         # 디스크립터/핸들
 swift test --filter LynxWebGPUShaderTests       # 트랜스파일러 (+ Metal 컴파일 검증)
 swift test --filter LynxWebGPUTests             # GPU 렌더 + 해석기
@@ -37,12 +37,11 @@ cd JS && npm test        # node --expose-gc --test 'tests/*.test.mjs'
 base64 코덱은 Node의 `Buffer` 구현과 대조한다 — 패딩(0~2바이트 꼬리)과
 인코더 청크 경계(3072바이트)를 모두 밟는 길이들로 라운드트립을 검증한다.
 
-Lynx 브리지 컴파일 확인 (iOS 시뮬레이터 고정: iPhone 17 / iOS 26.2):
+Lynx 브리지 컴파일 확인 — SPM 크로스 빌드를 쓴다 (루트의 Tuist 워크스페이스가
+`xcodebuild`의 패키지 스킴 탐색을 가리므로):
 
 ```zsh
-arch -arm64 xcodebuild -scheme LynxWebGPUBridge \
-  -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' \
-  -derivedDataPath .derivedData-cli build
+swift build --sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" --triple arm64-apple-ios17.0-simulator
 ```
 
 ## 3. Metal 컴파일러 하네스
@@ -100,14 +99,16 @@ try harness.assertPixel(x: 1, y: 1, equals: (0, 0, 255, 255), "삼각형 외부(
 - 비동기 경로(`readBuffer`)는 `XCTestExpectation`으로 검증한다.
 - 테스트 더블은 손으로 만든다 (모킹 라이브러리 없음).
 
-## 6. 커버리지 대상 (현재 74개)
+## 6. 커버리지 대상 (Swift 92개 + JS 16개)
 
 | 영역 | 파일 | 주요 케이스 |
 |---|---|---|
 | 값 디코딩 | `WGPUValueReaderTests` | 기본값, NSNull, 열거형 후보 안내, 색/크기 두 표기, base64·바이트배열, 경로 누적 |
 | 디스크립터 | `WGPUDescriptorTests` | 크기 유추, 범위 검증, 명세 기본값, auto/명시 레이아웃, 블렌드 기본값 |
-| 핸들 레지스트리 | `WGPUObjectRegistryTests` | 등록/조회/해제, 타입 불일치 진단 |
+| 핸들 레지스트리 | `WGPUObjectRegistryTests` | 등록/조회/해제, 타입 불일치 진단, **증식 경고 임계(4096 → 두 배씩)** |
 | JS↔Swift 상수 | `JSConstantParityTests` | `JS/webgpu.js`의 사용 플래그·스테이지·컬러마스크가 Swift OptionSet과 같은 값인지 |
+| in-flight 프레임 | `SurfaceInFlightTests` | 카운터 계약(3에서 포화·완료로 해제), 컨텍스트 집계, 해석기 커밋/완료 통지(표면당 1회), CAMetalLayer 헤드리스 왕복 |
+| JS 클라이언트 | `JS/tests` (node:test) | base64 라운드트립(Buffer 대조·패딩·청크 경계), 캔버스 크기 캐시(프레임당 왕복 1회·리사이즈 반영), GC 자동 해제(중복 방지·프레임 스코프 제외), objects 전달 |
 | WGSL 트랜스파일 | `WGSLTranspilerTests` | 삼각형(정점속성+유니폼+헬퍼), 리소스 스레딩, 리플렉션, vec3 배치, 컴퓨트/스토리지, 텍스처/샘플러/스토리지텍스처, 제어흐름, workgroup 변수, 오류 보고, 바인딩 배정, **MSL 예약어 맹글링**, **부동소수 `%`**, **벡터 성분 추론**, **추상 정수 벡터(문맥으로 굳는 `vec3(1)`)**, **파이프라인 상수**, **확장 선언**, **`arrayLength()` 크기 표**, **외부 텍스처**, **함수 지역 `const` 배열 크기** |
 | 외부 코퍼스 | `SampleCorpusTests` | 공식 webgpu-samples 셰이더 통과율 리포트 (§7, 기본 스킵) |
 | GPU 렌더 | `RenderPipelineTests` | 삼각형, 유니폼, 인덱스 드로우, 알파 블렌딩, 컴퓨트+readback, 텍스처 샘플링, **`arrayLength()`가 바인딩된 크기를 돌려주는지**, **가장자리 클램프 샘플링**, 깊이 테스트 |
