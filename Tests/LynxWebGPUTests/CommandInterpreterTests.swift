@@ -113,7 +113,7 @@ final class CommandInterpreterTests: XCTestCase {
         let expectation = expectation(description: "readBuffer")
         var output: [Float] = []
         harness.context.readBuffer(handle: 2) { result in
-            if let base64 = result["data"] as? String, let data = Data(base64Encoded: base64) {
+            if let data = result["data"] as? Data {
                 output = data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
             }
             expectation.fulfill()
@@ -180,7 +180,7 @@ final class CommandInterpreterTests: XCTestCase {
         let expectation = expectation(description: "readBuffer")
         var bytes: [UInt8] = []
         harness.context.readBuffer(handle: 3) { result in
-            if let base64 = result["data"] as? String, let data = Data(base64Encoded: base64) {
+            if let data = result["data"] as? Data {
                 bytes = Array(data)
             }
             expectation.fulfill()
@@ -214,7 +214,7 @@ final class CommandInterpreterTests: XCTestCase {
         let expectation = expectation(description: "readBuffer")
         var bytes: [UInt8] = []
         harness.context.readBuffer(handle: 2) { result in
-            if let base64 = result["data"] as? String, let data = Data(base64Encoded: base64) {
+            if let data = result["data"] as? Data {
                 bytes = Array(data)
             }
             expectation.fulfill()

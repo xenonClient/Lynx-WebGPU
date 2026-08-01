@@ -342,7 +342,7 @@ final class RenderPipelineTests: XCTestCase {
         let expectation = expectation(description: "readBuffer")
         var output: [Float] = []
         harness.context.readBuffer(handle: 3, offset: 0, size: 32) { result in
-            if let base64 = result["data"] as? String, let data = Data(base64Encoded: base64) {
+            if let data = result["data"] as? Data {
                 output = data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
             }
             expectation.fulfill()
@@ -402,7 +402,7 @@ final class RenderPipelineTests: XCTestCase {
         let expectation = expectation(description: "readBuffer")
         var lengths: [UInt32] = []
         harness.context.readBuffer(handle: 5, offset: 0, size: 16) { result in
-            if let base64 = result["data"] as? String, let data = Data(base64Encoded: base64) {
+            if let data = result["data"] as? Data {
                 lengths = data.withUnsafeBytes { Array($0.bindMemory(to: UInt32.self)) }
             }
             expectation.fulfill()

@@ -16,7 +16,8 @@ export function installNativeMock(overrides = {}) {
       overrides.executeResult ?? ((payload) => ({ ok: true, commandCount: payload.commands.length })),
     canvasInfoResult:
       overrides.canvasInfoResult ?? { ok: true, width: 300, height: 150, format: 'bgra8unorm' },
-    readBufferResult: overrides.readBufferResult ?? { ok: true, data: '' },
+    // 네이티브는 `Data`를 싣고 Lynx가 ArrayBuffer로 바꿔 준다 — 목도 ArrayBuffer를 준다.
+    readBufferResult: overrides.readBufferResult ?? { ok: true, data: new ArrayBuffer(0) },
   };
 
   const resolve = (value, argument) => (typeof value === 'function' ? value(argument) : value);

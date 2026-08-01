@@ -87,134 +87,40 @@ export const GPUMapMode = { READ: 0x1, WRITE: 0x2 };
 /** @typedef {{size?: GPUExtent3D, format?: string, usage?: number, label?: string, frameScoped?: boolean}} GPUTextureInit */
 
 // ---------------------------------------------------------------------------
-// 바이너리 유틸 — PrimJS에는 btoa/atob가 없다
+// 바이너리 유틸
 // ---------------------------------------------------------------------------
 
-const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-const BASE64_PAD = 61; // '='
-
-/** 6비트 값 → 문자 코드. */
-const BASE64_CODES = (() => {
-  const codes = new Uint8Array(64);
-  for (let index = 0; index < 64; index += 1) codes[index] = BASE64_ALPHABET.charCodeAt(index);
-  return codes;
-})();
-
-/** 문자 코드 → 6비트 값 (유효하지 않으면 0xff). */
-const BASE64_VALUES = (() => {
-  const values = new Uint8Array(128).fill(0xff);
-  for (let index = 0; index < 64; index += 1) values[BASE64_ALPHABET.charCodeAt(index)] = index;
-  return values;
-})();
-
-// 텍스처 업로드처럼 수십 KB~수 MB가 지나가는 경로다. 문자열 누적(`+=`)과 문자당
-// `indexOf` 스캔은 여기서 바로 병목이 되므로, 룩업 테이블로 문자 코드를 만든 뒤
-// `String.fromCharCode`를 청크 단위로 호출해 O(n)으로 처리한다.
 /**
- * @param {Uint8Array} bytes
- * @returns {string}
- */
-function encodeBase64(bytes) {
-  const length = bytes.length;
-  /** @type {string[]} */
-  const parts = [];
-  /** @type {number[]} */
-  const codes = [];
-  let index = 0;
-  const tripleEnd = length - (length % 3);
-  while (index < tripleEnd) {
-    const a = bytes[index];
-    const b = bytes[index + 1];
-    const c = bytes[index + 2];
-    index += 3;
-    codes.push(
-      BASE64_CODES[a >> 2],
-      BASE64_CODES[((a & 0x03) << 4) | (b >> 4)],
-      BASE64_CODES[((b & 0x0f) << 2) | (c >> 6)],
-      BASE64_CODES[c & 0x3f]
-    );
-    // apply의 인자 개수 제한을 넘지 않도록 잘라서 문자열로 바꾼다.
-    if (codes.length >= 4096) {
-      parts.push(String.fromCharCode.apply(null, codes));
-      codes.length = 0;
-    }
-  }
-  const remainder = length - index;
-  if (remainder === 1) {
-    const a = bytes[index];
-    codes.push(BASE64_CODES[a >> 2], BASE64_CODES[(a & 0x03) << 4], BASE64_PAD, BASE64_PAD);
-  } else if (remainder === 2) {
-    const a = bytes[index];
-    const b = bytes[index + 1];
-    codes.push(
-      BASE64_CODES[a >> 2],
-      BASE64_CODES[((a & 0x03) << 4) | (b >> 4)],
-      BASE64_CODES[(b & 0x0f) << 2],
-      BASE64_PAD
-    );
-  }
-  if (codes.length > 0) parts.push(String.fromCharCode.apply(null, codes));
-  return parts.join('');
-}
-
-/**
- * @param {string} text
- * @returns {Uint8Array}
- */
-function decodeBase64(text) {
-  const length = text.length;
-  // 유효 문자 수를 먼저 세어 정확한 크기로 할당한다 (패딩·공백·개행은 건너뛴다).
-  let effective = 0;
-  for (let index = 0; index < length; index += 1) {
-    const code = text.charCodeAt(index);
-    if (code < 128 && BASE64_VALUES[code] !== 0xff) effective += 1;
-  }
-  const bytes = new Uint8Array(Math.floor((effective * 3) / 4));
-  let accumulator = 0;
-  let bits = 0;
-  let byteIndex = 0;
-  for (let index = 0; index < length; index += 1) {
-    const code = text.charCodeAt(index);
-    if (code >= 128) continue;
-    const value = BASE64_VALUES[code];
-    if (value === 0xff) continue;
-    accumulator = (accumulator << 6) | value;
-    bits += 6;
-    if (bits >= 8) {
-      bits -= 8;
-      if (byteIndex < bytes.length) bytes[byteIndex++] = (accumulator >> bits) & 0xff;
-    }
-  }
-  return bytes;
-}
-
-/**
- * TypedArray / ArrayBuffer / 숫자 배열을 커맨드에 실을 base64로 바꾼다.
+ * TypedArray / ArrayBuffer / 숫자 배열을 커맨드에 실을 `ArrayBuffer`로 바꾼다.
+ *
+ * **뷰(TypedArray)를 그대로 실으면 안 된다.** Lynx의 값 변환기는 진짜 `ArrayBuffer`만
+ * 알아보고(`isArrayBuffer`), 뷰는 평범한 객체로 취급해 `{"0":1,"1":2,…}` 로 만들어 버린다 —
+ * 오류 없이 조용히 깨지는 종류다. 바이트열은 **반드시 여기를 거쳐** 커맨드에 실을 것.
+ *
+ * 백킹 버퍼 전체를 덮는 뷰는 복사 없이 그대로 넘어가고, 일부만 덮는 뷰(또는 오프셋·개수가
+ * 지정된 경우)는 그 구간만 잘라 낸다 — `view.buffer`는 뷰가 아니라 버퍼 전체이기 때문이다.
  *
  * @param {GPUDataSource} source
  * @param {number} [elementOffset] 원소 단위 시작 위치 (DataView는 바이트 단위)
  * @param {number} [elementCount] 원소 개수. 생략하면 끝까지
- * @returns {string}
+ * @returns {ArrayBuffer}
  */
-function toBase64(source, elementOffset, elementCount) {
-  /** @type {Uint8Array} */
-  let bytes;
-  if (source instanceof ArrayBuffer) {
-    bytes = new Uint8Array(source);
-  } else if (ArrayBuffer.isView(source)) {
+function toArrayBuffer(source, elementOffset, elementCount) {
+  if (source instanceof ArrayBuffer) return source;
+  if (ArrayBuffer.isView(source)) {
     // DataView에는 BYTES_PER_ELEMENT가 없다 — 그 경우 오프셋을 바이트로 해석한다.
     const elementSize = /** @type {{BYTES_PER_ELEMENT?: number}} */ (source).BYTES_PER_ELEMENT || 1;
     const start = source.byteOffset + (elementOffset || 0) * elementSize;
     const length =
       elementCount === undefined ? source.byteLength - (elementOffset || 0) * elementSize
         : elementCount * elementSize;
-    bytes = new Uint8Array(source.buffer, start, length);
-  } else if (Array.isArray(source)) {
-    bytes = new Uint8Array(source);
-  } else {
-    throw new TypeError('데이터는 TypedArray · ArrayBuffer · 숫자 배열이어야 한다');
+    const backing = /** @type {ArrayBuffer} */ (source.buffer);
+    return start === 0 && length === backing.byteLength
+      ? backing
+      : backing.slice(start, start + length);
   }
-  return encodeBase64(bytes);
+  if (Array.isArray(source)) return /** @type {ArrayBuffer} */ (new Uint8Array(source).buffer);
+  throw new TypeError('데이터는 TypedArray · ArrayBuffer · 숫자 배열이어야 한다');
 }
 
 // ---------------------------------------------------------------------------
@@ -385,7 +291,7 @@ class GPUBuffer extends GPUObjectBase {
       size: this.size,
       usage: this.usage,
       label: this.label,
-      data: toBase64(this._mapped),
+      data: this._mapped,   // 이미 ArrayBuffer다
     });
     this._mapped = null;
   }
@@ -409,7 +315,8 @@ class GPUBuffer extends GPUObjectBase {
       this._recorder.report((result && result.errors) || []);
       throw new Error('버퍼 읽기 실패');
     }
-    const mapped = /** @type {ArrayBuffer} */ (decodeBase64(result.data).buffer);
+    // 네이티브가 `Data`로 돌려주면 Lynx가 ArrayBuffer로 바꿔 준다 — 디코딩할 것이 없다.
+    const mapped = result.data;
     this._mapped = mapped;
     return mapped;
   }
@@ -755,7 +662,7 @@ class GPUQueue {
       op: 'writeBuffer',
       buffer: buffer.id,
       bufferOffset: bufferOffset || 0,
-      data: toBase64(data, dataOffset, size),
+      data: toArrayBuffer(data, dataOffset, size),
     });
   }
 
@@ -772,7 +679,7 @@ class GPUQueue {
       texture: destination.texture.id,
       mipLevel: destination.mipLevel || 0,
       origin: destination.origin,
-      data: toBase64(data),
+      data: toArrayBuffer(data),
       bytesPerRow: dataLayout.bytesPerRow,
       rowsPerImage: dataLayout.rowsPerImage,
       size,

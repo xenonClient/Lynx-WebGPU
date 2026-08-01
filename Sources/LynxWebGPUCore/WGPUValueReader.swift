@@ -185,8 +185,11 @@ public struct WGPUValueReader {
 
     // MARK: - 바이너리
 
-    /// 바이트열을 읽는다. JS에서 오는 형태를 모두 받는다:
-    /// base64 문자열(대용량 권장), `NSData`(Lynx가 ArrayBuffer를 변환해 준 경우), 숫자 배열(소량 디버그용).
+    /// 바이트열을 읽는다. 세 가지 표현을 모두 받는다:
+    ///
+    /// - `NSData` — **JS 셰임이 쓰는 경로.** Lynx가 `ArrayBuffer`를 변환해 준 것이다.
+    /// - base64 문자열 — 손으로 쓰는 커맨드 스트림(테스트 하네스, `RenderHarness.base64`)용.
+    /// - 숫자 배열 — 소량 디버그용.
     public func requiredData(_ key: String) throws -> Data {
         guard let raw = value(key) else { throw missing(key) }
         if let data = raw as? Data { return data }
@@ -207,7 +210,7 @@ public struct WGPUValueReader {
             }
             return Data(bytes)
         }
-        throw mismatch(key, expected: "base64 문자열 · ArrayBuffer · 바이트 배열")
+        throw mismatch(key, expected: "ArrayBuffer · base64 문자열 · 바이트 배열")
     }
 
     public func optionalData(_ key: String) throws -> Data? {

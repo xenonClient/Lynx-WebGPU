@@ -12,7 +12,7 @@ GPU 코드는 "돌려 보고 눈으로 확인"에 기대기 쉽다. 이 저장�
 | Metal 백엔드 | 오프스크린 렌더 후 **픽셀 값 단언** | `RenderHarness` |
 | 커맨드 해석기 | 오류 누적·경로·핸들 수명 계약 | `RenderHarness` |
 | Lynx 브리지 | 컴파일 검증 + 호스트 앱 수동 확인 | `xcodebuild` |
-| JS 클라이언트 | Swift 상수와의 값 일치 + 동작 검증(코덱·캐시·수명) | `JSConstantParityTests`, `JS/tests` (node:test) |
+| JS 클라이언트 | Swift 상수와의 값 일치 + 동작 검증(바이너리 경로·캐시·수명) | `JSConstantParityTests`, `JS/tests` (node:test) |
 
 브리지는 Lynx 런타임이 있어야 의미가 있으므로 단위 테스트 대상이 아니다 —
 로직이 생기면 `LynxWebGPU`로 내리는 것이 원칙이다.
@@ -31,7 +31,7 @@ JS 클라이언트(shim) 테스트 — 의존성 없이 node 내장 러너로 �
 `NativeModules.WebGPU`를 목으로 바꿔 커맨드 페이로드·왕복 횟수를 단언한다:
 
 ```zsh
-cd JS && npm test            # NODE_OPTIONS=--expose-gc node --test 'tests/*.test.mjs' — 16개
+cd JS && npm test            # NODE_OPTIONS=--expose-gc node --test 'tests/*.test.mjs' — 17개
 cd JS && npm run typecheck   # JSDoc 기준 타입 검사
 ```
 
@@ -39,8 +39,9 @@ cd JS && npm run typecheck   # JSDoc 기준 타입 검사
 테스트 파일을 도는 자식 프로세스에 그 플래그를 물려주지 않아 `globalThis.gc`가 없고,
 GC 수명 테스트 3개가 **조용히 스킵된다** (실패가 아니라 스킵이라 통과처럼 보인다).
 
-base64 코덱은 Node의 `Buffer` 구현과 대조한다 — 패딩(0~2바이트 꼬리)과
-인코더 청크 경계(3072바이트)를 모두 밟는 길이들로 라운드트립을 검증한다.
+바이너리 경로는 커맨드에 실린 `data`가 **진짜 `ArrayBuffer`인지**까지 단언한다. 뷰(TypedArray)가
+새어 나가면 Lynx가 `{"0":1,…}` 객체로 바꿔 **오류 없이 조용히** 깨지므로, 바이트 비교만으로는
+부족하고 `instanceof ArrayBuffer`를 함께 봐야 한다.
 
 타입 검사는 `JS/tsconfig.json`(`checkJs`)이 JSDoc을 읽어 돌린다. 브라우저 전역을 실수로 쓰는 것을
 막으려고 **DOM lib을 켜지 않고**, 호스트가 실제로 주는 것만 `JS/lynx-env.d.ts`에 적어 둔다.
@@ -109,16 +110,16 @@ try harness.assertPixel(x: 1, y: 1, equals: (0, 0, 255, 255), "삼각형 외부(
 - 비동기 경로(`readBuffer`)는 `XCTestExpectation`으로 검증한다.
 - 테스트 더블은 손으로 만든다 (모킹 라이브러리 없음).
 
-## 6. 커버리지 대상 (Swift 92개 + JS 16개)
+## 6. 커버리지 대상 (Swift 92개 + JS 17개)
 
 | 영역 | 파일 | 주요 케이스 |
 |---|---|---|
-| 값 디코딩 | `WGPUValueReaderTests` | 기본값, NSNull, 열거형 후보 안내, 색/크기 두 표기, base64·바이트배열, 경로 누적 |
+| 값 디코딩 | `WGPUValueReaderTests` | 기본값, NSNull, 열거형 후보 안내, 색/크기 두 표기, **바이너리 세 표현(Data·base64·바이트배열)**, 경로 누적 |
 | 디스크립터 | `WGPUDescriptorTests` | 크기 유추, 범위 검증, 명세 기본값, auto/명시 레이아웃, 블렌드 기본값 |
 | 핸들 레지스트리 | `WGPUObjectRegistryTests` | 등록/조회/해제, 타입 불일치 진단, **증식 경고 임계(4096 → 두 배씩)** |
 | JS↔Swift 상수 | `JSConstantParityTests` | `JS/webgpu.js`의 사용 플래그·스테이지·컬러마스크가 Swift OptionSet과 같은 값인지 |
 | in-flight 프레임 | `SurfaceInFlightTests` | 카운터 계약(3에서 포화·완료로 해제), 컨텍스트 집계, 해석기 커밋/완료 통지(표면당 1회), CAMetalLayer 헤드리스 왕복 |
-| JS 클라이언트 | `JS/tests` (node:test) | base64 라운드트립(Buffer 대조·패딩·청크 경계), 캔버스 크기 캐시(프레임당 왕복 1회·리사이즈 반영), GC 자동 해제(중복 방지·프레임 스코프 제외), objects 전달 |
+| JS 클라이언트 | `JS/tests` (node:test) | **바이너리 경로(ArrayBuffer 타입·뷰 오프셋 반영·불필요한 복사 없음·양방향)**, 캔버스 크기 캐시(프레임당 왕복 1회·리사이즈 반영), GC 자동 해제(중복 방지·프레임 스코프 제외), objects 전달 |
 | WGSL 트랜스파일 | `WGSLTranspilerTests` | 삼각형(정점속성+유니폼+헬퍼), 리소스 스레딩, 리플렉션, vec3 배치, 컴퓨트/스토리지, 텍스처/샘플러/스토리지텍스처, 제어흐름, workgroup 변수, 오류 보고, 바인딩 배정, **MSL 예약어 맹글링**, **부동소수 `%`**, **벡터 성분 추론**, **추상 정수 벡터(문맥으로 굳는 `vec3(1)`)**, **파이프라인 상수**, **확장 선언**, **`arrayLength()` 크기 표**, **외부 텍스처**, **함수 지역 `const` 배열 크기** |
 | 외부 코퍼스 | `SampleCorpusTests` | 공식 webgpu-samples 셰이더 통과율 리포트 (§7, 기본 스킵) |
 | GPU 렌더 | `RenderPipelineTests` | 삼각형, 유니폼, 인덱스 드로우, 알파 블렌딩, 컴퓨트+readback, 텍스처 샘플링, **`arrayLength()`가 바인딩된 크기를 돌려주는지**, **가장자리 클램프 샘플링**, 깊이 테스트 |
@@ -172,14 +173,14 @@ LYNXWEBGPU_WGSL_CORPUS=… LYNXWEBGPU_WGSL_DUMP=/tmp/msl swift test --filter Sam
 | `cube` | 인덱스 드로우 + 깊이 테스트 + 백페이스 컬링 + MVP |
 | `particles` | 컴퓨트 + 스토리지 버퍼 + 인스턴싱 + 가산 블렌딩 |
 | `texture` | createTexture + writeTexture + repeat 샘플러 + textureSample |
-| `dynamic` | CPU 플라스마를 **매 프레임 writeTexture**로 — 큐 순서 업로드 + 스테이징 풀 + base64 인코딩 처리량. HUD의 live 객체 수(`objects`)가 일정해야 정상 |
+| `dynamic` | CPU 플라스마를 **매 프레임 writeTexture**로 — 큐 순서 업로드 + 스테이징 풀 + 업로드 처리량. HUD의 live 객체 수(`objects`)가 일정해야 정상 |
 | `blending` | 미리 곱해진 알파 합성 + discard + 유니폼 구조체 배열 |
 | `readback` | 컴퓨트 결과를 `mapAsync`로 CPU가 읽어 화면에 표시 |
 | `constants` | 같은 셰이더 모듈 + 다른 `override` 값 → 파이프라인 3개 |
 | `msl` | `language: 'msl'` 직접 주입 + 명시적 파이프라인 레이아웃 |
 | `interactive` | 홀로그래픽 카드 — Lynx 표준 터치 → 3D 자세 → 포일/정반사/반짝임. **위아래로 겹친 Lynx 컴포넌트의 입력 라우팅**도 함께 확인 |
 | `wgsl` | `arrayLength()`로 센 칸 수 + 외부 텍스처(왼쪽만 가장자리 클램프) + 타입 없는 상수식. 셰이더가 센 길이를 CPU가 리드백으로 되짚어 HUD에 ✓/✗로 띄운다 |
-| `arraybuffer` | **Lynx 값 변환기 스모크** — base64 없이 `ArrayBuffer`를 커맨드에 실어(`commands[i].data`, 중첩 위치) 왕복시킨 뒤 바이트를 대조한다. 화면이 초록이면 통과, 빨강이면 실패. base64 경로를 대조군으로 함께 돌린다 |
+| `arraybuffer` | **Lynx 값 변환기 스모크** — 바이트열이 `ArrayBuffer`로 **양방향** 오가는지 본다. 올릴 때는 커맨드의 중첩 위치(`commands[i].data`), 내릴 때는 `mapAsync`. 페이로드 타입까지 단언한다. 화면이 초록이면 통과, 빨강이면 실패 |
 
 `interactive`만 **모달 전체 화면**으로 올라온다 (닫기 버튼은 화면 왼쪽 위).
 밀어서 뒤로 가기 제스처가 카드를 끄는 드래그를 가로채기 때문이다 — `DemoScene.coversFullScreen`.

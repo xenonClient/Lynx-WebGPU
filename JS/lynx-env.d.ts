@@ -44,10 +44,15 @@ interface WGPUCanvasInfo {
   format?: string;
 }
 
-/** `readBuffer` 콜백이 받는 값. */
+/**
+ * `readBuffer` 콜백이 받는 값.
+ *
+ * `data`는 네이티브가 `Data`로 돌려준 것을 Lynx가 `ArrayBuffer`로 바꿔 준 것이다
+ * (base64 문자열이 아니다 — `LynxWebGPUContext.readBuffer` 참고).
+ */
 interface WGPUReadBufferResult {
   ok?: boolean;
-  data: string;
+  data: ArrayBuffer;
   byteLength?: number;
   errors?: WGPUErrorPayload[];
 }

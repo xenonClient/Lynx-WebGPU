@@ -38,7 +38,7 @@ enum DemoScene: String, CaseIterable {
         case .msl: return "MSL 탈출구"
         case .interactive: return "홀로그래픽 카드"
         case .wgsl: return "WGSL 호환성"
-        case .arraybuffer: return "ArrayBuffer 브리징"
+        case .arraybuffer: return "바이너리 브리징"
         }
     }
 
@@ -56,7 +56,7 @@ enum DemoScene: String, CaseIterable {
         case .msl: return "language: 'msl' — 트랜스파일러 우회 + 명시적 레이아웃"
         case .interactive: return "잡고 기울이면 포일이 흐른다 — Lynx 터치 → 3D 자세 → 셰이더"
         case .wgsl: return "arrayLength + 외부 텍스처 + 타입 없는 상수식"
-        case .arraybuffer: return "base64 없이 ArrayBuffer를 커맨드에 실어 왕복 — Lynx 값 변환 검증"
+        case .arraybuffer: return "ArrayBuffer로 양방향 왕복 — Lynx 값 변환 검증"
         }
     }
 }

@@ -22,7 +22,7 @@ swift test --filter LynxWebGPUShaderTests    # WGSL → MSL 트랜스파일러�
 swift test --filter RenderPipelineTests      # GPU 오프스크린 렌더 검증
 
 # JS 클라이언트(shim) — 런타임 의존성 0. TypeScript는 **검사·선언 생성 전용**이다 (빌드 산출물 없음)
-cd JS && npm test            # node 내장 러너, 16개
+cd JS && npm test            # node 내장 러너, 17개
 cd JS && npm run typecheck   # JSDoc 기준 타입 검사 (tsc --noEmit)
 cd JS && npm run types       # webgpu.d.ts 를 JSDoc에서 다시 생성
 

@@ -7,7 +7,7 @@ import { GPUTextureUsage } from '../webgpu.js'
  *
  * writeTexture가 호출마다 GPU 완주를 기다리던 시절에는 불가능했던 프로파일이다.
  * 지금은 스테이징 + blit으로 큐 순서를 타므로(스테이징도 풀로 재사용) 128×128 RGBA(64KB)를
- * 매 프레임 올려도 프레임이 서지 않는다. base64 브리지 비용이 이 씬의 상한을 정한다.
+ * 매 프레임 올려도 프레임이 서지 않는다. 바이트열은 ArrayBuffer로 그대로 건너간다.
  *
  * HUD의 live 객체 수는 submit 응답의 `objects`다 — 프레임을 거듭해도 일정해야 정상이다
  * (docs/JS-AUTHORING.md §8).

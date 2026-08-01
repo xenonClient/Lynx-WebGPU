@@ -71,8 +71,16 @@ final class WGPUValueReaderTests: XCTestCase {
         XCTAssertEqual(try array.requiredExtent("size"), WGPUExtent3D(width: 64, height: 32, depthOrArrayLayers: 6))
     }
 
-    func test_바이너리는_base64와_바이트배열을_모두_받는다() throws {
+    func test_바이너리는_Data와_base64와_바이트배열을_모두_받는다() throws {
         let bytes: [UInt8] = [0xDE, 0xAD, 0xBE, 0xEF]
+
+        // JS 셰임이 쓰는 경로 — Lynx가 ArrayBuffer를 NSData로 바꿔 준 것이 그대로 들어온다.
+        let native = WGPUValueReader(["data": Data(bytes)])
+        XCTAssertEqual(Array(try native.requiredData("data")), bytes)
+
+        // NSData로 들어와도 같다 (브리지가 실제로 넘기는 타입).
+        let bridged = WGPUValueReader(["data": NSData(data: Data(bytes))])
+        XCTAssertEqual(Array(try bridged.requiredData("data")), bytes)
 
         let base64 = WGPUValueReader(["data": Data(bytes).base64EncodedString()])
         XCTAssertEqual(Array(try base64.requiredData("data")), bytes)
