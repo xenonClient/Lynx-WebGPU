@@ -230,6 +230,25 @@ public enum WGPUCanvasAlphaMode: String, CaseIterable, Sendable {
     case premultiplied
 }
 
+/// `GPUCanvasConfiguration.colorSpace` — 명세가 정의하는 두 가지.
+public enum WGPUPredefinedColorSpace: String, CaseIterable, Sendable {
+    case srgb
+    case displayP3 = "display-p3"
+}
+
+/// `GPUCanvasToneMappingMode`.
+///
+/// `standard`는 표시할 때 SDR 범위(0~1)로 자른다. `extended`는 디스플레이가 SDR 흰색보다
+/// 더 밝게 낼 수 있는 여유(EDR)까지 값을 그대로 내보낸다.
+///
+/// `extended`를 쓰려면 두 가지가 함께 맞아야 한다:
+/// - 캔버스 포맷이 1.0을 넘는 값을 담을 수 있어야 한다 (`rgba16float`).
+/// - 셰이더가 **선형** 값을 써야 한다. 확장 색공간은 선형이므로 sRGB 인코딩을 하면 안 된다.
+public enum WGPUCanvasToneMappingMode: String, CaseIterable, Sendable {
+    case standard
+    case extended
+}
+
 /// 셰이더 소스 언어. WebGPU 명세는 WGSL만 정의하지만, 이 구현은 트랜스파일러를 우회해
 /// Metal Shading Language를 직접 넣는 탈출구를 제공한다 (`docs/WGSL.md` §5).
 public enum WGPUShaderLanguage: String, CaseIterable, Sendable {

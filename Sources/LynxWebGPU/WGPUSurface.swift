@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 import Metal
 import QuartzCore
 import LynxWebGPUCore
@@ -115,6 +116,21 @@ public final class WGPUMetalLayerSurface: WGPUSurface {
             layer.pixelFormat = pixelFormat
             layer.isOpaque = configuration.alphaMode == .opaque
             layer.framebufferOnly = !configuration.usage.contains(.copySrc)
+
+            // EDR — `extended`면 1.0을 넘는 값을 SDR 흰색 위쪽 여유 밝기로 그대로 내보낸다.
+            // 색공간을 확장 **선형**으로 함께 바꿔야 한다. 둘 중 하나만 걸면 값이 잘리거나
+            // 감마가 두 번 먹는다. (셰이더는 sRGB 인코딩 없이 선형 값을 그대로 써야 하고,
+            // 포맷도 1.0 초과를 담는 `rgba16float`여야 실제로 밝아진다.)
+            let extended = configuration.toneMappingMode == .extended
+            layer.wantsExtendedDynamicRangeContent = extended
+            let space: CFString
+            switch (configuration.colorSpace, extended) {
+            case (.srgb, false): space = CGColorSpace.sRGB
+            case (.srgb, true): space = CGColorSpace.extendedLinearSRGB
+            case (.displayP3, false): space = CGColorSpace.displayP3
+            case (.displayP3, true): space = CGColorSpace.extendedLinearDisplayP3
+            }
+            layer.colorspace = CGColorSpace(name: space)
         }
         if Thread.isMainThread {
             apply()
