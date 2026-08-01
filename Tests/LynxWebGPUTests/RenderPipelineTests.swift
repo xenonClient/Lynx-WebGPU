@@ -606,4 +606,52 @@ final class RenderPipelineTests: XCTestCase {
 
         try harness.assertPixel(x: 32, y: 32, equals: (255, 0, 0, 255), "앞쪽(빨강)이 남아야 한다")
     }
+
+    // MARK: - HDR 되읽기
+
+    func test_rgba16float_표면은_SDR범위_밖의_값을_잃지_않는다() throws {
+        // 삼각형 안쪽은 프래그먼트가 쓴 값, 바깥쪽은 클리어 값 — 둘 다 1.0을 넘겨서 확인한다.
+        // 8비트 표면이라면 여기서 전부 1.0으로 잘려 나간다.
+        let shader = """
+        @vertex
+        fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f {
+            var positions = array<vec2f, 3>(vec2f(-0.5, -0.5), vec2f(0.5, -0.5), vec2f(0.0, 0.5));
+            return vec4f(positions[index], 0.0, 1.0);
+        }
+        @fragment
+        fn fs_main() -> @location(0) vec4f {
+            return vec4f(2.5, 0.5, -0.25, 1.0);
+        }
+        """
+
+        harness.executeExpectingSuccess([
+            ["op": "configureCanvas", "canvas": "test", "format": "rgba16float"],
+            ["op": "createShaderModule", "id": 1, "code": shader],
+            ["op": "createRenderPipeline", "id": 2, "layout": "auto",
+             "vertex": ["module": 1, "entryPoint": "vs_main"],
+             "fragment": ["module": 1, "entryPoint": "fs_main", "targets": [["format": "rgba16float"]]]],
+            ["op": "getCurrentTexture", "id": 10, "canvas": "test"],
+            ["op": "createTextureView", "id": 11, "texture": 10],
+            ["op": "beginRenderPass", "colorAttachments": [[
+                "view": 11, "loadOp": "clear", "storeOp": "store",
+                "clearValue": ["r": 4.0, "g": 0.0, "b": 0.0, "a": 1.0],
+            ]]],
+            ["op": "setPipeline", "pipeline": 2],
+            ["op": "draw", "vertexCount": 3],
+            ["op": "endPass"],
+        ])
+
+        let readback = try harness.readback()
+        XCTAssertEqual(readback.format, .rgba16float)
+        XCTAssertEqual(readback.bytesPerRow, 64 * 8, "픽셀당 8바이트여야 한다")
+        XCTAssertEqual(readback.data.count, 64 * 64 * 8)
+
+        try harness.assertPixelFloat(
+            x: 32, y: 32, equals: SIMD4<Float>(2.5, 0.5, -0.25, 1),
+            "삼각형 내부 — 1.0 초과와 음수가 그대로 살아야 한다"
+        )
+        try harness.assertPixelFloat(
+            x: 1, y: 1, equals: SIMD4<Float>(4, 0, 0, 1), "클리어 값도 잘리지 않아야 한다"
+        )
+    }
 }

@@ -52,14 +52,21 @@ struct RenderHarness {
         }.joined(separator: "\n")
     }
 
-    /// 렌더 결과 픽셀 (RGBA, 0~255).
+    /// 렌더 결과를 포맷·행 간격과 함께 되읽는다.
+    func readback() throws -> WGPUPixelReadback {
+        try surface.readPixels(queue: context.queue)
+    }
+
+    /// 렌더 결과 픽셀을 채널 값 그대로 읽는다. float 표면이면 **1.0 초과·음수도 그대로** 나온다.
+    func pixelFloat(x: Int, y: Int) throws -> SIMD4<Float> {
+        try readback().rgba(x: x, y: y)
+    }
+
+    /// 렌더 결과 픽셀 (RGBA, 0~255). 8비트 표면용 — float 표면에는 `pixelFloat`를 쓴다.
     func pixel(x: Int, y: Int) throws -> (r: Int, g: Int, b: Int, a: Int) {
-        let data = try surface.readPixels(queue: context.queue)
-        let offset = (y * width + x) * 4
-        guard offset + 3 < data.count else {
-            throw WGPUError.validation("픽셀 (\(x), \(y))이 범위를 벗어났다")
-        }
-        return (Int(data[offset]), Int(data[offset + 1]), Int(data[offset + 2]), Int(data[offset + 3]))
+        let color = try pixelFloat(x: x, y: y)
+        let byte = { (value: Float) in Int((value * 255).rounded()) }
+        return (byte(color.x), byte(color.y), byte(color.z), byte(color.w))
     }
 
     /// 픽셀 색을 허용 오차와 함께 단언한다 (sRGB 변환·래스터화 오차 흡수).
@@ -84,10 +91,39 @@ struct RenderHarness {
         )
     }
 
+    /// float 채널 값을 허용 오차와 함께 단언한다. SDR 범위 밖(1.0 초과·음수)도 그대로 비교한다.
+    func assertPixelFloat(
+        x: Int,
+        y: Int,
+        equals expected: SIMD4<Float>,
+        tolerance: Float = 0.01,
+        _ message: String = "",
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        let actual = try pixelFloat(x: x, y: y)
+        let matches = (0..<4).allSatisfy { abs(actual[$0] - expected[$0]) <= tolerance }
+        XCTAssertTrue(
+            matches,
+            "픽셀 (\(x), \(y)) = \(actual), 기대 \(expected)\(message.isEmpty ? "" : " — \(message)")",
+            file: file, line: line
+        )
+    }
+
     /// 디버깅용 — 렌더 결과를 PNG로 떨군다 (`.tmp/` 아래).
+    /// float 표면은 0~1로 잘라서 8비트로 굽는다 (눈으로 볼 용도이므로 HDR 범위는 버린다).
     @discardableResult
     func dumpPNG(named name: String) -> URL? {
-        guard let data = try? surface.readPixels(queue: context.queue) else { return nil }
+        guard let readback = try? readback() else { return nil }
+        var data = Data(capacity: width * height * 4)
+        for y in 0..<height {
+            for x in 0..<width {
+                guard let color = try? readback.rgba(x: x, y: y) else { return nil }
+                for channel in 0..<4 {
+                    data.append(UInt8((min(max(color[channel], 0), 1) * 255).rounded()))
+                }
+            }
+        }
         let directory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             .appendingPathComponent(".tmp")
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
