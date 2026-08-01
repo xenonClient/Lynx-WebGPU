@@ -23,6 +23,7 @@ public final class WebGPUNativeModule: NSObject, LynxModule {
             "adapterInfo": NSStringFromSelector(#selector(adapterInfo)),
             "canvasInfo": NSStringFromSelector(#selector(canvasInfo(_:))),
             "readBuffer": NSStringFromSelector(#selector(readBuffer(_:callback:))),
+            "loadAsset": NSStringFromSelector(#selector(loadAsset(_:callback:))),
             "startFrameLoop": NSStringFromSelector(#selector(startFrameLoop(_:))),
             "stopFrameLoop": NSStringFromSelector(#selector(stopFrameLoop)),
             "reset": NSStringFromSelector(#selector(reset)),
@@ -97,6 +98,57 @@ public final class WebGPUNativeModule: NSObject, LynxModule {
             size: (params["size"] as? NSNumber)?.intValue,
             completion: callback
         )
+    }
+
+    // MARK: - 애셋
+
+    /// 앱 번들에 들어 있는 파일을 `ArrayBuffer`로 읽는다.
+    ///
+    /// 텍스처로 올릴 픽셀 데이터처럼 번들에 담기엔 크고 JS 소스에 박기엔 부담스러운 것을
+    /// 가져오는 통로다. 브라우저의 `fetch()`가 하던 역할을 최소한으로 대신한다.
+    ///
+    /// - Parameter params: `{"name": "hdr-sample.bin"}` — 번들 최상위의 파일 이름.
+    ///   경로 구분자나 `.`으로 시작하는 이름은 거부하고, 해석은 전적으로
+    ///   `Bundle.main.url(forResource:withExtension:)`에 맡긴다. 임의 경로를 만들지 않으므로
+    ///   번들 밖으로 벗어날 수 없다.
+    /// - Returns: 콜백으로 `{"ok": true, "data": ArrayBuffer, "byteLength": Int}`.
+    public func loadAsset(_ params: [String: Any], callback: @escaping LynxCallbackBlock) {
+        guard let name = params["name"] as? String, !name.isEmpty else {
+            callback(["ok": false, "errors": [WGPUError.validation("애셋 name이 필요하다").payload]])
+            return
+        }
+        // 경로 조작을 이름 단계에서 끊는다. 번들은 평평하므로 하위 경로를 받을 이유가 없다.
+        guard !name.contains("/"), !name.contains("\\"), !name.hasPrefix(".") else {
+            callback([
+                "ok": false,
+                "errors": [WGPUError.validation("애셋 이름에 경로를 쓸 수 없다: \(name)").payload],
+            ])
+            return
+        }
+
+        let base = (name as NSString).deletingPathExtension
+        let ext = (name as NSString).pathExtension
+        guard let url = Bundle.main.url(forResource: base, withExtension: ext.isEmpty ? nil : ext) else {
+            callback([
+                "ok": false,
+                "errors": [WGPUError.validation("번들에 '\(name)'이(가) 없다").payload],
+            ])
+            return
+        }
+
+        // 파일 크기가 수 MB에 이를 수 있어 JS 스레드에서 동기로 읽지 않는다.
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let data = try Data(contentsOf: url, options: .mappedIfSafe)
+                // `readBuffer`와 같은 규약 — `Data`를 그대로 실으면 Lynx가 `ArrayBuffer`로 바꿔 준다.
+                callback(["ok": true, "data": data, "byteLength": data.count])
+            } catch {
+                callback([
+                    "ok": false,
+                    "errors": [WGPUError.backend("애셋 '\(name)'을(를) 읽지 못했다: \(error)").payload],
+                ])
+            }
+        }
     }
 
     // MARK: - 프레임 루프
