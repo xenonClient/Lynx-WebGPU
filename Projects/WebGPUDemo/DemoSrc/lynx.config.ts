@@ -19,6 +19,7 @@ export default defineConfig({
       wgsl: './src/wgsl/index.tsx',
       arraybuffer: './src/arraybuffer/index.tsx',
       bench: './src/bench/index.tsx',
+      hdr: './src/hdr/index.tsx',
     },
   },
   output: {
