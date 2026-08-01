@@ -84,6 +84,26 @@ final class GPUPageViewController: UIViewController {
 `JS/webgpu.js`, `JS/webgpu.d.ts`, `JS/elements.d.ts`를 rspeedy 프로젝트의 `src/` 아래로 복사한다.
 사용법은 `docs/JS-AUTHORING.md`, 최소 예제는 `Examples/HelloTriangle.tsx` 참고.
 
+### 번들 애셋 읽기
+
+텍스처로 올릴 픽셀처럼 **JS 소스에 박기엔 큰 데이터**는 앱 번들에 파일로 넣고 `loadAsset`으로
+읽는다. 브라우저의 `fetch()`가 하던 역할을 최소한으로 대신한다.
+
+```js
+import { loadAsset } from './webgpu.js'
+
+const buffer = await loadAsset('hdr-sample.bin')   // ArrayBuffer
+device.queue.writeTexture({ texture }, new Uint8Array(buffer, offset, length), …)
+```
+
+- 파일은 **앱 타깃의 리소스**로 넣는다 (Tuist라면 `resources: ["Resources/**"]`).
+  리소스를 추가한 뒤에는 `tuist generate`를 다시 돌려야 한다 — glob은 생성 시점에 펼쳐진다.
+- 이름은 번들 최상위의 파일 이름이다. 경로 구분자나 `.`으로 시작하는 이름은 **거부한다** —
+  해석을 `Bundle.main.url(forResource:withExtension:)`에만 맡겨 번들 밖으로 나갈 수 없게 했다.
+- 네이티브가 `Data`로 돌려주면 Lynx가 `ArrayBuffer`로 바꿔 준다. base64 왕복이 없다.
+- 파일 읽기는 백그라운드 큐에서 하고 콜백으로 돌려준다 — 수 MB짜리를 JS 스레드에서
+  동기로 읽으면 프레임이 밀린다.
+
 ## 4. `<webgpu-canvas>`
 
 ```tsx
