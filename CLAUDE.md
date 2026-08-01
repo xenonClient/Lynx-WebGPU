@@ -93,6 +93,7 @@ JS/                     — webgpu.js(클라이언트 shim) / webgpu.d.ts(**JSDo
                           tests/(node:test — 코덱·캔버스 크기·수명)
 Examples/HelloTriangle.tsx  — ReactLynx 최소 예제
 Projects/WebGPUDemo/    — Tuist 데모 호스트 앱 (Sources/) + 데모 번들 rspeedy 소스 (DemoSrc/)
+                          Tools/ — 빌드 시점 애셋 변환 (HDR HEIC → GPU가 바로 먹는 바이너리)
 Tuist.swift · Workspace.swift — 데모 앱 전용. 라이브러리 자체는 SPM만으로 완결된다
 docs/                   — ARCHITECTURE / WEBGPU-API / WGSL / LYNX-INTEGRATION / JS-AUTHORING / TESTING
 .claude/skills/         — webgpu-command / wgsl-feature / gpu-smoke
@@ -162,6 +163,9 @@ git tag -a 0.2.0 -m "0.2.0 — 요약"
   "번들이 없다"를 띄운다** — glob은 생성 시점에 펼쳐진다. 라이브러리 쪽은 SPM이라 재생성이 필요 없다.
 - **시뮬레이터에는 터치 주입 수단이 없다** (`simctl`에 탭 API가 없고 `osascript` 클릭은 접근성 권한이 필요).
   터치로만 보이는 상태는 런치 인자로 고정해 캡처한다 (`-cardTilt` 참고 — initData로 JS까지 전달된다).
+- **EDR(HDR 출력)은 시뮬레이터에서 확인할 수 없다.** 실기기 디스플레이 기능이라 스크린샷에도
+  안 잡힌다. `hdr` 씬의 EDR 버튼은 실기기에서만 의미가 있다 (`docs/WEBGPU-API.md` §2).
+  값이 실제로 1.0을 넘는지는 같은 씬의 **클리핑 표시**로 확인한다 — 그건 화면과 무관하다.
 - **`<webgpu-canvas>`의 터치는 Lynx 표준 이벤트를 쓴다** (`bindtouchstart` 등). UIKit `touchesBegan`을
   가로채면 Lynx의 hitTest·pointer-events·버블링·제스처 아레나를 우회해 웹과 다르게 동작한다
   (`docs/LYNX-INTEGRATION.md` §5).
