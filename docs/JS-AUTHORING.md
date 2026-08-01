@@ -7,9 +7,12 @@
 ```
 src/
 ├── webgpu.js       — 클라이언트 shim (런타임)
-├── webgpu.d.ts     — 타입 선언
+├── webgpu.d.ts     — 타입 선언 (shim의 JSDoc에서 생성된다 — 손으로 고치지 말 것)
 └── elements.d.ts   — <webgpu-canvas> TSX 선언
 ```
+
+`JS/lynx-env.d.ts`와 `JS/tsconfig.json`은 **복사하지 않는다.** 이 라이브러리 자신의 타입 검사에만
+쓰는 파일이고, 번들 쪽 프로젝트에 넣으면 `@lynx-js/types`의 전역 선언과 겹칠 수 있다.
 
 ```tsx
 import gpu, { GPUBufferUsage, GPUTextureUsage, GPUShaderStage, startFrameLoop } from './webgpu.js'
@@ -86,10 +89,31 @@ submit에서 한 번에 나가고, 크기는 **제출 응답으로 갱신되는 
 (동기 조회는 `configure` 시점 1회뿐이다). 리사이즈는 다음 제출 응답에 반영되므로
 한 프레임 늦을 수 있다 — 즉시성이 필요하면 `bindcanvasresize`를 쓴다.
 
-큰 데이터를 매 프레임 올린다면 base64 인코딩 비용이 붙는다. 유니폼(수십~수백 바이트)은 문제없고,
-`writeTexture`/`writeBuffer` 모두 GPU 완주를 기다리지 않고 큐 순서를 타므로 수십 KB급 동적
-텍스처(예: 128×128 RGBA = 64KB)까지는 매 프레임 갱신이 실용적이다 (데모의 `dynamic` 씬).
-매 프레임 수 MB를 올린다면 스토리지 버퍼 + 컴퓨트 셰이더로 GPU 안에서 갱신하는 편이 낫다.
+### 바이트열 올리기·내리기
+
+바이트열은 **`ArrayBuffer`로 그대로** 브리지를 건넌다 (Lynx가 `NSData`로 바꿔 준다).
+문자열 인코딩이 없으므로 팽창도 인코딩 루프도 없다 — `writeBuffer`/`writeTexture`/`mapAsync`
+모두 같다. `writeTexture`/`writeBuffer`는 GPU 완주를 기다리지 않고 큐 순서를 탄다.
+
+데모 `bench` 씬으로 잰 업로드 비용 (Apple Silicon, 페이로드를 만드는 비용 + `execute` 왕복):
+
+| 페이로드 | 비용 | 60fps 프레임 예산(16.7ms) 대비 |
+|---|---|---|
+| 유니폼 1KB | 0.112 ms | 0.7% |
+| 동적 텍스처 128×128 RGBA (64KB) | 0.148 ms | 0.9% |
+| 텍스처 256×256 RGBA (256KB) | 0.188 ms | 1.1% |
+| 정점 스트림 1MB | 0.250 ms | 1.5% |
+
+**크기에 거의 비례하지 않는다** — 1KB와 1MB의 차이가 두 배 남짓이다. 브리지 왕복 자체가
+비용의 대부분이고 바이트 전송은 memcpy라서다. 그래서 업로드 크기보다 **왕복 횟수**를
+줄이는 것이 여전히 중요하다 (그래서 프레임당 1회 계약이 있다).
+
+수 MB를 매 프레임 올리는 것도 이제 프레임 예산 안에 들어오지만, 그 정도라면 애초에
+스토리지 버퍼 + 컴퓨트 셰이더로 GPU 안에서 갱신하는 편이 낫다 — 브리지를 아예 안 건넌다.
+
+`TypedArray`를 손으로 커맨드에 실으면 안 된다 — Lynx는 진짜 `ArrayBuffer`만 알아보고 뷰는
+평범한 객체로 바꿔 **오류 없이 조용히** 깨진다. 셰임의 `writeBuffer`/`writeTexture`에 넘기면
+알아서 풀어 주므로 신경 쓸 일은 없다.
 
 ## 6. 캔버스 크기 다루기
 

@@ -131,7 +131,9 @@ public final class LynxWebGPUContext {
             defer { self.executionLock.unlock() }
             do {
                 let data = try target.read(offset: offset, length: length)
-                completion(["ok": true, "data": data.base64EncodedString(), "byteLength": data.count])
+                // `Data`를 그대로 싣는다 — Lynx가 `NSData`를 JS의 `ArrayBuffer`로 바꿔 준다.
+                // base64로 만들면 33% 팽창에 JS 쪽 디코딩 루프까지 붙는다.
+                completion(["ok": true, "data": data, "byteLength": data.count])
             } catch let error as WGPUError {
                 completion(["ok": false, "errors": [error.payload]])
             } catch {
