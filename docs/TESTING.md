@@ -31,11 +31,19 @@ JS 클라이언트(shim) 테스트 — 의존성 없이 node 내장 러너로 �
 `NativeModules.WebGPU`를 목으로 바꿔 커맨드 페이로드·왕복 횟수를 단언한다:
 
 ```zsh
-cd JS && npm test        # node --expose-gc --test 'tests/*.test.mjs'
+cd JS && npm test            # NODE_OPTIONS=--expose-gc node --test 'tests/*.test.mjs' — 16개
+cd JS && npm run typecheck   # JSDoc 기준 타입 검사
 ```
+
+`--expose-gc`는 **`NODE_OPTIONS`로 넘겨야 한다.** `node --expose-gc --test`로 주면 러너가
+테스트 파일을 도는 자식 프로세스에 그 플래그를 물려주지 않아 `globalThis.gc`가 없고,
+GC 수명 테스트 3개가 **조용히 스킵된다** (실패가 아니라 스킵이라 통과처럼 보인다).
 
 base64 코덱은 Node의 `Buffer` 구현과 대조한다 — 패딩(0~2바이트 꼬리)과
 인코더 청크 경계(3072바이트)를 모두 밟는 길이들로 라운드트립을 검증한다.
+
+타입 검사는 `JS/tsconfig.json`(`checkJs`)이 JSDoc을 읽어 돌린다. 브라우저 전역을 실수로 쓰는 것을
+막으려고 **DOM lib을 켜지 않고**, 호스트가 실제로 주는 것만 `JS/lynx-env.d.ts`에 적어 둔다.
 
 Lynx 브리지 컴파일 확인 — SPM 크로스 빌드를 쓴다 (루트의 Tuist 워크스페이스가
 `xcodebuild`의 패키지 스킴 탐색을 가리므로). `--scratch-path`를 꼭 준다 —

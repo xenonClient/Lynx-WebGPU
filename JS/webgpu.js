@@ -42,6 +42,51 @@ export const GPUColorWrite = { RED: 0x1, GREEN: 0x2, BLUE: 0x4, ALPHA: 0x8, ALL:
 export const GPUMapMode = { READ: 0x1, WRITE: 0x2 };
 
 // ---------------------------------------------------------------------------
+// 공용 타입 — 여기 정의가 `npm run types`로 webgpu.d.ts에 그대로 나간다
+// ---------------------------------------------------------------------------
+
+/**
+ * 커맨드 실행 중 발생한 오류.
+ * @typedef {WGPUErrorPayload} WGPUError
+ */
+
+/** @typedef {{width: number, height?: number, depthOrArrayLayers?: number}} GPUExtent3DDict */
+/** @typedef {GPUExtent3DDict | number[]} GPUExtent3D */
+/** @typedef {{x?: number, y?: number, z?: number}} GPUOrigin3DDict */
+/** @typedef {{r: number, g: number, b: number, a: number}} GPUColorDict */
+/** @typedef {GPUColorDict | number[]} GPUColor */
+
+/** `writeBuffer`/`writeTexture`가 받는 바이트열. */
+/** @typedef {ArrayBuffer | ArrayBufferView | number[]} GPUDataSource */
+
+/**
+ * 커맨드 스트림의 한 항목.
+ *
+ * 필드는 네이티브의 `WGPUCommandInterpreter`가 **문자열 키로** 읽는다. 이름이 어긋나도
+ * 여기서는 잡히지 않으므로, op를 추가·수정할 때는 반드시 양쪽을 함께 고칠 것
+ * (`.claude/skills/webgpu-command/SKILL.md`).
+ * @typedef {Record<string, any>} GPUCommand
+ */
+
+// --- 디스크립터 -------------------------------------------------------------
+// 파이프라인처럼 필드가 깊고 넓은 것은 Record<string, any>로 둔다. 여기서 스펙 전체를
+// 다시 쓰는 것보다, 네이티브의 디스크립터 디코더가 경로까지 붙여 오류를 내는 편이 낫다.
+
+/** @typedef {{size: number, usage: number, mappedAtCreation?: boolean, label?: string}} GPUBufferDescriptor */
+/** @typedef {{size: GPUExtent3D, format: string, usage: number, dimension?: string, mipLevelCount?: number, sampleCount?: number, label?: string}} GPUTextureDescriptor */
+/** @typedef {{code: string, language?: 'wgsl' | 'msl', label?: string}} GPUShaderModuleDescriptor */
+/** @typedef {{entries: Record<string, any>[], label?: string}} GPUBindGroupLayoutDescriptor */
+/** @typedef {{bindGroupLayouts: GPUPipelineLayoutSource[], label?: string}} GPUPipelineLayoutDescriptor */
+/** @typedef {{layout: GPUBindGroupLayout, entries: {binding: number, resource: any}[], label?: string}} GPUBindGroupDescriptor */
+/** @typedef {{device: GPUDevice, format?: string, usage?: number, alphaMode?: 'opaque' | 'premultiplied'}} GPUCanvasConfiguration */
+
+/** `createPipelineLayout`이 받는 레이아웃 — id만 있으면 된다. */
+/** @typedef {{id: number}} GPUPipelineLayoutSource */
+
+/** `GPUTexture` 생성자 내부용 — 스왑체인 텍스처는 usage/format이 없을 수 있다. */
+/** @typedef {{size?: GPUExtent3D, format?: string, usage?: number, label?: string, frameScoped?: boolean}} GPUTextureInit */
+
+// ---------------------------------------------------------------------------
 // 바이너리 유틸 — PrimJS에는 btoa/atob가 없다
 // ---------------------------------------------------------------------------
 
@@ -65,9 +110,15 @@ const BASE64_VALUES = (() => {
 // 텍스처 업로드처럼 수십 KB~수 MB가 지나가는 경로다. 문자열 누적(`+=`)과 문자당
 // `indexOf` 스캔은 여기서 바로 병목이 되므로, 룩업 테이블로 문자 코드를 만든 뒤
 // `String.fromCharCode`를 청크 단위로 호출해 O(n)으로 처리한다.
+/**
+ * @param {Uint8Array} bytes
+ * @returns {string}
+ */
 function encodeBase64(bytes) {
   const length = bytes.length;
+  /** @type {string[]} */
   const parts = [];
+  /** @type {number[]} */
   const codes = [];
   let index = 0;
   const tripleEnd = length - (length % 3);
@@ -106,6 +157,10 @@ function encodeBase64(bytes) {
   return parts.join('');
 }
 
+/**
+ * @param {string} text
+ * @returns {Uint8Array}
+ */
 function decodeBase64(text) {
   const length = text.length;
   // 유효 문자 수를 먼저 세어 정확한 크기로 할당한다 (패딩·공백·개행은 건너뛴다).
@@ -133,13 +188,22 @@ function decodeBase64(text) {
   return bytes;
 }
 
-/** TypedArray / ArrayBuffer / 숫자 배열을 커맨드에 실을 base64로 바꾼다. */
+/**
+ * TypedArray / ArrayBuffer / 숫자 배열을 커맨드에 실을 base64로 바꾼다.
+ *
+ * @param {GPUDataSource} source
+ * @param {number} [elementOffset] 원소 단위 시작 위치 (DataView는 바이트 단위)
+ * @param {number} [elementCount] 원소 개수. 생략하면 끝까지
+ * @returns {string}
+ */
 function toBase64(source, elementOffset, elementCount) {
+  /** @type {Uint8Array} */
   let bytes;
   if (source instanceof ArrayBuffer) {
     bytes = new Uint8Array(source);
   } else if (ArrayBuffer.isView(source)) {
-    const elementSize = source.BYTES_PER_ELEMENT || 1;
+    // DataView에는 BYTES_PER_ELEMENT가 없다 — 그 경우 오프셋을 바이트로 해석한다.
+    const elementSize = /** @type {{BYTES_PER_ELEMENT?: number}} */ (source).BYTES_PER_ELEMENT || 1;
     const start = source.byteOffset + (elementOffset || 0) * elementSize;
     const length =
       elementCount === undefined ? source.byteLength - (elementOffset || 0) * elementSize
@@ -188,26 +252,36 @@ const canvasSizeCache = new Map();
 
 class Recorder {
   constructor() {
+    /** @type {GPUCommand[]} */
     this.pending = [];
     this.nextId = 1;
+    /** @type {((error: WGPUError, text: string) => void)[]} */
     this.errorHandlers = [];
   }
 
+  /** @returns {number} 새 핸들 id */
   allocate() {
     return this.nextId++;
   }
 
+  /**
+   * @param {GPUCommand} command
+   * @returns {GPUCommand}
+   */
   push(command) {
     this.pending.push(command);
     return command;
   }
 
-  /** 모아 둔 명령을 네이티브로 넘긴다. 실행할 것이 없으면 아무것도 하지 않는다. */
+  /**
+   * 모아 둔 명령을 네이티브로 넘긴다. 실행할 것이 없으면 아무것도 하지 않는다.
+   * @returns {WGPUExecuteResult}
+   */
   flush() {
     if (this.pending.length === 0) return { ok: true, commandCount: 0 };
     const commands = this.pending;
     this.pending = [];
-    const result = nativeModule().execute({ commands }) || {};
+    const result = /** @type {WGPUExecuteResult} */ (nativeModule().execute({ commands }) || {});
     if (result.canvases) {
       for (const canvasId in result.canvases) {
         const info = result.canvases[canvasId];
@@ -220,6 +294,7 @@ class Recorder {
     return result;
   }
 
+  /** @param {WGPUError[]} errors */
   report(errors) {
     for (const error of errors) {
       const text = `[WebGPU:${error.kind}] ${error.path ? error.path + ' — ' : ''}${error.message}`;
@@ -243,6 +318,7 @@ class Recorder {
  * PrimJS처럼 지원이 없는 엔진에서는 조용히 꺼진다 — **명시적 destroy()가 여전히 정답**이고,
  * 이 장치는 놓친 것을 주워 담는 안전망이다 (docs/JS-AUTHORING.md §8).
  */
+/** @type {FinalizationRegistry<{recorder: Recorder, id: number}> | null} */
 const autoReleasePool =
   typeof FinalizationRegistry === 'function'
     ? new FinalizationRegistry((held) => {
@@ -251,9 +327,16 @@ const autoReleasePool =
     : null;
 
 class GPUObjectBase {
+  /**
+   * @param {GPUDevice} device
+   * @param {number} id JS가 발급한 핸들
+   * @param {string} [label]
+   * @param {boolean} [frameScoped] 프레임 끝에 네이티브가 회수하는 핸들이면 true
+   */
   constructor(device, id, label, frameScoped) {
     this._device = device;
-    this._recorder = device ? device._recorder : null;
+    // 생성 경로가 모두 GPUDevice를 넘기므로 실제로는 항상 Recorder다. 방어 분기는 그대로 둔다.
+    this._recorder = /** @type {Recorder} */ (device ? device._recorder : null);
     this.id = id;
     this.label = label || '';
     // 프레임 스코프 핸들(스왑체인 텍스처와 그 뷰)은 네이티브가 프레임 끝에 회수한다 — 등록 제외.
@@ -270,11 +353,18 @@ class GPUObjectBase {
 }
 
 class GPUBuffer extends GPUObjectBase {
+  /**
+   * @param {GPUDevice} device
+   * @param {number} id
+   * @param {GPUBufferDescriptor} descriptor
+   */
   constructor(device, id, descriptor) {
     super(device, id, descriptor.label);
     this.size = descriptor.size;
     this.usage = descriptor.usage;
+    /** @type {ArrayBuffer | null} */
     this._mapped = null;
+    /** @type {ArrayBuffer | null} */
     this._mappedRange = null;
   }
 
@@ -286,7 +376,7 @@ class GPUBuffer extends GPUObjectBase {
     return this._mapped;
   }
 
-  /** 매핑을 풀면서 실제 생성 명령(초기 데이터 포함)을 기록한다. */
+  /** 매핑을 풀면서 실제 생성 명령(초기 데이터 포함)을 기록한다. @returns {void} */
   unmap() {
     if (!this._mapped) return;
     this._recorder.push({
@@ -302,31 +392,50 @@ class GPUBuffer extends GPUObjectBase {
 
   /**
    * 버퍼 내용을 읽는다. WebGPU의 `mapAsync` + `getMappedRange`를 하나로 합친 형태다.
+   *
+   * @param {number} [_mode] 스펙 호환용 — 이 구현은 보지 않는다
+   * @param {number} [offset] 바이트 오프셋
+   * @param {number} [size] 읽을 바이트 수. 생략하면 끝까지
    * @returns {Promise<ArrayBuffer>}
    */
   async mapAsync(_mode, offset, size) {
     this._recorder.flush();
-    const result = await new Promise((resolve) => {
-      nativeModule().readBuffer({ buffer: this.id, offset: offset || 0, size }, resolve);
-    });
+    const result = await /** @type {Promise<WGPUReadBufferResult | undefined>} */ (
+      new Promise((resolve) => {
+        nativeModule().readBuffer({ buffer: this.id, offset: offset || 0, size }, resolve);
+      })
+    );
     if (!result || result.ok === false) {
       this._recorder.report((result && result.errors) || []);
       throw new Error('버퍼 읽기 실패');
     }
-    this._mapped = decodeBase64(result.data).buffer;
-    return this._mapped;
+    const mapped = /** @type {ArrayBuffer} */ (decodeBase64(result.data).buffer);
+    this._mapped = mapped;
+    return mapped;
   }
 }
 
 class GPUTexture extends GPUObjectBase {
+  /**
+   * @param {GPUDevice} device
+   * @param {number} id
+   * @param {GPUTextureInit} [descriptor]
+   */
   constructor(device, id, descriptor) {
     super(device, id, descriptor && descriptor.label, descriptor && descriptor.frameScoped);
     this._frameScoped = !!(descriptor && descriptor.frameScoped);
-    this.width = descriptor && descriptor.size ? descriptor.size.width || descriptor.size[0] : 0;
-    this.height = descriptor && descriptor.size ? descriptor.size.height || descriptor.size[1] || 1 : 0;
+    // size는 dict({width,…})와 배열([w,h,…])을 모두 받는다 — 덕 타이핑 그대로 읽는다.
+    /** @type {any} */
+    const size = descriptor && descriptor.size;
+    this.width = size ? size.width || size[0] : 0;
+    this.height = size ? size.height || size[1] || 1 : 0;
     this.format = descriptor && descriptor.format;
   }
 
+  /**
+   * @param {Record<string, any>} [descriptor]
+   * @returns {GPUTextureView}
+   */
   createView(descriptor) {
     const id = this._recorder.allocate();
     this._recorder.push({ op: 'createTextureView', id, texture: this.id, ...(descriptor || {}) });
@@ -343,7 +452,11 @@ class GPUPipelineLayout extends GPUObjectBase {}
 class GPUBindGroup extends GPUObjectBase {}
 
 class GPUPipelineBase extends GPUObjectBase {
-  /** `layout: 'auto'` 파이프라인이 유도한 바인드 그룹 레이아웃을 꺼낸다. */
+  /**
+   * `layout: 'auto'` 파이프라인이 유도한 바인드 그룹 레이아웃을 꺼낸다.
+   * @param {number} index
+   * @returns {GPUBindGroupLayout}
+   */
   getBindGroupLayout(index) {
     const id = this._recorder.allocate();
     this._recorder.push({ op: 'getBindGroupLayout', id, pipeline: this.id, index });
@@ -360,40 +473,75 @@ class GPUComputePipeline extends GPUPipelineBase {}
 
 /** 인코더는 자기 명령을 따로 모았다가 `finish()` → `submit()`에서 스트림에 합쳐진다. */
 class GPUCommandBuffer {
+  /** @param {GPUCommand[]} commands */
   constructor(commands) {
     this.commands = commands;
   }
 }
 
 class GPUPassEncoderBase {
+  /** @param {GPUCommand[]} commands */
   constructor(commands) {
     this._commands = commands;
   }
 
+  /**
+   * @param {GPURenderPipeline | GPUComputePipeline} pipeline
+   * @returns {void}
+   */
   setPipeline(pipeline) {
     this._commands.push({ op: 'setPipeline', pipeline: pipeline.id });
   }
 
+  /**
+   * @param {number} index
+   * @param {GPUBindGroup} bindGroup
+   * @param {number[]} [dynamicOffsets]
+   * @returns {void}
+   */
   setBindGroup(index, bindGroup, dynamicOffsets) {
+    /** @type {GPUCommand} */
     const command = { op: 'setBindGroup', index, bindGroup: bindGroup.id };
     if (dynamicOffsets && dynamicOffsets.length) command.dynamicOffsets = Array.from(dynamicOffsets);
     this._commands.push(command);
   }
 
+  /** @returns {void} */
   end() {
     this._commands.push({ op: 'endPass' });
   }
 }
 
 class GPURenderPassEncoder extends GPUPassEncoderBase {
+  /**
+   * @param {number} slot
+   * @param {GPUBuffer} buffer
+   * @param {number} [offset]
+   * @returns {void}
+   */
   setVertexBuffer(slot, buffer, offset) {
     this._commands.push({ op: 'setVertexBuffer', slot, buffer: buffer.id, offset: offset || 0 });
   }
 
+  /**
+   * @param {GPUBuffer} buffer
+   * @param {'uint16' | 'uint32'} format
+   * @param {number} [offset]
+   * @returns {void}
+   */
   setIndexBuffer(buffer, format, offset) {
     this._commands.push({ op: 'setIndexBuffer', buffer: buffer.id, format, offset: offset || 0 });
   }
 
+  /**
+   * @param {number} x
+   * @param {number} y
+   * @param {number} width
+   * @param {number} height
+   * @param {number} [minDepth]
+   * @param {number} [maxDepth]
+   * @returns {void}
+   */
   setViewport(x, y, width, height, minDepth, maxDepth) {
     this._commands.push({
       op: 'setViewport', x, y, width, height,
@@ -402,18 +550,40 @@ class GPURenderPassEncoder extends GPUPassEncoderBase {
     });
   }
 
+  /**
+   * @param {number} x
+   * @param {number} y
+   * @param {number} width
+   * @param {number} height
+   * @returns {void}
+   */
   setScissorRect(x, y, width, height) {
     this._commands.push({ op: 'setScissorRect', x, y, width, height });
   }
 
+  /**
+   * @param {GPUColor} color
+   * @returns {void}
+   */
   setBlendConstant(color) {
     this._commands.push({ op: 'setBlendConstant', color });
   }
 
+  /**
+   * @param {number} reference
+   * @returns {void}
+   */
   setStencilReference(reference) {
     this._commands.push({ op: 'setStencilReference', reference });
   }
 
+  /**
+   * @param {number} vertexCount
+   * @param {number} [instanceCount]
+   * @param {number} [firstVertex]
+   * @param {number} [firstInstance]
+   * @returns {void}
+   */
   draw(vertexCount, instanceCount, firstVertex, firstInstance) {
     this._commands.push({
       op: 'draw', vertexCount,
@@ -423,6 +593,14 @@ class GPURenderPassEncoder extends GPUPassEncoderBase {
     });
   }
 
+  /**
+   * @param {number} indexCount
+   * @param {number} [instanceCount]
+   * @param {number} [firstIndex]
+   * @param {number} [baseVertex]
+   * @param {number} [firstInstance]
+   * @returns {void}
+   */
   drawIndexed(indexCount, instanceCount, firstIndex, baseVertex, firstInstance) {
     this._commands.push({
       op: 'drawIndexed', indexCount,
@@ -435,25 +613,41 @@ class GPURenderPassEncoder extends GPUPassEncoderBase {
 }
 
 class GPUComputePassEncoder extends GPUPassEncoderBase {
+  /**
+   * @param {number} x
+   * @param {number} [y]
+   * @param {number} [z]
+   * @returns {void}
+   */
   dispatchWorkgroups(x, y, z) {
     this._commands.push({ op: 'dispatchWorkgroups', x: x || 1, y: y || 1, z: z || 1 });
   }
 }
 
 class GPUCommandEncoder {
+  /** @param {GPUDevice} device */
   constructor(device) {
     this._device = device;
+    /** @type {GPUCommand[]} */
     this._commands = [];
   }
 
+  /**
+   * @param {Record<string, any>} descriptor
+   * @returns {GPURenderPassEncoder}
+   */
   beginRenderPass(descriptor) {
-    const colorAttachments = (descriptor.colorAttachments || []).map((attachment) => ({
-      view: attachment.view.id,
-      resolveTarget: attachment.resolveTarget ? attachment.resolveTarget.id : undefined,
-      loadOp: attachment.loadOp || 'clear',
-      storeOp: attachment.storeOp || 'store',
-      clearValue: attachment.clearValue,
-    }));
+    const colorAttachments = (descriptor.colorAttachments || []).map(
+      /** @param {Record<string, any>} attachment */
+      (attachment) => ({
+        view: attachment.view.id,
+        resolveTarget: attachment.resolveTarget ? attachment.resolveTarget.id : undefined,
+        loadOp: attachment.loadOp || 'clear',
+        storeOp: attachment.storeOp || 'store',
+        clearValue: attachment.clearValue,
+      })
+    );
+    /** @type {GPUCommand} */
     const command = { op: 'beginRenderPass', colorAttachments, label: descriptor.label };
     if (descriptor.depthStencilAttachment) {
       const depth = descriptor.depthStencilAttachment;
@@ -463,11 +657,20 @@ class GPUCommandEncoder {
     return new GPURenderPassEncoder(this._commands);
   }
 
+  /** @returns {GPUComputePassEncoder} */
   beginComputePass() {
     this._commands.push({ op: 'beginComputePass' });
     return new GPUComputePassEncoder(this._commands);
   }
 
+  /**
+   * @param {GPUBuffer} source
+   * @param {number} sourceOffset
+   * @param {GPUBuffer} destination
+   * @param {number} destinationOffset
+   * @param {number} size
+   * @returns {void}
+   */
   copyBufferToBuffer(source, sourceOffset, destination, destinationOffset, size) {
     this._commands.push({
       op: 'copyBufferToBuffer',
@@ -475,6 +678,12 @@ class GPUCommandEncoder {
     });
   }
 
+  /**
+   * @param {{texture: GPUTexture} & Record<string, any>} source
+   * @param {{buffer: GPUBuffer} & Record<string, any>} destination
+   * @param {GPUExtent3D} copySize
+   * @returns {void}
+   */
   copyTextureToBuffer(source, destination, copySize) {
     this._commands.push({
       op: 'copyTextureToBuffer',
@@ -484,6 +693,12 @@ class GPUCommandEncoder {
     });
   }
 
+  /**
+   * @param {{buffer: GPUBuffer} & Record<string, any>} source
+   * @param {{texture: GPUTexture} & Record<string, any>} destination
+   * @param {GPUExtent3D} copySize
+   * @returns {void}
+   */
   copyBufferToTexture(source, destination, copySize) {
     this._commands.push({
       op: 'copyBufferToTexture',
@@ -493,6 +708,12 @@ class GPUCommandEncoder {
     });
   }
 
+  /**
+   * @param {{texture: GPUTexture} & Record<string, any>} source
+   * @param {{texture: GPUTexture} & Record<string, any>} destination
+   * @param {GPUExtent3D} copySize
+   * @returns {void}
+   */
   copyTextureToTexture(source, destination, copySize) {
     this._commands.push({
       op: 'copyTextureToTexture',
@@ -502,6 +723,7 @@ class GPUCommandEncoder {
     });
   }
 
+  /** @returns {GPUCommandBuffer} */
   finish() {
     const commands = this._commands;
     this._commands = [];
@@ -514,11 +736,20 @@ class GPUCommandEncoder {
 // ---------------------------------------------------------------------------
 
 class GPUQueue {
+  /** @param {GPUDevice} device */
   constructor(device) {
     this._device = device;
     this._recorder = device._recorder;
   }
 
+  /**
+   * @param {GPUBuffer} buffer
+   * @param {number} bufferOffset
+   * @param {GPUDataSource} data
+   * @param {number} [dataOffset] 원소 단위 시작 위치
+   * @param {number} [size] 원소 개수
+   * @returns {void}
+   */
   writeBuffer(buffer, bufferOffset, data, dataOffset, size) {
     this._recorder.push({
       op: 'writeBuffer',
@@ -528,6 +759,13 @@ class GPUQueue {
     });
   }
 
+  /**
+   * @param {{texture: GPUTexture, mipLevel?: number, origin?: GPUOrigin3DDict}} destination
+   * @param {GPUDataSource} data
+   * @param {{bytesPerRow: number, rowsPerImage?: number}} dataLayout
+   * @param {GPUExtent3D} size
+   * @returns {void}
+   */
   writeTexture(destination, data, dataLayout, size) {
     this._recorder.push({
       op: 'writeTexture',
@@ -541,7 +779,11 @@ class GPUQueue {
     });
   }
 
-  /** 인코더가 모은 명령을 스트림에 합쳐 **한 번에** 네이티브로 보낸다. */
+  /**
+   * 인코더가 모은 명령을 스트림에 합쳐 **한 번에** 네이티브로 보낸다.
+   * @param {GPUCommandBuffer[]} commandBuffers
+   * @returns {WGPUExecuteResult}
+   */
   submit(commandBuffers) {
     for (const commandBuffer of commandBuffers || []) {
       for (const command of commandBuffer.commands) this._recorder.push(command);
@@ -549,6 +791,7 @@ class GPUQueue {
     return this._recorder.flush();
   }
 
+  /** @returns {Promise<void>} */
   onSubmittedWorkDone() {
     this._recorder.flush();
     return Promise.resolve();
@@ -556,6 +799,7 @@ class GPUQueue {
 }
 
 class GPUDevice {
+  /** @param {GPUAdapter} adapter */
   constructor(adapter) {
     this.adapter = adapter;
     this.limits = adapter.limits;
@@ -563,11 +807,19 @@ class GPUDevice {
     this.queue = new GPUQueue(this);
   }
 
-  /** 커맨드 실행 오류 핸들러 (`{kind, message, path}`). 등록하지 않으면 console.error로 나간다. */
+  /**
+   * 커맨드 실행 오류 핸들러 (`{kind, message, path}`). 등록하지 않으면 console.error로 나간다.
+   * @param {(error: WGPUError, text: string) => void} handler
+   * @returns {void}
+   */
   onError(handler) {
     this._recorder.errorHandlers.push(handler);
   }
 
+  /**
+   * @param {GPUBufferDescriptor} descriptor
+   * @returns {GPUBuffer}
+   */
   createBuffer(descriptor) {
     const id = this._recorder.allocate();
     const buffer = new GPUBuffer(this, id, descriptor);
@@ -583,18 +835,30 @@ class GPUDevice {
     return buffer;
   }
 
+  /**
+   * @param {GPUTextureDescriptor} descriptor
+   * @returns {GPUTexture}
+   */
   createTexture(descriptor) {
     const id = this._recorder.allocate();
     this._recorder.push({ op: 'createTexture', id, ...descriptor });
     return new GPUTexture(this, id, descriptor);
   }
 
+  /**
+   * @param {Record<string, any>} [descriptor]
+   * @returns {GPUSampler}
+   */
   createSampler(descriptor) {
     const id = this._recorder.allocate();
     this._recorder.push({ op: 'createSampler', id, ...(descriptor || {}) });
     return new GPUSampler(this, id, descriptor && descriptor.label);
   }
 
+  /**
+   * @param {GPUShaderModuleDescriptor} descriptor
+   * @returns {GPUShaderModule}
+   */
   createShaderModule(descriptor) {
     const id = this._recorder.allocate();
     this._recorder.push({
@@ -604,12 +868,20 @@ class GPUDevice {
     return new GPUShaderModule(this, id, descriptor.label);
   }
 
+  /**
+   * @param {GPUBindGroupLayoutDescriptor} descriptor
+   * @returns {GPUBindGroupLayout}
+   */
   createBindGroupLayout(descriptor) {
     const id = this._recorder.allocate();
     this._recorder.push({ op: 'createBindGroupLayout', id, ...descriptor });
     return new GPUBindGroupLayout(this, id, descriptor.label);
   }
 
+  /**
+   * @param {GPUPipelineLayoutDescriptor} descriptor
+   * @returns {GPUPipelineLayout}
+   */
   createPipelineLayout(descriptor) {
     const id = this._recorder.allocate();
     this._recorder.push({
@@ -620,6 +892,10 @@ class GPUDevice {
     return new GPUPipelineLayout(this, id, descriptor.label);
   }
 
+  /**
+   * @param {GPUBindGroupDescriptor} descriptor
+   * @returns {GPUBindGroup}
+   */
   createBindGroup(descriptor) {
     const id = this._recorder.allocate();
     this._recorder.push({
@@ -634,8 +910,13 @@ class GPUDevice {
     return new GPUBindGroup(this, id, descriptor.label);
   }
 
+  /**
+   * @param {Record<string, any>} descriptor
+   * @returns {GPURenderPipeline}
+   */
   createRenderPipeline(descriptor) {
     const id = this._recorder.allocate();
+    /** @type {GPUCommand} */
     const command = {
       op: 'createRenderPipeline', id,
       layout: descriptor.layout && descriptor.layout.id !== undefined ? descriptor.layout.id : 'auto',
@@ -652,6 +933,10 @@ class GPUDevice {
     return new GPURenderPipeline(this, id, descriptor.label);
   }
 
+  /**
+   * @param {Record<string, any>} descriptor
+   * @returns {GPUComputePipeline}
+   */
   createComputePipeline(descriptor) {
     const id = this._recorder.allocate();
     this._recorder.push({
@@ -663,11 +948,12 @@ class GPUDevice {
     return new GPUComputePipeline(this, id, descriptor.label);
   }
 
+  /** @returns {GPUCommandEncoder} */
   createCommandEncoder() {
     return new GPUCommandEncoder(this);
   }
 
-  /** 모든 GPU 객체를 버린다 (페이지 이탈 시 호출). */
+  /** 모든 GPU 객체를 버린다 (페이지 이탈 시 호출). @returns {void} */
   destroy() {
     this._recorder.pending = [];
     canvasSizeCache.clear();
@@ -675,6 +961,10 @@ class GPUDevice {
   }
 }
 
+/**
+ * @param {any} resource GPUBuffer · GPUSampler · GPUTextureView 또는 `{buffer, offset?, size?}`
+ * @returns {Record<string, any>}
+ */
 function serializeBindingResource(resource) {
   if (resource instanceof GPUSampler) return { sampler: resource.id };
   if (resource instanceof GPUTextureView) return { textureView: resource.id };
@@ -690,12 +980,18 @@ function serializeBindingResource(resource) {
 // ---------------------------------------------------------------------------
 
 class GPUCanvasContext {
+  /** @param {string} canvasId `<webgpu-canvas canvas-id="…">` 의 값 */
   constructor(canvasId) {
     this.canvasId = canvasId;
+    /** @type {GPUDevice | null} */
     this._device = null;
     this.format = 'bgra8unorm';
   }
 
+  /**
+   * @param {GPUCanvasConfiguration} configuration
+   * @returns {void}
+   */
   configure(configuration) {
     this._device = configuration.device;
     this.format = configuration.format || 'bgra8unorm';
@@ -710,7 +1006,10 @@ class GPUCanvasContext {
     this._fetchSize();
   }
 
-  /** 이번 프레임의 스왑체인 텍스처. 프레임이 끝나면 무효해진다 (브라우저와 같은 규칙). */
+  /**
+   * 이번 프레임의 스왑체인 텍스처. 프레임이 끝나면 무효해진다 (브라우저와 같은 규칙).
+   * @returns {GPUTexture}
+   */
   getCurrentTexture() {
     if (!this._device) throw new Error('configure()를 먼저 호출해야 한다');
     const id = this._device._recorder.allocate();
@@ -729,6 +1028,8 @@ class GPUCanvasContext {
    * 제출(`submit`) 응답으로 갱신되는 캐시를 읽으므로 프레임 안에서 불러도 왕복이 없다.
    * 리사이즈 직후 아직 제출이 없었다면 한 프레임 이전 값일 수 있다 — 즉시성이 필요하면
    * `<webgpu-canvas>`의 `bindcanvasresize` 이벤트를 쓸 것.
+   *
+   * @returns {{width: number, height: number}}
    */
   getSize() {
     const cached = canvasSizeCache.get(this.canvasId);
@@ -736,7 +1037,10 @@ class GPUCanvasContext {
     return this._fetchSize();
   }
 
-  /** 동기 네이티브 조회 — 캐시가 비어 있을 때만 쓴다. */
+  /**
+   * 동기 네이티브 조회 — 캐시가 비어 있을 때만 쓴다.
+   * @returns {{width: number, height: number}}
+   */
   _fetchSize() {
     const info = nativeModule().canvasInfo({ canvas: this.canvasId }) || {};
     const size = { width: info.width || 0, height: info.height || 0 };
@@ -753,6 +1057,7 @@ class GPUCanvasContext {
 // ---------------------------------------------------------------------------
 
 class GPUAdapter {
+  /** @param {WGPUAdapterInfo} info */
   constructor(info) {
     this.name = info.name;
     this.backend = info.backend;
@@ -760,25 +1065,36 @@ class GPUAdapter {
     this.hasUnifiedMemory = info.hasUnifiedMemory;
   }
 
+  /** @returns {Promise<GPUDevice>} */
   async requestDevice() {
     return new GPUDevice(this);
   }
 }
 
 export const gpu = {
-  /** `navigator.gpu.requestAdapter()`. */
+  /**
+   * `navigator.gpu.requestAdapter()`.
+   * @returns {Promise<GPUAdapter | null>}
+   */
   async requestAdapter() {
     const info = nativeModule().adapterInfo();
     if (!info || info.ok === false) return null;
     return new GPUAdapter(info);
   },
 
-  /** 캔버스 표면에 가장 잘 맞는 포맷. `<webgpu-canvas>`의 기본값과 같다. */
+  /**
+   * 캔버스 표면에 가장 잘 맞는 포맷. `<webgpu-canvas>`의 기본값과 같다.
+   * @returns {string}
+   */
   getPreferredCanvasFormat() {
     return 'bgra8unorm';
   },
 
-  /** `<webgpu-canvas canvas-id="…">` 의 표면에 붙는다 (`canvas.getContext('webgpu')` 대응). */
+  /**
+   * `<webgpu-canvas canvas-id="…">` 의 표면에 붙는다 (`canvas.getContext('webgpu')` 대응).
+   * @param {string} canvasId
+   * @returns {GPUCanvasContext}
+   */
   getCanvasContext(canvasId) {
     return new GPUCanvasContext(canvasId);
   },
@@ -798,14 +1114,18 @@ export function startFrameLoop(handler, options) {
   const fps = (options && options.fps) || 60;
   const module = nativeModule();
 
+  /** @type {LynxGlobalEventEmitter | null} */
   let emitter = null;
   try {
-    emitter = lynx.getJSModule('GlobalEventEmitter');
+    // 전역 자체가 없을 수 있다 — `nativeModule()`과 같은 방식으로 확인한다.
+    // (getJSModule 자체가 던지는 경우도 있어 try는 그대로 둔다.)
+    emitter = typeof lynx !== 'undefined' && lynx ? lynx.getJSModule('GlobalEventEmitter') : null;
   } catch (error) {
     emitter = null;
   }
 
   if (emitter) {
+    /** @param {{timestamp: number, delta: number} | undefined} frame */
     const listener = (frame) => handler(frame || { timestamp: 0, delta: 16 });
     emitter.addListener('webgpu:frame', listener);
     module.startFrameLoop({ fps });

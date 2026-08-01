@@ -7,9 +7,12 @@
 ```
 src/
 ├── webgpu.js       — 클라이언트 shim (런타임)
-├── webgpu.d.ts     — 타입 선언
+├── webgpu.d.ts     — 타입 선언 (shim의 JSDoc에서 생성된다 — 손으로 고치지 말 것)
 └── elements.d.ts   — <webgpu-canvas> TSX 선언
 ```
+
+`JS/lynx-env.d.ts`와 `JS/tsconfig.json`은 **복사하지 않는다.** 이 라이브러리 자신의 타입 검사에만
+쓰는 파일이고, 번들 쪽 프로젝트에 넣으면 `@lynx-js/types`의 전역 선언과 겹칠 수 있다.
 
 ```tsx
 import gpu, { GPUBufferUsage, GPUTextureUsage, GPUShaderStage, startFrameLoop } from './webgpu.js'

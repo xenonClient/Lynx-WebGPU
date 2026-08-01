@@ -1,0 +1,36 @@
+{
+  // shim은 .js 그대로 배포한다. TypeScript는 **검사기와 .d.ts 생성기로만** 쓴다 —
+  // 빌드 산출물이 없으므로 번들 파이프라인(rspeedy)은 지금까지처럼 webgpu.js를 그대로 먹는다.
+  //
+  //   npm run typecheck  — JSDoc 기준으로 타입 검사 (CI/훅에서 도는 것)
+  //   npm run types      — webgpu.d.ts 를 JSDoc에서 다시 생성
+  //
+  // webgpu.d.ts 는 include에 넣지 않는다. 프로그램에 들어가면 (1) 같은 이름의 선언이
+  // webgpu.js 를 가려 검사가 무의미해지고 (2) 선언 생성이 자기 입력을 덮어쓴다며 실패한다.
+  //
+  // webgpu.js 에 `// @ts-check` 를 넣지 않는다 — 검사는 여기 checkJs가 켠다.
+  // 파일에 직접 박으면 이 파일을 복사해 쓰는 쪽(Projects/WebGPUDemo/DemoSrc/src)에서도
+  // 검사가 강제로 켜지는데, 거기엔 lynx-env.d.ts 가 없어 빌드가 깨진다.
+  "compilerOptions": {
+    "target": "ES2021",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    // DOM을 넣지 않는다 — 브라우저 전역을 실수로 쓰면 PrimJS에서 죽는다.
+    // 호스트가 실제로 주는 것은 lynx-env.d.ts 에만 적는다.
+    "lib": ["ES2021"],
+
+    "allowJs": true,
+    "checkJs": true,
+    "strict": true,
+    "noImplicitOverride": true,
+    "noUncheckedIndexedAccess": false,
+    "exactOptionalPropertyTypes": false,
+
+    // `npm run types` 가 이 설정으로 webgpu.d.ts 를 덮어쓴다.
+    // outDir을 두지 않는다 — 선언은 소스 옆(webgpu.d.ts)에 나오고,
+    // outDir을 지정하면 tsc가 그 디렉토리를 자동 exclude해 include가 비어 버린다.
+    "declaration": true,
+    "emitDeclarationOnly": true
+  },
+  "include": ["webgpu.js", "lynx-env.d.ts"]
+}
