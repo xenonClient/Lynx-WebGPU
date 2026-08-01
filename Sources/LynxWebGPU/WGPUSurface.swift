@@ -223,12 +223,26 @@ public final class WGPUOffscreenSurface: WGPUSurface {
         return WGPUOffscreenDrawable(texture: texture)
     }
 
-    /// 렌더 결과를 RGBA8 바이트로 읽어 온다. 호출 전에 GPU 작업이 끝나 있어야 한다.
-    public func readPixels(queue: MTLCommandQueue) throws -> Data {
+    /// 렌더 결과를 **표면에 설정된 포맷 그대로** 읽어 온다. 호출 전에 GPU 작업이 끝나 있어야 한다.
+    ///
+    /// 예전에는 `Data`만 돌려주면서 픽셀당 4바이트를 가정했다. 그러면 `rgba16float` 표면에서
+    /// 길이도 해석도 틀린 바이트가 **오류 없이** 나오므로, 지금은 포맷·크기·행 간격을 함께 묶은
+    /// `WGPUPixelReadback`을 돌려준다. 값 하나는 `readback.rgba(x:y:)`로 꺼낸다.
+    ///
+    /// - Throws: 아직 `configure`되지 않았거나 표면이 depth/stencil 포맷이면 `WGPUError.validation`.
+    ///           depth/stencil은 Metal blit이 aspect 지정 없이 한 덩어리로 복사할 수 없고,
+    ///           `depth32float-stencil8`처럼 두 aspect가 섞인 포맷은 픽셀당 바이트 수 자체가
+    ///           연속된 한 블록으로 존재하지 않는다.
+    public func readPixels(queue: MTLCommandQueue) throws -> WGPUPixelReadback {
         guard let texture else {
             throw WGPUError.validation("표면이 아직 configure 되지 않았다")
         }
-        let bytesPerRow = texture.width * 4
+        guard !format.isDepthOrStencil else {
+            throw WGPUError.validation(
+                "\(format.rawValue) 표면은 readPixels로 읽을 수 없다 — depth/stencil은 aspect별 복사가 필요하다"
+            )
+        }
+        let bytesPerRow = texture.width * format.bytesPerPixel
         let length = bytesPerRow * texture.height
         guard let staging = device.makeBuffer(length: length, options: .storageModeShared),
               let commandBuffer = queue.makeCommandBuffer(),
@@ -249,6 +263,12 @@ public final class WGPUOffscreenSurface: WGPUSurface {
         blit.endEncoding()
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
-        return Data(bytes: staging.contents(), count: length)
+        return WGPUPixelReadback(
+            data: Data(bytes: staging.contents(), count: length),
+            format: format,
+            width: texture.width,
+            height: texture.height,
+            bytesPerRow: bytesPerRow
+        )
     }
 }
