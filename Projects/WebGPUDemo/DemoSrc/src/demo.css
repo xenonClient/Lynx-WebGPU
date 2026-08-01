@@ -102,3 +102,69 @@ page {
   font-size: 14px;
   color: #8aa0c0;
 }
+
+/* --- bench 씬: 캔버스 없이 결과 표만 그린다 --- */
+
+.bench-page {
+  padding: 120px 20px 20px 20px;
+  display: flex;
+  flex-direction: column;
+}
+
+.bench-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  margin-top: 6px;
+}
+
+.bench-head {
+  margin-top: 18px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #2a3448;
+}
+
+.bench-group {
+  margin-top: 10px;
+}
+
+.bench-cell {
+  flex-grow: 1;
+  flex-shrink: 1;
+  flex-basis: 0;
+  font-size: 13px;
+  color: #c8d4e8;
+  text-align: right;
+}
+
+.bench-label {
+  flex-grow: 1.8;
+  flex-shrink: 1;
+  flex-basis: 0;
+  text-align: left;
+  color: #8aa0c0;
+}
+
+.bench-slow {
+  color: #ff9a9a;
+}
+
+.bench-fast {
+  color: #6de1a0;
+}
+
+.bench-ratio {
+  font-weight: bold;
+  color: #ffd88a;
+}
+
+.bench-detail .bench-cell {
+  font-size: 11px;
+  color: #63739a;
+}
+
+.bench-foot {
+  margin-top: 20px;
+  font-size: 11px;
+  color: #63739a;
+}

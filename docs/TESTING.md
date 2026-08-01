@@ -180,6 +180,7 @@ LYNXWEBGPU_WGSL_CORPUS=… LYNXWEBGPU_WGSL_DUMP=/tmp/msl swift test --filter Sam
 | `msl` | `language: 'msl'` 직접 주입 + 명시적 파이프라인 레이아웃 |
 | `interactive` | 홀로그래픽 카드 — Lynx 표준 터치 → 3D 자세 → 포일/정반사/반짝임. **위아래로 겹친 Lynx 컴포넌트의 입력 라우팅**도 함께 확인 |
 | `wgsl` | `arrayLength()`로 센 칸 수 + 외부 텍스처(왼쪽만 가장자리 클램프) + 타입 없는 상수식. 셰이더가 센 길이를 CPU가 리드백으로 되짚어 HUD에 ✓/✗로 띄운다 |
+| `bench` | **브리지 비용 측정** — 같은 커맨드의 `data`만 base64 문자열/`ArrayBuffer`로 바꿔 인코딩·제출 비용을 잰다. 네이티브가 두 표현을 다 받으므로 그 아래(스테이징·blit)는 완전히 같다. 캔버스를 쓰지 않는다 |
 | `arraybuffer` | **Lynx 값 변환기 스모크** — 바이트열이 `ArrayBuffer`로 **양방향** 오가는지 본다. 올릴 때는 커맨드의 중첩 위치(`commands[i].data`), 내릴 때는 `mapAsync`. 페이로드 타입까지 단언한다. 화면이 초록이면 통과, 빨강이면 실패 |
 
 `interactive`만 **모달 전체 화면**으로 올라온다 (닫기 버튼은 화면 왼쪽 위).

@@ -18,6 +18,7 @@ export default defineConfig({
       interactive: './src/interactive/index.tsx',
       wgsl: './src/wgsl/index.tsx',
       arraybuffer: './src/arraybuffer/index.tsx',
+      bench: './src/bench/index.tsx',
     },
   },
   output: {
