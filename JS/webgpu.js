@@ -78,7 +78,11 @@ export const GPUMapMode = { READ: 0x1, WRITE: 0x2 };
 /** @typedef {{entries: Record<string, any>[], label?: string}} GPUBindGroupLayoutDescriptor */
 /** @typedef {{bindGroupLayouts: GPUPipelineLayoutSource[], label?: string}} GPUPipelineLayoutDescriptor */
 /** @typedef {{layout: GPUBindGroupLayout, entries: {binding: number, resource: any}[], label?: string}} GPUBindGroupDescriptor */
-/** @typedef {{device: GPUDevice, format?: string, usage?: number, alphaMode?: 'opaque' | 'premultiplied'}} GPUCanvasConfiguration */
+/**
+ * `toneMapping.mode: 'extended'`는 1.0을 넘는 값을 디스플레이의 여유 밝기(EDR)로 내보낸다.
+ * 이때 `format`은 `'rgba16float'`여야 하고, 셰이더는 sRGB 인코딩 없이 **선형** 값을 써야 한다.
+ */
+/** @typedef {{device: GPUDevice, format?: string, usage?: number, alphaMode?: 'opaque' | 'premultiplied', colorSpace?: 'srgb' | 'display-p3', toneMapping?: {mode: 'standard' | 'extended'}}} GPUCanvasConfiguration */
 
 /** `createPipelineLayout`이 받는 레이아웃 — id만 있으면 된다. */
 /** @typedef {{id: number}} GPUPipelineLayoutSource */
@@ -908,6 +912,8 @@ class GPUCanvasContext {
       format: this.format,
       usage: configuration.usage,
       alphaMode: configuration.alphaMode,
+      colorSpace: configuration.colorSpace,
+      toneMapping: configuration.toneMapping,
     });
     // 크기를 미리 캐시한다 — 이후에는 제출 응답이 갱신하므로 동기 조회는 사실상 이 1회뿐이다.
     this._fetchSize();
@@ -1050,6 +1056,33 @@ export function startFrameLoop(handler, options) {
     previous = now;
   }, Math.max(1, Math.round(1000 / fps)));
   return () => clearInterval(timer);
+}
+
+/**
+ * 앱 번들에 들어 있는 파일을 `ArrayBuffer`로 읽는다 — 브라우저의 `fetch()` 자리다.
+ *
+ * 텍스처로 올릴 픽셀처럼 JS 소스에 박기엔 큰 데이터를 가져오는 통로다. 네이티브가
+ * `Data`로 돌려주면 Lynx가 `ArrayBuffer`로 바꿔 주므로 디코딩할 것이 없다.
+ *
+ * 이름은 **번들 최상위의 파일 이름**이다. 경로 구분자나 `.`으로 시작하는 이름은
+ * 네이티브가 거부한다 (`WebGPUNativeModule.loadAsset` 참고).
+ *
+ * @param {string} name 번들 안의 파일 이름 (예: `'hdr-sample.bin'`)
+ * @returns {Promise<ArrayBuffer>}
+ */
+export async function loadAsset(name) {
+  const result = await /** @type {Promise<WGPULoadAssetResult | undefined>} */ (
+    new Promise((resolve) => {
+      nativeModule().loadAsset({ name }, resolve);
+    })
+  );
+  if (!result || result.ok === false) {
+    const errors = (result && result.errors) || [];
+    throw new Error(
+      errors.length ? errors[0].message : `애셋 '${name}'을(를) 읽지 못했다`
+    );
+  }
+  return result.data;
 }
 
 export { GPUBuffer, GPUTexture, GPUTextureView, GPUSampler, GPUDevice, GPUCanvasContext };

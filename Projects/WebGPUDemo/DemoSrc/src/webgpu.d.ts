@@ -104,6 +104,10 @@ export type GPUCanvasConfiguration = {
     format?: string;
     usage?: number;
     alphaMode?: 'opaque' | 'premultiplied';
+    colorSpace?: 'srgb' | 'display-p3';
+    toneMapping?: {
+        mode: 'standard' | 'extended';
+    };
 };
 export type GPUPipelineLayoutSource = {
     id: number;
@@ -556,5 +560,18 @@ export declare function startFrameLoop(handler: (frame: {
 }) => void, options?: {
     fps?: number;
 }): () => void;
+/**
+ * 앱 번들에 들어 있는 파일을 `ArrayBuffer`로 읽는다 — 브라우저의 `fetch()` 자리다.
+ *
+ * 텍스처로 올릴 픽셀처럼 JS 소스에 박기엔 큰 데이터를 가져오는 통로다. 네이티브가
+ * `Data`로 돌려주면 Lynx가 `ArrayBuffer`로 바꿔 주므로 디코딩할 것이 없다.
+ *
+ * 이름은 **번들 최상위의 파일 이름**이다. 경로 구분자나 `.`으로 시작하는 이름은
+ * 네이티브가 거부한다 (`WebGPUNativeModule.loadAsset` 참고).
+ *
+ * @param {string} name 번들 안의 파일 이름 (예: `'hdr-sample.bin'`)
+ * @returns {Promise<ArrayBuffer>}
+ */
+export declare function loadAsset(name: string): Promise<ArrayBuffer>;
 export { GPUBuffer, GPUTexture, GPUTextureView, GPUSampler, GPUDevice, GPUCanvasContext };
 export default gpu;

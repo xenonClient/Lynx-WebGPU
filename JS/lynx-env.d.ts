@@ -57,6 +57,19 @@ interface WGPUReadBufferResult {
   errors?: WGPUErrorPayload[];
 }
 
+/**
+ * `loadAsset` 콜백이 받는 값.
+ *
+ * `readBuffer`와 같은 규약이다 — `data`는 네이티브가 `Data`로 돌려준 것을 Lynx가
+ * `ArrayBuffer`로 바꿔 준 것이다.
+ */
+interface WGPULoadAssetResult {
+  ok?: boolean;
+  data: ArrayBuffer;
+  byteLength?: number;
+  errors?: WGPUErrorPayload[];
+}
+
 /** `NativeModules.WebGPU` — 커맨드 스트림 입구. */
 interface WebGPUNativeModule {
   execute(payload: { commands: Record<string, any>[] }): WGPUExecuteResult | undefined;
@@ -65,6 +78,10 @@ interface WebGPUNativeModule {
   readBuffer(
     params: { buffer: number; offset: number; size?: number },
     callback: (result: WGPUReadBufferResult | undefined) => void
+  ): void;
+  loadAsset(
+    params: { name: string },
+    callback: (result: WGPULoadAssetResult | undefined) => void
   ): void;
   startFrameLoop(params: { fps: number }): unknown;
   stopFrameLoop(): unknown;
