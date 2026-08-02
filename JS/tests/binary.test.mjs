@@ -79,16 +79,38 @@ test('TypedArray의 byteOffset과 요소 오프셋·개수를 반영해 잘라 �
   assert.deepEqual(payloadOf(state, 'writeBuffer'), new Uint8Array(expected));
 });
 
-test('버퍼 전체를 덮는 뷰는 잘라 내지 않고 백킹 버퍼를 그대로 넘긴다', async () => {
-  const bytes = randomBytes(32, 9);
+test('writeBuffer는 호출 시점에 복사한다 — 이후 원본을 바꿔도 페이로드가 안 변한다', async () => {
+  // 명세 계약이다 ("the contents of data are copied"). 커맨드는 submit까지 큐에 머무르므로,
+  // 참조로 실으면 배열 하나를 재사용해 버퍼 여러 개를 쓰는 흔한 패턴이 조용히 깨진다 —
+  // constants 데모 씬의 다각형 3개가 실제로 전부 같은 위치에 겹쳐 그려졌다.
+  const uniforms = new Float32Array([1, 2, 3, 4]);
   const state = installNativeMock();
   const device = await makeDevice();
-  const buffer = device.createBuffer({ size: 32, usage: GPUBufferUsage.COPY_DST });
-  device.queue.writeBuffer(buffer, 0, bytes);
+  const bufferA = device.createBuffer({ size: 16, usage: GPUBufferUsage.COPY_DST });
+  const bufferB = device.createBuffer({ size: 16, usage: GPUBufferUsage.COPY_DST });
+
+  device.queue.writeBuffer(bufferA, 0, uniforms);
+  uniforms.set([5, 6, 7, 8]);                       // 같은 배열을 고쳐 다음 버퍼에 쓴다
+  device.queue.writeBuffer(bufferB, 0, uniforms);
   device.queue.submit([]);
 
-  const command = commandsOf(state).find((entry) => entry.op === 'writeBuffer');
-  assert.equal(command.data, bytes.buffer, '불필요한 복사가 생겼다');
+  const writes = commandsOf(state).filter((entry) => entry.op === 'writeBuffer');
+  assert.notEqual(writes[0].data, uniforms.buffer, '참조가 그대로 실렸다 — 복사해야 한다');
+  assert.deepEqual(Array.from(new Float32Array(writes[0].data)), [1, 2, 3, 4]);
+  assert.deepEqual(Array.from(new Float32Array(writes[1].data)), [5, 6, 7, 8]);
+});
+
+test('ArrayBuffer를 직접 넘겨도 호출 시점에 복사된다', async () => {
+  const backing = randomBytes(16, 3).buffer;
+  const state = installNativeMock();
+  const device = await makeDevice();
+  const buffer = device.createBuffer({ size: 16, usage: GPUBufferUsage.COPY_DST });
+  device.queue.writeBuffer(buffer, 0, backing);
+  const before = randomBytes(16, 3);
+  new Uint8Array(backing).fill(0);
+  device.queue.submit([]);
+
+  assert.deepEqual(payloadOf(state, 'writeBuffer'), before);
 });
 
 test('ArrayBuffer와 숫자 배열도 ArrayBuffer로 실린다', async () => {

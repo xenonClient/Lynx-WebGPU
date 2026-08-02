@@ -110,7 +110,11 @@ export const GPUMapMode = { READ: 0x1, WRITE: 0x2 };
  * @returns {ArrayBuffer}
  */
 function toArrayBuffer(source, elementOffset, elementCount) {
-  if (source instanceof ArrayBuffer) return source;
+  // 항상 **호출 시점에 복사**한다 — WebGPU 명세의 계약이다 ("the contents of data are
+  // copied"). 커맨드는 submit까지 큐에 머무르므로, 참조로 실으면 호출자가 같은 배열을
+  // 재사용할 때(유니폼 배열 하나로 버퍼 여러 개를 쓰는 흔한 패턴) 마지막 값이 전부를
+  // 덮어쓴다. 복사 비용은 브리지 왕복에 비해 무시할 수준이다 (docs/ARCHITECTURE.md §3).
+  if (source instanceof ArrayBuffer) return source.slice(0);
   if (ArrayBuffer.isView(source)) {
     // DataView에는 BYTES_PER_ELEMENT가 없다 — 그 경우 오프셋을 바이트로 해석한다.
     const elementSize = /** @type {{BYTES_PER_ELEMENT?: number}} */ (source).BYTES_PER_ELEMENT || 1;
@@ -119,9 +123,7 @@ function toArrayBuffer(source, elementOffset, elementCount) {
       elementCount === undefined ? source.byteLength - (elementOffset || 0) * elementSize
         : elementCount * elementSize;
     const backing = /** @type {ArrayBuffer} */ (source.buffer);
-    return start === 0 && length === backing.byteLength
-      ? backing
-      : backing.slice(start, start + length);
+    return backing.slice(start, start + length);
   }
   if (Array.isArray(source)) return /** @type {ArrayBuffer} */ (new Uint8Array(source).buffer);
   throw new TypeError('데이터는 TypedArray · ArrayBuffer · 숫자 배열이어야 한다');
