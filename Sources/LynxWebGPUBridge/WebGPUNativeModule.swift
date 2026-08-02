@@ -115,19 +115,7 @@ public final class WebGPUNativeModule: NSObject, LynxModule {
             callback(Self.unavailable)
             return
         }
-        guard let name = params["name"] as? String else {
-            callback(["ok": false, "errors": [WGPUError.validation("애셋 name이 필요하다").payload]])
-            return
-        }
-        host.assetProvider.loadAsset(named: name) { result in
-            switch result {
-            case .success(let data):
-                // `readBuffer`와 같은 규약 — `Data`를 그대로 실으면 Lynx가 `ArrayBuffer`로 바꿔 준다.
-                callback(["ok": true, "data": data, "byteLength": data.count])
-            case .failure(let error):
-                callback(["ok": false, "errors": [error.payload]])
-            }
-        }
+        WGPUAssetLoading.load(params, provider: host.assetProvider, callback: callback)
     }
 
     // MARK: - 프레임 루프

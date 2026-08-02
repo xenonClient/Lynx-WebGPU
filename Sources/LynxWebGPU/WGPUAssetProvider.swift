@@ -18,6 +18,36 @@ public protocol WGPUAssetProvider: AnyObject {
     func loadAsset(named name: String, completion: @escaping (Result<Data, WGPUError>) -> Void)
 }
 
+/// 브리지의 `loadAsset` 요청을 공급자에 위임하고 결과를 JS 페이로드로 바꾼다.
+///
+/// Lynx 의존이 없는 이 위치에 두는 이유: 브리지(`WebGPUNativeModule`)는 iOS 전용이라
+/// macOS 테스트가 닿지 않는다 — **"공급자를 갈아끼우면 스코프가 바뀐다"는 계약은
+/// 여기서 검증한다** (`AssetProviderTests`).
+public enum WGPUAssetLoading {
+    /// - Parameter params: `{"name": String}` — JS `loadAsset(name)`이 보낸 그대로.
+    /// - Parameter callback: `{"ok": true, "data": Data, "byteLength": Int}` 또는
+    ///   `{"ok": false, "errors": [...]}`. `Data`는 Lynx가 `ArrayBuffer`로 바꿔 준다.
+    public static func load(
+        _ params: [String: Any],
+        provider: WGPUAssetProvider,
+        callback: @escaping ([String: Any]) -> Void
+    ) {
+        guard let name = params["name"] as? String else {
+            callback(["ok": false, "errors": [WGPUError.validation("애셋 name이 필요하다").payload]])
+            return
+        }
+        provider.loadAsset(named: name) { result in
+            switch result {
+            case .success(let data):
+                // `readBuffer`와 같은 규약 — `Data`를 그대로 실으면 Lynx가 `ArrayBuffer`로 바꿔 준다.
+                callback(["ok": true, "data": data, "byteLength": data.count])
+            case .failure(let error):
+                callback(["ok": false, "errors": [error.payload]])
+            }
+        }
+    }
+}
+
 /// 기본 애셋 공급자 — 파일과 등록된 메모리 데이터를 이름 하나로 해석한다.
 ///
 /// 해석 순서:

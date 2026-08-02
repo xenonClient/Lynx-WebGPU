@@ -156,4 +156,105 @@ final class AssetProviderTests: XCTestCase {
         }
         XCTAssertEqual(error.kind, .validation)
     }
+
+    func test_기본_공급자는_https_URL을_해석하지_않는다() {
+        // 네트워크는 기본 스코프 밖이다 — 번들 이름으로 떨어져 "없다"로 끝나야 한다.
+        guard case .failure(let error) = load(WGPUFileAssetProvider(), "https://example.com/a.bin") else {
+            return XCTFail("성공하면 안 된다")
+        }
+        XCTAssertEqual(error.kind, .validation)
+    }
+}
+
+/// 공급자를 갈아끼우면 브리지 경로(`WGPUAssetLoading`)의 스코프가 실제로 바뀐다는 계약.
+///
+/// 예시 공급자는 기본과 정반대다 — https URL만 받고 파일 경로는 거부한다.
+final class AssetProviderSwapTests: XCTestCase {
+
+    /// https URL만 허용하는 공급자. 네트워크 대신 canned 데이터를 준다 —
+    /// 검증 대상은 전송이 아니라 **스코프 규칙이 공급자를 따라간다**는 것이다.
+    private final class HTTPSOnlyProvider: WGPUAssetProvider {
+        var served: [String: Data] = [:]
+
+        func loadAsset(named name: String, completion: @escaping (Result<Data, WGPUError>) -> Void) {
+            guard name.hasPrefix("https://") else {
+                completion(.failure(.validation("https URL만 허용한다: \(name)")))
+                return
+            }
+            guard let data = served[name] else {
+                completion(.failure(.backend("가져오지 못했다: \(name)")))
+                return
+            }
+            completion(.success(data))
+        }
+    }
+
+    private func load(
+        _ provider: WGPUAssetProvider, _ params: [String: Any]
+    ) -> [String: Any] {
+        let expectation = expectation(description: "load")
+        var received: [String: Any]!
+        WGPUAssetLoading.load(params, provider: provider) { payload in
+            received = payload
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5)
+        return received
+    }
+
+    private func firstError(_ payload: [String: Any]) -> [String: Any]? {
+        (payload["errors"] as? [[String: Any]])?.first
+    }
+
+    func test_교체한_공급자는_https_URL을_허용한다() {
+        let provider = HTTPSOnlyProvider()
+        provider.served["https://example.com/lut.cube"] = Data([1, 2])
+
+        let payload = load(provider, ["name": "https://example.com/lut.cube"])
+
+        XCTAssertEqual(payload["ok"] as? Bool, true)
+        XCTAssertEqual(payload["data"] as? Data, Data([1, 2]))
+        XCTAssertEqual(payload["byteLength"] as? Int, 2)
+    }
+
+    func test_교체한_공급자는_기본이_허용하던_파일_경로를_차단한다() throws {
+        // 실존하는 파일이라도 공급자가 거부하면 못 읽는다 — 스코프는 공급자의 것이다.
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("swap-\(UUID().uuidString).bin")
+        try Data([9]).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        XCTAssertEqual(try WGPUFileAssetProvider().loadSync(url.path), Data([9]))  // 기본은 통과
+        let payload = load(HTTPSOnlyProvider(), ["name": url.path])                // 교체 후 차단
+
+        XCTAssertEqual(payload["ok"] as? Bool, false)
+        XCTAssertEqual(firstError(payload)?["kind"] as? String, "validation")
+    }
+
+    func test_공급자의_오류_분류가_JS_페이로드까지_그대로_간다() {
+        let payload = load(HTTPSOnlyProvider(), ["name": "https://example.com/absent.bin"])
+
+        XCTAssertEqual(payload["ok"] as? Bool, false)
+        XCTAssertEqual(firstError(payload)?["kind"] as? String, "backend")
+    }
+
+    func test_name이_없으면_공급자까지_가지_않고_validation_오류다() {
+        let payload = load(HTTPSOnlyProvider(), [:])
+
+        XCTAssertEqual(payload["ok"] as? Bool, false)
+        XCTAssertEqual(firstError(payload)?["kind"] as? String, "validation")
+    }
+}
+
+private extension WGPUFileAssetProvider {
+    /// 테스트 편의 — 동기로 결과를 꺼낸다.
+    func loadSync(_ name: String) throws -> Data {
+        let semaphore = DispatchSemaphore(value: 0)
+        var received: Result<Data, WGPUError>!
+        loadAsset(named: name) { result in
+            received = result
+            semaphore.signal()
+        }
+        semaphore.wait()
+        return try received.get()
+    }
 }
