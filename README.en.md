@@ -35,7 +35,7 @@ Browser WebGPU code and WGSL shaders port over almost verbatim.
 
 ```swift
 // Package.swift
-.package(url: "https://github.com/xenonClient/Lynx-WebGPU", from: "0.3.0")
+.package(url: "https://github.com/xenonClient/Lynx-WebGPU", from: "0.4.0")
 ```
 
 Wiring up the host app takes three steps:
