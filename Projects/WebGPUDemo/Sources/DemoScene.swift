@@ -19,13 +19,14 @@ enum DemoScene: String, CaseIterable {
     case arraybuffer
     case bench
     case hdr
+    case scrollpass
 
     /// 화면 전체를 덮어 띄울 씬 — 네비게이션 컨트롤러가 아니라 **모달로 표시**한다.
     ///
     /// 밀어서 뒤로 가기(`interactivePopGestureRecognizer`)가 화면 왼쪽에서 시작하는 드래그를
     /// 가로채기 때문에, 캔버스를 잡고 끄는 씬은 그 제스처와 경쟁한다. 모달 전체 화면에는
     /// 그런 제스처가 없어서 터치가 온전히 Lynx로 간다 (뒤로가기는 직접 붙인 버튼으로).
-    var coversFullScreen: Bool { self == .interactive || self == .hdr }
+    var coversFullScreen: Bool { self == .interactive || self == .hdr || self == .scrollpass }
 
     var title: String {
         switch self {
@@ -43,6 +44,7 @@ enum DemoScene: String, CaseIterable {
         case .arraybuffer: return "바이너리 브리징"
         case .bench: return "브리지 비용 측정"
         case .hdr: return "HDR 게인맵 재구성"
+        case .scrollpass: return "스크롤 통과"
         }
     }
 
@@ -63,6 +65,7 @@ enum DemoScene: String, CaseIterable {
         case .arraybuffer: return "ArrayBuffer로 양방향 왕복 — Lynx 값 변환 검증"
         case .bench: return "base64 문자열 vs ArrayBuffer — 인코딩·제출 비용 비교"
         case .hdr: return "loadAsset + 게인맵 컴퓨트 → rgba16float 중간 텍스처 → 톤매핑"
+        case .scrollpass: return "<scroll-view> 위 캔버스 — passthrough-touches 히트 테스트 검증"
         }
     }
 }

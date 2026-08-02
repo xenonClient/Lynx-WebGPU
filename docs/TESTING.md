@@ -223,8 +223,9 @@ LYNXWEBGPU_WGSL_CORPUS=… LYNXWEBGPU_WGSL_DUMP=/tmp/msl swift test --filter Sam
 | `bench` | **브리지 비용 측정** — 같은 커맨드의 `data`만 base64 문자열/`ArrayBuffer`로 바꿔 인코딩·제출 비용을 잰다. 네이티브가 두 표현을 다 받으므로 그 아래(스테이징·blit)는 완전히 같다. 캔버스를 쓰지 않는다 |
 | `arraybuffer` | **Lynx 값 변환기 스모크** — 바이트열이 `ArrayBuffer`로 **양방향** 오가는지 본다. 올릴 때는 커맨드의 중첩 위치(`commands[i].data`), 내릴 때는 `mapAsync`. 페이로드 타입까지 단언한다. 화면이 초록이면 통과, 빨강이면 실패 |
 | `hdr` | **HDR 게인맵 재구성** — `loadAsset`으로 받은 애셋을 컴퓨트로 `rgba16float`에 되살리고, 좌우로 갈라 8비트 원본과 같은 조건으로 비교한다. 드래그로 경계 이동. 버튼 셋: 노출 ±, **클리핑**(원본 선형값이 1.0을 넘는 픽셀만 표시 — 오른쪽에만 떠야 정상), **EDR**(캔버스를 `rgba16float` + `toneMapping: extended`로 재configure). **EDR은 실기기에서만 확인된다** |
+| `scrollpass` | **스크롤 통과** — `<scroll-view>` 리스트 **위에** 캔버스 밴드가 형제로 겹친다. 밴드를 세로로 드래그: `passthrough-touches` ON이면 리스트가 스크롤되고 캔버스는 `touchcancel`을 받는다, OFF면 웹 기본처럼 스크롤이 막히고 `touchmove`가 계속 온다. HUD의 스크롤 오프셋·터치 로그로 판정한다. **터치 주입 수단이 없어 손으로 만져야 한다** |
 
-`interactive`와 `hdr`은 **모달 전체 화면**으로 올라온다 (닫기 버튼은 화면 왼쪽 위).
+`interactive` · `hdr` · `scrollpass`는 **모달 전체 화면**으로 올라온다 (닫기 버튼은 화면 왼쪽 위).
 밀어서 뒤로 가기 제스처가 캔버스를 끄는 드래그를 가로채기 때문이다 — `DemoScene.coversFullScreen`.
 
 목록 ↔ 씬을 오갈 때마다 LynxView와 WebGPU 런타임이 새로 만들어지고 해제되므로,

@@ -145,6 +145,47 @@ page {
   text-align: center;
 }
 
+/* --- scrollpass 씬: 스크롤 리스트 위에 캔버스 밴드가 형제로 겹친다 --- */
+
+.scroll-list {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.scroll-content {
+  padding: 210px 16px 120px 16px;
+  display: flex;
+  flex-direction: column;
+}
+
+.scroll-row {
+  height: 56px;
+  border-radius: 12px;
+  background-color: #141c30;
+  border: 1px solid #24304e;
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+}
+
+.scroll-row-text {
+  font-size: 13px;
+  color: #c8d4e8;
+}
+
+/* 캔버스 밴드 — 리스트 **위에** 얹힌 형제. passthrough-touches 검증 대상이다. */
+.overlay-canvas {
+  position: absolute;
+  left: 0;
+  top: 42%;
+  width: 100%;
+  height: 26%;
+}
+
 /* --- bench 씬: 캔버스 없이 결과 표만 그린다 --- */
 
 .bench-page {

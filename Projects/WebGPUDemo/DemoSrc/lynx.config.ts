@@ -20,6 +20,7 @@ export default defineConfig({
       arraybuffer: './src/arraybuffer/index.tsx',
       bench: './src/bench/index.tsx',
       hdr: './src/hdr/index.tsx',
+      scrollpass: './src/scrollpass/index.tsx',
     },
   },
   output: {
