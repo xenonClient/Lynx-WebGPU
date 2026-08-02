@@ -19,7 +19,7 @@ latest=$(git tag --list --sort=-v:refname 2>/dev/null |
 version=${latest#v}
 
 # 이 패키지를 가리키는 `.package(url: …Lynx-WebGPU…, from: "x.y.z")` 줄만 고친다.
-targets="README.md docs/LYNX-INTEGRATION.md"
+targets="README.md README.en.md docs/LYNX-INTEGRATION.md"
 changed=""
 for file in $targets; do
     [ -f "$file" ] || continue

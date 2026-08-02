@@ -1,5 +1,7 @@
 # Lynx-WebGPU
 
+**한국어** · [English](README.en.md)
+
 [Lynx](https://lynxjs.org) 번들의 JS에서 **WebGPU 모양으로 GPU에 접근**하게 해 주는 SPM 라이브러리.
 [W3C WebGPU](https://www.w3.org/TR/webgpu/)의 객체 모델과 [WGSL](https://www.w3.org/TR/WGSL/)을 Metal로 옮긴다.
 
@@ -119,7 +121,7 @@ JS 스레드(터치·타이머 포함)로 번지지 않는다.
 
 ## 검증
 
-Swift 106개 + JS 17개 테스트가 몇 초 안에 돈다 — 시뮬레이터도 기기도 필요 없다.
+Swift 125개 + JS 20개 테스트가 몇 초 안에 돈다 — 시뮬레이터도 기기도 필요 없다.
 
 - 트랜스파일러 테스트는 생성된 MSL을 **실제 Metal 컴파일러로** 통과시킨다.
 - 렌더 테스트는 오프스크린 텍스처에 그린 뒤 **픽셀 값을 단언**한다 (삼각형, 유니폼, 인덱스 드로우,
