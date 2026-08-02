@@ -84,10 +84,10 @@ final class GPUPageViewController: UIViewController {
 `JS/webgpu.js`, `JS/webgpu.d.ts`, `JS/elements.d.ts`를 rspeedy 프로젝트의 `src/` 아래로 복사한다.
 사용법은 `docs/JS-AUTHORING.md`, 최소 예제는 `Examples/HelloTriangle.tsx` 참고.
 
-### 번들 애셋 읽기
+### 애셋 읽기 (`loadAsset`)
 
-텍스처로 올릴 픽셀처럼 **JS 소스에 박기엔 큰 데이터**는 앱 번들에 파일로 넣고 `loadAsset`으로
-읽는다. 브라우저의 `fetch()`가 하던 역할을 최소한으로 대신한다.
+텍스처로 올릴 픽셀처럼 **JS 소스에 박기엔 큰 데이터**는 `loadAsset`으로 가져온다.
+브라우저의 `fetch()`가 하던 역할을 최소한으로 대신한다.
 
 ```js
 import { loadAsset } from './webgpu.js'
@@ -96,13 +96,40 @@ const buffer = await loadAsset('hdr-sample.bin')   // ArrayBuffer
 device.queue.writeTexture({ texture }, new Uint8Array(buffer, offset, length), …)
 ```
 
-- 파일은 **앱 타깃의 리소스**로 넣는다 (Tuist라면 `resources: ["Resources/**"]`).
-  리소스를 추가한 뒤에는 `tuist generate`를 다시 돌려야 한다 — glob은 생성 시점에 펼쳐진다.
-- 이름은 번들 최상위의 파일 이름이다. 경로 구분자나 `.`으로 시작하는 이름은 **거부한다** —
-  해석을 `Bundle.main.url(forResource:withExtension:)`에만 맡겨 번들 밖으로 나갈 수 없게 했다.
+이름 해석은 호스트의 `assetProvider`(`WGPUAssetProvider`)가 정한다 — Lynx가 번들 로딩을
+`LynxTemplateProvider`에 맡기는 것과 같은 구조다. **기본 공급자**(`WGPUFileAssetProvider`)는
+순서대로:
+
+1. **등록된 이름** — 이미지 피커처럼 파일이 아니라 `Data`로 오는 것의 통로.
+   ```swift
+   // PHPicker 결과를 JS에 내줄 때
+   provider.register(pickedData, for: "picked-image")
+   ```
+2. **절대 경로 · `file://` URL** — 피커·다운로드가 준 파일 URL 문자열을 JS에 넘기고
+   (initData·이벤트 등으로) 그대로 `loadAsset`에 쓴다.
+3. **번들 상대 경로** (`'hdr-sample.bin'`, `'LUTs/neutral.cube'`) — 앱 타깃의 리소스.
+   Tuist라면 `resources: ["Resources/**"]`, 추가 후 `tuist generate` 재실행.
+   `..`이나 숨김 이름은 거부한다.
+
+**접근 범위는 기본이 전체 허용이다.** 번들(JS)을 신뢰할 수 없는 앱 — 서버에서 내려받는
+번들 등 — 은 반드시 좁힐 것:
+
+```swift
+// 파일 경로 접근을 특정 디렉토리 아래로 제한 (심볼릭 링크를 풀어 비교한다)
+host.assetProvider = WGPUFileAssetProvider(
+    allowedRoots: [FileManager.default.temporaryDirectory]
+)
+
+// SPM 라이브러리가 동봉한 리소스를 내주려면 그쪽 번들을 지정
+host.assetProvider = WGPUFileAssetProvider(bundle: .module)
+
+// 해석 규칙 자체를 바꾸려면 프로토콜을 직접 구현한다
+final class HandleOnlyProvider: WGPUAssetProvider { … }
+```
+
 - 네이티브가 `Data`로 돌려주면 Lynx가 `ArrayBuffer`로 바꿔 준다. base64 왕복이 없다.
 - 파일 읽기는 백그라운드 큐에서 하고 콜백으로 돌려준다 — 수 MB짜리를 JS 스레드에서
-  동기로 읽으면 프레임이 밀린다.
+  동기로 읽으면 프레임이 밀린다. 공급자를 직접 구현할 때도 같은 규칙을 지킬 것.
 
 ## 4. `<webgpu-canvas>`
 
