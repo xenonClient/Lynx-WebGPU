@@ -16,6 +16,17 @@ public final class LynxWebGPUHost: NSObject {
     private weak var lynxView: LynxView?
     private let ticker = WebGPUFrameTicker()
 
+    /// JS `loadAsset(name)`의 이름을 바이트로 해석하는 곳. 갈아끼워서 해석 규칙과
+    /// 접근 범위를 앱이 정한다 (`WGPUAssetProvider` 문서 참고).
+    ///
+    /// 기본은 전체 경로 허용이다 — **번들(JS)을 신뢰할 수 없으면 반드시 좁힐 것**:
+    /// ```swift
+    /// host.assetProvider = WGPUFileAssetProvider(
+    ///     allowedRoots: [FileManager.default.temporaryDirectory]
+    /// )
+    /// ```
+    public var assetProvider: WGPUAssetProvider = WGPUFileAssetProvider()
+
     public init(context: LynxWebGPUContext) {
         self.context = context
         super.init()

@@ -103,6 +103,48 @@ page {
   color: #8aa0c0;
 }
 
+/* --- 씬 하단 조작 바 (hdr 씬) --- */
+
+.controls {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  padding: 14px 12px 34px 12px;
+  background-color: #141a28;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+}
+
+.control-button {
+  min-width: 50px;
+  padding: 11px 13px;
+  margin: 0 4px;
+  border-radius: 10px;
+  background-color: #23304e;
+  border: 1px solid #3a4a72;
+  font-size: 15px;
+  color: #dce6f7;
+  text-align: center;
+}
+
+/* 눌려 있는 토글 — 배경과 테두리로 상태를 드러낸다. */
+.control-button-on {
+  background-color: #3a5a9a;
+  border: 1px solid #6d9ae1;
+  color: #ffffff;
+}
+
+.control-value {
+  min-width: 104px;
+  margin: 0 4px;
+  font-size: 14px;
+  color: #ffd88a;
+  text-align: center;
+}
+
 /* --- bench 씬: 캔버스 없이 결과 표만 그린다 --- */
 
 .bench-page {

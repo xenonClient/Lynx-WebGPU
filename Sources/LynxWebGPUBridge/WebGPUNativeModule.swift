@@ -23,6 +23,7 @@ public final class WebGPUNativeModule: NSObject, LynxModule {
             "adapterInfo": NSStringFromSelector(#selector(adapterInfo)),
             "canvasInfo": NSStringFromSelector(#selector(canvasInfo(_:))),
             "readBuffer": NSStringFromSelector(#selector(readBuffer(_:callback:))),
+            "loadAsset": NSStringFromSelector(#selector(loadAsset(_:callback:))),
             "startFrameLoop": NSStringFromSelector(#selector(startFrameLoop(_:))),
             "stopFrameLoop": NSStringFromSelector(#selector(stopFrameLoop)),
             "reset": NSStringFromSelector(#selector(reset)),
@@ -97,6 +98,24 @@ public final class WebGPUNativeModule: NSObject, LynxModule {
             size: (params["size"] as? NSNumber)?.intValue,
             completion: callback
         )
+    }
+
+    // MARK: - 애셋
+
+    /// 애셋을 `ArrayBuffer`로 읽는다. 브라우저의 `fetch()`가 하던 역할을 최소한으로 대신한다.
+    ///
+    /// 이름 해석은 전적으로 `host.assetProvider`에 맡긴다 — 기본 공급자는 등록된 메모리
+    /// 데이터·파일 경로·번들 상대 이름을 받고, 앱이 공급자를 갈아끼워 규칙과 접근 범위를
+    /// 정할 수 있다 (`WGPUAssetProvider` 참고).
+    ///
+    /// - Parameter params: `{"name": String}`
+    /// - Returns: 콜백으로 `{"ok": true, "data": ArrayBuffer, "byteLength": Int}`.
+    public func loadAsset(_ params: [String: Any], callback: @escaping LynxCallbackBlock) {
+        guard let host else {
+            callback(Self.unavailable)
+            return
+        }
+        WGPUAssetLoading.load(params, provider: host.assetProvider, callback: callback)
     }
 
     // MARK: - 프레임 루프

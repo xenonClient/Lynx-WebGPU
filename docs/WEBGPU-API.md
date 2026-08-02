@@ -40,6 +40,32 @@ const { width, height } = context.getSize()                  // 캐시 (execute 
 - `getCurrentTexture()`가 돌려준 텍스처와 그 뷰는 **그 프레임 안에서만** 유효하다.
 - present는 자동이다 — 배치가 끝날 때 획득한 드로어블이 화면에 올라간다.
 
+### HDR 출력 (EDR)
+
+```js
+context.configure({
+  device,
+  format: 'rgba16float',              // 1.0을 넘는 값을 담을 수 있어야 한다
+  colorSpace: 'srgb',                 // 또는 'display-p3'
+  toneMapping: { mode: 'extended' },  // 기본값 'standard'
+})
+```
+
+`toneMapping.mode: 'extended'`는 `CAMetalLayer`의 `wantsExtendedDynamicRangeContent`를 켜고
+색공간을 **확장 선형**으로 바꾼다. 1.0을 넘는 값이 잘리지 않고 디스플레이가 SDR 흰색보다
+밝게 낼 수 있는 여유(EDR)로 그대로 나간다.
+
+세 가지가 **함께** 맞아야 실제로 밝아진다. 하나라도 어긋나면 조용히 SDR로 보인다:
+
+1. `format`이 1.0 초과를 담는 `rgba16float` — UNORM 포맷은 0~1로 클램프된다
+2. `toneMapping.mode`가 `'extended'`
+3. 셰이더가 **선형 값을 그대로** 출력 — 확장 색공간이 선형이므로 sRGB 인코딩을 하면 안 되고,
+   톤매핑도 하면 안 된다 (톤매핑이 하는 일이 정확히 "1.0 초과를 0~1로 눌러 담기"다)
+
+- **시뮬레이터에서는 확인할 수 없다.** EDR은 실기기 디스플레이 기능이다.
+- 포맷이 바뀌는 `configure`는 레이어 설정이 메인 스레드에 비동기로 반영되므로, 파이프라인을
+  새 포맷으로 갈아탈 때 몇 프레임 여유를 둬야 한다 (`hdr` 데모 씬 참고).
+
 ## 3. 리소스
 
 ### 버퍼
@@ -242,6 +268,7 @@ device.onError((error, text) => console.error(text))
 | `GPUExternalTexture` (`importExternalTexture`) | 미지원 — Lynx에 비디오 엘리먼트 핸들이 없다. 다만 WGSL `texture_external` + `textureSampleBaseClampToEdge`는 **지원**하므로, 프레임을 텍스처로 올려 그 자리에 `GPUTextureView`를 묶으면 된다 |
 | `pushErrorScope` / `popErrorScope` | `submit()` 반환의 `errors` 배열로 대체 |
 | 파이프라인 상수 (`override` / `constants`) | **지원** (§5) |
+| 캔버스 `colorSpace` · `toneMapping` (EDR 출력) | **지원** (§2) — 실기기에서만 확인된다 |
 | `writeTimestamp`, `resolveQuerySet` | 미지원 |
 
 새 명령을 추가하는 절차는 `.claude/skills/webgpu-command/SKILL.md` 참고.

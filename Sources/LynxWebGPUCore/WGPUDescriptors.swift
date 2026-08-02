@@ -588,11 +588,22 @@ public struct WGPUCanvasConfiguration {
     public var format: WGPUTextureFormat
     public var usage: WGPUTextureUsage
     public var alphaMode: WGPUCanvasAlphaMode
+    public var colorSpace: WGPUPredefinedColorSpace
+    public var toneMappingMode: WGPUCanvasToneMappingMode
 
     public init(from reader: WGPUValueReader) throws {
         canvasId = try reader.requiredString("canvas")
         format = try reader.enumValue("format", default: WGPUTextureFormat.bgra8unorm)
         usage = reader.flags("usage", WGPUTextureUsage.self, default: .renderAttachment)
         alphaMode = try reader.enumValue("alphaMode", default: WGPUCanvasAlphaMode.opaque)
+        colorSpace = try reader.enumValue("colorSpace", default: WGPUPredefinedColorSpace.srgb)
+        // 명세에서 toneMapping은 `{mode: …}` 형태의 중첩 객체다.
+        if let toneMapping = reader.object("toneMapping") {
+            toneMappingMode = try toneMapping.enumValue(
+                "mode", default: WGPUCanvasToneMappingMode.standard
+            )
+        } else {
+            toneMappingMode = .standard
+        }
     }
 }

@@ -104,6 +104,10 @@ export type GPUCanvasConfiguration = {
     format?: string;
     usage?: number;
     alphaMode?: 'opaque' | 'premultiplied';
+    colorSpace?: 'srgb' | 'display-p3';
+    toneMapping?: {
+        mode: 'standard' | 'extended';
+    };
 };
 export type GPUPipelineLayoutSource = {
     id: number;
@@ -556,5 +560,24 @@ export declare function startFrameLoop(handler: (frame: {
 }) => void, options?: {
     fps?: number;
 }): () => void;
+/**
+ * 애셋을 `ArrayBuffer`로 읽는다 — 브라우저의 `fetch()` 자리다.
+ *
+ * 텍스처로 올릴 픽셀처럼 JS 소스에 박기엔 큰 데이터를 가져오는 통로다. 네이티브가
+ * `Data`로 돌려주면 Lynx가 `ArrayBuffer`로 바꿔 주므로 디코딩할 것이 없다.
+ *
+ * 이름 해석은 호스트의 `assetProvider`가 정한다. 기본 공급자는 순서대로:
+ *   1. 호스트가 `register(_:for:)`로 등록한 이름 — 이미지 피커처럼 파일이 아니라
+ *      데이터로 오는 것의 통로다.
+ *   2. 절대 경로 또는 `file://` URL — 피커·다운로드가 준 파일 URL을 그대로 넘긴다.
+ *   3. 앱 번들 상대 경로 (`'hdr-sample.bin'`, `'LUTs/neutral.cube'`)
+ *
+ * 호스트가 접근 범위를 좁혀 두었다면(`allowedRoots`) 그 밖의 경로는 거부된다
+ * (`WGPUAssetProvider` 참고).
+ *
+ * @param {string} name 애셋 이름 — 등록 이름, 파일 경로/URL, 또는 번들 상대 경로
+ * @returns {Promise<ArrayBuffer>}
+ */
+export declare function loadAsset(name: string): Promise<ArrayBuffer>;
 export { GPUBuffer, GPUTexture, GPUTextureView, GPUSampler, GPUDevice, GPUCanvasContext };
 export default gpu;
