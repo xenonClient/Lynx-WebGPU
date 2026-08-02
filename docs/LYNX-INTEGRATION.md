@@ -146,6 +146,7 @@ final class HandleOnlyProvider: WGPUAssetProvider { … }
 |---|---|
 | `canvas-id` (필수) | JS가 `gpu.getCanvasContext(id)`로 지목할 이름. 페이지 안에서 유일해야 한다 |
 | `pixel-ratio` | CSS px → 드로어블 픽셀 배율. 생략하면 화면 배율. 부하가 크면 1로 낮춘다 |
+| `passthrough-touches` | UIKit 터치 통과 (기본 꺼짐). 캔버스 **뒤** 네이티브 제스처가 필요할 때 켠다 — §5 참고 |
 
 | 이벤트 | detail |
 |---|---|
@@ -188,6 +189,32 @@ CSS 크기는 `bindcanvasresize`의 `width / pixelRatio`로 얻는다 (detail의
 
 > 확인은 `interactive` 데모 씬으로 한다 — 캔버스 위에 Lynx 카드와 하단 바를 겹쳐 두고,
 > 어떤 엘리먼트가 마지막 입력을 가져갔는지 화면에 표시한다.
+
+### 캔버스가 스크롤뷰 **위에** 겹칠 때 (`passthrough-touches`)
+
+반대 방향 — 캔버스가 다른 네이티브 뷰 기반 엘리먼트를 덮는 경우다. 구조에 따라 갈린다:
+
+- **스크롤뷰가 캔버스의 조상**이면 (`<scroll-view>` 안에 캔버스) 아무것도 필요 없다.
+  UIScrollView의 팬 인식기는 조상 뷰에 붙어 있어 캔버스에 떨어진 터치도 받는다.
+  가능하면 이 구조를 먼저 검토할 것 — 웹과 완전히 같은 동작이다.
+- **스크롤뷰가 형제로 캔버스 뒤에** 있으면 기본값에서는 스크롤이 막힌다.
+  이것도 웹과 같다 — 겹친 캔버스는 아래 형제의 포인터를 가린다. 웹과 달리 뚫고
+  싶을 때만 `passthrough-touches`를 켠다:
+
+  ```tsx
+  <webgpu-canvas canvas-id="overlay" passthrough-touches
+    bindtouchstart={…} />   // Lynx 이벤트는 계속 온다
+  ```
+
+  캔버스 백킹 뷰가 UIKit 히트 테스트에서 빠져 아래 네이티브 제스처가 통과한다.
+  **캔버스 자신의 Lynx 이벤트는 계속 온다** — Lynx의 터치 인식기는 개별 뷰가 아니라
+  rootView(LynxView)에 붙어 있고 타깃 결정도 Lynx 자체 hitTest가 하기 때문이다.
+  통과한 제스처(스크롤)가 이기면 캔버스는 `bindtouchcancel`을 받는다 — 다른
+  엘리먼트와 같은 경쟁 규칙이다.
+- **Lynx 이벤트까지 뒤로 보내야** 하면 (캔버스가 아무 입력도 안 받아야 하면)
+  Lynx 전역 속성을 함께 쓴다 — Lynx 레벨은 `user-interaction-enabled={false}`,
+  LynxView 밖 네이티브까지 뚫으려면 `event-through`. 이 둘은 Lynx 기본 제공이라
+  이 패키지와 무관하게 모든 엘리먼트에서 동작한다.
 
 ## 6. 스레딩 계약
 

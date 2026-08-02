@@ -18,6 +18,8 @@ public final class WebGPUCanvasView: UIView {
     var onDrawableSizeChange: ((CGSize) -> Void)?
     /// CSS px → 픽셀 배율. 지정하지 않으면 화면 배율을 쓴다.
     var pixelRatioOverride: CGFloat?
+    /// UIKit 히트 테스트에서 이 뷰를 투명하게 만들지 (`passthrough-touches` prop).
+    var passthroughTouches = false
 
     private var lastReportedSize: CGSize = .zero
 
@@ -35,6 +37,16 @@ public final class WebGPUCanvasView: UIView {
 
     var pixelRatio: CGFloat {
         pixelRatioOverride ?? window?.screen.scale ?? traitCollection.displayScale
+    }
+
+    /// 통과 모드에서는 UIKit 히트 테스트에 잡히지 않는다 — 캔버스 **아래** 네이티브 뷰
+    /// (`<scroll-view>`의 UIScrollView 등)에 붙은 제스처 인식기가 터치를 받는다.
+    ///
+    /// Lynx 이벤트(`bindtouchstart` 등)는 영향을 받지 않는다: Lynx의 터치 인식기는
+    /// 개별 뷰가 아니라 **rootView(LynxView)에 붙어 있고**(`LynxEventHandler.attachContainerView`),
+    /// 타깃 결정도 UIKit이 아니라 Lynx 자체 hitTest(`LynxEventTarget`)가 한다.
+    public override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        passthroughTouches ? nil : super.hitTest(point, with: event)
     }
 
     public override func layoutSubviews() {
@@ -111,6 +123,21 @@ public final class WebGPUCanvasUI: LynxUI<WebGPUCanvasView> {
     public func setPixelRatio(_ value: CGFloat, requestReset: Bool) {
         pendingPixelRatio = requestReset || value <= 0 ? nil : value
         propsDirty = true
+    }
+
+    @objc(__lynx_prop_config__webgpuCanvasPassthroughTouches)
+    public static func propConfigPassthroughTouches() -> [String] {
+        ["passthrough-touches", "setPassthroughTouches", "BOOL"]
+    }
+
+    /// UIKit 터치 통과 (기본 꺼짐 — 웹처럼 캔버스가 아래를 가린다).
+    ///
+    /// 켜면 캔버스 **뒤**의 네이티브 제스처(형제 `<scroll-view>`의 스크롤 등)가 통과한다.
+    /// 캔버스 자신의 Lynx 이벤트는 계속 온다 — 통과한 제스처가 이기면 Lynx가
+    /// `touchcancel`을 보내는, 다른 엘리먼트와 같은 경쟁 규칙을 따른다.
+    @objc(setPassthroughTouches:requestReset:)
+    public func setPassthroughTouches(_ value: Bool, requestReset: Bool) {
+        view().passthroughTouches = requestReset ? false : value
     }
 
     public override func propsDidUpdate() {

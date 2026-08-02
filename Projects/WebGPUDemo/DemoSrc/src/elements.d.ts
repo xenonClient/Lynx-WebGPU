@@ -17,6 +17,15 @@ export interface WebGPUCanvasProps {
   'canvas-id': string;
   /** CSS px → 드로어블 픽셀 배율. 생략하면 화면 배율을 쓴다 (성능을 위해 1로 낮출 수 있다). */
   'pixel-ratio'?: number;
+  /**
+   * UIKit 터치 통과. 기본 꺼짐 — 웹의 캔버스처럼 아래를 가린다.
+   *
+   * 캔버스가 네이티브 뷰 기반 엘리먼트(`<scroll-view>` 등) **위에 형제로 겹칠 때** 켜면,
+   * 그쪽 제스처(스크롤 팬 등)가 캔버스를 뚫고 내려간다. 캔버스 자신의 Lynx 이벤트
+   * (`bindtouchstart` …)는 계속 온다 — 통과한 제스처가 이기면 `bindtouchcancel`을 받는다.
+   * 스크롤뷰가 캔버스의 **조상**이면 이 prop 없이도 스크롤이 동작한다.
+   */
+  'passthrough-touches'?: boolean;
   /** 드로어블 픽셀 크기가 바뀔 때. 투영행렬·뷰포트를 다시 계산할 지점이다. */
   bindcanvasresize?: (event: {
     detail: { width: number; height: number; pixelRatio: number };
