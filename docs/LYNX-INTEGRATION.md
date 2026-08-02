@@ -7,7 +7,7 @@
 ```swift
 // Package.swift
 dependencies: [
-    .package(url: "https://github.com/xenonClient/Lynx-WebGPU", from: "0.4.0"),
+    .package(url: "https://github.com/xenonClient/Lynx-WebGPU", from: "0.3.1"),
 ],
 targets: [
     .target(name: "MyApp", dependencies: [
