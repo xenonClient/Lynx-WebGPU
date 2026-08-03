@@ -129,6 +129,16 @@ export type GPUDepthStencilState = {
     stencilReadMask?: number;
     stencilWriteMask?: number;
 };
+export type GPUQuerySetDescriptor = {
+    type: 'occlusion' | 'timestamp';
+    count: number;
+    label?: string;
+};
+export type GPUPassTimestampWrites = {
+    querySet: GPUQuerySet;
+    beginningOfPassWriteIndex?: number;
+    endOfPassWriteIndex?: number;
+};
 export type GPURenderBundleEncoderDescriptor = {
     colorFormats: (string | null)[];
     depthStencilFormat?: string;
@@ -269,6 +279,17 @@ declare class GPUComputePipeline extends GPUPipelineBase {
 /** `bundleEncoder.finish()`가 돌려주는 재사용 가능한 드로우 묶음. */
 declare class GPURenderBundle extends GPUObjectBase {
 }
+/** `device.createQuerySet()`이 돌려주는 쿼리 저장소. */
+declare class GPUQuerySet extends GPUObjectBase {
+    type: "occlusion" | "timestamp";
+    count: number;
+    /**
+     * @param {GPUDevice} device
+     * @param {number} id
+     * @param {GPUQuerySetDescriptor} descriptor
+     */
+    constructor(device: GPUDevice, id: number, descriptor: GPUQuerySetDescriptor);
+}
 /** 인코더는 자기 명령을 따로 모았다가 `finish()` → `submit()`에서 스트림에 합쳐진다. */
 declare class GPUCommandBuffer {
     commands: GPUCommand[];
@@ -388,6 +409,17 @@ declare class GPURenderPassEncoder extends GPURenderCommandsBase {
      */
     setStencilReference(reference: number): void;
     /**
+     * 이 드로우들이 통과시킨 샘플 수를 세기 시작한다.
+     *
+     * `beginRenderPass`에 `occlusionQuerySet`을 준 패스에서만 쓸 수 있고, 중첩할 수 없다.
+     *
+     * @param {number} queryIndex
+     * @returns {void}
+     */
+    beginOcclusionQuery(queryIndex: number): void;
+    /** @returns {void} */
+    endOcclusionQuery(): void;
+    /**
      * 미리 기록해 둔 번들들을 이 패스에 되풀이한다.
      *
      * 번들은 패스 상태를 **물려받지 않고**, 실행이 끝나면 패스의 파이프라인·바인드 그룹·
@@ -459,8 +491,28 @@ declare class GPUCommandEncoder {
      * @returns {GPURenderPassEncoder}
      */
     beginRenderPass(descriptor: Record<string, any>): GPURenderPassEncoder;
-    /** @returns {GPUComputePassEncoder} */
-    beginComputePass(): GPUComputePassEncoder;
+    /**
+     * @param {{label?: string, timestampWrites?: GPUPassTimestampWrites}} [descriptor]
+     * @returns {GPUComputePassEncoder}
+     */
+    beginComputePass(descriptor?: {
+        label?: string;
+        timestampWrites?: GPUPassTimestampWrites;
+    }): GPUComputePassEncoder;
+    /**
+     * 쿼리 결과를 버퍼로 내린다. 결과 하나는 `u64`(8바이트)다.
+     *
+     * 목적지 버퍼는 `GPUBufferUsage.QUERY_RESOLVE`로 만들어야 하고,
+     * `destinationOffset`은 **256의 배수**여야 한다 (명세 요구).
+     *
+     * @param {GPUQuerySet} querySet
+     * @param {number} firstQuery
+     * @param {number} queryCount
+     * @param {GPUBuffer} destination
+     * @param {number} destinationOffset
+     * @returns {void}
+     */
+    resolveQuerySet(querySet: GPUQuerySet, firstQuery: number, queryCount: number, destination: GPUBuffer, destinationOffset: number): void;
     /**
      * @param {GPUBuffer} source
      * @param {number} sourceOffset
@@ -636,6 +688,17 @@ declare class GPUDevice {
      * @returns {GPURenderBundleEncoder}
      */
     createRenderBundleEncoder(descriptor: GPURenderBundleEncoderDescriptor): GPURenderBundleEncoder;
+    /**
+     * 쿼리 저장소를 만든다.
+     *
+     * `'occlusion'`은 드로우가 통과시킨 샘플 수를 센다 — 결정적이라 값을 믿을 수 있다.
+     * `'timestamp'`는 GPU 시계라 같은 입력에도 값이 매번 다르다. 기기에 따라 아예 만들 수
+     * 없으므로(`adapter.limits.timestampQuery`) 실패를 처리할 것.
+     *
+     * @param {GPUQuerySetDescriptor} descriptor
+     * @returns {GPUQuerySet}
+     */
+    createQuerySet(descriptor: GPUQuerySetDescriptor): GPUQuerySet;
     /** 모든 GPU 객체를 버린다 (페이지 이탈 시 호출). @returns {void} */
     destroy(): void;
 }
@@ -683,6 +746,15 @@ declare class GPUAdapter {
     backend: string;
     limits: Record<string, number>;
     hasUnifiedMemory: boolean | undefined;
+    /**
+     * 기기마다 갈리는 기능 — 웹과 같은 분기(`adapter.features.has('timestamp-query')`)가
+     * 동작하도록 `has`만 흉내 낸다 (엔진에 `Set`이 없을 수 있다).
+     */
+    features: {
+        has: (name: string) => boolean;
+        size: number;
+        values: () => string[];
+    };
     /** @param {WGPUAdapterInfo} info */
     constructor(info: WGPUAdapterInfo);
     /** @returns {Promise<GPUDevice>} */
@@ -741,5 +813,5 @@ export declare function startFrameLoop(handler: (frame: {
  * @returns {Promise<ArrayBuffer>}
  */
 export declare function loadAsset(name: string): Promise<ArrayBuffer>;
-export { GPUBuffer, GPUTexture, GPUTextureView, GPUSampler, GPUDevice, GPUCanvasContext, GPURenderBundle, GPURenderBundleEncoder, };
+export { GPUBuffer, GPUTexture, GPUTextureView, GPUSampler, GPUDevice, GPUCanvasContext, GPURenderBundle, GPURenderBundleEncoder, GPUQuerySet, };
 export default gpu;

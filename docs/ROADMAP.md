@@ -19,6 +19,7 @@ Lynx 앱 안의 **이미지 에디터·필터**지 3D 렌더러가 아니다. �
 | 간접 드로우/디스패치 (`drawIndirect` 계열 3종) | `IndirectDrawTests`. 컴퓨트가 인자를 쓰는 GPU-driven 경로까지 |
 | 오류 스코프 (`pushErrorScope` / `popErrorScope`) | `ErrorScopeTests`. GPU 불필요 |
 | 렌더 번들 (`GPURenderBundle` / `executeBundles`) | `RenderBundleTests`. 명령 목록을 되풀이하는 방식 |
+| 쿼리셋 (occlusion · 타임스탬프 · `resolveQuerySet`) | `QuerySetTests`. 타임스탬프는 `adapter.features`로 기기 확인 |
 
 공통 절차는 `.claude/skills/webgpu-command/SKILL.md`(새 op 추가)와
 `.claude/skills/wgsl-feature/SKILL.md`(셰이더 문법 — 아래 항목은 해당 없음)를 따른다.

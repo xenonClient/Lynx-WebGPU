@@ -51,6 +51,77 @@ public final class WGPUBufferObject {
     }
 }
 
+/// `GPUQuerySet`.
+///
+/// 두 종류가 Metal에서 전혀 다른 물건으로 내려간다:
+/// - `occlusion` — 평범한 `MTLBuffer`다. 렌더 패스가 `visibilityResultBuffer`로 물고,
+///   드로우가 통과시킨 샘플 수를 쿼리 인덱스마다 8바이트로 쌓는다.
+/// - `timestamp` — `MTLCounterSampleBuffer`다. 버퍼가 아니라 카운터 샘플 저장소라
+///   blit의 `resolveCounters`로만 꺼낼 수 있다.
+///
+/// 그래서 `resolveQuerySet`도 종류에 따라 다른 blit 명령을 쓴다.
+public final class WGPUQuerySetObject {
+    /// 결과 하나의 크기 — 두 종류 다 `u64`다 (명세와 Metal이 일치한다).
+    static let resultStride = 8
+
+    public let type: WGPUQueryType
+    public let count: Int
+    /// `occlusion`일 때의 결과 버퍼.
+    let visibilityBuffer: MTLBuffer?
+    /// `timestamp`일 때의 카운터 샘플 버퍼.
+    let counterBuffer: MTLCounterSampleBuffer?
+
+    init(device: MTLDevice, descriptor: WGPUQuerySetDescriptor) throws {
+        self.type = descriptor.type
+        self.count = descriptor.count
+
+        switch descriptor.type {
+        case .occlusion:
+            let length = descriptor.count * Self.resultStride
+            guard let buffer = device.makeBuffer(length: length, options: .storageModeShared) else {
+                throw WGPUError.outOfMemory("occlusion 쿼리 버퍼 \(length)B 생성 실패")
+            }
+            // 쓰이지 않은 쿼리 슬롯이 쓰레기 값을 돌려주지 않도록 0으로 깐다.
+            memset(buffer.contents(), 0, length)
+            if let label = descriptor.label { buffer.label = label }
+            visibilityBuffer = buffer
+            counterBuffer = nil
+
+        case .timestamp:
+            guard device.supportsCounterSampling(.atStageBoundary),
+                  let counterSet = device.counterSets?.first(
+                    where: { $0.name == MTLCommonCounterSet.timestamp.rawValue }
+                  ) else {
+                throw WGPUError.unsupported(
+                    "이 기기는 패스 경계 타임스탬프 샘플링을 지원하지 않는다 "
+                        + "(adapter 정보의 timestampQuery로 미리 확인할 것)"
+                )
+            }
+            let counterDescriptor = MTLCounterSampleBufferDescriptor()
+            counterDescriptor.counterSet = counterSet
+            counterDescriptor.sampleCount = descriptor.count
+            counterDescriptor.storageMode = .shared
+            if let label = descriptor.label { counterDescriptor.label = label }
+            do {
+                counterBuffer = try device.makeCounterSampleBuffer(descriptor: counterDescriptor)
+            } catch {
+                throw WGPUError.backend("타임스탬프 샘플 버퍼 생성 실패: \(error.localizedDescription)")
+            }
+            visibilityBuffer = nil
+        }
+    }
+
+    /// 쿼리 구간이 이 셋 안에 들어오는지. 넘으면 Metal이 단언으로 죽는다.
+    func checkRange(first: Int, count queryCount: Int, path: String?) throws {
+        guard first >= 0, queryCount >= 0, first + queryCount <= count else {
+            throw WGPUError.validation(
+                "쿼리 범위를 벗어났다 — \(first)부터 \(queryCount)개, 쿼리셋 크기 \(count)",
+                path: path
+            )
+        }
+    }
+}
+
 /// `GPUTexture`.
 public final class WGPUTextureObject {
     public let texture: MTLTexture

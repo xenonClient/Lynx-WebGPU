@@ -34,6 +34,10 @@ final class WGPUCommandInterpreter {
     private var indexBinding: (buffer: MTLBuffer, offset: Int, type: MTLIndexType, stride: Int)?
     /// 지금 렌더 패스의 어태치먼트 모양 — 렌더 번들이 이 패스에서 유효한지 볼 때 쓴다.
     private var passFormats: (color: [WGPUTextureFormat], depthStencil: WGPUTextureFormat?, sampleCount: Int)?
+    /// 지금 렌더 패스가 물고 있는 occlusion 쿼리셋 (`beginRenderPass`에서만 붙일 수 있다).
+    private var passOcclusionQuerySet: WGPUQuerySetObject?
+    /// 열려 있는 occlusion 쿼리 인덱스 — 중첩·미종료를 잡는다.
+    private var openOcclusionQuery: Int?
     private var acquiredDrawables: [(handle: WGPUHandle, drawable: WGPUDrawable, surface: WGPUSurface)] = []
     /// 이번 프레임 업로드에 쓴 스테이징 버퍼 — 커맨드 버퍼 완료 시 풀로 돌아간다.
     private var frameStagingBuffers: [MTLBuffer] = []
@@ -151,6 +155,8 @@ final class WGPUCommandInterpreter {
         dirtyGroups.removeAll()
         indexBinding = nil
         passFormats = nil
+        passOcclusionQuerySet = nil
+        openOcclusionQuery = nil
         acquiredDrawables.removeAll()
         frameScopedHandles.removeAll()
         touchedCanvases.removeAll()
@@ -266,6 +272,7 @@ final class WGPUCommandInterpreter {
         case "createBindGroupLayout": try createBindGroupLayout(command)
         case "createPipelineLayout": try createPipelineLayout(command)
         case "createBindGroup": try createBindGroup(command)
+        case "createQuerySet": try createQuerySet(command)
         case "createRenderBundle": try createRenderBundle(command)
         case "createRenderPipeline": try createRenderPipeline(command)
         case "createComputePipeline": try createComputePipeline(command)
@@ -296,9 +303,11 @@ final class WGPUCommandInterpreter {
         case "drawIndirect": try drawIndirect(command)
         case "drawIndexedIndirect": try drawIndexedIndirect(command)
         case "executeBundles": try executeBundles(command)
+        case "beginOcclusionQuery": try beginOcclusionQuery(command)
+        case "endOcclusionQuery": try endOcclusionQuery()
 
         // 컴퓨트 패스
-        case "beginComputePass": try beginComputePass()
+        case "beginComputePass": try beginComputePass(command)
         case "dispatchWorkgroups": try dispatchWorkgroups(command)
         case "dispatchWorkgroupsIndirect": try dispatchWorkgroupsIndirect(command)
 
@@ -309,6 +318,7 @@ final class WGPUCommandInterpreter {
         case "copyTextureToBuffer": try copyTextureToBuffer(command)
         case "copyBufferToTexture": try copyBufferToTexture(command)
         case "copyTextureToTexture": try copyTextureToTexture(command)
+        case "resolveQuerySet": try resolveQuerySet(command)
 
         default:
             throw WGPUError.unsupported("알 수 없는 명령 '\(op)'", path: "commands[\(index)].op")
@@ -437,6 +447,12 @@ final class WGPUCommandInterpreter {
         registry.insert(
             try WGPUBindGroupObject(layout: layout, descriptor: descriptor, registry: registry), at: handle
         )
+    }
+
+    private func createQuerySet(_ command: WGPUValueReader) throws {
+        let handle = try command.requiredHandle("id")
+        let object = try WGPUQuerySetObject(device: device, descriptor: WGPUQuerySetDescriptor(from: command))
+        registry.insert(object, at: handle)
     }
 
     /// `bundleEncoder.finish()` — JS가 모아 둔 명령 목록을 번들 객체로 등록한다.
@@ -603,13 +619,140 @@ final class WGPUCommandInterpreter {
             }
         }
 
+        // occlusion 쿼리는 **패스를 열 때만** 붙일 수 있다 (Metal도 WebGPU도 같은 제약).
+        var occlusionQuerySet: WGPUQuerySetObject?
+        if let handle = descriptor.occlusionQuerySet {
+            let querySet = try registry.lookup(handle, as: WGPUQuerySetObject.self, kind: "GPUQuerySet")
+            guard querySet.type == .occlusion else {
+                throw WGPUError.validation(
+                    "occlusionQuerySet은 type: \"occlusion\"이어야 한다 (받은 것: \(querySet.type.rawValue))"
+                )
+            }
+            passDescriptor.visibilityResultBuffer = querySet.visibilityBuffer
+            occlusionQuerySet = querySet
+        }
+
+        if let writes = descriptor.timestampWrites {
+            let attachment = passDescriptor.sampleBufferAttachments[0]!
+            let querySet = try timestampSampleBuffer(writes)
+            attachment.sampleBuffer = querySet
+            // WebGPU의 "패스 시작/끝"을 Metal의 스테이지 경계에 맞춘다 —
+            // 시작은 정점 스테이지 진입, 끝은 프래그먼트 스테이지 종료다.
+            attachment.startOfVertexSampleIndex = writes.beginningOfPassWriteIndex ?? MTLCounterDontSample
+            attachment.endOfVertexSampleIndex = MTLCounterDontSample
+            attachment.startOfFragmentSampleIndex = MTLCounterDontSample
+            attachment.endOfFragmentSampleIndex = writes.endOfPassWriteIndex ?? MTLCounterDontSample
+        }
+
         guard let encoder = try activeCommandBuffer().makeRenderCommandEncoder(descriptor: passDescriptor) else {
             throw WGPUError.backend("MTLRenderCommandEncoder 생성 실패 — 어태치먼트 설정을 확인할 것")
         }
         if let label = descriptor.label { encoder.label = label }
         renderEncoder = encoder
         passFormats = (colorFormats, depthStencilFormat, sampleCount)
+        passOcclusionQuerySet = occlusionQuerySet
+        openOcclusionQuery = nil
         resetPassBindings()
+    }
+
+    // MARK: - 쿼리
+
+    /// 타임스탬프 쓰기 자리를 확인하고 카운터 샘플 버퍼를 꺼낸다.
+    private func timestampSampleBuffer(_ writes: WGPUPassTimestampWrites) throws -> MTLCounterSampleBuffer {
+        let querySet = try registry.lookup(writes.querySet, as: WGPUQuerySetObject.self, kind: "GPUQuerySet")
+        guard querySet.type == .timestamp, let buffer = querySet.counterBuffer else {
+            throw WGPUError.validation(
+                "timestampWrites의 쿼리셋은 type: \"timestamp\"여야 한다 (받은 것: \(querySet.type.rawValue))"
+            )
+        }
+        for index in [writes.beginningOfPassWriteIndex, writes.endOfPassWriteIndex].compactMap({ $0 }) {
+            try querySet.checkRange(first: index, count: 1, path: "timestampWrites")
+        }
+        return buffer
+    }
+
+    private func beginOcclusionQuery(_ command: WGPUValueReader) throws {
+        let encoder = try requireRenderEncoder()
+        guard let querySet = passOcclusionQuerySet else {
+            throw WGPUError.validation(
+                "beginOcclusionQuery를 쓰려면 beginRenderPass에 occlusionQuerySet을 줘야 한다"
+            )
+        }
+        guard openOcclusionQuery == nil else {
+            throw WGPUError.validation("occlusion 쿼리는 중첩할 수 없다 (앞의 것을 endOcclusionQuery로 닫을 것)")
+        }
+        let index = try command.requiredInt("queryIndex")
+        try querySet.checkRange(first: index, count: 1, path: command.fieldPath("queryIndex"))
+        // `.counting`은 통과한 **샘플 수**를 센다 — 명세의 occlusion 결과와 같은 뜻이다.
+        encoder.setVisibilityResultMode(.counting, offset: index * WGPUQuerySetObject.resultStride)
+        openOcclusionQuery = index
+    }
+
+    private func endOcclusionQuery() throws {
+        let encoder = try requireRenderEncoder()
+        guard let index = openOcclusionQuery else {
+            throw WGPUError.validation("endOcclusionQuery: 열려 있는 occlusion 쿼리가 없다")
+        }
+        encoder.setVisibilityResultMode(.disabled, offset: index * WGPUQuerySetObject.resultStride)
+        openOcclusionQuery = nil
+    }
+
+    /// 쿼리 결과를 버퍼로 내린다. 종류마다 blit 명령이 다르다.
+    private func resolveQuerySet(_ command: WGPUValueReader) throws {
+        let querySet = try registry.lookup(
+            try command.requiredHandle("querySet"), as: WGPUQuerySetObject.self, kind: "GPUQuerySet"
+        )
+        let destination = try registry.lookup(
+            try command.requiredHandle("destination"), as: WGPUBufferObject.self, kind: "GPUBuffer"
+        )
+        let first = command.int("firstQuery", default: 0)
+        let count = command.int("queryCount", default: querySet.count - first)
+        let offset = command.int("destinationOffset", default: 0)
+        try querySet.checkRange(first: first, count: count, path: command.fieldPath("firstQuery"))
+
+        // 명세가 요구하는 정렬. Metal은 이보다 느슨해서 여기서 안 막으면 브라우저에서만 깨진다.
+        guard offset >= 0, offset % 256 == 0 else {
+            throw WGPUError.validation(
+                "destinationOffset은 256의 배수여야 한다 (받은 값 \(offset))",
+                path: command.fieldPath("destinationOffset")
+            )
+        }
+        let byteCount = count * WGPUQuerySetObject.resultStride
+        guard offset + byteCount <= destination.size else {
+            throw WGPUError.validation(
+                "쿼리 결과 \(byteCount)B가 버퍼 범위를 넘는다 — "
+                    + "offset \(offset) + \(byteCount)B > 버퍼 크기 \(destination.size)B",
+                path: command.fieldPath("destinationOffset")
+            )
+        }
+        guard destination.usage.contains(.queryResolve) else {
+            throw WGPUError.validation(
+                "resolveQuerySet의 목적지 버퍼는 GPUBufferUsage.QUERY_RESOLVE로 만들어야 한다",
+                path: command.fieldPath("destination")
+            )
+        }
+        guard count > 0 else { return }   // no-op (Metal은 0바이트 복사를 거부한다)
+
+        let encoder = try activeBlitEncoder()
+        switch querySet.type {
+        case .occlusion:
+            guard let source = querySet.visibilityBuffer else {
+                throw WGPUError.backend("occlusion 쿼리 버퍼가 없다")
+            }
+            encoder.copy(
+                from: source, sourceOffset: first * WGPUQuerySetObject.resultStride,
+                to: destination.buffer, destinationOffset: offset, size: byteCount
+            )
+        case .timestamp:
+            guard let source = querySet.counterBuffer else {
+                throw WGPUError.backend("타임스탬프 샘플 버퍼가 없다")
+            }
+            // 카운터는 평범한 버퍼가 아니라 전용 저장소라 resolveCounters로만 꺼낼 수 있다.
+            encoder.resolveCounters(
+                source, range: first..<(first + count),
+                destinationBuffer: destination.buffer, destinationOffset: offset
+            )
+        }
     }
 
     /// 파이프라인·바인드 그룹·인덱스 버퍼 바인딩을 "지정되지 않음"으로 되돌린다.
@@ -986,11 +1129,26 @@ final class WGPUCommandInterpreter {
 
     // MARK: - 컴퓨트 패스
 
-    private func beginComputePass() throws {
+    private func beginComputePass(_ command: WGPUValueReader) throws {
         endActiveEncoders()
-        guard let encoder = try activeCommandBuffer().makeComputeCommandEncoder() else {
+        let descriptor = try WGPUComputePassDescriptor(from: command)
+        let buffer = try activeCommandBuffer()
+
+        let encoder: MTLComputeCommandEncoder?
+        if let writes = descriptor.timestampWrites {
+            let passDescriptor = MTLComputePassDescriptor()
+            let attachment = passDescriptor.sampleBufferAttachments[0]!
+            attachment.sampleBuffer = try timestampSampleBuffer(writes)
+            attachment.startOfEncoderSampleIndex = writes.beginningOfPassWriteIndex ?? MTLCounterDontSample
+            attachment.endOfEncoderSampleIndex = writes.endOfPassWriteIndex ?? MTLCounterDontSample
+            encoder = buffer.makeComputeCommandEncoder(descriptor: passDescriptor)
+        } else {
+            encoder = buffer.makeComputeCommandEncoder()
+        }
+        guard let encoder else {
             throw WGPUError.backend("MTLComputeCommandEncoder 생성 실패")
         }
+        if let label = descriptor.label { encoder.label = label }
         computeEncoder = encoder
         currentComputePipeline = nil
         boundGroups.removeAll()

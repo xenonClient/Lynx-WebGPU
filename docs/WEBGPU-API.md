@@ -24,6 +24,12 @@ const format  = gpu.getPreferredCanvasFormat()      // "bgra8unorm"
 | `maxBufferSize` | `MTLDevice.maxBufferLength` |
 | `maxThreadsPerThreadgroup` | 컴퓨트 워크그룹 상한 |
 
+`adapter.features`는 기기마다 갈리는 기능을 알려 준다 (웹과 같은 `has()` 인터페이스):
+
+```js
+if (adapter.features.has('timestamp-query')) { /* 타임스탬프 쿼리셋을 만들 수 있다 */ }
+```
+
 ## 2. 캔버스 (`GPUCanvasContext`)
 
 ```js
@@ -84,7 +90,7 @@ const bytes = await buffer.mapAsync(GPUMapMode.READ)   // readBuffer (콜백형 
 ```
 
 `usage` 플래그: `MAP_READ` `MAP_WRITE` `COPY_SRC` `COPY_DST` `INDEX` `VERTEX` `UNIFORM` `STORAGE`
-`INDIRECT` (`QUERY_RESOLVE`는 값만 있고 기능은 미지원).
+`INDIRECT` `QUERY_RESOLVE`.
 
 > `writeBuffer`는 스테이징 버퍼 + blit으로 큐에 **순서를 태워** 올라간다. 직접 memcpy 하면
 > 직전 프레임 GPU 작업과 경쟁하기 때문이다. 스테이징 버퍼는 네이티브가 풀로 재사용하므로
@@ -259,6 +265,48 @@ device.queue.submit([encoder.finish()])   // ← 여기서 한 번에 네이티�
 - `beginRenderPass`는 멀티샘플 `resolveTarget`을 지원한다 (store op이 `multisampleResolve`로 바뀐다).
 - 복사 명령은 패스 **밖에서만** 쓸 수 있다.
 
+### 쿼리 (occlusion · 타임스탬프)
+
+```js
+const querySet = device.createQuerySet({ type: 'occlusion', count: 2 })   // createQuerySet
+const results  = device.createBuffer({ size: 16, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.MAP_READ })
+
+const pass = encoder.beginRenderPass({ colorAttachments, occlusionQuerySet: querySet })
+pass.beginOcclusionQuery(0)        // beginOcclusionQuery
+pass.draw(3)
+pass.endOcclusionQuery()           // endOcclusionQuery
+pass.end()
+
+encoder.resolveQuerySet(querySet, 0, 2, results, 0)   // resolveQuerySet
+device.queue.submit([encoder.finish()])
+const counts = new BigUint64Array(await results.mapAsync(GPUMapMode.READ))
+```
+
+- 결과 하나는 `u64` 8바이트다. `occlusion`은 **통과한 샘플 수**이므로 0이면 완전히 가려진 것이다.
+- 쿼리셋은 **패스를 열 때만** 붙일 수 있고(`occlusionQuerySet`), occlusion 쿼리는 중첩할 수 없다.
+- 목적지 버퍼는 `GPUBufferUsage.QUERY_RESOLVE`로 만들어야 하고 `destinationOffset`은
+  **256의 배수**여야 한다 (명세 요구 — Metal은 더 느슨해서 여기서 직접 막는다).
+
+타임스탬프는 패스 경계에서 찍는다. **기기 조건이 붙으므로 만들기 전에 확인할 것**:
+
+```js
+if (adapter.features.has('timestamp-query')) {
+  const stamps = device.createQuerySet({ type: 'timestamp', count: 2 })
+  encoder.beginRenderPass({
+    colorAttachments,
+    timestampWrites: { querySet: stamps, beginningOfPassWriteIndex: 0, endOfPassWriteIndex: 1 },
+  })
+  // 컴퓨트 패스도 같은 모양: encoder.beginComputePass({ timestampWrites })
+}
+```
+
+- 값은 GPU 시계 눈금이다. **차이만 의미가 있고 절대값은 의미가 없다.**
+- 지원하지 않는 기기에서 `type: 'timestamp'`로 만들면 `unsupported` 오류가 난다.
+- **컴퓨트 패스 타임스탬프는 Apple GPU에서 신뢰할 수 없다.** 샘플 자체는 찍히지만
+  `resolveQuerySet`이 쓰는 GPU 측 resolve 경로가 같은 코드에서도 0을 돌려줄 때가 있다
+  (드라이버 사정이라 이 구현이 고칠 수 없다). 프레임 계측이 목적이면 **렌더 패스 쪽을 쓸 것** —
+  그쪽은 안정적이다.
+
 ### 렌더 번들
 
 매 프레임 똑같은 드로우 묶음을 다시 기록하지 않도록 한 번 기록해 두고 재사용한다.
@@ -371,7 +419,7 @@ if (error) fallBackToSimplePipeline()
 
 | 기능 | 상태 |
 |---|---|
-| `GPUQuerySet` / 타임스탬프 / occlusion 쿼리 | 미지원 |
+| `GPUQuerySet` / 타임스탬프 / occlusion 쿼리 | **지원** (§6). 타임스탬프는 `adapter.features.has('timestamp-query')`인 기기에서만 |
 | `drawIndirect` / `drawIndexedIndirect` / `dispatchWorkgroupsIndirect` | **지원** (§6) |
 | `GPURenderBundle` | **지원** (§6) |
 | 스텐실 테스트 상태 | **지원** (§5) |
@@ -381,6 +429,7 @@ if (error) fallBackToSimplePipeline()
 | `device.lost` | 미지원 — iOS/macOS에는 디바이스 손실에 해당하는 사건이 사실상 없다. 테스트 전용 주입 경로만 남는 API라 넣지 않았다 |
 | 파이프라인 상수 (`override` / `constants`) | **지원** (§5) |
 | 캔버스 `colorSpace` · `toneMapping` (EDR 출력) | **지원** (§2) — 실기기에서만 확인된다 |
-| `writeTimestamp`, `resolveQuerySet` | 미지원 |
+| `resolveQuerySet` | **지원** (§6) |
+| `writeTimestamp` | 미지원 — Metal은 패스 경계에서만 카운터를 샘플링한다 (`timestampWrites`를 쓸 것) |
 
 새 명령을 추가하는 절차는 `.claude/skills/webgpu-command/SKILL.md` 참고.

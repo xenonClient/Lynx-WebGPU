@@ -618,9 +618,26 @@ public struct WGPURenderPassDepthStencilAttachment {
     }
 }
 
+/// 패스 경계에서 타임스탬프를 찍을 자리 (`GPURenderPassTimestampWrites`).
+///
+/// 두 인덱스는 각각 생략할 수 있다 — 시작만, 끝만 찍는 것도 명세상 유효하다.
+public struct WGPUPassTimestampWrites {
+    public var querySet: WGPUHandle
+    public var beginningOfPassWriteIndex: Int?
+    public var endOfPassWriteIndex: Int?
+
+    public init(from reader: WGPUValueReader) throws {
+        querySet = try reader.requiredHandle("querySet")
+        beginningOfPassWriteIndex = reader.optionalInt("beginningOfPassWriteIndex")
+        endOfPassWriteIndex = reader.optionalInt("endOfPassWriteIndex")
+    }
+}
+
 public struct WGPURenderPassDescriptor {
     public var colorAttachments: [WGPURenderPassColorAttachment]
     public var depthStencilAttachment: WGPURenderPassDepthStencilAttachment?
+    public var occlusionQuerySet: WGPUHandle?
+    public var timestampWrites: WGPUPassTimestampWrites?
     public var label: String?
 
     public init(from reader: WGPUValueReader) throws {
@@ -628,7 +645,36 @@ public struct WGPURenderPassDescriptor {
             .map(WGPURenderPassColorAttachment.init(from:))
         depthStencilAttachment = try reader.object("depthStencilAttachment")
             .map(WGPURenderPassDepthStencilAttachment.init(from:))
+        occlusionQuerySet = reader.optionalHandle("occlusionQuerySet")
+        timestampWrites = try reader.object("timestampWrites").map(WGPUPassTimestampWrites.init(from:))
         label = reader.optionalString("label")
+    }
+}
+
+public struct WGPUComputePassDescriptor {
+    public var timestampWrites: WGPUPassTimestampWrites?
+    public var label: String?
+
+    public init(from reader: WGPUValueReader?) throws {
+        timestampWrites = try reader?.object("timestampWrites").map(WGPUPassTimestampWrites.init(from:))
+        label = reader?.optionalString("label")
+    }
+}
+
+// MARK: - 쿼리
+
+public struct WGPUQuerySetDescriptor {
+    public var type: WGPUQueryType
+    public var count: Int
+    public var label: String?
+
+    public init(from reader: WGPUValueReader) throws {
+        type = try reader.requiredEnum("type", WGPUQueryType.self)
+        count = try reader.requiredInt("count")
+        label = reader.optionalString("label")
+        guard count > 0 else {
+            throw WGPUError.validation("쿼리 개수는 1 이상이어야 한다", path: reader.fieldPath("count"))
+        }
     }
 }
 

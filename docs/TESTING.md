@@ -20,7 +20,7 @@ GPU 코드는 "돌려 보고 눈으로 확인"에 기대기 쉽다. 이 저장�
 ## 2. 실행
 
 ```zsh
-swift test                                      # 전체 (106개, 약 7초)
+swift test                                      # 전체 (188개, 약 4초)
 swift test --filter LynxWebGPUCoreTests         # 디스크립터/핸들
 swift test --filter LynxWebGPUShaderTests       # 트랜스파일러 (+ Metal 컴파일 검증)
 swift test --filter LynxWebGPUTests             # GPU 렌더 + 해석기
@@ -31,7 +31,7 @@ JS 클라이언트(shim) 테스트 — 의존성 없이 node 내장 러너로 �
 `NativeModules.WebGPU`를 목으로 바꿔 커맨드 페이로드·왕복 횟수를 단언한다:
 
 ```zsh
-cd JS && npm test            # NODE_OPTIONS=--expose-gc node --test 'tests/*.test.mjs' — 17개
+cd JS && npm test            # NODE_OPTIONS=--expose-gc node --test 'tests/*.test.mjs' — 43개
 cd JS && npm run typecheck   # JSDoc 기준 타입 검사
 ```
 
@@ -178,7 +178,7 @@ try XCTSkipUnless(harness.supports(.timestampQuery), "타임스탬프 카운터�
 - 비동기 경로(`readBuffer`)는 `XCTestExpectation`으로 검증한다.
 - 테스트 더블은 손으로 만든다 (모킹 라이브러리 없음).
 
-## 6. 커버리지 대상 (Swift 106개 + JS 17개)
+## 6. 커버리지 대상 (Swift 188개 + JS 43개)
 
 | 영역 | 파일 | 주요 케이스 |
 |---|---|---|
@@ -201,6 +201,7 @@ try XCTSkipUnless(harness.supports(.timestampQuery), "타임스탬프 카운터�
 | 간접 드로우 | `IndirectDrawTests` | **직접 호출과 프레임 전체 동치성**(인자 칸 순서), `firstVertex`, 인덱스 바인딩 오프셋 + `firstIndex` 이중 적용 회귀, 간접 디스패치, **컴퓨트가 인자를 쓰는 GPU-driven 경로** |
 | 오류 스코프 | `ErrorScopeTests` | 가로채기(전역으로 안 샘), 필터 매칭, 중첩에서 안쪽 우선 + 안 맞으면 바깥으로, **배치를 넘는 수명**, 처음 잡힌 하나만, 짝 없는 pop이 인덱스를 안 민다, reset |
 | 렌더 번들 | `RenderBundleTests` | **직접 인코딩과 프레임 전체 동치성**, 재사용(두 프레임 연속), 실행 순서, **상태 격리 양방향**(물려받지도 남기지도 않는다), 포맷·어태치먼트 수 불일치, 번들에 금지된 명령 |
+| 쿼리셋 | `QuerySetTests` | occlusion은 **값 단언**(전체 통과 = 64×64, 완전히 잘린 드로우 = 정확히 0), 구간 resolve, 타임스탬프는 **구조만**(길이·단조·초기값 아님, 절대 시간 임계 금지), 기기 지원과 `adapter.features` 일치, 중첩·범위·usage·256 정렬 계약 |
 
 새 기능을 넣으면 위 표에 행을 추가하고 같은 컨벤션으로 테스트를 쓴다.
 

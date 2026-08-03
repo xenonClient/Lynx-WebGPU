@@ -182,6 +182,15 @@ public enum WGPUVertexFormat: String, CaseIterable, Sendable {
     }
 }
 
+/// `GPUQuerySet.type`.
+///
+/// 둘은 성격이 아주 다르다. `occlusion`은 "몇 개의 샘플이 살아남았나"라 **결정적**이고,
+/// `timestamp`는 GPU 시계라 같은 입력에도 값이 매번 다르다. 뒤엣것에 값 단언을 걸면 안 된다.
+public enum WGPUQueryType: String, CaseIterable, Sendable {
+    case occlusion
+    case timestamp
+}
+
 public enum WGPULoadOp: String, CaseIterable, Sendable {
     case load, clear
 }

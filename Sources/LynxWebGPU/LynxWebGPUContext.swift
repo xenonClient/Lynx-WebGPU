@@ -180,7 +180,21 @@ public final class LynxWebGPUContext {
             "supportsFamilyApple7": device.supportsFamily(.apple7),
             "preferredCanvasFormat": WGPUTextureFormat.bgra8unorm.rawValue,
             "limits": limits,
+            "features": features(),
         ]
+    }
+
+    /// 기기마다 갈리는 기능 (`adapter.features` — 명세 철자 그대로).
+    ///
+    /// JS가 만들기 전에 물어볼 수 있어야 하는 것만 싣는다. 못 만드는 것을 만들려다 오류를
+    /// 받는 것보다, 미리 알고 다른 길로 가는 편이 낫다.
+    private func features() -> [String] {
+        var result: [String] = []
+        if device.supportsCounterSampling(.atStageBoundary),
+           device.counterSets?.contains(where: { $0.name == MTLCommonCounterSet.timestamp.rawValue }) == true {
+            result.append("timestamp-query")
+        }
+        return result
     }
 
     /// 모든 GPU 객체를 버린다 (페이지 이탈 등).

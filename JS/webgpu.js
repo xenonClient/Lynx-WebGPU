@@ -98,6 +98,13 @@ export const GPUMapMode = { READ: 0x1, WRITE: 0x2 };
  */
 /** @typedef {{format: string, depthWriteEnabled?: boolean, depthCompare?: GPUCompareFunction, depthBias?: number, depthBiasSlopeScale?: number, depthBiasClamp?: number, stencilFront?: GPUStencilFaceState, stencilBack?: GPUStencilFaceState, stencilReadMask?: number, stencilWriteMask?: number}} GPUDepthStencilState */
 
+/** @typedef {{type: 'occlusion' | 'timestamp', count: number, label?: string}} GPUQuerySetDescriptor */
+
+/**
+ * 패스 경계에서 타임스탬프를 찍을 자리. 두 인덱스는 각각 생략할 수 있다.
+ */
+/** @typedef {{querySet: GPUQuerySet, beginningOfPassWriteIndex?: number, endOfPassWriteIndex?: number}} GPUPassTimestampWrites */
+
 /**
  * `createRenderBundleEncoder`의 디스크립터 — 이 번들을 **실행할 패스의 모양**이다.
  * `colorFormats`의 `null`은 "그 슬롯은 비어 있다"는 뜻이다.
@@ -430,6 +437,20 @@ class GPUComputePipeline extends GPUPipelineBase {}
 /** `bundleEncoder.finish()`가 돌려주는 재사용 가능한 드로우 묶음. */
 class GPURenderBundle extends GPUObjectBase {}
 
+/** `device.createQuerySet()`이 돌려주는 쿼리 저장소. */
+class GPUQuerySet extends GPUObjectBase {
+  /**
+   * @param {GPUDevice} device
+   * @param {number} id
+   * @param {GPUQuerySetDescriptor} descriptor
+   */
+  constructor(device, id, descriptor) {
+    super(device, id, descriptor.label);
+    this.type = descriptor.type;
+    this.count = descriptor.count;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 커맨드 인코더
 // ---------------------------------------------------------------------------
@@ -617,6 +638,23 @@ class GPURenderPassEncoder extends GPURenderCommandsBase {
   }
 
   /**
+   * 이 드로우들이 통과시킨 샘플 수를 세기 시작한다.
+   *
+   * `beginRenderPass`에 `occlusionQuerySet`을 준 패스에서만 쓸 수 있고, 중첩할 수 없다.
+   *
+   * @param {number} queryIndex
+   * @returns {void}
+   */
+  beginOcclusionQuery(queryIndex) {
+    this._commands.push({ op: 'beginOcclusionQuery', queryIndex });
+  }
+
+  /** @returns {void} */
+  endOcclusionQuery() {
+    this._commands.push({ op: 'endOcclusionQuery' });
+  }
+
+  /**
    * 미리 기록해 둔 번들들을 이 패스에 되풀이한다.
    *
    * 번들은 패스 상태를 **물려받지 않고**, 실행이 끝나면 패스의 파이프라인·바인드 그룹·
@@ -747,14 +785,51 @@ class GPUCommandEncoder {
       const depth = descriptor.depthStencilAttachment;
       command.depthStencilAttachment = { ...depth, view: depth.view.id };
     }
+    // 쿼리는 패스를 열 때만 붙일 수 있다 (Metal도 WebGPU도 같은 제약).
+    if (descriptor.occlusionQuerySet) command.occlusionQuerySet = descriptor.occlusionQuerySet.id;
+    if (descriptor.timestampWrites) {
+      command.timestampWrites = serializeTimestampWrites(descriptor.timestampWrites);
+    }
     this._commands.push(command);
     return new GPURenderPassEncoder(this._commands);
   }
 
-  /** @returns {GPUComputePassEncoder} */
-  beginComputePass() {
-    this._commands.push({ op: 'beginComputePass' });
+  /**
+   * @param {{label?: string, timestampWrites?: GPUPassTimestampWrites}} [descriptor]
+   * @returns {GPUComputePassEncoder}
+   */
+  beginComputePass(descriptor) {
+    /** @type {GPUCommand} */
+    const command = { op: 'beginComputePass', label: descriptor && descriptor.label };
+    if (descriptor && descriptor.timestampWrites) {
+      command.timestampWrites = serializeTimestampWrites(descriptor.timestampWrites);
+    }
+    this._commands.push(command);
     return new GPUComputePassEncoder(this._commands);
+  }
+
+  /**
+   * 쿼리 결과를 버퍼로 내린다. 결과 하나는 `u64`(8바이트)다.
+   *
+   * 목적지 버퍼는 `GPUBufferUsage.QUERY_RESOLVE`로 만들어야 하고,
+   * `destinationOffset`은 **256의 배수**여야 한다 (명세 요구).
+   *
+   * @param {GPUQuerySet} querySet
+   * @param {number} firstQuery
+   * @param {number} queryCount
+   * @param {GPUBuffer} destination
+   * @param {number} destinationOffset
+   * @returns {void}
+   */
+  resolveQuerySet(querySet, firstQuery, queryCount, destination, destinationOffset) {
+    this._commands.push({
+      op: 'resolveQuerySet',
+      querySet: querySet.id,
+      firstQuery: firstQuery || 0,
+      queryCount,
+      destination: destination.id,
+      destinationOffset: destinationOffset || 0,
+    });
   }
 
   /**
@@ -1095,6 +1170,22 @@ class GPUDevice {
     return new GPURenderBundleEncoder(this, descriptor);
   }
 
+  /**
+   * 쿼리 저장소를 만든다.
+   *
+   * `'occlusion'`은 드로우가 통과시킨 샘플 수를 센다 — 결정적이라 값을 믿을 수 있다.
+   * `'timestamp'`는 GPU 시계라 같은 입력에도 값이 매번 다르다. 기기에 따라 아예 만들 수
+   * 없으므로(`adapter.limits.timestampQuery`) 실패를 처리할 것.
+   *
+   * @param {GPUQuerySetDescriptor} descriptor
+   * @returns {GPUQuerySet}
+   */
+  createQuerySet(descriptor) {
+    const id = this._recorder.allocate();
+    this._recorder.push({ op: 'createQuerySet', id, ...descriptor });
+    return new GPUQuerySet(this, id, descriptor);
+  }
+
   /** 모든 GPU 객체를 버린다 (페이지 이탈 시 호출). @returns {void} */
   destroy() {
     this._recorder.pending = [];
@@ -1103,6 +1194,19 @@ class GPUDevice {
     canvasSizeCache.clear();
     nativeModule().reset();
   }
+}
+
+/**
+ * 타임스탬프 쓰기 자리를 커맨드에 실을 모양으로 — 쿼리셋은 핸들로 바꾼다.
+ * @param {GPUPassTimestampWrites} writes
+ * @returns {Record<string, any>}
+ */
+function serializeTimestampWrites(writes) {
+  return {
+    querySet: writes.querySet.id,
+    beginningOfPassWriteIndex: writes.beginningOfPassWriteIndex,
+    endOfPassWriteIndex: writes.endOfPassWriteIndex,
+  };
 }
 
 /**
@@ -1202,6 +1306,20 @@ class GPUCanvasContext {
 // 진입점 (navigator.gpu 대응)
 // ---------------------------------------------------------------------------
 
+/**
+ * `GPUSupportedFeatures` 흉내 — 웹 코드가 쓰는 것은 `has()`와 순회뿐이다.
+ * @param {string[]} names
+ * @returns {{has: (name: string) => boolean, size: number, values: () => string[]}}
+ */
+function makeFeatureSet(names) {
+  const list = names.slice();
+  return {
+    has: (name) => list.indexOf(name) >= 0,
+    size: list.length,
+    values: () => list.slice(),
+  };
+}
+
 class GPUAdapter {
   /** @param {WGPUAdapterInfo} info */
   constructor(info) {
@@ -1209,6 +1327,11 @@ class GPUAdapter {
     this.backend = info.backend;
     this.limits = info.limits || {};
     this.hasUnifiedMemory = info.hasUnifiedMemory;
+    /**
+     * 기기마다 갈리는 기능 — 웹과 같은 분기(`adapter.features.has('timestamp-query')`)가
+     * 동작하도록 `has`만 흉내 낸다 (엔진에 `Set`이 없을 수 있다).
+     */
+    this.features = makeFeatureSet(info.features || []);
   }
 
   /** @returns {Promise<GPUDevice>} */
@@ -1326,6 +1449,6 @@ export async function loadAsset(name) {
 
 export {
   GPUBuffer, GPUTexture, GPUTextureView, GPUSampler, GPUDevice, GPUCanvasContext,
-  GPURenderBundle, GPURenderBundleEncoder,
+  GPURenderBundle, GPURenderBundleEncoder, GPUQuerySet,
 };
 export default gpu;
