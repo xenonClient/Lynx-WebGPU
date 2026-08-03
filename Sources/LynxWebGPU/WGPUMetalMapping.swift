@@ -155,6 +155,38 @@ enum WGPUMetalMapping {
         }
     }
 
+    static func stencilOperation(_ operation: WGPUStencilOperation) -> MTLStencilOperation {
+        switch operation {
+        case .keep: return .keep
+        case .zero: return .zero
+        case .replace: return .replace
+        case .invert: return .invert
+        case .incrementClamp: return .incrementClamp
+        case .decrementClamp: return .decrementClamp
+        case .incrementWrap: return .incrementWrap
+        case .decrementWrap: return .decrementWrap
+        }
+    }
+
+    /// 한 면(front/back)의 스텐실 상태 + 파이프라인 공통 마스크.
+    ///
+    /// 마스크는 명세상 `GPUDepthStencilState`에 하나씩만 있고 앞/뒤가 나뉘지 않는다.
+    /// Metal은 면마다 들고 있으므로 같은 값을 양쪽에 넣는다.
+    static func stencilDescriptor(
+        _ face: WGPUStencilFaceState,
+        readMask: Int,
+        writeMask: Int
+    ) -> MTLStencilDescriptor {
+        let descriptor = MTLStencilDescriptor()
+        descriptor.stencilCompareFunction = compareFunction(face.compare)
+        descriptor.stencilFailureOperation = stencilOperation(face.failOp)
+        descriptor.depthFailureOperation = stencilOperation(face.depthFailOp)
+        descriptor.depthStencilPassOperation = stencilOperation(face.passOp)
+        descriptor.readMask = UInt32(truncatingIfNeeded: readMask)
+        descriptor.writeMask = UInt32(truncatingIfNeeded: writeMask)
+        return descriptor
+    }
+
     static func blendFactor(_ factor: WGPUBlendFactor) -> MTLBlendFactor {
         switch factor {
         case .zero: return .zero

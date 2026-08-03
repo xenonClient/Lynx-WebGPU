@@ -195,7 +195,28 @@ const compute = device.createComputePipeline({                // createComputePi
   (`docs/WGSL.md` §2-2). 같은 셰이더라도 상수가 다르면 별도로 컴파일·캐시된다.
 - 정점 버퍼 슬롯은 **최대 8개**, `arrayStride: 0`은 미지원.
 - 컴퓨트 워크그룹 크기는 WGSL의 `@workgroup_size`에서 리플렉션으로 가져온다 (MSL 모듈은 (1,1,1)).
-- 스텐실 상태(`stencilFront`/`stencilBack`)는 미지원 — 깊이만 반영된다.
+
+### 스텐실 상태
+
+```js
+depthStencil: {
+  format: 'stencil8',                 // 또는 'depth24plus-stencil8' · 'depth32float-stencil8'
+  stencilFront: { compare: 'equal', failOp: 'keep', depthFailOp: 'keep', passOp: 'replace' },
+  stencilBack:  { compare: 'equal', passOp: 'replace' },
+  stencilReadMask: 0xffffffff,        // 비교 전에 양쪽 값을 가리는 마스크
+  stencilWriteMask: 0xffffffff,       // 갱신할 비트
+}
+```
+
+- 연산 8종: `keep` `zero` `replace` `invert` `increment-clamp` `decrement-clamp`
+  `increment-wrap` `decrement-wrap`. `replace`가 쓰는 값은 `pass.setStencilReference(n)`이다.
+- 기본값은 "아무것도 하지 않음"이다 — `compare: 'always'` + 세 연산 모두 `'keep'`.
+  그래서 `stencilFront`/`stencilBack`을 주지 않으면 스텐실이 결과에 영향을 주지 않는다.
+- 비교는 `(reference & readMask)` ↔ `(저장된 값 & readMask)` 사이에서 일어난다.
+- 세 연산의 구분: `failOp`는 스텐실 테스트에 졌을 때, `depthFailOp`는 스텐실은 통과하고
+  **깊이 테스트에 졌을 때**, `passOp`는 둘 다 통과했을 때다.
+- 마킹 패스는 `targets: [{ format, writeMask: 0 }]`으로 색을 막고 스텐실만 남긴다.
+- 깊이가 없는 `stencil8` 단독 포맷도 쓸 수 있다 (렌더 패스에 깊이 어태치먼트를 두지 않는다).
 
 ## 6. 커맨드 인코딩
 
@@ -263,7 +284,7 @@ device.onError((error, text) => console.error(text))
 | `GPUQuerySet` / 타임스탬프 / occlusion 쿼리 | 미지원 |
 | `drawIndirect` / `dispatchWorkgroupsIndirect` | 미지원 |
 | `GPURenderBundle` | 미지원 |
-| 스텐실 테스트 상태 | 미지원 (깊이만) |
+| 스텐실 테스트 상태 | **지원** (§5) |
 | 블록 압축 텍스처 (BC/ETC/ASTC) | 미지원 |
 | `GPUExternalTexture` (`importExternalTexture`) | 미지원 — Lynx에 비디오 엘리먼트 핸들이 없다. 다만 WGSL `texture_external` + `textureSampleBaseClampToEdge`는 **지원**하므로, 프레임을 텍스처로 올려 그 자리에 `GPUTextureView`를 묶으면 된다 |
 | `pushErrorScope` / `popErrorScope` | `submit()` 반환의 `errors` 배열로 대체 |

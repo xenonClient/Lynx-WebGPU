@@ -196,6 +196,8 @@ try XCTSkipUnless(harness.supports(.timestampQuery), "타임스탬프 카운터�
 | 커맨드 해석기 | `CommandInterpreterTests` | 알 수 없는 명령, 없는 핸들, 오류 누적, 패스 상태, 캔버스 진단, 셰이더 실패 시 MSL 첨부, 드로어블 핸들 수명, 복사/읽기, 범위 검증, reset, 어댑터 정보, **writeTexture 큐 순서**, **배열 레이어 업로드** |
 | 스테이징 풀 | `StagingPoolTests` | 크기 클래스 반올림, 같은 인스턴스 재사용, 최적합 선택, 총량 상한, 프레임 반복 시 풀 크기 불변 |
 | 하네스 자신 | `RenderHarnessTests` | **동치성 단언이 다름을 실제로 잡는지**(§4-2), 동기 리드백의 실패 보고 |
+| Metal 매핑 | `MetalMappingTests` | 스텐실 연산·비교 함수 **전수**(CaseIterable), 네 연산이 제 슬롯에 들어가는지, 마스크. GPU 불필요 |
+| 스텐실 | `StencilTests` | 마스킹(안/밖) + **같은 영역의 시저와 프레임 전체 비교**, `setStencilReference`가 쓰기와 비교 양쪽에, read/writeMask, `depthFailOp`(섀도 볼륨 경로), `stencil8` 단독 포맷 회귀 |
 
 새 기능을 넣으면 위 표에 행을 추가하고 같은 컨벤션으로 테스트를 쓴다.
 

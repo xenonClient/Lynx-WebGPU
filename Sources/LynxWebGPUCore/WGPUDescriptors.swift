@@ -457,6 +457,45 @@ public struct WGPUPrimitiveState {
     }
 }
 
+/// 앞면/뒷면 각각의 스텐실 동작 (`GPUStencilFaceState`).
+///
+/// 명세 기본값은 "아무것도 하지 않음"이다 — 비교는 `always`(항상 통과), 세 연산은 모두 `keep`.
+/// 그래서 `stencilFront`/`stencilBack`을 주지 않으면 스텐실이 결과에 영향을 주지 않는다.
+public struct WGPUStencilFaceState: Equatable {
+    public var compare: WGPUCompareFunction
+    public var failOp: WGPUStencilOperation
+    public var depthFailOp: WGPUStencilOperation
+    public var passOp: WGPUStencilOperation
+
+    public init(
+        compare: WGPUCompareFunction = .always,
+        failOp: WGPUStencilOperation = .keep,
+        depthFailOp: WGPUStencilOperation = .keep,
+        passOp: WGPUStencilOperation = .keep
+    ) {
+        self.compare = compare
+        self.failOp = failOp
+        self.depthFailOp = depthFailOp
+        self.passOp = passOp
+    }
+
+    public init(from reader: WGPUValueReader?) throws {
+        guard let reader else {
+            self.init()
+            return
+        }
+        self.init(
+            compare: try reader.enumValue("compare", default: WGPUCompareFunction.always),
+            failOp: try reader.enumValue("failOp", default: WGPUStencilOperation.keep),
+            depthFailOp: try reader.enumValue("depthFailOp", default: WGPUStencilOperation.keep),
+            passOp: try reader.enumValue("passOp", default: WGPUStencilOperation.keep)
+        )
+    }
+
+    /// 스텐실 값을 건드리지도 읽지도 않는 상태인가 — 기본값이면 상태를 만들 필요가 없다.
+    public var isNoOp: Bool { self == WGPUStencilFaceState() }
+}
+
 public struct WGPUDepthStencilState {
     public var format: WGPUTextureFormat
     public var depthWriteEnabled: Bool
@@ -464,6 +503,10 @@ public struct WGPUDepthStencilState {
     public var depthBias: Int
     public var depthBiasSlopeScale: Double
     public var depthBiasClamp: Double
+    public var stencilFront: WGPUStencilFaceState
+    public var stencilBack: WGPUStencilFaceState
+    public var stencilReadMask: Int
+    public var stencilWriteMask: Int
 
     public init(from reader: WGPUValueReader) throws {
         format = try reader.requiredEnum("format", WGPUTextureFormat.self)
@@ -472,10 +515,17 @@ public struct WGPUDepthStencilState {
         depthBias = reader.int("depthBias", default: 0)
         depthBiasSlopeScale = reader.double("depthBiasSlopeScale", default: 0)
         depthBiasClamp = reader.double("depthBiasClamp", default: 0)
+        stencilFront = try WGPUStencilFaceState(from: reader.object("stencilFront"))
+        stencilBack = try WGPUStencilFaceState(from: reader.object("stencilBack"))
+        stencilReadMask = reader.int("stencilReadMask", default: 0xFFFF_FFFF)
+        stencilWriteMask = reader.int("stencilWriteMask", default: 0xFFFF_FFFF)
         guard format.isDepthOrStencil else {
             throw WGPUError.validation("depthStencil.format은 깊이/스텐실 포맷이어야 한다", path: reader.path)
         }
     }
+
+    /// 스텐실 테스트를 실제로 쓰는가 — 어느 면이든 기본값이 아니면 스텐실 상태를 만든다.
+    public var usesStencil: Bool { !stencilFront.isNoOp || !stencilBack.isNoOp }
 }
 
 public struct WGPUMultisampleState {

@@ -109,6 +109,26 @@ export type GPUCanvasConfiguration = {
         mode: 'standard' | 'extended';
     };
 };
+export type GPUStencilFaceState = {
+    compare?: GPUCompareFunction;
+    failOp?: GPUStencilOperation;
+    depthFailOp?: GPUStencilOperation;
+    passOp?: GPUStencilOperation;
+};
+export type GPUCompareFunction = 'never' | 'less' | 'equal' | 'less-equal' | 'greater' | 'not-equal' | 'greater-equal' | 'always';
+export type GPUStencilOperation = 'keep' | 'zero' | 'replace' | 'invert' | 'increment-clamp' | 'decrement-clamp' | 'increment-wrap' | 'decrement-wrap';
+export type GPUDepthStencilState = {
+    format: string;
+    depthWriteEnabled?: boolean;
+    depthCompare?: GPUCompareFunction;
+    depthBias?: number;
+    depthBiasSlopeScale?: number;
+    depthBiasClamp?: number;
+    stencilFront?: GPUStencilFaceState;
+    stencilBack?: GPUStencilFaceState;
+    stencilReadMask?: number;
+    stencilWriteMask?: number;
+};
 export type GPUPipelineLayoutSource = {
     id: number;
 };

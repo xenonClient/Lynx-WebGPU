@@ -115,6 +115,21 @@ public enum WGPUCompareFunction: String, CaseIterable, Sendable {
     case always
 }
 
+/// 스텐실 테스트/깊이 테스트 결과에 따라 스텐실 값을 어떻게 바꿀지.
+///
+/// `-clamp`는 0/255에서 멈추고 `-wrap`은 넘어가면 반대쪽으로 감긴다 — 섀도 볼륨처럼
+/// 겹침 횟수를 셀 때 둘의 차이가 결과를 가른다.
+public enum WGPUStencilOperation: String, CaseIterable, Sendable {
+    case keep
+    case zero
+    case replace
+    case invert
+    case incrementClamp = "increment-clamp"
+    case decrementClamp = "decrement-clamp"
+    case incrementWrap = "increment-wrap"
+    case decrementWrap = "decrement-wrap"
+}
+
 public enum WGPUPrimitiveTopology: String, CaseIterable, Sendable {
     case pointList = "point-list"
     case lineList = "line-list"

@@ -6,9 +6,8 @@ Lynx 앱 안의 **이미지 에디터·필터**지 3D 렌더러가 아니다. �
 
 | 순서 | 기능 | 규모 | 효과 |
 |---|---|---|---|
-| 1 | 스텐실 상태 (`stencilFront`/`stencilBack`) | 소 | 마스킹·아웃라인. 절반은 이미 구현돼 있다 |
-| 2 | 간접 드로우/디스패치 (`drawIndirect` 계열) | 중 | GPU-driven 렌더링 — 컴퓨트가 드로우 인자를 만든다 |
-| 3 | 이미지 처리 경로 다듬기 | 소~중 | limits 노출 · 색공간 · 큰 이미지 업로드 |
+| 1 | 간접 드로우/디스패치 (`drawIndirect` 계열) | 중 | GPU-driven 렌더링 — 컴퓨트가 드로우 인자를 만든다 |
+| 2 | 이미지 처리 경로 다듬기 | 소~중 | limits 노출 · 색공간 · 큰 이미지 업로드 |
 | — | 압축 텍스처 (ASTC · ETC2 · BC) | 대 | **보류** — 편집 파이프라인에 끼울 수 없다 (아래) |
 
 ### 이미 된 것
@@ -17,6 +16,7 @@ Lynx 앱 안의 **이미지 에디터·필터**지 3D 렌더러가 아니다. �
 |---|---|
 | 캔버스 EDR 출력 (`colorSpace` · `toneMapping`) | `hdr` 데모 씬에서 확인. 실기기 전용 |
 | 애셋 로딩 (`loadAsset` + `WGPUAssetProvider`) | 브라우저 `fetch()` 자리 |
+| 스텐실 상태 (`stencilFront`/`stencilBack`/마스크) | `StencilTests`. `stencil8` 단독 포맷도 (아래 §1) |
 
 공통 절차는 `.claude/skills/webgpu-command/SKILL.md`(새 op 추가)와
 `.claude/skills/wgsl-feature/SKILL.md`(셰이더 문법 — 아래 항목은 해당 없음)를 따른다.
@@ -112,53 +112,7 @@ ASTC를 1순위로 한다 — iOS에서 보편이고 압축률 선택 폭이 가
 
 ---
 
-## 1. 스텐실 상태 (`stencilFront` / `stencilBack` / 마스크)
-
-### 현재 상태 — 절반은 이미 있다
-
-| 있음 ✓ | 없음 ✗ |
-|---|---|
-| `stencil8`·`depth24plus-stencil8`·`depth32float-stencil8` 포맷 매핑 | `WGPUDepthStencilState`의 `stencilFront`/`stencilBack`/`stencilReadMask`/`stencilWriteMask` 파싱 |
-| 렌더 패스 스텐실 어태치먼트 (load/store/`stencilClearValue` — 해석기 `beginRenderPass`) | `MTLStencilDescriptor` 매핑 (`WGPUPipeline.swift:175` 부근은 depth만 만든다) |
-| `setStencilReference` op (인코더에 이미 연결됨) | 스텐실 연산 열거형 (`keep`/`zero`/`replace`/`invert`/`increment-clamp`/`decrement-clamp`/`increment-wrap`/`decrement-wrap`) |
-
-### 바꿀 곳
-
-- **Core** — `WGPUStencilOperation` 열거형(8종, 명세 철자), `WGPUStencilFaceState`
-  (`compare`/`failOp`/`depthFailOp`/`passOp` — 기본값은 명세대로 `always`/`keep`),
-  `WGPUDepthStencilState`에 4개 필드 추가 (마스크 기본 `0xFFFFFFFF`).
-- **LynxWebGPU** — `WGPUMetalMapping.stencilOperation(_:)` 추가.
-  `WGPURenderPipelineObject` 초기화에서 `MTLDepthStencilDescriptor`에
-  `frontFaceStencil`/`backFaceStencil`(+ read/write mask) 구성.
-- **함께 고칠 기존 버그** — `WGPUPipeline.swift:171`이 `depthAttachmentPixelFormat`을
-  무조건 세팅한다. `stencil8` 단독 포맷이면 depth 어태치먼트 포맷을 세팅하면 안 된다 —
-  `format.hasDepth`/`hasStencil`로 각각 분기할 것.
-- **JS** — shim 변경 없음 (`depthStencil` 디스크립터는 이미 통째로 지나간다).
-  `webgpu.d.ts`에 `GPUStencilFaceState` 타입만 추가. `WEBGPU-API.md` §5의
-  "스텐실 상태 미지원" 문구와 §8 표에서 제거.
-
-### 테스트 (필수)
-
-- **마스크 렌더를 픽셀로 단언** — 1패스: 화면 일부에 `replace`/ref=1로 스텐실만 쓴다
-  (`writeMask: 0`으로 컬러 차단); 2패스: `compare: 'equal'`/ref=1 풀스크린 → 마스크 안은
-  칠해지고 밖은 클리어 색. 안/밖 두 점 이상 (`docs/TESTING.md` §4 규칙).
-- `depthFailOp` 경로: 깊이 실패 시 스텐실 증가 → 두 번째 패스에서 카운트 확인 (섀도 볼륨 패턴).
-- `stencilReadMask`/`stencilWriteMask` 반영 확인.
-- 디스크립터 파싱 단위 테스트 (기본값·명세 철자 후보 안내).
-- `stencil8` 단독 포맷 파이프라인이 만들어지는지 (위 버그의 회귀 테스트).
-
-### 데모 씬 (선택)
-
-`stencil` 씬 — 회전하는 도형을 스텐실 마스크로 오려낸 컷아웃. 규모가 작으니 `blending` 씬에
-패스를 추가하는 것으로 갈음해도 된다.
-
-### 완료 기준
-
-픽셀 테스트 통과 · `WEBGPU-API.md` §5/§8 갱신 · 기존 깊이 테스트 씬(`cube`) 회귀 없음.
-
----
-
-## 2. 간접 드로우/디스패치 (`drawIndirect` · `drawIndexedIndirect` · `dispatchWorkgroupsIndirect`)
+## 1. 간접 드로우/디스패치 (`drawIndirect` · `drawIndexedIndirect` · `dispatchWorkgroupsIndirect`)
 
 ### 목표
 
@@ -207,7 +161,7 @@ CPU/GPU-driven 픽셀 테스트 통과 · `WEBGPU-API.md` §6 인코딩 예시�
 
 ---
 
-## 3. 이미지 처리 경로 다듬기
+## 2. 이미지 처리 경로 다듬기
 
 3D 기준 미지원 목록에는 없지만, 이미지 에디터에서는 이쪽이 먼저 아프다.
 

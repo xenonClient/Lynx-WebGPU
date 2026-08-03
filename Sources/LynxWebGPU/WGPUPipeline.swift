@@ -168,13 +168,26 @@ public final class WGPURenderPipelineObject {
 
         if let depthStencil = descriptor.depthStencil {
             let format = try WGPUMetalMapping.pixelFormat(depthStencil.format)
-            metalDescriptor.depthAttachmentPixelFormat = format
-            if depthStencil.format.hasStencil {
-                metalDescriptor.stencilAttachmentPixelFormat = format
-            }
+            // 깊이와 스텐실은 **각각** 확인한다. `stencil8` 단독 포맷에 깊이 어태치먼트 포맷을
+            // 세팅하면 렌더 패스에 없는 깊이를 요구하게 되어 파이프라인 생성이 실패한다.
+            if depthStencil.format.hasDepth { metalDescriptor.depthAttachmentPixelFormat = format }
+            if depthStencil.format.hasStencil { metalDescriptor.stencilAttachmentPixelFormat = format }
+
             let depthDescriptor = MTLDepthStencilDescriptor()
             depthDescriptor.depthCompareFunction = WGPUMetalMapping.compareFunction(depthStencil.depthCompare)
             depthDescriptor.isDepthWriteEnabled = depthStencil.depthWriteEnabled
+            if depthStencil.usesStencil {
+                depthDescriptor.frontFaceStencil = WGPUMetalMapping.stencilDescriptor(
+                    depthStencil.stencilFront,
+                    readMask: depthStencil.stencilReadMask,
+                    writeMask: depthStencil.stencilWriteMask
+                )
+                depthDescriptor.backFaceStencil = WGPUMetalMapping.stencilDescriptor(
+                    depthStencil.stencilBack,
+                    readMask: depthStencil.stencilReadMask,
+                    writeMask: depthStencil.stencilWriteMask
+                )
+            }
             depthStencilState = device.makeDepthStencilState(descriptor: depthDescriptor)
         } else {
             depthStencilState = nil

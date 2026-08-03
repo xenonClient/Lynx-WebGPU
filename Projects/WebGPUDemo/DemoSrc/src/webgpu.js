@@ -84,6 +84,20 @@ export const GPUMapMode = { READ: 0x1, WRITE: 0x2 };
  */
 /** @typedef {{device: GPUDevice, format?: string, usage?: number, alphaMode?: 'opaque' | 'premultiplied', colorSpace?: 'srgb' | 'display-p3', toneMapping?: {mode: 'standard' | 'extended'}}} GPUCanvasConfiguration */
 
+/**
+ * 한 면(앞/뒤)의 스텐실 동작. 명세 기본값은 "아무것도 하지 않음"이다 —
+ * `compare: 'always'` + 세 연산 모두 `'keep'`.
+ */
+/** @typedef {{compare?: GPUCompareFunction, failOp?: GPUStencilOperation, depthFailOp?: GPUStencilOperation, passOp?: GPUStencilOperation}} GPUStencilFaceState */
+/** @typedef {'never' | 'less' | 'equal' | 'less-equal' | 'greater' | 'not-equal' | 'greater-equal' | 'always'} GPUCompareFunction */
+/** @typedef {'keep' | 'zero' | 'replace' | 'invert' | 'increment-clamp' | 'decrement-clamp' | 'increment-wrap' | 'decrement-wrap'} GPUStencilOperation */
+
+/**
+ * `createRenderPipeline`의 `depthStencil`. 마스크 기본값은 둘 다 `0xFFFFFFFF`이며,
+ * 비교는 `(reference & readMask)`와 `(저장된 값 & readMask)` 사이에서 일어난다.
+ */
+/** @typedef {{format: string, depthWriteEnabled?: boolean, depthCompare?: GPUCompareFunction, depthBias?: number, depthBiasSlopeScale?: number, depthBiasClamp?: number, stencilFront?: GPUStencilFaceState, stencilBack?: GPUStencilFaceState, stencilReadMask?: number, stencilWriteMask?: number}} GPUDepthStencilState */
+
 /** `createPipelineLayout`이 받는 레이아웃 — id만 있으면 된다. */
 /** @typedef {{id: number}} GPUPipelineLayoutSource */
 
