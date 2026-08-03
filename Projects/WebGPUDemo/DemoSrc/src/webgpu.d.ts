@@ -145,6 +145,12 @@ declare class Recorder {
     nextId: number;
     /** @type {((error: WGPUError, text: string) => void)[]} */
     errorHandlers: ((error: WGPUError, text: string) => void)[];
+    /**
+     * `popErrorScope()`가 돌려준 Promise의 resolve 함수들 — **pop한 순서 그대로**다.
+     * 네이티브가 같은 순서로 `errorScopes` 배열을 돌려주므로 인덱스로 짝을 맞춘다.
+     * @type {((error: WGPUError | null) => void)[]}
+     */
+    pendingErrorScopes: ((error: WGPUError | null) => void)[];
     constructor();
     /** @returns {number} 새 핸들 id */
     allocate(): number;
@@ -158,6 +164,17 @@ declare class Recorder {
      * @returns {WGPUExecuteResult}
      */
     flush(): WGPUExecuteResult;
+    /**
+     * 기다리고 있던 `popErrorScope()` Promise들을 푼다.
+     *
+     * 네이티브가 인덱스를 밀지 않는다는 계약에 기대므로(pop이 실패해도 자리를 남긴다),
+     * 여기서는 순서대로 짝지어 주기만 하면 된다. 응답에 결과가 모자라면 `null`이다 —
+     * Promise가 영원히 안 풀리는 것보다 낫다.
+     *
+     * @param {(WGPUError | null)[]} popped
+     * @returns {void}
+     */
+    settleErrorScopes(popped: (WGPUError | null)[]): void;
     /** @param {WGPUError[]} errors */
     report(errors: WGPUError[]): void;
 }
@@ -483,6 +500,28 @@ declare class GPUDevice {
      * @returns {void}
      */
     onError(handler: (error: WGPUError, text: string) => void): void;
+    /**
+     * 여기서부터 `popErrorScope()`까지 사이에 난 오류 중 **필터에 맞는 것**을 가로챈다.
+     *
+     * 가로챈 오류는 전역 핸들러(`onError`)로 가지 않는다 — 이미 처리하기로 한 것이기 때문이다.
+     * 스코프는 중첩할 수 있고, 오류는 **가장 안쪽의 맞는 스코프**가 가져간다.
+     *
+     * 기록만 하므로 왕복이 늘지 않는다. 프레임 안에서 마음껏 써도 된다.
+     *
+     * @param {'validation' | 'out-of-memory' | 'internal'} filter
+     * @returns {void}
+     */
+    pushErrorScope(filter: 'validation' | 'out-of-memory' | 'internal'): void;
+    /**
+     * 가장 안쪽 스코프를 닫고 **거기서 처음 잡힌 오류**를 돌려준다 (없으면 `null`).
+     *
+     * `mapAsync`처럼 **즉시 제출한다** — 그러지 않으면 다음 `submit()`이 올 때까지 Promise가
+     * 풀리지 않기 때문이다. 그래서 프레임 루프 안에서 부르면 왕복이 하나 늘어난다.
+     * 초기화나 진단 경로에서 쓰는 것을 전제로 한 API다 (`docs/JS-AUTHORING.md` §5).
+     *
+     * @returns {Promise<WGPUError | null>}
+     */
+    popErrorScope(): Promise<WGPUError | null>;
     /**
      * @param {GPUBufferDescriptor} descriptor
      * @returns {GPUBuffer}

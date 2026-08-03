@@ -309,6 +309,30 @@ device.onError((error, text) => console.error(text))
 | `out-of-memory` | 리소스 생성 실패. |
 | `backend` | Metal/셰이더 컴파일 오류. 셰이더 실패 시 **생성된 MSL이 메시지에 포함**된다. |
 
+### 오류 스코프
+
+특정 구간의 오류만 따로 받고 싶을 때 쓴다 — "이 셰이더가 컴파일되는지"처럼 **실패를 예상하고
+분기하는** 코드에 필요하다.
+
+```js
+device.pushErrorScope('validation')                 // pushErrorScope
+const pipeline = device.createRenderPipeline(descriptor)
+const error = await device.popErrorScope()          // popErrorScope
+if (error) fallBackToSimplePipeline()
+```
+
+- 필터는 `'validation'` · `'out-of-memory'` · `'internal'` 셋이다. 스코프는 **중첩**할 수 있고,
+  오류는 **가장 안쪽의 맞는 스코프**가 가져간다. 필터가 안 맞으면 바깥으로 흘러간다.
+- 스코프가 가져간 오류는 `submit()` 반환의 `errors`에도, `device.onError`에도 **가지 않는다**.
+- 스코프가 돌려주는 것은 **처음 잡힌 오류 하나**다 (명세와 같다).
+- 이 구현의 오류 분류는 넷이라 명세의 셋에 이렇게 붙인다:
+  `unsupported`는 `validation`이 잡고(브라우저에서 같은 코드는 유효하거나 validation이다),
+  `backend`(Metal/셰이더 컴파일 실패)는 `internal`이 잡는다.
+- **스코프는 `submit()` 경계를 넘어 이어진다** — 디바이스 상태이기 때문이다.
+  `push`와 `pop` 사이에 프레임이 몇 개 들어가도 된다.
+- `popErrorScope()`는 `mapAsync`처럼 **즉시 제출한다** (안 그러면 다음 `submit()`까지 Promise가
+  안 풀린다). 그래서 프레임 루프 안에서 부르면 왕복이 하나 는다 — 초기화·진단용 API다.
+
 ## 8. 미지원 목록
 
 | 기능 | 상태 |
@@ -319,7 +343,8 @@ device.onError((error, text) => console.error(text))
 | 스텐실 테스트 상태 | **지원** (§5) |
 | 블록 압축 텍스처 (BC/ETC/ASTC) | 미지원 |
 | `GPUExternalTexture` (`importExternalTexture`) | 미지원 — Lynx에 비디오 엘리먼트 핸들이 없다. 다만 WGSL `texture_external` + `textureSampleBaseClampToEdge`는 **지원**하므로, 프레임을 텍스처로 올려 그 자리에 `GPUTextureView`를 묶으면 된다 |
-| `pushErrorScope` / `popErrorScope` | `submit()` 반환의 `errors` 배열로 대체 |
+| `pushErrorScope` / `popErrorScope` | **지원** (§7) |
+| `device.lost` | 미지원 — iOS/macOS에는 디바이스 손실에 해당하는 사건이 사실상 없다. 테스트 전용 주입 경로만 남는 API라 넣지 않았다 |
 | 파이프라인 상수 (`override` / `constants`) | **지원** (§5) |
 | 캔버스 `colorSpace` · `toneMapping` (EDR 출력) | **지원** (§2) — 실기기에서만 확인된다 |
 | `writeTimestamp`, `resolveQuerySet` | 미지원 |

@@ -82,6 +82,7 @@ ReactLynx라면 `useEffect`의 정리 함수에서 부를 것.
 | 프레임 안에서 피할 것 | 이유 | 대안 |
 |---|---|---|
 | `buffer.mapAsync()` | GPU 완료를 기다린다 | 결과가 필요한 프레임에만 |
+| `device.popErrorScope()` | 결과를 받으려고 즉시 제출한다 | 초기화·진단에서. **여는 쪽(`pushErrorScope`)은 기록만 하므로 프레임 안에서 써도 된다** |
 | `gpu.requestAdapter()` | 동기 네이티브 호출 | 초기화에서 1회 |
 | `device.createRenderPipeline()` | 셰이더 컴파일이 붙는다 | 초기화에서 1회 |
 

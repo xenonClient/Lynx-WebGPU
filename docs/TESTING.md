@@ -199,6 +199,7 @@ try XCTSkipUnless(harness.supports(.timestampQuery), "타임스탬프 카운터�
 | Metal 매핑 | `MetalMappingTests` | 스텐실 연산·비교 함수 **전수**(CaseIterable), 네 연산이 제 슬롯에 들어가는지, 마스크. GPU 불필요 |
 | 스텐실 | `StencilTests` | 마스킹(안/밖) + **같은 영역의 시저와 프레임 전체 비교**, `setStencilReference`가 쓰기와 비교 양쪽에, read/writeMask, `depthFailOp`(섀도 볼륨 경로), `stencil8` 단독 포맷 회귀 |
 | 간접 드로우 | `IndirectDrawTests` | **직접 호출과 프레임 전체 동치성**(인자 칸 순서), `firstVertex`, 인덱스 바인딩 오프셋 + `firstIndex` 이중 적용 회귀, 간접 디스패치, **컴퓨트가 인자를 쓰는 GPU-driven 경로** |
+| 오류 스코프 | `ErrorScopeTests` | 가로채기(전역으로 안 샘), 필터 매칭, 중첩에서 안쪽 우선 + 안 맞으면 바깥으로, **배치를 넘는 수명**, 처음 잡힌 하나만, 짝 없는 pop이 인덱스를 안 민다, reset |
 
 새 기능을 넣으면 위 표에 행을 추가하고 같은 컨벤션으로 테스트를 쓴다.
 

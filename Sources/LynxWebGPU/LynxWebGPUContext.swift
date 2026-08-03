@@ -187,6 +187,7 @@ public final class LynxWebGPUContext {
     public func reset() {
         executionLock.lock()
         registry.removeAll()
+        interpreter.discardErrorScopes()
         executionLock.unlock()
     }
 
