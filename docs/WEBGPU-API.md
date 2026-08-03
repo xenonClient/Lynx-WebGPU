@@ -417,19 +417,18 @@ if (error) fallBackToSimplePipeline()
 
 ## 8. 미지원 목록
 
-| 기능 | 상태 |
+| 기능 | 왜 없나 |
 |---|---|
-| `GPUQuerySet` / 타임스탬프 / occlusion 쿼리 | **지원** (§6). 타임스탬프는 `adapter.features.has('timestamp-query')`인 기기에서만 |
-| `drawIndirect` / `drawIndexedIndirect` / `dispatchWorkgroupsIndirect` | **지원** (§6) |
-| `GPURenderBundle` | **지원** (§6) |
-| 스텐실 테스트 상태 | **지원** (§5) |
-| 블록 압축 텍스처 (BC/ETC/ASTC) | 미지원 |
-| `GPUExternalTexture` (`importExternalTexture`) | 미지원 — Lynx에 비디오 엘리먼트 핸들이 없다. 다만 WGSL `texture_external` + `textureSampleBaseClampToEdge`는 **지원**하므로, 프레임을 텍스처로 올려 그 자리에 `GPUTextureView`를 묶으면 된다 |
-| `pushErrorScope` / `popErrorScope` | **지원** (§7) |
-| `device.lost` | 미지원 — iOS/macOS에는 디바이스 손실에 해당하는 사건이 사실상 없다. 테스트 전용 주입 경로만 남는 API라 넣지 않았다 |
-| 파이프라인 상수 (`override` / `constants`) | **지원** (§5) |
-| 캔버스 `colorSpace` · `toneMapping` (EDR 출력) | **지원** (§2) — 실기기에서만 확인된다 |
-| `resolveQuerySet` | **지원** (§6) |
-| `writeTimestamp` | 미지원 — Metal은 패스 경계에서만 카운터를 샘플링한다 (`timestampWrites`를 쓸 것) |
+| 블록 압축 텍스처 (BC/ETC/ASTC) | **보류** — 렌더 타깃도 스토리지 텍스처도 될 수 없어 편집 파이프라인에 끼울 수 없다. 읽기 전용 에셋이 많아지면 다시 본다 (`docs/ROADMAP.md`) |
+| `GPUExternalTexture` (`importExternalTexture`) | Lynx에 비디오 엘리먼트 핸들이 없다. 다만 WGSL `texture_external` + `textureSampleBaseClampToEdge`는 **지원**하므로, 프레임을 텍스처로 올려 그 자리에 `GPUTextureView`를 묶으면 된다 |
+| `writeTimestamp` | Metal은 패스 경계에서만 카운터를 샘플링한다 — `timestampWrites`(§6)를 쓸 것 |
+| `device.lost` | iOS/macOS에는 디바이스 손실에 해당하는 사건이 사실상 없다. 테스트 전용 주입 경로만 남는 API라 넣지 않았다 |
+
+### 기기에 따라 갈리는 것
+
+| 기능 | 조건 |
+|---|---|
+| 타임스탬프 쿼리 | `adapter.features.has('timestamp-query')`. **컴퓨트 패스 쪽 값은 신뢰할 수 없다** (§6) |
+| 캔버스 EDR 출력 (`toneMapping: 'extended'`) | 실기기 디스플레이 기능 — 시뮬레이터에서는 확인되지 않는다 (§2) |
 
 새 명령을 추가하는 절차는 `.claude/skills/webgpu-command/SKILL.md` 참고.
