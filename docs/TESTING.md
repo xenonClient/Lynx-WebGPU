@@ -252,6 +252,10 @@ LYNXWEBGPU_WGSL_CORPUS=… LYNXWEBGPU_WGSL_DUMP=/tmp/msl swift test --filter Sam
 | `texture` | createTexture + writeTexture + repeat 샘플러 + textureSample |
 | `dynamic` | CPU 플라스마를 **매 프레임 writeTexture**로 — 큐 순서 업로드 + 스테이징 풀 + 업로드 처리량. HUD의 live 객체 수(`objects`)가 일정해야 정상 |
 | `blending` | 미리 곱해진 알파 합성 + discard + 유니폼 구조체 배열 |
+| `stencil` | **스텐실 마스크** — `stencil8` 단독 포맷(깊이 없음)에 같은 풀스크린 삼각형을 3번 그린다. 갈리는 이유가 스텐실뿐이라, 안 먹으면 화면이 한 색으로 덮인다. 마킹 패스는 `writeMask: 0`, 채우기 두 번은 `equal`/`not-equal`. 버튼이 `setStencilReference`로 마스크를 뒤집는다 |
+| `gpudriven` | **간접 드로우/디스패치** — 컴퓨트가 이번 프레임의 개수를 정해 인자 버퍼에 쓰고, `dispatchWorkgroupsIndirect` + `drawIndexedIndirect`가 그 버퍼를 읽는다. HUD는 인자 버퍼를 되짚어 GPU가 정한 수를 띄운다. 직접 모드는 개수를 모르니 늘 최대치를 그린다 |
+| `bundle` | **렌더 번들** — 드로우 120개를 한 번만 기록해 매 프레임 되돌린다. HUD의 커맨드 수는 `submit()` 반환의 `commandCount`라 추정이 아니다 (직접 128개 → 번들 6개) |
+| `query` | **occlusion 쿼리 · 타임스탬프 · 오류 스코프** — 막대가 원을 가릴수록 살아남은 샘플 수가 줄고 완전히 가려지면 0이 된다. 타임스탬프는 `adapter.features.has('timestamp-query')`인 기기에서만 (시뮬레이터는 미지원으로 표시). 버튼 둘이 같은 잘못된 호출을 스코프 **안/밖**에서 실행해, 노란 줄과 빨간 줄로 갈리는 것을 보여 준다 |
 | `readback` | 컴퓨트 결과를 `mapAsync`로 CPU가 읽어 화면에 표시 |
 | `constants` | 같은 셰이더 모듈 + 다른 `override` 값 → 파이프라인 3개 |
 | `msl` | `language: 'msl'` 직접 주입 + 명시적 파이프라인 레이아웃 |
@@ -278,8 +282,10 @@ xcrun simctl install <device> .derivedData-cli/Build/Products/Debug-iphonesimula
 xcrun simctl launch <device> org.lynxwebgpu.demo                # 씬 목록
 xcrun simctl launch <device> org.lynxwebgpu.demo -demo cube      # 목록을 건너뛰고 바로 진입
 
-# 시뮬레이터에는 터치를 주입할 방법이 없다. 기울인 카드를 회귀 확인하려면 각도를 고정한다:
+# 시뮬레이터에는 터치를 주입할 방법이 없다. 손으로 눌러야 보이는 상태는 런치 인자로 고정한다:
 xcrun simctl launch <device> org.lynxwebgpu.demo -demo interactive -cardTilt 0.42
+# -altMode 1 은 토글이 있는 씬(stencil·gpudriven·bundle)을 **기본이 아닌 쪽**으로 시작시킨다.
+xcrun simctl launch <device> org.lynxwebgpu.demo -demo bundle -altMode 1
 xcrun simctl io <device> screenshot .tmp/demo-cube.png
 ```
 

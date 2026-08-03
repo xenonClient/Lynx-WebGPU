@@ -11,6 +11,10 @@ enum DemoScene: String, CaseIterable {
     case texture
     case dynamic
     case blending
+    case stencil
+    case gpudriven
+    case bundle
+    case query
     case readback
     case constants
     case msl
@@ -36,6 +40,10 @@ enum DemoScene: String, CaseIterable {
         case .texture: return "텍스처 · 샘플러"
         case .dynamic: return "동적 텍스처"
         case .blending: return "알파 블렌딩"
+        case .stencil: return "스텐실 마스크"
+        case .gpudriven: return "GPU-driven 렌더링"
+        case .bundle: return "렌더 번들"
+        case .query: return "쿼리 · 오류 스코프"
         case .readback: return "컴퓨트 · 리드백"
         case .constants: return "파이프라인 상수"
         case .msl: return "MSL 탈출구"
@@ -57,6 +65,10 @@ enum DemoScene: String, CaseIterable {
         case .texture: return "createTexture + writeTexture + 샘플러 + textureSample"
         case .dynamic: return "CPU 플라스마를 매 프레임 writeTexture로 — 큐 순서 업로드 검증"
         case .blending: return "미리 곱해진 알파 합성 + 겹치는 반투명 도형"
+        case .stencil: return "stencil8 단독 포맷 — 같은 삼각형 3번, 갈리는 이유는 스텐실뿐"
+        case .gpudriven: return "컴퓨트가 개수를 정하고 간접 디스패치·드로우가 그 버퍼를 읽는다"
+        case .bundle: return "드로우 120개를 한 번만 기록 — 프레임당 커맨드 수를 HUD에 표시"
+        case .query: return "occlusion 샘플 수 + 타임스탬프 + pushErrorScope 대비 실험"
         case .readback: return "컴퓨트 결과를 mapAsync로 CPU에서 읽어 표시"
         case .constants: return "같은 셰이더를 override 값만 바꿔 여러 파이프라인으로"
         case .msl: return "language: 'msl' — 트랜스파일러 우회 + 명시적 레이아웃"
