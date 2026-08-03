@@ -110,16 +110,7 @@ final class CommandInterpreterTests: XCTestCase {
              "destination": 2, "destinationOffset": 0, "size": 16],
         ])
 
-        let expectation = expectation(description: "readBuffer")
-        var output: [Float] = []
-        harness.context.readBuffer(handle: 2) { result in
-            if let data = result["data"] as? Data {
-                output = data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
-            }
-            expectation.fulfill()
-        }
-        wait(for: [expectation], timeout: 10)
-        XCTAssertEqual(output, source)
+        XCTAssertEqual(try harness.readBufferSync(handle: 2, as: Float.self), source)
     }
 
     func test_범위를_벗어난_writeBuffer는_거부된다() {
@@ -177,15 +168,7 @@ final class CommandInterpreterTests: XCTestCase {
              "copySize": ["width": 2, "height": 2]],
         ])
 
-        let expectation = expectation(description: "readBuffer")
-        var bytes: [UInt8] = []
-        harness.context.readBuffer(handle: 3) { result in
-            if let data = result["data"] as? Data {
-                bytes = Array(data)
-            }
-            expectation.fulfill()
-        }
-        wait(for: [expectation], timeout: 10)
+        let bytes = Array(try harness.readBufferSync(handle: 3))
         XCTAssertEqual(bytes, green, "스트림에서 나중에 온 writeTexture가 최종 내용이어야 한다")
     }
 
@@ -211,15 +194,7 @@ final class CommandInterpreterTests: XCTestCase {
              "copySize": ["width": 2, "height": 2]],
         ])
 
-        let expectation = expectation(description: "readBuffer")
-        var bytes: [UInt8] = []
-        harness.context.readBuffer(handle: 2) { result in
-            if let data = result["data"] as? Data {
-                bytes = Array(data)
-            }
-            expectation.fulfill()
-        }
-        wait(for: [expectation], timeout: 10)
+        let bytes = Array(try harness.readBufferSync(handle: 2))
         XCTAssertEqual(Array(bytes.prefix(16)), red, "레이어 0")
         XCTAssertEqual(Array(bytes.suffix(16)), blue, "레이어 1")
     }

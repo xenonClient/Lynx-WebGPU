@@ -110,6 +110,111 @@ struct RenderHarness {
         )
     }
 
+    // MARK: - 프레임 동치성
+
+    /// 지금 프레임 전체를 바이트로 뜬다 — 동치성 비교의 기준값.
+    func frameBytes() throws -> Data {
+        try readback().data
+    }
+
+    /// 프레임 전체가 기준값과 **바이트 단위로** 같은지 단언한다.
+    ///
+    /// 점 단언은 "같은 결과를 내야 하는 두 경로"를 비교하기에 약하다 — 고른 두 점만 우연히
+    /// 맞아도 통과하기 때문이다. 직접 드로우 ↔ 간접 드로우, 직접 인코딩 ↔ 렌더 번들처럼
+    /// **계약 자체가 "결과가 같다"**인 경우에는 프레임 전체를 비교한다.
+    ///
+    /// 다르면 처음 어긋난 픽셀의 좌표와 두 값을 함께 보여 준다 — "N바이트 다름"만으로는 못 고친다.
+    func assertFrameEquals(
+        _ expected: Data,
+        _ message: String = "",
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        let suffix = message.isEmpty ? "" : " — \(message)"
+        let actual = try readback()
+        guard actual.data.count == expected.count else {
+            return XCTFail(
+                "프레임 길이가 다르다 — 기준 \(expected.count)B, 실제 \(actual.data.count)B\(suffix)",
+                file: file, line: line
+            )
+        }
+        let differences = zip(expected, actual.data).enumerated().filter { $0.element.0 != $0.element.1 }
+        guard let first = differences.first else { return }
+
+        // 바이트 오프셋을 픽셀 좌표로 되돌린다.
+        let bytesPerPixel = max(actual.bytesPerRow / max(actual.width, 1), 1)
+        let y = first.offset / max(actual.bytesPerRow, 1)
+        let x = (first.offset % max(actual.bytesPerRow, 1)) / bytesPerPixel
+        let detail = (try? readback().rgba(x: x, y: y)).map { " (실제 픽셀 \($0))" } ?? ""
+        XCTFail(
+            "프레임이 기준과 다르다 — \(differences.count)/\(expected.count)B 불일치, "
+                + "처음 어긋난 곳 (\(x), \(y)) 바이트 \(first.offset): "
+                + "기준 \(first.element.0) ≠ 실제 \(first.element.1)\(detail)\(suffix)",
+            file: file, line: line
+        )
+    }
+
+    // MARK: - 버퍼 되읽기
+
+    /// 버퍼를 **동기로** 읽는다.
+    ///
+    /// `LynxWebGPUContext.readBuffer`는 직전 커맨드 버퍼의 GPU 완료를 기다려야 하므로 콜백형이다.
+    /// 테스트는 그 뒤에 할 일이 없으니 여기서 기다린다 — `XCTestExpectation` 보일러플레이트가
+    /// 리드백 테스트마다 반복되던 것을 없앤다.
+    func readBufferSync(
+        handle: Int,
+        offset: Int = 0,
+        size: Int? = nil,
+        timeout: TimeInterval = 10
+    ) throws -> Data {
+        let box = ReadbackBox()
+        let semaphore = DispatchSemaphore(value: 0)
+        // 이미 완료된 커맨드 버퍼면 콜백이 **이 스레드에서 동기로** 온다 — signal이 wait보다
+        // 앞서지만 세마포어가 값을 세므로 그대로 통과한다 (교착 없음).
+        context.readBuffer(handle: handle, offset: offset, size: size) { result in
+            box.result = result
+            semaphore.signal()
+        }
+        guard semaphore.wait(timeout: .now() + timeout) == .success else {
+            throw HarnessError("readBuffer가 \(timeout)초 안에 돌아오지 않았다 (handle \(handle))")
+        }
+        let result = box.result
+        guard (result["ok"] as? Bool) == true, let data = result["data"] as? Data else {
+            throw HarnessError("readBuffer 실패 (handle \(handle)): \(describeErrors(result))")
+        }
+        return data
+    }
+
+    /// 버퍼를 원소 타입으로 읽는다 (`try harness.readBufferSync(handle: 3, as: Float.self)`).
+    func readBufferSync<T>(
+        handle: Int,
+        as type: T.Type,
+        offset: Int = 0,
+        size: Int? = nil,
+        timeout: TimeInterval = 10
+    ) throws -> [T] {
+        let data = try readBufferSync(handle: handle, offset: offset, size: size, timeout: timeout)
+        return data.withUnsafeBytes { Array($0.bindMemory(to: T.self)) }
+    }
+
+    // MARK: - 기기 조건
+
+    /// 기기마다 갈리는 기능. GPU 유무만 보던 스킵 조건을 기능별로 나눈다.
+    enum Capability {
+        /// 타임스탬프 쿼리 — 패스 경계에서 GPU 카운터를 샘플링할 수 있는가.
+        case timestampQuery
+    }
+
+    func supports(_ capability: Capability) -> Bool {
+        switch capability {
+        case .timestampQuery:
+            guard context.device.supportsCounterSampling(.atStageBoundary) else { return false }
+            return context.device.counterSets?.contains {
+                $0.name == MTLCommonCounterSet.timestamp.rawValue
+            } ?? false
+        }
+    }
+
     /// 디버깅용 — 렌더 결과를 PNG로 떨군다 (`.tmp/` 아래).
     /// float 표면은 0~1로 잘라서 8비트로 굽는다 (눈으로 볼 용도이므로 HDR 범위는 버린다).
     @discardableResult
@@ -132,6 +237,18 @@ struct RenderHarness {
         try? png.write(to: url)
         return url
     }
+}
+
+/// 하네스 자체가 내는 오류 (GPU 오류가 아니라 "테스트를 진행할 수 없다").
+struct HarnessError: LocalizedError {
+    let message: String
+    init(_ message: String) { self.message = message }
+    var errorDescription: String? { message }
+}
+
+/// 콜백이 다른 스레드에서 올 수 있으므로 값을 참조 타입에 담는다 (세마포어가 가시성을 보장한다).
+private final class ReadbackBox {
+    var result: [String: Any] = [:]
 }
 
 /// 의존성 없이 RGBA8 버퍼를 PNG로 인코딩한다 (렌더 결과를 눈으로 확인할 때만 쓴다).
@@ -221,6 +338,8 @@ enum TestUsage {
     static let vertex = 0x0020
     static let uniform = 0x0040
     static let storage = 0x0080
+    static let indirect = 0x0100
+    static let queryResolve = 0x0200
 
     static let textureCopySrc = 0x01
     static let textureCopyDst = 0x02

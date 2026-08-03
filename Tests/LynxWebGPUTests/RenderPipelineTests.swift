@@ -339,16 +339,7 @@ final class RenderPipelineTests: XCTestCase {
             ["op": "endPass"],
         ])
 
-        let expectation = expectation(description: "readBuffer")
-        var output: [Float] = []
-        harness.context.readBuffer(handle: 3, offset: 0, size: 32) { result in
-            if let data = result["data"] as? Data {
-                output = data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
-            }
-            expectation.fulfill()
-        }
-        wait(for: [expectation], timeout: 10)
-
+        let output = try harness.readBufferSync(handle: 3, as: Float.self, size: 32)
         XCTAssertEqual(output, [2, 4, 6, 8, 10, 12, 14, 16])
     }
 
@@ -399,16 +390,7 @@ final class RenderPipelineTests: XCTestCase {
             ["op": "endPass"],
         ])
 
-        let expectation = expectation(description: "readBuffer")
-        var lengths: [UInt32] = []
-        harness.context.readBuffer(handle: 5, offset: 0, size: 16) { result in
-            if let data = result["data"] as? Data {
-                lengths = data.withUnsafeBytes { Array($0.bindMemory(to: UInt32.self)) }
-            }
-            expectation.fulfill()
-        }
-        wait(for: [expectation], timeout: 10)
-
+        let lengths = try harness.readBufferSync(handle: 5, as: UInt32.self, size: 16)
         XCTAssertEqual(Array(lengths.prefix(3)), [10, 3, 2])
     }
 

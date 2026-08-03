@@ -139,6 +139,36 @@ try harness.assertPixelFloat(x: 32, y: 32, equals: SIMD4<Float>(2.5, 0.5, -0.25,
 `Data`를 돌려주던 시절의 코드를 옮기는 법은
 [`docs/extra/260801-readpixel-migration-guide.md`](extra/260801-readpixel-migration-guide.md)에 있다.
 
+### 4-2. 동치성 단언 — "같은 결과를 내야 하는 두 경로"
+
+점 단언으로는 약한 기능이 있다. 간접 드로우·렌더 번들처럼 **계약 자체가 "직접 경로와 결과가
+같다"**인 것은 고른 두 점만 우연히 맞아도 통과하기 때문이다. 그럴 때는 프레임 전체를 비교한다:
+
+```swift
+harness.executeExpectingSuccess(직접경로)
+let reference = try harness.frameBytes()
+
+harness.executeExpectingSuccess(간접경로)
+try harness.assertFrameEquals(reference, "간접 드로우는 직접 드로우와 같아야 한다")
+```
+
+실패하면 **처음 어긋난 픽셀의 좌표와 두 값**이 나온다 ("N바이트 다름"만으로는 못 고친다).
+이 단언이 다름을 실제로 잡는지는 `RenderHarnessTests`가 못 박는다 — 토대가 되는 단언이라
+"항상 통과"가 되면 그 위의 모든 동치성 테스트가 조용히 무의미해진다.
+
+버퍼 리드백은 동기 헬퍼를 쓴다 (`XCTestExpectation` 보일러플레이트가 리드백 테스트마다
+반복되던 것을 없앤다):
+
+```swift
+let values = try harness.readBufferSync(handle: 3, as: Float.self, size: 32)
+```
+
+기기마다 갈리는 기능은 `supports(_:)`로 나눠 건너뛴다 — GPU 유무만 보던 조건의 확장이다:
+
+```swift
+try XCTSkipUnless(harness.supports(.timestampQuery), "타임스탬프 카운터를 지원하지 않는 기기")
+```
+
 ## 5. 컨벤션
 
 - 테스트 파일은 대상 타입/영역당 1개, 각 모듈 `Tests/` 아래.
@@ -165,6 +195,7 @@ try harness.assertPixelFloat(x: 32, y: 32, equals: SIMD4<Float>(2.5, 0.5, -0.25,
 | 오프스크린 되읽기 | `OffscreenReadbackTests` | 포맷별 행 간격·길이(1~16B/픽셀), **depth/stencil 거부**, configure 전 거부 |
 | 커맨드 해석기 | `CommandInterpreterTests` | 알 수 없는 명령, 없는 핸들, 오류 누적, 패스 상태, 캔버스 진단, 셰이더 실패 시 MSL 첨부, 드로어블 핸들 수명, 복사/읽기, 범위 검증, reset, 어댑터 정보, **writeTexture 큐 순서**, **배열 레이어 업로드** |
 | 스테이징 풀 | `StagingPoolTests` | 크기 클래스 반올림, 같은 인스턴스 재사용, 최적합 선택, 총량 상한, 프레임 반복 시 풀 크기 불변 |
+| 하네스 자신 | `RenderHarnessTests` | **동치성 단언이 다름을 실제로 잡는지**(§4-2), 동기 리드백의 실패 보고 |
 
 새 기능을 넣으면 위 표에 행을 추가하고 같은 컨벤션으로 테스트를 쓴다.
 
