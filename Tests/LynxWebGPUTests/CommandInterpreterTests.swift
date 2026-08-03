@@ -199,6 +199,70 @@ final class CommandInterpreterTests: XCTestCase {
         XCTAssertEqual(Array(bytes.suffix(16)), blue, "레이어 1")
     }
 
+    // MARK: - 간접 드로우 계약
+
+    /// 이 셋은 **크래시와 오류의 경계**다. 정렬·범위를 Metal까지 흘리면 검증 레이어가 단언으로
+    /// 프로세스를 죽이고, `INDIRECT` usage는 Metal에 개념이 없어 아무도 봐 주지 않는다
+    /// (여기서 안 막으면 브라우저에서만 깨지는 코드가 나간다).
+    /// 인자 버퍼 하나 + 패스 하나. 인자 검증은 `setPipeline`보다 앞서므로 파이프라인은 없어도 된다.
+    private func indirectSetup(usage: Int, size: Int = 32, compute: Bool = false) -> [[String: Any]] {
+        let buffer: [[String: Any]] = [["op": "createBuffer", "id": 1, "size": size, "usage": usage]]
+        if compute { return buffer + [["op": "beginComputePass"]] }
+        return buffer + [
+            ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
+            ["op": "getCurrentTexture", "id": 90, "canvas": "test"],
+            ["op": "createTextureView", "id": 91, "texture": 90],
+            ["op": "beginRenderPass", "colorAttachments": [[
+                "view": 91, "loadOp": "clear", "storeOp": "store",
+                "clearValue": ["r": 0, "g": 0, "b": 0, "a": 1],
+            ]]],
+        ]
+    }
+
+    func test_간접_오프셋이_4의_배수가_아니면_거부한다() {
+        let setup = indirectSetup(usage: TestUsage.indirect)
+        let result = harness.execute(setup + [
+            ["op": "drawIndirect", "indirectBuffer": 1, "indirectOffset": 2],
+        ])
+
+        XCTAssertEqual(errors(result).first?["kind"] as? String, "validation")
+        XCTAssertEqual(errors(result).first?["path"] as? String, "commands[\(setup.count)].indirectOffset")
+    }
+
+    func test_간접_인자가_버퍼_범위를_넘으면_거부한다() {
+        // drawIndexedIndirect는 20B를 읽는다 — offset 16 + 20 > 32.
+        let setup = indirectSetup(usage: TestUsage.indirect)
+        let result = harness.execute(setup + [
+            ["op": "drawIndexedIndirect", "indirectBuffer": 1, "indirectOffset": 16],
+        ])
+
+        XCTAssertEqual(errors(result).first?["kind"] as? String, "validation")
+        XCTAssertEqual(errors(result).first?["path"] as? String, "commands[\(setup.count)].indirectOffset")
+        XCTAssertTrue(((errors(result).first?["message"] as? String) ?? "").contains("범위"))
+    }
+
+    func test_INDIRECT_usage가_없는_버퍼는_간접_디스패치에_못_쓴다() {
+        let setup = indirectSetup(usage: TestUsage.storage, compute: true)
+        let result = harness.execute(setup + [
+            ["op": "dispatchWorkgroupsIndirect", "indirectBuffer": 1],
+        ])
+
+        XCTAssertEqual(errors(result).first?["kind"] as? String, "validation")
+        XCTAssertEqual(errors(result).first?["path"] as? String, "commands[\(setup.count)].indirectBuffer")
+        XCTAssertTrue(((errors(result).first?["message"] as? String) ?? "").contains("INDIRECT"))
+    }
+
+    func test_패스없이_간접_드로우하면_오류다() {
+        let result = harness.execute([
+            ["op": "createBuffer", "id": 1, "size": 32, "usage": TestUsage.indirect],
+            ["op": "drawIndirect", "indirectBuffer": 1],
+        ])
+        XCTAssertTrue(
+            ((errors(result).first?["message"] as? String) ?? "").contains("beginRenderPass"),
+            "무엇을 먼저 해야 하는지 알려 줘야 한다"
+        )
+    }
+
     func test_어댑터_정보가_한계값을_보고한다() {
         let info = harness.context.adapterInfo()
 

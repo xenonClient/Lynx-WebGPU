@@ -328,6 +328,31 @@ declare class GPURenderPassEncoder extends GPUPassEncoderBase {
      * @returns {void}
      */
     drawIndexed(indexCount: number, instanceCount?: number, firstIndex?: number, baseVertex?: number, firstInstance?: number): void;
+    /**
+     * 드로우 인자를 GPU 버퍼에서 읽어 그린다 — 컴퓨트가 만든 수만큼 그릴 때 쓴다.
+     *
+     * 버퍼에는 `u32` 4개가 이 순서로 들어 있어야 한다:
+     * `vertexCount, instanceCount, firstVertex, firstInstance`.
+     * 버퍼는 `GPUBufferUsage.INDIRECT`로 만들고, `indirectOffset`은 4의 배수여야 한다.
+     *
+     * @param {GPUBuffer} indirectBuffer
+     * @param {number} [indirectOffset]
+     * @returns {void}
+     */
+    drawIndirect(indirectBuffer: GPUBuffer, indirectOffset?: number): void;
+    /**
+     * 인덱스 드로우 인자를 GPU 버퍼에서 읽어 그린다.
+     *
+     * 버퍼에는 `u32` 5개가 이 순서로 들어 있어야 한다:
+     * `indexCount, instanceCount, firstIndex, baseVertex(부호 있는 i32), firstInstance`.
+     * `firstIndex`는 인자 버퍼 안에 있으므로 `setIndexBuffer(buffer, format, offset)`의
+     * 오프셋과 **더해지지 않고 따로** 적용된다.
+     *
+     * @param {GPUBuffer} indirectBuffer
+     * @param {number} [indirectOffset]
+     * @returns {void}
+     */
+    drawIndexedIndirect(indirectBuffer: GPUBuffer, indirectOffset?: number): void;
 }
 declare class GPUComputePassEncoder extends GPUPassEncoderBase {
     /**
@@ -337,6 +362,17 @@ declare class GPUComputePassEncoder extends GPUPassEncoderBase {
      * @returns {void}
      */
     dispatchWorkgroups(x: number, y?: number, z?: number): void;
+    /**
+     * 워크그룹 수를 GPU 버퍼에서 읽어 디스패치한다.
+     *
+     * 버퍼에는 `u32` 3개(`x, y, z`)가 들어 있어야 한다. 버퍼는 `GPUBufferUsage.INDIRECT`로
+     * 만들고, `indirectOffset`은 4의 배수여야 한다.
+     *
+     * @param {GPUBuffer} indirectBuffer
+     * @param {number} [indirectOffset]
+     * @returns {void}
+     */
+    dispatchWorkgroupsIndirect(indirectBuffer: GPUBuffer, indirectOffset?: number): void;
 }
 declare class GPUCommandEncoder {
     _device: GPUDevice;

@@ -84,7 +84,7 @@ const bytes = await buffer.mapAsync(GPUMapMode.READ)   // readBuffer (콜백형 
 ```
 
 `usage` 플래그: `MAP_READ` `MAP_WRITE` `COPY_SRC` `COPY_DST` `INDEX` `VERTEX` `UNIFORM` `STORAGE`
-(`INDIRECT`/`QUERY_RESOLVE`는 값만 있고 기능은 미지원).
+`INDIRECT` (`QUERY_RESOLVE`는 값만 있고 기능은 미지원).
 
 > `writeBuffer`는 스테이징 버퍼 + blit으로 큐에 **순서를 태워** 올라간다. 직접 memcpy 하면
 > 직전 프레임 GPU 작업과 경쟁하기 때문이다. 스테이징 버퍼는 네이티브가 풀로 재사용하므로
@@ -237,12 +237,15 @@ pass.setBlendConstant(color)        // setBlendConstant
 pass.setStencilReference(1)         // setStencilReference
 pass.draw(3, 1, 0, 0)               // draw
 pass.drawIndexed(6, 1, 0, 0, 0)     // drawIndexed
+pass.drawIndirect(argsBuffer, 0)        // drawIndirect
+pass.drawIndexedIndirect(argsBuffer, 0) // drawIndexedIndirect
 pass.end()                          // endPass
 
 const computePass = encoder.beginComputePass()               // beginComputePass
 computePass.setPipeline(compute)
 computePass.setBindGroup(0, group)
 computePass.dispatchWorkgroups(8, 8)                         // dispatchWorkgroups
+computePass.dispatchWorkgroupsIndirect(argsBuffer, 0)        // dispatchWorkgroupsIndirect
 computePass.end()
 
 encoder.copyBufferToBuffer(src, 0, dst, 0, size)             // copyBufferToBuffer
@@ -255,6 +258,35 @@ device.queue.submit([encoder.finish()])   // ← 여기서 한 번에 네이티�
 
 - `beginRenderPass`는 멀티샘플 `resolveTarget`을 지원한다 (store op이 `multisampleResolve`로 바뀐다).
 - 복사 명령은 패스 **밖에서만** 쓸 수 있다.
+
+### 간접 드로우 · 디스패치
+
+드로우 인자를 CPU가 아니라 **GPU 버퍼에서** 읽는다. 컴퓨트가 "몇 개를 그릴지"를 계산해
+그대로 넘길 수 있다 — 개수를 알려고 CPU로 되읽는 왕복이 사라진다.
+
+```js
+const args = device.createBuffer({
+  size: 16,
+  usage: GPUBufferUsage.INDIRECT | GPUBufferUsage.STORAGE,   // 컴퓨트가 쓰고 드로우가 읽는다
+})
+// 같은 배치 안에서 컴퓨트 → 드로우 순서가 그대로 실행 순서다.
+computePass.dispatchWorkgroups(1)     // args에 [vertexCount, instanceCount, …]를 쓴다
+pass.drawIndirect(args, 0)
+```
+
+버퍼에 들어가는 `u32` 배열은 명세 그대로다:
+
+| 명령 | 인자 (`u32`) | 크기 |
+|---|---|---|
+| `drawIndirect` | `vertexCount, instanceCount, firstVertex, firstInstance` | 16B |
+| `drawIndexedIndirect` | `indexCount, instanceCount, firstIndex, baseVertex`(부호 있는 `i32`)`, firstInstance` | 20B |
+| `dispatchWorkgroupsIndirect` | `x, y, z` | 12B |
+
+- 버퍼는 `GPUBufferUsage.INDIRECT`로 만들어야 한다. Metal에는 이 개념이 없어 확인해 주지
+  않으므로 이 구현이 직접 막는다 — 안 막으면 여기서만 돌고 브라우저에서 깨진다.
+- `indirectOffset`은 **4의 배수**여야 하고, 인자 크기만큼이 버퍼 안에 들어가야 한다.
+- `drawIndexedIndirect`의 `firstIndex`는 인자 버퍼 안에 있으므로,
+  `setIndexBuffer(buffer, format, offset)`의 오프셋과 **더해지지 않고 따로** 적용된다.
 
 ## 7. 오류 처리
 
@@ -282,7 +314,7 @@ device.onError((error, text) => console.error(text))
 | 기능 | 상태 |
 |---|---|
 | `GPUQuerySet` / 타임스탬프 / occlusion 쿼리 | 미지원 |
-| `drawIndirect` / `dispatchWorkgroupsIndirect` | 미지원 |
+| `drawIndirect` / `drawIndexedIndirect` / `dispatchWorkgroupsIndirect` | **지원** (§6) |
 | `GPURenderBundle` | 미지원 |
 | 스텐실 테스트 상태 | **지원** (§5) |
 | 블록 압축 텍스처 (BC/ETC/ASTC) | 미지원 |

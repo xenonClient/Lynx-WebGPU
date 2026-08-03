@@ -537,6 +537,43 @@ class GPURenderPassEncoder extends GPUPassEncoderBase {
       firstInstance: firstInstance || 0,
     });
   }
+
+  /**
+   * 드로우 인자를 GPU 버퍼에서 읽어 그린다 — 컴퓨트가 만든 수만큼 그릴 때 쓴다.
+   *
+   * 버퍼에는 `u32` 4개가 이 순서로 들어 있어야 한다:
+   * `vertexCount, instanceCount, firstVertex, firstInstance`.
+   * 버퍼는 `GPUBufferUsage.INDIRECT`로 만들고, `indirectOffset`은 4의 배수여야 한다.
+   *
+   * @param {GPUBuffer} indirectBuffer
+   * @param {number} [indirectOffset]
+   * @returns {void}
+   */
+  drawIndirect(indirectBuffer, indirectOffset) {
+    this._commands.push({
+      op: 'drawIndirect', indirectBuffer: indirectBuffer.id, indirectOffset: indirectOffset || 0,
+    });
+  }
+
+  /**
+   * 인덱스 드로우 인자를 GPU 버퍼에서 읽어 그린다.
+   *
+   * 버퍼에는 `u32` 5개가 이 순서로 들어 있어야 한다:
+   * `indexCount, instanceCount, firstIndex, baseVertex(부호 있는 i32), firstInstance`.
+   * `firstIndex`는 인자 버퍼 안에 있으므로 `setIndexBuffer(buffer, format, offset)`의
+   * 오프셋과 **더해지지 않고 따로** 적용된다.
+   *
+   * @param {GPUBuffer} indirectBuffer
+   * @param {number} [indirectOffset]
+   * @returns {void}
+   */
+  drawIndexedIndirect(indirectBuffer, indirectOffset) {
+    this._commands.push({
+      op: 'drawIndexedIndirect',
+      indirectBuffer: indirectBuffer.id,
+      indirectOffset: indirectOffset || 0,
+    });
+  }
 }
 
 class GPUComputePassEncoder extends GPUPassEncoderBase {
@@ -548,6 +585,24 @@ class GPUComputePassEncoder extends GPUPassEncoderBase {
    */
   dispatchWorkgroups(x, y, z) {
     this._commands.push({ op: 'dispatchWorkgroups', x: x || 1, y: y || 1, z: z || 1 });
+  }
+
+  /**
+   * 워크그룹 수를 GPU 버퍼에서 읽어 디스패치한다.
+   *
+   * 버퍼에는 `u32` 3개(`x, y, z`)가 들어 있어야 한다. 버퍼는 `GPUBufferUsage.INDIRECT`로
+   * 만들고, `indirectOffset`은 4의 배수여야 한다.
+   *
+   * @param {GPUBuffer} indirectBuffer
+   * @param {number} [indirectOffset]
+   * @returns {void}
+   */
+  dispatchWorkgroupsIndirect(indirectBuffer, indirectOffset) {
+    this._commands.push({
+      op: 'dispatchWorkgroupsIndirect',
+      indirectBuffer: indirectBuffer.id,
+      indirectOffset: indirectOffset || 0,
+    });
   }
 }
 

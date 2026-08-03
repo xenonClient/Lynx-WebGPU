@@ -239,10 +239,13 @@ final class WGPUCommandInterpreter {
             .setStencilReferenceValue(UInt32(command.int("reference", default: 0)))
         case "draw": try draw(command)
         case "drawIndexed": try drawIndexed(command)
+        case "drawIndirect": try drawIndirect(command)
+        case "drawIndexedIndirect": try drawIndexedIndirect(command)
 
         // 컴퓨트 패스
         case "beginComputePass": try beginComputePass()
         case "dispatchWorkgroups": try dispatchWorkgroups(command)
+        case "dispatchWorkgroupsIndirect": try dispatchWorkgroupsIndirect(command)
 
         case "endPass": endActiveEncoders()
 
@@ -774,6 +777,101 @@ final class WGPUCommandInterpreter {
             instanceCount: command.int("instanceCount", default: 1),
             baseVertex: command.int("baseVertex", default: 0),
             baseInstance: command.int("firstInstance", default: 0)
+        )
+    }
+
+    // MARK: - 간접 드로우 / 디스패치
+
+    /// 간접 인자 버퍼를 찾고 오프셋을 검증한다.
+    ///
+    /// WebGPU와 Metal의 인자 구조체가 **필드 순서까지 1:1로 같아서** 변환 없이 버퍼를 그대로
+    /// 넘긴다. 그래서 여기서 막을 것은 "몇 바이트를 읽을 것인가"뿐이다:
+    ///
+    /// - 4바이트 정렬과 범위는 **Metal이 단언(=프로세스 종료)으로 처리**하므로 여기서 잡는다.
+    /// - `INDIRECT` usage는 Metal에 대응하는 개념이 아예 없어 Metal이 봐 주지 않는다.
+    ///   확인하지 않으면 여기서는 돌고 브라우저에서만 깨지는 코드가 나온다.
+    private func indirectArguments(
+        _ command: WGPUValueReader,
+        argumentSize: Int
+    ) throws -> (buffer: MTLBuffer, offset: Int) {
+        let object = try registry.lookup(
+            try command.requiredHandle("indirectBuffer"), as: WGPUBufferObject.self, kind: "GPUBuffer"
+        )
+        let offset = command.int("indirectOffset", default: 0)
+        guard offset >= 0, offset % 4 == 0 else {
+            throw WGPUError.validation(
+                "indirectOffset은 4의 배수여야 한다 (받은 값 \(offset))",
+                path: command.fieldPath("indirectOffset")
+            )
+        }
+        guard offset + argumentSize <= object.size else {
+            throw WGPUError.validation(
+                "간접 인자 \(argumentSize)B가 버퍼 범위를 넘는다 — "
+                    + "offset \(offset) + \(argumentSize)B > 버퍼 크기 \(object.size)B",
+                path: command.fieldPath("indirectOffset")
+            )
+        }
+        guard object.usage.contains(.indirect) else {
+            throw WGPUError.validation(
+                "간접 드로우/디스패치의 인자 버퍼는 GPUBufferUsage.INDIRECT로 만들어야 한다",
+                path: command.fieldPath("indirectBuffer")
+            )
+        }
+        return (object.buffer, offset)
+    }
+
+    private func drawIndirect(_ command: WGPUValueReader) throws {
+        let encoder = try requireRenderEncoder()
+        // 인자 검증을 `applyBindGroups()`보다 **먼저** 한다 — 거부할 명령이 인코더 상태를
+        // 이미 바꿔 놓는 일이 없어야 한다 (오류는 프레임을 죽이지 않고 누적되므로 더 그렇다).
+        // vertexCount, instanceCount, firstVertex, firstInstance — u32 4개.
+        let arguments = try indirectArguments(command, argumentSize: 16)
+        try applyBindGroups()
+        guard let pipeline = currentRenderPipeline else {
+            throw WGPUError.validation("drawIndirect 전에 setPipeline이 필요하다")
+        }
+        encoder.drawPrimitives(
+            type: pipeline.primitiveType,
+            indirectBuffer: arguments.buffer,
+            indirectBufferOffset: arguments.offset
+        )
+    }
+
+    private func drawIndexedIndirect(_ command: WGPUValueReader) throws {
+        let encoder = try requireRenderEncoder()
+        // indexCount, instanceCount, firstIndex, baseVertex(i32), firstInstance — 5칸.
+        let arguments = try indirectArguments(command, argumentSize: 20)
+        try applyBindGroups()
+        guard let pipeline = currentRenderPipeline else {
+            throw WGPUError.validation("drawIndexedIndirect 전에 setPipeline이 필요하다")
+        }
+        guard let indexBinding else {
+            throw WGPUError.validation("drawIndexedIndirect 전에 setIndexBuffer가 필요하다")
+        }
+        encoder.drawIndexedPrimitives(
+            type: pipeline.primitiveType,
+            indexType: indexBinding.type,
+            indexBuffer: indexBinding.buffer,
+            // 직접 경로(`drawIndexed`)와 달리 `firstIndex`를 여기 더하지 않는다 —
+            // 그 값은 인자 버퍼 안에 있고 GPU가 읽는다. 더하면 두 번 세어 조용히 틀린다.
+            indexBufferOffset: indexBinding.offset,
+            indirectBuffer: arguments.buffer,
+            indirectBufferOffset: arguments.offset
+        )
+    }
+
+    private func dispatchWorkgroupsIndirect(_ command: WGPUValueReader) throws {
+        let encoder = try requireComputeEncoder()
+        // x, y, z — u32 3개.
+        let arguments = try indirectArguments(command, argumentSize: 12)
+        try applyBindGroups()
+        guard let pipeline = currentComputePipeline else {
+            throw WGPUError.validation("dispatchWorkgroupsIndirect 전에 setPipeline이 필요하다")
+        }
+        encoder.dispatchThreadgroups(
+            indirectBuffer: arguments.buffer,
+            indirectBufferOffset: arguments.offset,
+            threadsPerThreadgroup: pipeline.threadsPerThreadgroup
         )
     }
 

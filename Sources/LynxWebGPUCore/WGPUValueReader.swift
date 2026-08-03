@@ -25,6 +25,12 @@ public struct WGPUValueReader {
         path.isEmpty ? key : "\(path).\(key)"
     }
 
+    /// 이 리더 아래 필드 하나의 경로 (`commands[3].indirectOffset`).
+    ///
+    /// 값을 읽는 쪽이 아니라 **쓰임새를 아는 쪽**이 검증할 때 쓴다 — 리더가 타입만 보고
+    /// 던지는 오류와 달리, "4의 배수여야 한다" 같은 규칙은 호출처만 알기 때문이다.
+    public func fieldPath(_ key: String) -> String { childPath(key) }
+
     private func value(_ key: String) -> Any? {
         guard let value = dictionary[key], !(value is NSNull) else { return nil }
         return value

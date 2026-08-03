@@ -86,7 +86,9 @@ ReactLynx라면 `useEffect`의 정리 함수에서 부를 것.
 | `device.createRenderPipeline()` | 셰이더 컴파일이 붙는다 | 초기화에서 1회 |
 
 반대로 **얼마든지 해도 되는 것**: `setPipeline`, `setBindGroup`, `draw`, `writeBuffer`,
-그리고 `context.getSize()`/`getCurrentTexture()` — 앞의 넷은 JS 배열에 push만 하고
+`drawIndirect`/`drawIndexedIndirect`/`dispatchWorkgroupsIndirect`(핸들과 오프셋만 싣는다 —
+드로우 인자는 GPU 버퍼 안에 있으므로 CPU가 읽지 않는다),
+그리고 `context.getSize()`/`getCurrentTexture()` — 앞의 것들은 JS 배열에 push만 하고
 submit에서 한 번에 나가고, 크기는 **제출 응답으로 갱신되는 캐시**를 읽는다
 (동기 조회는 `configure` 시점 1회뿐이다). 리사이즈는 다음 제출 응답에 반영되므로
 한 프레임 늦을 수 있다 — 즉시성이 필요하면 `bindcanvasresize`를 쓴다.
