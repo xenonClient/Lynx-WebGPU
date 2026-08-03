@@ -189,6 +189,20 @@ public struct WGPUValueReader {
         try integers(key).map(WGPUHandle.init)
     }
 
+    /// 문자열 배열. **`null` 항목은 nil로 남긴다** — 렌더 번들의 `colorFormats`처럼
+    /// "이 슬롯에는 어태치먼트가 없다"를 null로 표현하는 자리가 있다.
+    public func strings(_ key: String) throws -> [String?] {
+        guard let raw = value(key) else { return [] }
+        guard let array = raw as? [Any] else { throw mismatch(key, expected: "문자열 배열") }
+        return try array.enumerated().map { index, element in
+            if element is NSNull { return nil }
+            guard let string = element as? String else {
+                throw WGPUError.validation("문자열이 필요하다", path: "\(childPath(key))[\(index)]")
+            }
+            return string
+        }
+    }
+
     // MARK: - 바이너리
 
     /// 바이트열을 읽는다. 세 가지 표현을 모두 받는다:

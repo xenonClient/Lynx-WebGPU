@@ -632,6 +632,36 @@ public struct WGPURenderPassDescriptor {
     }
 }
 
+// MARK: - 렌더 번들
+
+/// `GPURenderBundleEncoder`의 디스크립터.
+///
+/// 번들은 **어떤 모양의 패스에서 실행될지**를 미리 선언한다. 그 선언이 실제 패스와 어긋나면
+/// 명세상 오류다 — 이 구현은 번들을 명령 목록으로 되풀이하므로 Metal이 대신 잡아 주지 않아
+/// `executeBundles`에서 직접 확인한다.
+public struct WGPURenderBundleDescriptor {
+    /// 컬러 어태치먼트별 포맷. `null`은 "그 슬롯은 비어 있다"는 뜻이다.
+    public var colorFormats: [WGPUTextureFormat?]
+    public var depthStencilFormat: WGPUTextureFormat?
+    public var sampleCount: Int
+    public var label: String?
+
+    public init(from reader: WGPUValueReader) throws {
+        colorFormats = try reader.strings("colorFormats").map { raw in
+            guard let raw else { return nil }
+            guard let format = WGPUTextureFormat(rawValue: raw) else {
+                throw WGPUError.validation(
+                    "알 수 없는 컬러 포맷 \"\(raw)\"", path: reader.fieldPath("colorFormats")
+                )
+            }
+            return format
+        }
+        depthStencilFormat = try reader.optionalEnum("depthStencilFormat", WGPUTextureFormat.self)
+        sampleCount = reader.int("sampleCount", default: 1)
+        label = reader.optionalString("label")
+    }
+}
+
 /// `<webgpu-canvas>` 표면 설정 (`GPUCanvasContext.configure`).
 public struct WGPUCanvasConfiguration {
     public var canvasId: String

@@ -98,6 +98,12 @@ export const GPUMapMode = { READ: 0x1, WRITE: 0x2 };
  */
 /** @typedef {{format: string, depthWriteEnabled?: boolean, depthCompare?: GPUCompareFunction, depthBias?: number, depthBiasSlopeScale?: number, depthBiasClamp?: number, stencilFront?: GPUStencilFaceState, stencilBack?: GPUStencilFaceState, stencilReadMask?: number, stencilWriteMask?: number}} GPUDepthStencilState */
 
+/**
+ * `createRenderBundleEncoder`의 디스크립터 — 이 번들을 **실행할 패스의 모양**이다.
+ * `colorFormats`의 `null`은 "그 슬롯은 비어 있다"는 뜻이다.
+ */
+/** @typedef {{colorFormats: (string | null)[], depthStencilFormat?: string, sampleCount?: number, label?: string}} GPURenderBundleEncoderDescriptor */
+
 /** `createPipelineLayout`이 받는 레이아웃 — id만 있으면 된다. */
 /** @typedef {{id: number}} GPUPipelineLayoutSource */
 
@@ -421,6 +427,9 @@ class GPUPipelineBase extends GPUObjectBase {
 class GPURenderPipeline extends GPUPipelineBase {}
 class GPUComputePipeline extends GPUPipelineBase {}
 
+/** `bundleEncoder.finish()`가 돌려주는 재사용 가능한 드로우 묶음. */
+class GPURenderBundle extends GPUObjectBase {}
+
 // ---------------------------------------------------------------------------
 // 커맨드 인코더
 // ---------------------------------------------------------------------------
@@ -459,14 +468,16 @@ class GPUPassEncoderBase {
     if (dynamicOffsets && dynamicOffsets.length) command.dynamicOffsets = Array.from(dynamicOffsets);
     this._commands.push(command);
   }
-
-  /** @returns {void} */
-  end() {
-    this._commands.push({ op: 'endPass' });
-  }
 }
 
-class GPURenderPassEncoder extends GPUPassEncoderBase {
+/**
+ * 렌더 패스와 렌더 번들이 **함께** 쓸 수 있는 명령.
+ *
+ * 이 경계는 명세가 정한 것이다 — 번들에는 뷰포트·시저·블렌드 상수·스텐실 참조·중첩 번들을
+ * 담을 수 없다. 그것들을 `GPURenderPassEncoder`에만 두면 번들 인코더에는 애초에 그 메서드가
+ * 없으므로, 잘못 쓰는 코드가 네이티브까지 가지 않는다.
+ */
+class GPURenderCommandsBase extends GPUPassEncoderBase {
   /**
    * @param {number} slot
    * @param {GPUBuffer} buffer
@@ -485,50 +496,6 @@ class GPURenderPassEncoder extends GPUPassEncoderBase {
    */
   setIndexBuffer(buffer, format, offset) {
     this._commands.push({ op: 'setIndexBuffer', buffer: buffer.id, format, offset: offset || 0 });
-  }
-
-  /**
-   * @param {number} x
-   * @param {number} y
-   * @param {number} width
-   * @param {number} height
-   * @param {number} [minDepth]
-   * @param {number} [maxDepth]
-   * @returns {void}
-   */
-  setViewport(x, y, width, height, minDepth, maxDepth) {
-    this._commands.push({
-      op: 'setViewport', x, y, width, height,
-      minDepth: minDepth === undefined ? 0 : minDepth,
-      maxDepth: maxDepth === undefined ? 1 : maxDepth,
-    });
-  }
-
-  /**
-   * @param {number} x
-   * @param {number} y
-   * @param {number} width
-   * @param {number} height
-   * @returns {void}
-   */
-  setScissorRect(x, y, width, height) {
-    this._commands.push({ op: 'setScissorRect', x, y, width, height });
-  }
-
-  /**
-   * @param {GPUColor} color
-   * @returns {void}
-   */
-  setBlendConstant(color) {
-    this._commands.push({ op: 'setBlendConstant', color });
-  }
-
-  /**
-   * @param {number} reference
-   * @returns {void}
-   */
-  setStencilReference(reference) {
-    this._commands.push({ op: 'setStencilReference', reference });
   }
 
   /**
@@ -603,6 +570,119 @@ class GPURenderPassEncoder extends GPUPassEncoderBase {
   }
 }
 
+/** 패스 전용 명령 — 아래 넷과 `executeBundles`는 번들에 담을 수 없다 (명세). */
+class GPURenderPassEncoder extends GPURenderCommandsBase {
+  /**
+   * @param {number} x
+   * @param {number} y
+   * @param {number} width
+   * @param {number} height
+   * @param {number} [minDepth]
+   * @param {number} [maxDepth]
+   * @returns {void}
+   */
+  setViewport(x, y, width, height, minDepth, maxDepth) {
+    this._commands.push({
+      op: 'setViewport', x, y, width, height,
+      minDepth: minDepth === undefined ? 0 : minDepth,
+      maxDepth: maxDepth === undefined ? 1 : maxDepth,
+    });
+  }
+
+  /**
+   * @param {number} x
+   * @param {number} y
+   * @param {number} width
+   * @param {number} height
+   * @returns {void}
+   */
+  setScissorRect(x, y, width, height) {
+    this._commands.push({ op: 'setScissorRect', x, y, width, height });
+  }
+
+  /**
+   * @param {GPUColor} color
+   * @returns {void}
+   */
+  setBlendConstant(color) {
+    this._commands.push({ op: 'setBlendConstant', color });
+  }
+
+  /**
+   * @param {number} reference
+   * @returns {void}
+   */
+  setStencilReference(reference) {
+    this._commands.push({ op: 'setStencilReference', reference });
+  }
+
+  /**
+   * 미리 기록해 둔 번들들을 이 패스에 되풀이한다.
+   *
+   * 번들은 패스 상태를 **물려받지 않고**, 실행이 끝나면 패스의 파이프라인·바인드 그룹·
+   * 정점/인덱스 버퍼 바인딩이 **무효화된다** (이전 값으로 복원되는 것이 아니다 — 명세 계약).
+   * 이어서 그리려면 `setPipeline`부터 다시 해야 한다. 뷰포트·시저·블렌드 상수·스텐실 참조는
+   * 그대로 남는다.
+   *
+   * @param {GPURenderBundle[]} bundles
+   * @returns {void}
+   */
+  executeBundles(bundles) {
+    this._commands.push({
+      op: 'executeBundles',
+      bundles: Array.from(bundles || []).map((bundle) => bundle.id),
+    });
+  }
+
+  /** @returns {void} */
+  end() {
+    this._commands.push({ op: 'endPass' });
+  }
+}
+
+/**
+ * 여러 프레임에 걸쳐 다시 쓸 드로우 묶음을 기록한다 (`device.createRenderBundleEncoder`).
+ *
+ * 이 구현에서 번들의 이득은 브라우저와 다르다 — 브라우저는 드라이버 명령을 미리 만들어 두지만,
+ * 여기서는 **JS가 매 프레임 같은 명령 배열을 다시 만들지 않아도 되는 것**이 이득이다.
+ * 번들을 실행하는 명령은 핸들 하나뿐이고, 되풀이는 네이티브가 한다.
+ */
+class GPURenderBundleEncoder extends GPURenderCommandsBase {
+  /**
+   * @param {GPUDevice} device
+   * @param {GPURenderBundleEncoderDescriptor} descriptor
+   */
+  constructor(device, descriptor) {
+    super([]);
+    /** @type {GPUCommand[]} 번들 인코더는 자기 배열에만 모은다 (패스 스트림과 섞이지 않는다). */
+    this._commands = [];
+    this._device = device;
+    this._descriptor = descriptor || { colorFormats: [] };
+  }
+
+  /**
+   * 기록을 끝내고 재사용 가능한 번들을 만든다.
+   * @param {{label?: string}} [descriptor]
+   * @returns {GPURenderBundle}
+   */
+  finish(descriptor) {
+    const recorder = this._device._recorder;
+    const id = recorder.allocate();
+    const label = (descriptor && descriptor.label) || this._descriptor.label;
+    recorder.push({
+      op: 'createRenderBundle', id,
+      commands: this._commands,
+      colorFormats: this._descriptor.colorFormats || [],
+      depthStencilFormat: this._descriptor.depthStencilFormat,
+      sampleCount: this._descriptor.sampleCount,
+      label,
+    });
+    // 인코더는 한 번만 finish할 수 있다 — 남겨 두면 다음 finish에 같은 명령이 또 실린다.
+    this._commands = [];
+    return new GPURenderBundle(this._device, id, label);
+  }
+}
+
 class GPUComputePassEncoder extends GPUPassEncoderBase {
   /**
    * @param {number} x
@@ -630,6 +710,11 @@ class GPUComputePassEncoder extends GPUPassEncoderBase {
       indirectBuffer: indirectBuffer.id,
       indirectOffset: indirectOffset || 0,
     });
+  }
+
+  /** @returns {void} */
+  end() {
+    this._commands.push({ op: 'endPass' });
   }
 }
 
@@ -997,6 +1082,19 @@ class GPUDevice {
     return new GPUCommandEncoder(this);
   }
 
+  /**
+   * 여러 프레임에 걸쳐 다시 쓸 드로우 묶음을 기록하기 시작한다.
+   *
+   * `colorFormats`(와 있다면 `depthStencilFormat`·`sampleCount`)는 이 번들을 **실행할 패스의
+   * 모양**이다. 실제 패스와 어긋나면 `executeBundles`에서 오류가 난다.
+   *
+   * @param {GPURenderBundleEncoderDescriptor} descriptor
+   * @returns {GPURenderBundleEncoder}
+   */
+  createRenderBundleEncoder(descriptor) {
+    return new GPURenderBundleEncoder(this, descriptor);
+  }
+
   /** 모든 GPU 객체를 버린다 (페이지 이탈 시 호출). @returns {void} */
   destroy() {
     this._recorder.pending = [];
@@ -1226,5 +1324,8 @@ export async function loadAsset(name) {
   return result.data;
 }
 
-export { GPUBuffer, GPUTexture, GPUTextureView, GPUSampler, GPUDevice, GPUCanvasContext };
+export {
+  GPUBuffer, GPUTexture, GPUTextureView, GPUSampler, GPUDevice, GPUCanvasContext,
+  GPURenderBundle, GPURenderBundleEncoder,
+};
 export default gpu;

@@ -17,6 +17,8 @@ Lynx 앱 안의 **이미지 에디터·필터**지 3D 렌더러가 아니다. �
 | 애셋 로딩 (`loadAsset` + `WGPUAssetProvider`) | 브라우저 `fetch()` 자리 |
 | 스텐실 상태 (`stencilFront`/`stencilBack`/마스크) | `StencilTests`. `stencil8` 단독 포맷도 |
 | 간접 드로우/디스패치 (`drawIndirect` 계열 3종) | `IndirectDrawTests`. 컴퓨트가 인자를 쓰는 GPU-driven 경로까지 |
+| 오류 스코프 (`pushErrorScope` / `popErrorScope`) | `ErrorScopeTests`. GPU 불필요 |
+| 렌더 번들 (`GPURenderBundle` / `executeBundles`) | `RenderBundleTests`. 명령 목록을 되풀이하는 방식 |
 
 공통 절차는 `.claude/skills/webgpu-command/SKILL.md`(새 op 추가)와
 `.claude/skills/wgsl-feature/SKILL.md`(셰이더 문법 — 아래 항목은 해당 없음)를 따른다.

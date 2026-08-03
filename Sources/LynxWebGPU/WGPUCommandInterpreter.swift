@@ -32,6 +32,8 @@ final class WGPUCommandInterpreter {
     /// 바인드 그룹을 적용할 때마다 갱신하고, 셰이더가 쓸 때만 인코더에 올린다.
     private var bufferSizes = [UInt32](repeating: 0, count: WGSLMetalLimits.maxBindGroupBuffers)
     private var indexBinding: (buffer: MTLBuffer, offset: Int, type: MTLIndexType, stride: Int)?
+    /// 지금 렌더 패스의 어태치먼트 모양 — 렌더 번들이 이 패스에서 유효한지 볼 때 쓴다.
+    private var passFormats: (color: [WGPUTextureFormat], depthStencil: WGPUTextureFormat?, sampleCount: Int)?
     private var acquiredDrawables: [(handle: WGPUHandle, drawable: WGPUDrawable, surface: WGPUSurface)] = []
     /// 이번 프레임 업로드에 쓴 스테이징 버퍼 — 커맨드 버퍼 완료 시 풀로 돌아간다.
     private var frameStagingBuffers: [MTLBuffer] = []
@@ -148,6 +150,7 @@ final class WGPUCommandInterpreter {
         boundGroups.removeAll()
         dirtyGroups.removeAll()
         indexBinding = nil
+        passFormats = nil
         acquiredDrawables.removeAll()
         frameScopedHandles.removeAll()
         touchedCanvases.removeAll()
@@ -263,6 +266,7 @@ final class WGPUCommandInterpreter {
         case "createBindGroupLayout": try createBindGroupLayout(command)
         case "createPipelineLayout": try createPipelineLayout(command)
         case "createBindGroup": try createBindGroup(command)
+        case "createRenderBundle": try createRenderBundle(command)
         case "createRenderPipeline": try createRenderPipeline(command)
         case "createComputePipeline": try createComputePipeline(command)
         case "getBindGroupLayout": try getBindGroupLayout(command)
@@ -291,6 +295,7 @@ final class WGPUCommandInterpreter {
         case "drawIndexed": try drawIndexed(command)
         case "drawIndirect": try drawIndirect(command)
         case "drawIndexedIndirect": try drawIndexedIndirect(command)
+        case "executeBundles": try executeBundles(command)
 
         // 컴퓨트 패스
         case "beginComputePass": try beginComputePass()
@@ -434,6 +439,19 @@ final class WGPUCommandInterpreter {
         )
     }
 
+    /// `bundleEncoder.finish()` — JS가 모아 둔 명령 목록을 번들 객체로 등록한다.
+    ///
+    /// 번들 인코더 자체는 네이티브에 없다. JS가 명령을 배열에 모으고 `finish()`에서 한 번에
+    /// 내려보내므로, 인코더의 수명을 양쪽에서 맞출 이유가 없다.
+    private func createRenderBundle(_ command: WGPUValueReader) throws {
+        let handle = try command.requiredHandle("id")
+        let bundle = try WGPURenderBundleObject(
+            commands: try command.requiredObjects("commands"),
+            descriptor: try WGPURenderBundleDescriptor(from: command)
+        )
+        registry.insert(bundle, at: handle)
+    }
+
     private func createRenderPipeline(_ command: WGPUValueReader) throws {
         let handle = try command.requiredHandle("id")
         let descriptor = try WGPURenderPipelineDescriptor(from: command)
@@ -537,11 +555,15 @@ final class WGPUCommandInterpreter {
         endActiveEncoders()
         let descriptor = try WGPURenderPassDescriptor(from: command)
         let passDescriptor = MTLRenderPassDescriptor()
+        var colorFormats: [WGPUTextureFormat] = []
+        var sampleCount = 1
 
         for (index, attachment) in descriptor.colorAttachments.enumerated() {
             let view = try registry.lookup(
                 attachment.view, as: WGPUTextureViewObject.self, kind: "GPUTextureView"
             )
+            colorFormats.append(view.format)
+            sampleCount = max(sampleCount, view.sampleCount)
             let target = passDescriptor.colorAttachments[index]!
             target.texture = view.texture
             target.loadAction = WGPUMetalMapping.loadAction(attachment.loadOp)
@@ -561,8 +583,10 @@ final class WGPUCommandInterpreter {
             }
         }
 
+        var depthStencilFormat: WGPUTextureFormat?
         if let depth = descriptor.depthStencilAttachment {
             let view = try registry.lookup(depth.view, as: WGPUTextureViewObject.self, kind: "GPUTextureView")
+            depthStencilFormat = view.format
             if view.format.hasDepth {
                 let target = passDescriptor.depthAttachment!
                 target.texture = view.texture
@@ -584,10 +608,45 @@ final class WGPUCommandInterpreter {
         }
         if let label = descriptor.label { encoder.label = label }
         renderEncoder = encoder
+        passFormats = (colorFormats, depthStencilFormat, sampleCount)
+        resetPassBindings()
+    }
+
+    /// 파이프라인·바인드 그룹·인덱스 버퍼 바인딩을 "지정되지 않음"으로 되돌린다.
+    ///
+    /// 패스를 새로 열 때와 `executeBundles` 앞뒤에 쓴다. 명세는 번들 실행이 **이전 상태를
+    /// 복원하는 것이 아니라 무효화한다**고 정한다 — 번들은 패스 상태를 물려받지 않고,
+    /// 실행이 끝나면 패스도 번들이 남긴 상태를 물려받지 않는다. 그래서 양쪽 다 초기화한다.
+    /// (뷰포트·시저·블렌드 상수·스텐실 참조는 이 목록에 없다 — 그대로 남는다.)
+    private func resetPassBindings() {
         currentRenderPipeline = nil
         boundGroups.removeAll()
         dirtyGroups.removeAll()
         indexBinding = nil
+    }
+
+    private func executeBundles(_ command: WGPUValueReader) throws {
+        _ = try requireRenderEncoder()
+        guard let formats = passFormats else {
+            throw WGPUError.validation("executeBundles는 렌더 패스 안에서만 쓸 수 있다")
+        }
+        let bundles = try command.handles("bundles").map {
+            try registry.lookup($0, as: WGPURenderBundleObject.self, kind: "GPURenderBundle")
+        }
+
+        for bundle in bundles {
+            try bundle.checkCompatibility(
+                color: formats.color, depthStencil: formats.depthStencil, sampleCount: formats.sampleCount
+            )
+        }
+        // 하나라도 맞지 않으면 아무것도 실행하지 않는다 — 절반만 그려진 프레임을 남기지 않는다.
+        for bundle in bundles {
+            resetPassBindings()
+            for bundleCommand in bundle.commands {
+                try perform(bundleCommand, at: 0)
+            }
+        }
+        resetPassBindings()
     }
 
     private func setPipeline(_ command: WGPUValueReader) throws {

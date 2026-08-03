@@ -86,6 +86,9 @@ ReactLynx라면 `useEffect`의 정리 함수에서 부를 것.
 | `gpu.requestAdapter()` | 동기 네이티브 호출 | 초기화에서 1회 |
 | `device.createRenderPipeline()` | 셰이더 컴파일이 붙는다 | 초기화에서 1회 |
 
+매 프레임 **같은 드로우 묶음**을 다시 기록하고 있다면 렌더 번들로 묶는다 — 커맨드 배열을
+다시 만들고 브리지로 실어 보내는 비용이 핸들 하나로 줄어든다 (`docs/WEBGPU-API.md` §6).
+
 반대로 **얼마든지 해도 되는 것**: `setPipeline`, `setBindGroup`, `draw`, `writeBuffer`,
 `drawIndirect`/`drawIndexedIndirect`/`dispatchWorkgroupsIndirect`(핸들과 오프셋만 싣는다 —
 드로우 인자는 GPU 버퍼 안에 있으므로 CPU가 읽지 않는다),

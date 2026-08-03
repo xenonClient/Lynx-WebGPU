@@ -259,6 +259,40 @@ device.queue.submit([encoder.finish()])   // ← 여기서 한 번에 네이티�
 - `beginRenderPass`는 멀티샘플 `resolveTarget`을 지원한다 (store op이 `multisampleResolve`로 바뀐다).
 - 복사 명령은 패스 **밖에서만** 쓸 수 있다.
 
+### 렌더 번들
+
+매 프레임 똑같은 드로우 묶음을 다시 기록하지 않도록 한 번 기록해 두고 재사용한다.
+
+```js
+const bundleEncoder = device.createRenderBundleEncoder({
+  colorFormats: [format],          // 이 번들을 **실행할 패스의 모양**
+  depthStencilFormat: 'depth32float',   // 패스에 깊이가 없으면 생략
+  sampleCount: 1,
+})
+bundleEncoder.setPipeline(pipeline)
+bundleEncoder.setBindGroup(0, bindGroup)
+bundleEncoder.draw(3)
+const bundle = bundleEncoder.finish()            // createRenderBundle
+
+// 매 프레임
+pass.executeBundles([bundle])                    // executeBundles
+```
+
+- 번들에 담을 수 있는 것은 `setPipeline` `setBindGroup` `setVertexBuffer` `setIndexBuffer`
+  `draw` `drawIndexed` `drawIndirect` `drawIndexedIndirect` **여덟 개뿐**이다. 뷰포트·시저·
+  블렌드 상수·스텐실 참조·중첩 번들·복사는 담을 수 없다 — 번들 인코더에 그 메서드가 아예 없다.
+- **상태는 양방향으로 격리된다.** 번들은 패스가 지정해 둔 파이프라인·바인드 그룹을 물려받지
+  않고, 번들 실행이 끝나면 패스 쪽 바인딩도 무효화된다. 이어서 그리려면 `setPipeline`부터
+  다시 해야 한다 (이전 값으로 **복원되는 것이 아니다** — 명세 계약). 뷰포트·시저·블렌드 상수·
+  스텐실 참조는 그대로 남는다.
+- `colorFormats`(와 `depthStencilFormat`·`sampleCount`)가 실제 패스와 어긋나면
+  `executeBundles`에서 오류다.
+
+> **이 구현에서 번들이 무엇을 아껴 주나.** 브라우저는 드라이버 명령을 미리 만들어 두지만,
+> 여기서는 Metal에 대응 객체가 없어 명령 목록을 저장했다가 되풀이한다. 그래서 이득은
+> GPU 쪽이 아니라 **JS 쪽**이다 — 매 프레임 같은 커맨드 배열을 다시 만들고 브리지로
+> 실어 보내는 비용이 핸들 하나로 줄어든다.
+
 ### 간접 드로우 · 디스패치
 
 드로우 인자를 CPU가 아니라 **GPU 버퍼에서** 읽는다. 컴퓨트가 "몇 개를 그릴지"를 계산해
@@ -339,7 +373,7 @@ if (error) fallBackToSimplePipeline()
 |---|---|
 | `GPUQuerySet` / 타임스탬프 / occlusion 쿼리 | 미지원 |
 | `drawIndirect` / `drawIndexedIndirect` / `dispatchWorkgroupsIndirect` | **지원** (§6) |
-| `GPURenderBundle` | 미지원 |
+| `GPURenderBundle` | **지원** (§6) |
 | 스텐실 테스트 상태 | **지원** (§5) |
 | 블록 압축 텍스처 (BC/ETC/ASTC) | 미지원 |
 | `GPUExternalTexture` (`importExternalTexture`) | 미지원 — Lynx에 비디오 엘리먼트 핸들이 없다. 다만 WGSL `texture_external` + `textureSampleBaseClampToEdge`는 **지원**하므로, 프레임을 텍스처로 올려 그 자리에 `GPUTextureView`를 묶으면 된다 |

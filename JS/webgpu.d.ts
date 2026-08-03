@@ -129,6 +129,12 @@ export type GPUDepthStencilState = {
     stencilReadMask?: number;
     stencilWriteMask?: number;
 };
+export type GPURenderBundleEncoderDescriptor = {
+    colorFormats: (string | null)[];
+    depthStencilFormat?: string;
+    sampleCount?: number;
+    label?: string;
+};
 export type GPUPipelineLayoutSource = {
     id: number;
 };
@@ -260,6 +266,9 @@ declare class GPURenderPipeline extends GPUPipelineBase {
 }
 declare class GPUComputePipeline extends GPUPipelineBase {
 }
+/** `bundleEncoder.finish()`가 돌려주는 재사용 가능한 드로우 묶음. */
+declare class GPURenderBundle extends GPUObjectBase {
+}
 /** 인코더는 자기 명령을 따로 모았다가 `finish()` → `submit()`에서 스트림에 합쳐진다. */
 declare class GPUCommandBuffer {
     commands: GPUCommand[];
@@ -282,10 +291,15 @@ declare class GPUPassEncoderBase {
      * @returns {void}
      */
     setBindGroup(index: number, bindGroup: GPUBindGroup, dynamicOffsets?: number[]): void;
-    /** @returns {void} */
-    end(): void;
 }
-declare class GPURenderPassEncoder extends GPUPassEncoderBase {
+/**
+ * 렌더 패스와 렌더 번들이 **함께** 쓸 수 있는 명령.
+ *
+ * 이 경계는 명세가 정한 것이다 — 번들에는 뷰포트·시저·블렌드 상수·스텐실 참조·중첩 번들을
+ * 담을 수 없다. 그것들을 `GPURenderPassEncoder`에만 두면 번들 인코더에는 애초에 그 메서드가
+ * 없으므로, 잘못 쓰는 코드가 네이티브까지 가지 않는다.
+ */
+declare class GPURenderCommandsBase extends GPUPassEncoderBase {
     /**
      * @param {number} slot
      * @param {GPUBuffer} buffer
@@ -300,34 +314,6 @@ declare class GPURenderPassEncoder extends GPUPassEncoderBase {
      * @returns {void}
      */
     setIndexBuffer(buffer: GPUBuffer, format: 'uint16' | 'uint32', offset?: number): void;
-    /**
-     * @param {number} x
-     * @param {number} y
-     * @param {number} width
-     * @param {number} height
-     * @param {number} [minDepth]
-     * @param {number} [maxDepth]
-     * @returns {void}
-     */
-    setViewport(x: number, y: number, width: number, height: number, minDepth?: number, maxDepth?: number): void;
-    /**
-     * @param {number} x
-     * @param {number} y
-     * @param {number} width
-     * @param {number} height
-     * @returns {void}
-     */
-    setScissorRect(x: number, y: number, width: number, height: number): void;
-    /**
-     * @param {GPUColor} color
-     * @returns {void}
-     */
-    setBlendConstant(color: GPUColor): void;
-    /**
-     * @param {number} reference
-     * @returns {void}
-     */
-    setStencilReference(reference: number): void;
     /**
      * @param {number} vertexCount
      * @param {number} [instanceCount]
@@ -371,6 +357,75 @@ declare class GPURenderPassEncoder extends GPUPassEncoderBase {
      */
     drawIndexedIndirect(indirectBuffer: GPUBuffer, indirectOffset?: number): void;
 }
+/** 패스 전용 명령 — 아래 넷과 `executeBundles`는 번들에 담을 수 없다 (명세). */
+declare class GPURenderPassEncoder extends GPURenderCommandsBase {
+    /**
+     * @param {number} x
+     * @param {number} y
+     * @param {number} width
+     * @param {number} height
+     * @param {number} [minDepth]
+     * @param {number} [maxDepth]
+     * @returns {void}
+     */
+    setViewport(x: number, y: number, width: number, height: number, minDepth?: number, maxDepth?: number): void;
+    /**
+     * @param {number} x
+     * @param {number} y
+     * @param {number} width
+     * @param {number} height
+     * @returns {void}
+     */
+    setScissorRect(x: number, y: number, width: number, height: number): void;
+    /**
+     * @param {GPUColor} color
+     * @returns {void}
+     */
+    setBlendConstant(color: GPUColor): void;
+    /**
+     * @param {number} reference
+     * @returns {void}
+     */
+    setStencilReference(reference: number): void;
+    /**
+     * 미리 기록해 둔 번들들을 이 패스에 되풀이한다.
+     *
+     * 번들은 패스 상태를 **물려받지 않고**, 실행이 끝나면 패스의 파이프라인·바인드 그룹·
+     * 정점/인덱스 버퍼 바인딩이 **무효화된다** (이전 값으로 복원되는 것이 아니다 — 명세 계약).
+     * 이어서 그리려면 `setPipeline`부터 다시 해야 한다. 뷰포트·시저·블렌드 상수·스텐실 참조는
+     * 그대로 남는다.
+     *
+     * @param {GPURenderBundle[]} bundles
+     * @returns {void}
+     */
+    executeBundles(bundles: GPURenderBundle[]): void;
+    /** @returns {void} */
+    end(): void;
+}
+/**
+ * 여러 프레임에 걸쳐 다시 쓸 드로우 묶음을 기록한다 (`device.createRenderBundleEncoder`).
+ *
+ * 이 구현에서 번들의 이득은 브라우저와 다르다 — 브라우저는 드라이버 명령을 미리 만들어 두지만,
+ * 여기서는 **JS가 매 프레임 같은 명령 배열을 다시 만들지 않아도 되는 것**이 이득이다.
+ * 번들을 실행하는 명령은 핸들 하나뿐이고, 되풀이는 네이티브가 한다.
+ */
+declare class GPURenderBundleEncoder extends GPURenderCommandsBase {
+    _device: GPUDevice;
+    _descriptor: GPURenderBundleEncoderDescriptor;
+    /**
+     * @param {GPUDevice} device
+     * @param {GPURenderBundleEncoderDescriptor} descriptor
+     */
+    constructor(device: GPUDevice, descriptor: GPURenderBundleEncoderDescriptor);
+    /**
+     * 기록을 끝내고 재사용 가능한 번들을 만든다.
+     * @param {{label?: string}} [descriptor]
+     * @returns {GPURenderBundle}
+     */
+    finish(descriptor?: {
+        label?: string;
+    }): GPURenderBundle;
+}
 declare class GPUComputePassEncoder extends GPUPassEncoderBase {
     /**
      * @param {number} x
@@ -390,6 +445,8 @@ declare class GPUComputePassEncoder extends GPUPassEncoderBase {
      * @returns {void}
      */
     dispatchWorkgroupsIndirect(indirectBuffer: GPUBuffer, indirectOffset?: number): void;
+    /** @returns {void} */
+    end(): void;
 }
 declare class GPUCommandEncoder {
     _device: GPUDevice;
@@ -569,6 +626,16 @@ declare class GPUDevice {
     createComputePipeline(descriptor: Record<string, any>): GPUComputePipeline;
     /** @returns {GPUCommandEncoder} */
     createCommandEncoder(): GPUCommandEncoder;
+    /**
+     * 여러 프레임에 걸쳐 다시 쓸 드로우 묶음을 기록하기 시작한다.
+     *
+     * `colorFormats`(와 있다면 `depthStencilFormat`·`sampleCount`)는 이 번들을 **실행할 패스의
+     * 모양**이다. 실제 패스와 어긋나면 `executeBundles`에서 오류가 난다.
+     *
+     * @param {GPURenderBundleEncoderDescriptor} descriptor
+     * @returns {GPURenderBundleEncoder}
+     */
+    createRenderBundleEncoder(descriptor: GPURenderBundleEncoderDescriptor): GPURenderBundleEncoder;
     /** 모든 GPU 객체를 버린다 (페이지 이탈 시 호출). @returns {void} */
     destroy(): void;
 }
@@ -674,5 +741,5 @@ export declare function startFrameLoop(handler: (frame: {
  * @returns {Promise<ArrayBuffer>}
  */
 export declare function loadAsset(name: string): Promise<ArrayBuffer>;
-export { GPUBuffer, GPUTexture, GPUTextureView, GPUSampler, GPUDevice, GPUCanvasContext };
+export { GPUBuffer, GPUTexture, GPUTextureView, GPUSampler, GPUDevice, GPUCanvasContext, GPURenderBundle, GPURenderBundleEncoder, };
 export default gpu;

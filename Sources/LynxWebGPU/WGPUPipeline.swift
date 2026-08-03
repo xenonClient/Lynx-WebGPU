@@ -272,6 +272,72 @@ public final class WGPUComputePipelineObject {
     }
 }
 
+/// `GPURenderBundle` — 명령 목록을 그대로 들고 있다가 렌더 패스에 되풀이한다.
+///
+/// Metal에는 대응하는 객체가 없다 (`MTLIndirectCommandBuffer`는 제약이 훨씬 크고 용도가 다르다).
+/// 하지만 번들의 계약이 애초에 **"직접 인코딩과 같은 결과"**이므로, 명령을 저장했다가 현재
+/// 인코더에 다시 흘리는 것으로 계약을 그대로 만족시킨다. 재사용해도 안전한 이유도 같다 —
+/// 저장된 것은 값 타입인 리더뿐이라 실행이 원본을 바꾸지 않는다.
+public final class WGPURenderBundleObject {
+    /// 번들 안에서 쓸 수 있는 명령. 명세가 정한 목록 그대로다 — 뷰포트·시저·블렌드 상수·
+    /// 스텐실 참조·복사·중첩 번들은 번들에 담을 수 없다.
+    static let allowedOps: Set<String> = [
+        "setPipeline", "setBindGroup", "setVertexBuffer", "setIndexBuffer",
+        "draw", "drawIndexed", "drawIndirect", "drawIndexedIndirect",
+    ]
+
+    let commands: [WGPUValueReader]
+    let descriptor: WGPURenderBundleDescriptor
+
+    init(commands: [WGPUValueReader], descriptor: WGPURenderBundleDescriptor) throws {
+        for command in commands {
+            let op = try command.requiredString("op")
+            guard Self.allowedOps.contains(op) else {
+                throw WGPUError.validation(
+                    "렌더 번들에는 '\(op)'을(를) 담을 수 없다 "
+                        + "(가능: \(Self.allowedOps.sorted().joined(separator: ", ")))",
+                    path: command.fieldPath("op")
+                )
+            }
+        }
+        self.commands = commands
+        self.descriptor = descriptor
+    }
+
+    /// 이 번들이 지금 패스에서 실행될 수 있는가.
+    ///
+    /// 번들은 "어떤 모양의 패스에서 쓸 것"이라고 선언하고 만들어진다. 그 선언과 실제 패스가
+    /// 어긋나면 브라우저는 오류를 내지만, 이 구현은 명령을 되풀이할 뿐이라 Metal이 못 잡는다
+    /// (파이프라인이 패스와 맞기만 하면 그냥 그려진다). 여기서 막지 않으면 브라우저에서만
+    /// 깨지는 코드가 나간다.
+    func checkCompatibility(color: [WGPUTextureFormat], depthStencil: WGPUTextureFormat?, sampleCount: Int) throws {
+        guard descriptor.colorFormats.count == color.count else {
+            throw WGPUError.validation(
+                "번들의 컬러 어태치먼트 수(\(descriptor.colorFormats.count))가 "
+                    + "패스(\(color.count))와 다르다"
+            )
+        }
+        for (index, expected) in descriptor.colorFormats.enumerated() where expected != color[index] {
+            throw WGPUError.validation(
+                "번들의 colorFormats[\(index)]가 패스와 다르다 — "
+                    + "번들 \(expected?.rawValue ?? "null"), 패스 \(color[index].rawValue)"
+            )
+        }
+        guard descriptor.depthStencilFormat == depthStencil else {
+            throw WGPUError.validation(
+                "번들의 depthStencilFormat이 패스와 다르다 — "
+                    + "번들 \(descriptor.depthStencilFormat?.rawValue ?? "없음"), "
+                    + "패스 \(depthStencil?.rawValue ?? "없음")"
+            )
+        }
+        guard descriptor.sampleCount == sampleCount else {
+            throw WGPUError.validation(
+                "번들의 sampleCount(\(descriptor.sampleCount))가 패스(\(sampleCount))와 다르다"
+            )
+        }
+    }
+}
+
 // MARK: - 레이아웃 유도
 
 enum WGPUPipelineLayoutResolver {
