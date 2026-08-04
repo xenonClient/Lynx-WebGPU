@@ -562,6 +562,9 @@ class GPURenderCommandsBase extends GPUPassEncoderBase {
    * `vertexCount, instanceCount, firstVertex, firstInstance`.
    * 버퍼는 `GPUBufferUsage.INDIRECT`로 만들고, `indirectOffset`은 4의 배수여야 한다.
    *
+   * `firstInstance`가 0이 아니면 `indirect-first-instance` 기능이 필요하다. 이 구현은 그 기능을
+   * 항상 보고하지만, 브라우저에서는 **요청하지 않으면 드로우가 통째로 no-op**이 된다.
+   *
    * @param {GPUBuffer} indirectBuffer
    * @param {number} [indirectOffset]
    * @returns {void}
@@ -579,6 +582,9 @@ class GPURenderCommandsBase extends GPUPassEncoderBase {
    * `indexCount, instanceCount, firstIndex, baseVertex(부호 있는 i32), firstInstance`.
    * `firstIndex`는 인자 버퍼 안에 있으므로 `setIndexBuffer(buffer, format, offset)`의
    * 오프셋과 **더해지지 않고 따로** 적용된다.
+   *
+   * `firstInstance`가 0이 아니면 `indirect-first-instance` 기능이 필요하다. 이 구현은 그 기능을
+   * 항상 보고하지만, 브라우저에서는 **요청하지 않으면 드로우가 통째로 no-op**이 된다.
    *
    * @param {GPUBuffer} indirectBuffer
    * @param {number} [indirectOffset]

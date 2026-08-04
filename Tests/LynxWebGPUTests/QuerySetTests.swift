@@ -235,6 +235,8 @@ final class QuerySetTests: XCTestCase {
             features.contains("timestamp-query"), harness.supports(.timestampQuery),
             "JS가 만들기 전에 물어볼 수 있어야 한다"
         )
+        // Metal은 간접 드로우 인자의 firstInstance를 그대로 존중하므로 기기와 무관하게 참이다.
+        XCTAssertTrue(features.contains("indirect-first-instance"), "\(features)")
     }
 
     // MARK: - 계약

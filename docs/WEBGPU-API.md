@@ -391,6 +391,12 @@ pass.drawIndirect(args, 0)
 - `indirectOffset`은 **4의 배수**여야 하고, 인자 크기만큼이 버퍼 안에 들어가야 한다.
 - `drawIndexedIndirect`의 `firstIndex`는 인자 버퍼 안에 있으므로,
   `setIndexBuffer(buffer, format, offset)`의 오프셋과 **더해지지 않고 따로** 적용된다.
+- **`firstInstance`를 0이 아닌 값으로 쓰려면 `indirect-first-instance` 기능이 필요하다.**
+  이 구현은 Metal이 `baseInstance`를 그대로 존중하므로 그 기능을 항상 보고한다
+  (`adapter.features.has('indirect-first-instance')` → `true`). 하지만 브라우저에서는
+  기능을 **요청하지 않으면 그 드로우가 통째로 no-op**이 되므로, 옮길 코드라면
+  `requiredFeatures`에 넣어 두거나 `firstInstance`를 0으로 둘 것. 인자 값이 GPU 버퍼 안에
+  있어 인코딩 시점에는 검사할 수 없다 — 실패가 "아무것도 안 그려짐"으로만 나타난다.
 
 ## 7. 오류 처리
 

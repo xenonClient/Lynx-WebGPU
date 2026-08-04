@@ -194,6 +194,12 @@ public final class LynxWebGPUContext {
            device.counterSets?.contains(where: { $0.name == MTLCommonCounterSet.timestamp.rawValue }) == true {
             result.append("timestamp-query")
         }
+        // 간접 드로우 인자의 `firstInstance`를 존중하는가. 명세는 이것을 선택 기능으로 두고,
+        // 기능이 없으면 non-zero인 드로우를 **통째로 no-op**으로 만든다. Metal은 인자 배치가
+        // WebGPU와 같아 `baseInstance`를 그대로 존중하므로, 여기서는 항상 "기능이 활성된
+        // 어댑터"와 같은 자리에 선다. 인자 값이 GPU 버퍼 안에 있어 인코딩 시점에 검사할 수
+        // 없으므로, 이 기능을 알리는 것이 앱에 상황을 전달하는 유일한 수단이다.
+        result.append("indirect-first-instance")
         return result
     }
 
