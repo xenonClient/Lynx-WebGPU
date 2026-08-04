@@ -6,7 +6,9 @@ Lynx 앱 안의 **이미지 에디터·필터**지 3D 렌더러가 아니다. �
 
 | 순서 | 기능 | 규모 | 효과 |
 |---|---|---|---|
-| 1 | 이미지 처리 경로 다듬기 | 소~중 | limits 노출 · 색공간 · 큰 이미지 업로드 |
+| 1 | 웹 라이브러리 이식 갭 메우기 (§1) | 소 | Three.js가 밟는 명세 표면 — 몇 줄로 경로가 열린다 |
+| 2 | 이미지 처리 경로 다듬기 | 소~중 | limits 노출 · 색공간 · 큰 이미지 업로드 |
+| 3 | 트랜스파일러 코퍼스 잔여 3건 (§2) | 소~중 | 외부 셰이더 통과율 89% → 그 위 |
 | — | 압축 텍스처 (ASTC · ETC2 · BC) | 대 | **보류** — 편집 파이프라인에 끼울 수 없다 (아래) |
 
 ### 이미 된 것
@@ -24,8 +26,49 @@ Lynx 앱 안의 **이미지 에디터·필터**지 3D 렌더러가 아니다. �
 | 버퍼 매핑 상태 (`mapAsync` ~ `unmap`) | `CommandInterpreterTests`. 매핑 중 큐 작업 거부 — 리드백 경쟁을 없앤다 |
 
 공통 절차는 `.claude/skills/webgpu-command/SKILL.md`(새 op 추가)와
-`.claude/skills/wgsl-feature/SKILL.md`(셰이더 문법 — 아래 항목은 해당 없음)를 따른다.
-**트랜스파일러를 건드리지 않으므로** 외부 코퍼스 재측정(`docs/TESTING.md` §7)은 불필요하다.
+`.claude/skills/wgsl-feature/SKILL.md`(셰이더 문법 — §2만 해당)를 따른다.
+§1은 **트랜스파일러를 건드리지 않으므로** 외부 코퍼스 재측정(`docs/TESTING.md` §7)이 불필요하다.
+
+---
+
+## 1. 웹 라이브러리 이식 갭
+
+Three.js `WebGPURenderer`를 실제로 올려 보며(데모 `three` 씬) 드러난 것들이다. 검증 방식은
+그 씬의 체크리스트를 따른다 — **렌더 타깃에 그리고 픽셀 값을 단언**하므로 "도는 것 같다"가
+아니라 값으로 확인된다.
+
+| 항목 | 규모 | 왜 필요한가 |
+|---|---|---|
+| `createRenderPipelineAsync` / `createComputePipelineAsync` | 소 | three가 비동기 컴파일 경로에서 부른다. 없으면 그 경로에서 TypeError |
+| `device.onuncapturederror` | 소 | three가 대입만 하고 우리는 무시한다 → `renderer.onError` 콜백이 죽어 있다 |
+| `requestAnimationFrame` 심 | 소 | 지금은 데모 씬 안에 있다. three를 쓰는 번들마다 복사해야 하므로 shim의 선택적 헬퍼로 올린다 |
+| 상위 기능 검증 (섀도맵 · 밉맵 · 인스턴싱 · 포스트프로세싱 · TSL 컴퓨트) | 중 | 체크리스트에 행을 늘려 가며 하나씩. 각각이 다른 경로(비교 샘플러 · 자체 컴퓨트 파이프라인 · 인스턴스 버퍼)를 밟는다 |
+| 실기기 확인 | — | 지금까지 전부 시뮬레이터다. `three` 체크리스트와 `hdr` EDR(시뮬레이터로는 원리적으로 불가)은 기기에서 한 번 봐야 한다 |
+
+### 이미 메운 것 (참고)
+
+| 갭 | 어떻게 |
+|---|---|
+| `device.features` / `device.lost` | 명세대로 노출. `features`는 요청한 것만, `lost`는 영원히 pending |
+| `self` · `performance` · `navigator` · `GPU*` 전역 | shim이 `lynx*` 전역을 얹고 번들러 `define`이 bare 식별자를 잇는다 (`docs/JS-AUTHORING.md` §10) |
+| 프레임 중간 제출이 드로어블을 present하던 문제 | `execute({present})` — `popErrorScope`·`mapAsync`는 내부 제출로 표시 |
+| 커맨드 인자가 기록 뒤 변이되던 문제 | `Recorder.push`가 기록 시점 값으로 고정 (three가 디스크립터를 `reset()`한다) |
+| WGSL 전역 섀도잉 오역 | 사용 분석이 스코프를 따른다 (기계 생성 셰이더의 일상 패턴) |
+
+---
+
+## 2. 트랜스파일러 코퍼스 잔여 3건
+
+`webgpu-samples` 67개 중 60개 통과(89%). 남은 3건은 성격이 다르다:
+
+| 파일 | 증상 | 성격 |
+|---|---|---|
+| `cornell/rasterizer.wgsl` | `use of undeclared identifier 'common_uniforms'` | **버그일 가능성이 높다** — 사용 분석이 놓치는 자리가 있다. 섀도잉과 같은 계열일 수 있어 1순위 |
+| `cornell/tonemapper.wgsl` | 파싱 실패 (line 5, 포맷 자리의 `{`) | 파서 갭 — 문법 하나 |
+| `skinnedMesh/gltf.wgsl` | 진입점 매개변수 타입을 못 찾음 | **설계 결정 사안** — 다른 파일의 구조체를 참조하는 크로스 모듈 셰이더다. 지원할지부터 정해야 한다 |
+
+고치면 `docs/TESTING.md` §7의 통과율을 **반드시 다시 잰다** (로컬만 통과하고 코퍼스가 내려간
+변경이 실제로 있었다).
 
 ---
 
