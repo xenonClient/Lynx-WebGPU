@@ -114,6 +114,7 @@ device.queue.writeBuffer(buffer, 0, float32Array)      // writeBuffer
 
 // (3) 읽기 — GPU 완료를 기다리므로 비동기. 다 읽었으면 unmap()
 const bytes = await staging.mapAsync(GPUMapMode.READ)  // readBuffer (콜백형 네이티브 호출)
+const part  = staging.getMappedRange(8, 16)            // 부분만 (offset 8의 배수, size 4의 배수)
 staging.unmap()
 ```
 
@@ -136,6 +137,15 @@ texture.dimension · format · usage · textureBindingViewDimension
   Metal은 `.storageModeShared` 하나로 전부 되지만, 안 막으면 브라우저에서만 깨진다.
 - 그래서 계산 결과를 읽는 정석은 **2단**이다 — 결과 버퍼(`STORAGE|COPY_SRC`)를
   `copyBufferToBuffer`로 스테이징 버퍼(`COPY_DST|MAP_READ`)에 옮기고 그쪽을 매핑한다.
+
+> **`getMappedRange`가 돌려주는 것은 사본이다.** JS에서는 `ArrayBuffer`가 다른 `ArrayBuffer`의
+> 일부를 가리킬 수 없어, 구간을 복사해 주고 `unmap()`에서 되돌려 쓴다 — 쓴 내용은 사라지지
+> 않지만 **반환된 버퍼는 `unmap()` 전까지만** 의미가 있다 (브라우저에서 detach되는 시점과 같다).
+> 전체 구간을 처음 요청하면 복사 없이 매핑 자체를 준다. 구간끼리 **겹칠 수 없고**, `offset`은
+> 8의 배수·`size`는 4의 배수여야 한다 (명세 규칙, `OperationError`).
+>
+> 정렬 요구는 **명시한 값에만** 적용한다 — 매핑 크기가 곧 네이티브 버퍼 크기라 3바이트짜리도
+> 정상인데, 생략한 `size`까지 4의 배수를 요구하면 그런 버퍼를 아예 못 읽는다.
 
 > **매핑 중인 버퍼는 큐 작업에 쓸 수 없다.** `mapAsync`는 명세대로 버퍼를 "unavailable"로
 > 만들고, `unmap()`을 부를 때까지 쓰기·복사·resolve·드로우 바인딩을 전부 거부한다.

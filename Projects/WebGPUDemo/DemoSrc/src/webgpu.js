@@ -246,7 +246,20 @@ function makeGPUError(payload) {
  * @param {WGPUError} error
  * @returns {Error & {reason: string}}
  */
-function makePipelineError(error) {
+/**
+ * 명세가 `OperationError`로 던지라고 정한 자리 (`getMappedRange`의 인자 검증 등).
+ *
+ * 이름을 맞추는 것이 요점이다 — 웹 코드가 `error.name`으로 갈라 잡는다.
+ */
+class OperationError extends Error {
+  /** @param {string} message */
+  constructor(message) {
+    super(message);
+    this.name = 'OperationError';
+  }
+}
+
+function makePipelineError(/** @type {WGPUError} */ error) {
   const failure = /** @type {Error & {reason: string}} */ (
     new Error(`${error.path ? error.path + ' — ' : ''}${error.message}`)
   );
@@ -502,6 +515,11 @@ class GPUBuffer extends GPUObjectBase {
     this._mappedAtCreation = false;
     /** `mapAsync`가 아직 결과를 기다리는 중인가 (명세의 `"pending"` 상태). */
     this._mapPending = false;
+    /**
+     * `getMappedRange()`로 내준 구간들 — 겹침 검사와 `unmap()`의 되돌려 쓰기에 쓴다.
+     * @type {{offset: number, length: number, view: ArrayBuffer | null}[]}
+     */
+    this._mappedRanges = [];
   }
 
   /**
@@ -518,11 +536,71 @@ class GPUBuffer extends GPUObjectBase {
   }
 
   /** `mappedAtCreation: true`로 만든 버퍼의 초기 데이터 영역. */
-  getMappedRange() {
+  /**
+   * 매핑된 구간을 `ArrayBuffer`로 얻는다 (`mappedAtCreation` 또는 `mapAsync` 이후).
+   *
+   * **JS에서는 `ArrayBuffer`가 다른 `ArrayBuffer`의 일부를 가리킬 수 없다.** 브라우저는
+   * 매핑 메모리를 그대로 가리키는 뷰를 주지만, 여기서는 그럴 수 없어 구간을 복사해 주고
+   * `unmap()`에서 **되돌려 쓴다.** 그래서 쓴 내용이 사라지지 않는다 — 단, 반환된 버퍼는
+   * `unmap()` **전까지만** 의미가 있다 (브라우저에서 detach되는 것과 같은 시점이다).
+   *
+   * 전체 구간을 처음 요청하면 복사 없이 매핑 자체를 돌려준다 — `mappedAtCreation`으로
+   * 큰 정점 버퍼를 채우는 흔한 경로에서 복사를 한 번 아낀다.
+   *
+   * 명세 규칙: `offset`은 8의 배수, `size`는 4의 배수, 구간끼리 **겹칠 수 없다**.
+   *
+   * @param {number} [offset] 바이트 오프셋 (8의 배수)
+   * @param {number} [size] 바이트 수 (4의 배수). 생략하면 끝까지
+   * @returns {ArrayBuffer}
+   */
+  getMappedRange(offset, size) {
     if (!this._mapped) {
       throw new Error('getMappedRange는 mappedAtCreation 또는 mapAsync 이후에만 쓸 수 있다');
     }
-    return this._mapped;
+    const total = this._mapped.byteLength;
+    const start = offset || 0;
+    const length = size === undefined ? Math.max(0, total - start) : size;
+
+    if (start % 8 !== 0) {
+      throw new OperationError(`getMappedRange: offset은 8의 배수여야 한다 (받은 값 ${start})`);
+    }
+    // 정렬 검사는 **명시한 값에만** 적용한다. 브라우저의 매핑은 항상 4의 배수지만
+    // 여기서는 매핑 크기가 곧 네이티브 버퍼 크기라 3바이트짜리도 정상이다 —
+    // 생략했을 때(=매핑 전체)까지 4의 배수를 요구하면 그런 버퍼를 아예 못 읽는다.
+    if (size !== undefined && length % 4 !== 0) {
+      throw new OperationError(`getMappedRange: size는 4의 배수여야 한다 (받은 값 ${length})`);
+    }
+    if (start < 0 || start + length > total) {
+      throw new OperationError(
+        `getMappedRange 범위가 매핑을 넘는다 — offset ${start} + ${length}B > ${total}B`
+      );
+    }
+    for (const range of this._mappedRanges) {
+      if (start < range.offset + range.length && range.offset < start + length) {
+        throw new OperationError(
+          `getMappedRange 구간이 앞서 얻은 구간과 겹친다 (${range.offset}~${range.offset + range.length})`
+        );
+      }
+    }
+
+    // 전체를 처음 요청하면 매핑 자체를 준다 — 되돌려 쓸 것이 없다.
+    if (start === 0 && length === total && this._mappedRanges.length === 0) {
+      this._mappedRanges.push({ offset: 0, length, view: null });
+      return this._mapped;
+    }
+    const view = this._mapped.slice(start, start + length);
+    this._mappedRanges.push({ offset: start, length, view });
+    return view;
+  }
+
+  /** 구간 사본에 쓴 내용을 매핑으로 되돌린다 (`unmap` 직전). */
+  _flushMappedRanges() {
+    if (!this._mapped) return;
+    for (const range of this._mappedRanges) {
+      if (!range.view) continue;
+      new Uint8Array(this._mapped).set(new Uint8Array(range.view), range.offset);
+    }
+    this._mappedRanges = [];
   }
 
   /**
@@ -536,6 +614,8 @@ class GPUBuffer extends GPUObjectBase {
    */
   unmap() {
     if (!this._mapped) return;
+    // 구간 사본에 쓴 내용을 매핑으로 되돌린 뒤에 보낸다 — 안 하면 조용히 사라진다.
+    this._flushMappedRanges();
     if (this._mappedAtCreation) {
       this._recorder.push({
         op: 'createBuffer',
@@ -582,6 +662,8 @@ class GPUBuffer extends GPUObjectBase {
     const mapped = result.data;
     this._mapped = mapped;
     this._mappedAtCreation = false;
+    // 새 매핑이므로 앞선 매핑의 구간 기록은 버린다 (겹침 검사가 헛돌지 않게).
+    this._mappedRanges = [];
     return mapped;
   }
 }

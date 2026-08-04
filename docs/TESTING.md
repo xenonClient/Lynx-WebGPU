@@ -31,7 +31,7 @@ JS 클라이언트(shim) 테스트 — 의존성 없이 node 내장 러너로 �
 `NativeModules.WebGPU`를 목으로 바꿔 커맨드 페이로드·왕복 횟수를 단언한다:
 
 ```zsh
-cd JS && npm test            # NODE_OPTIONS=--expose-gc node --test 'tests/*.test.mjs' — 94개
+cd JS && npm test            # NODE_OPTIONS=--expose-gc node --test 'tests/*.test.mjs' — 101개
 cd JS && npm run typecheck   # JSDoc 기준 타입 검사
 ```
 
@@ -178,7 +178,7 @@ try XCTSkipUnless(harness.supports(.timestampQuery), "타임스탬프 카운터�
 - 비동기 경로(`readBuffer`)는 `XCTestExpectation`으로 검증한다.
 - 테스트 더블은 손으로 만든다 (모킹 라이브러리 없음).
 
-## 6. 커버리지 대상 (Swift 249개 + JS 94개)
+## 6. 커버리지 대상 (Swift 249개 + JS 101개)
 
 | 영역 | 파일 | 주요 케이스 |
 |---|---|---|
@@ -188,7 +188,7 @@ try XCTSkipUnless(harness.supports(.timestampQuery), "타임스탬프 카운터�
 | 픽셀 되읽기 해석 | `WGPUPixelReadbackTests` | half→float(서브노멀·Inf·NaN), **1.0 초과·음수 보존**, BGRA 순서, 없는 채널 기본값, 행 패딩, 팩된/정수 포맷 거부 |
 | JS↔Swift 상수 | `JSConstantParityTests` | `JS/webgpu.js`의 사용 플래그·스테이지·컬러마스크가 Swift OptionSet과 같은 값인지 |
 | in-flight 프레임 | `SurfaceInFlightTests` | 카운터 계약(3에서 포화·완료로 해제), 컨텍스트 집계, 해석기 커밋/완료 통지(표면당 1회), CAMetalLayer 헤드리스 왕복 |
-| JS 클라이언트 | `JS/tests` (node:test) | **바이너리 경로(ArrayBuffer 타입·뷰 오프셋 반영·불필요한 복사 없음·양방향)**, 캔버스 크기 캐시(프레임당 왕복 1회·리사이즈 반영), GC 자동 해제(중복 방지·프레임 스코프 제외), objects 전달, **짝 없는 pop의 `OperationError` reject**, **알 수 없는 filter의 동기 `TypeError`**, **브리지 호출 실패 시 대기 스코프 정리**, **번들 `finish()` 재호출 거부·리소스 retain**, **`device.features`(요청한 것만·미지원 요구 거부)·영원히 pending인 `device.lost`**, **flush의 `present` 표시(submit=프레임 / popErrorScope·mapAsync=내부)**, **기록 시점 스냅샷(호출 뒤 copySize·origin·clearValue 재사용/리셋이 스트림에 안 샘)**, **비동기 파이프라인 생성(스코프 두 겹을 한 배치에·`GPUPipelineError` reason 매핑·실패 핸들 회수)**, **`uncapturederror`(GPUError 하위 클래스 매핑·`onError`와 병행·리스너 예외 격리·스코프에 잡힌 오류는 제외)**, **명세 읽기 전용 속성**(GPUTexture 7종·기본값·`textureBindingViewDimension` 유도, `GPUBuffer.mapState` 3상태), **`installAnimationFrame`(틱 경계·예약 비면 링크 해제·기존 rAF 미침범)**, **`copyBufferToBuffer` 오버로드 4형태·`clearBuffer` 인자 전달**, **디버그 마커가 인코더 4종에 다 있는지**(클래스 계층이 갈려 한쪽만 넣기 쉽다), **`getCompilationInfo`(먼저 flush·실패해도 안 던짐)** |
+| JS 클라이언트 | `JS/tests` (node:test) | **바이너리 경로(ArrayBuffer 타입·뷰 오프셋 반영·불필요한 복사 없음·양방향)**, 캔버스 크기 캐시(프레임당 왕복 1회·리사이즈 반영), GC 자동 해제(중복 방지·프레임 스코프 제외), objects 전달, **짝 없는 pop의 `OperationError` reject**, **알 수 없는 filter의 동기 `TypeError`**, **브리지 호출 실패 시 대기 스코프 정리**, **번들 `finish()` 재호출 거부·리소스 retain**, **`device.features`(요청한 것만·미지원 요구 거부)·영원히 pending인 `device.lost`**, **flush의 `present` 표시(submit=프레임 / popErrorScope·mapAsync=내부)**, **기록 시점 스냅샷(호출 뒤 copySize·origin·clearValue 재사용/리셋이 스트림에 안 샘)**, **비동기 파이프라인 생성(스코프 두 겹을 한 배치에·`GPUPipelineError` reason 매핑·실패 핸들 회수)**, **`uncapturederror`(GPUError 하위 클래스 매핑·`onError`와 병행·리스너 예외 격리·스코프에 잡힌 오류는 제외)**, **명세 읽기 전용 속성**(GPUTexture 7종·기본값·`textureBindingViewDimension` 유도, `GPUBuffer.mapState` 3상태), **`installAnimationFrame`(틱 경계·예약 비면 링크 해제·기존 rAF 미침범)**, **`copyBufferToBuffer` 오버로드 4형태·`clearBuffer` 인자 전달**, **디버그 마커가 인코더 4종에 다 있는지**(클래스 계층이 갈려 한쪽만 넣기 쉽다), **`getCompilationInfo`(먼저 flush·실패해도 안 던짐)**, **`getMappedRange` 부분 매핑**(오프셋·쓴 내용 되돌리기·정렬/겹침/범위 거부·4의 배수 아닌 매핑 전체 읽기) |
 | WGSL 트랜스파일 | `WGSLTranspilerTests` | 삼각형(정점속성+유니폼+헬퍼), 리소스 스레딩, 리플렉션, vec3 배치, 컴퓨트/스토리지, 텍스처/샘플러/스토리지텍스처, 제어흐름, workgroup 변수, 오류 보고, 바인딩 배정, **MSL 예약어 맹글링**, **부동소수 `%`**, **벡터 성분 추론**, **추상 정수 벡터(문맥으로 굳는 `vec3(1)`)**, **파이프라인 상수**, **확장 선언**, **`arrayLength()` 크기 표**, **외부 텍스처**, **함수 지역 `const` 배열 크기**, **전역 섀도잉**(가려진 전역은 주입 안 함 — 매개변수·지역·전이 전달, 주입과 겹친 지역 선언 리네임, 중첩 블록 복원), **도달 가능성**(안 부르는 함수 미방출·전이적 도달·진입점별로 다름) |
 | 외부 코퍼스 | `SampleCorpusTests` | 공식 webgpu-samples 셰이더 통과율 리포트 (§7, 기본 스킵) |
 | GPU 렌더 | `RenderPipelineTests` | 삼각형, 유니폼, 인덱스 드로우, 알파 블렌딩, 컴퓨트+readback, 텍스처 샘플링, **`arrayLength()`가 바인딩된 크기를 돌려주는지**, **가장자리 클램프 샘플링**, 깊이 테스트, **rgba16float 표면이 SDR 범위 밖 값을 보존하는지**, **전역 섀도잉의 스코프 해석이 런타임 값까지 옳은지** |

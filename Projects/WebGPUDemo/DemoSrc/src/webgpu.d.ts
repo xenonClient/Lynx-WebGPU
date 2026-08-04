@@ -307,6 +307,15 @@ declare class GPUBuffer extends GPUObjectBase {
     /** `mapAsync`가 아직 결과를 기다리는 중인가 (명세의 `"pending"` 상태). */
     _mapPending: boolean;
     /**
+     * `getMappedRange()`로 내준 구간들 — 겹침 검사와 `unmap()`의 되돌려 쓰기에 쓴다.
+     * @type {{offset: number, length: number, view: ArrayBuffer | null}[]}
+     */
+    _mappedRanges: {
+        offset: number;
+        length: number;
+        view: ArrayBuffer | null;
+    }[];
+    /**
      * @param {GPUDevice} device
      * @param {number} id
      * @param {GPUBufferDescriptor} descriptor
@@ -322,7 +331,26 @@ declare class GPUBuffer extends GPUObjectBase {
      */
     get mapState(): 'unmapped' | 'pending' | 'mapped';
     /** `mappedAtCreation: true`로 만든 버퍼의 초기 데이터 영역. */
-    getMappedRange(): ArrayBuffer;
+    /**
+     * 매핑된 구간을 `ArrayBuffer`로 얻는다 (`mappedAtCreation` 또는 `mapAsync` 이후).
+     *
+     * **JS에서는 `ArrayBuffer`가 다른 `ArrayBuffer`의 일부를 가리킬 수 없다.** 브라우저는
+     * 매핑 메모리를 그대로 가리키는 뷰를 주지만, 여기서는 그럴 수 없어 구간을 복사해 주고
+     * `unmap()`에서 **되돌려 쓴다.** 그래서 쓴 내용이 사라지지 않는다 — 단, 반환된 버퍼는
+     * `unmap()` **전까지만** 의미가 있다 (브라우저에서 detach되는 것과 같은 시점이다).
+     *
+     * 전체 구간을 처음 요청하면 복사 없이 매핑 자체를 돌려준다 — `mappedAtCreation`으로
+     * 큰 정점 버퍼를 채우는 흔한 경로에서 복사를 한 번 아낀다.
+     *
+     * 명세 규칙: `offset`은 8의 배수, `size`는 4의 배수, 구간끼리 **겹칠 수 없다**.
+     *
+     * @param {number} [offset] 바이트 오프셋 (8의 배수)
+     * @param {number} [size] 바이트 수 (4의 배수). 생략하면 끝까지
+     * @returns {ArrayBuffer}
+     */
+    getMappedRange(offset?: number, size?: number): ArrayBuffer;
+    /** 구간 사본에 쓴 내용을 매핑으로 되돌린다 (`unmap` 직전). */
+    _flushMappedRanges(): void;
     /**
      * 매핑을 푼다.
      *
