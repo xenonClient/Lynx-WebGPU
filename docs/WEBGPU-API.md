@@ -325,11 +325,22 @@ encoder.copyBufferToTexture({ buffer, bytesPerRow }, { texture }, { width, heigh
 encoder.copyTextureToTexture({ texture: a }, { texture: b }, { width, height })
 encoder.clearBuffer(buffer, offset, size)                    // clearBuffer — 0으로 채운다
 
+// 디버그 마커 — 커맨드 인코더와 패스·번들 인코더 모두에 있다
+encoder.pushDebugGroup('프레임')                              // pushDebugGroup
+pass.insertDebugMarker('그림자 직전')                          // insertDebugMarker
+encoder.popDebugGroup()                                      // popDebugGroup
+
 device.queue.submit([encoder.finish()])   // ← 여기서 한 번에 네이티브로 넘어간다
 ```
 
 - `beginRenderPass`는 멀티샘플 `resolveTarget`을 지원한다 (store op이 `multisampleResolve`로 바뀐다).
 - 복사 명령은 패스 **밖에서만** 쓸 수 있다.
+- **디버그 마커는 Xcode GPU 캡처에 구간 이름으로 뜬다** (Metal `pushDebugGroup`/`insertDebugSignpost`).
+  없으면 캡처가 이름 없는 드로우 나열이라 어느 패스가 무엇인지 알 수 없다. 스코프는 두 층이다 —
+  **패스 안**에서 열면 그 패스 구간, **패스 밖**에서 열면 프레임 구간이다 (`writeBuffer`·복사가
+  속으로 여는 blit 인코더는 스코프가 아니다 — 그것까지 세면 프레임 구간이 거기서 닫히려 한다).
+  `push`와 `pop`의 짝이 맞지 않거나 연 채로 패스가 끝나면 **Metal이 단언으로 프로세스를 죽이므로**,
+  네이티브가 깊이를 세어 막고 validation 오류로 알린다 (닫아 주고 계속 간다).
 - `clearBuffer`는 `writeBuffer`로 0 배열을 미는 것과 결과가 같지만 **CPU에서 그 배열을 만들어
   브리지로 실어 보내지 않는다.** 큰 스토리지 버퍼를 프레임마다 초기화할 때 차이가 크다.
   `offset`·`size`는 4의 배수여야 하고 버퍼는 `COPY_DST`여야 한다 (명세 규칙). `size` 생략 시 끝까지.

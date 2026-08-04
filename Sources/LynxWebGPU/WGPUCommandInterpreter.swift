@@ -24,6 +24,9 @@ final class WGPUCommandInterpreter {
     private var renderEncoder: MTLRenderCommandEncoder?
     private var computeEncoder: MTLComputeCommandEncoder?
     private var blitEncoder: MTLBlitCommandEncoder?
+    /// 현재 인코더 / 커맨드 버퍼에서 연 디버그 그룹 수 — 짝이 안 맞으면 Metal이 단언으로 죽는다.
+    private var encoderDebugDepth = 0
+    private var bufferDebugDepth = 0
     private var currentRenderPipeline: WGPURenderPipelineObject?
     private var currentComputePipeline: WGPUComputePipelineObject?
     private var boundGroups: [Int: (group: WGPUBindGroupObject, offsets: [Int])] = [:]
@@ -203,6 +206,8 @@ final class WGPUCommandInterpreter {
         renderEncoder = nil
         computeEncoder = nil
         blitEncoder = nil
+        encoderDebugDepth = 0
+        bufferDebugDepth = 0
         currentRenderPipeline = nil
         currentComputePipeline = nil
         boundGroups.removeAll()
@@ -233,6 +238,16 @@ final class WGPUCommandInterpreter {
     /// 생성(pop 즉시 flush)이 정확히 이 경로를 밟았다.
     private func finish(present: Bool) {
         endActiveEncoders()
+        // 커맨드 버퍼에 연 그룹도 커밋 전에 닫는다 (인코더와 같은 이유 — Metal이 단언으로 죽는다).
+        if let commandBuffer, bufferDebugDepth > 0 {
+            record(.validation(
+                "디버그 그룹 \(bufferDebugDepth)개가 열린 채로 제출됐다 (popDebugGroup을 빠뜨렸다)"
+            ))
+            while bufferDebugDepth > 0 {
+                commandBuffer.popDebugGroup()
+                bufferDebugDepth -= 1
+            }
+        }
         if let commandBuffer {
             if present {
                 for acquired in acquiredDrawables {
@@ -342,6 +357,8 @@ final class WGPUCommandInterpreter {
             passDepthReadOnly = false
             passStencilReadOnly = false
         }
+        // 디버그 그룹이 열린 채 인코더를 닫으면 Metal이 단언으로 죽는다 — 닫아 주고 오류로 알린다.
+        if let encoder = debugScope { closeDanglingDebugGroups(on: encoder) }
         renderEncoder?.endEncoding()
         renderEncoder = nil
         computeEncoder?.endEncoding()
@@ -440,6 +457,11 @@ final class WGPUCommandInterpreter {
         // 복사
         case "copyBufferToBuffer": try copyBufferToBuffer(command)
         case "clearBuffer": try clearBuffer(command)
+
+        // 디버그 마커
+        case "pushDebugGroup": try pushDebugGroup(command)
+        case "popDebugGroup": popDebugGroup()
+        case "insertDebugMarker": try insertDebugMarker(command)
         case "copyTextureToBuffer": try copyTextureToBuffer(command)
         case "copyBufferToTexture": try copyBufferToTexture(command)
         case "copyTextureToTexture": try copyTextureToTexture(command)
@@ -1460,6 +1482,80 @@ final class WGPUCommandInterpreter {
             to: destination.buffer, destinationOffset: command.int("destinationOffset", default: 0),
             size: size
         )
+    }
+
+    // MARK: - 디버그 마커
+
+    /// 디버그 그룹·마커를 받을 대상 — **사용자 패스**가 열려 있으면 그 인코더, 아니면 커맨드 버퍼.
+    ///
+    /// 여기서 blit 인코더를 빼는 것이 핵심이다. blit은 `writeBuffer`·복사가 **속으로** 여닫는
+    /// 내부 인코더라, 사용자가 보기엔 "패스 밖"이다. 그걸 스코프로 삼으면 프레임 단위로 연 그룹이
+    /// blit 인코더에서 닫히려 하고, Metal이 요구하는 "인코더마다 짝 맞추기"가 깨진다
+    /// (실제로 `pushDebugGroup` → `writeBuffer` → `popDebugGroup` 순서가 그렇게 어긋났다).
+    ///
+    /// 그래서 스코프는 두 층이다 — 패스 안 구간(렌더/컴퓨트 인코더)과 프레임 구간(커맨드 버퍼).
+    private var debugScope: MTLCommandEncoder? {
+        renderEncoder ?? computeEncoder
+    }
+
+    private func pushDebugGroup(_ command: WGPUValueReader) throws {
+        let label = try command.requiredString("groupLabel")
+        if let encoder = debugScope {
+            encoder.pushDebugGroup(label)
+            encoderDebugDepth += 1
+        } else {
+            // 프레임 구간 — 아직 커맨드 버퍼가 없으면 만든다. 그래야 뒤따르는 pop과 짝이 맞는다.
+            try activeCommandBuffer().pushDebugGroup(label)
+            bufferDebugDepth += 1
+        }
+    }
+
+    /// 짝이 맞지 않는 `pop`은 **Metal이 단언으로 프로세스를 죽인다.** 그래서 깊이를 세어
+    /// 여기서 막는다 — 명세도 이 경우를 오류로 정하므로 동작이 같고, 앱은 살아남는다.
+    private func popDebugGroup() {
+        if let encoder = debugScope {
+            guard encoderDebugDepth > 0 else {
+                record(.validation("popDebugGroup: 짝이 맞는 pushDebugGroup이 없다 (패스 안)"))
+                return
+            }
+            encoderDebugDepth -= 1
+            encoder.popDebugGroup()
+        } else if let commandBuffer {
+            guard bufferDebugDepth > 0 else {
+                record(.validation("popDebugGroup: 짝이 맞는 pushDebugGroup이 없다"))
+                return
+            }
+            bufferDebugDepth -= 1
+            commandBuffer.popDebugGroup()
+        }
+    }
+
+    /// 인코더를 닫기 전에 열려 있는 디버그 그룹을 정리한다.
+    ///
+    /// Metal은 그룹이 열린 채 인코더가 끝나도 단언으로 죽는다. 명세는 "패스가 끝날 때
+    /// 디버그 스택이 비어 있어야 한다"고 정하므로, **오류로 알리되 닫아 주고 계속 간다** —
+    /// 여기서 프로세스가 죽으면 진단할 기회조차 없다.
+    private func closeDanglingDebugGroups(on encoder: MTLCommandEncoder) {
+        guard encoderDebugDepth > 0 else { return }
+        record(.validation(
+            "디버그 그룹 \(encoderDebugDepth)개가 열린 채로 패스가 끝났다 (popDebugGroup을 빠뜨렸다)"
+        ))
+        while encoderDebugDepth > 0 {
+            encoder.popDebugGroup()
+            encoderDebugDepth -= 1
+        }
+    }
+
+    private func insertDebugMarker(_ command: WGPUValueReader) throws {
+        let label = try command.requiredString("markerLabel")
+        // 인코더에는 signpost(점 이벤트)가 있다. 커맨드 버퍼에는 그룹밖에 없어 여닫아 흉내 낸다.
+        if let encoder = debugScope {
+            encoder.insertDebugSignpost(label)
+        } else {
+            let buffer = try activeCommandBuffer()
+            buffer.pushDebugGroup(label)
+            buffer.popDebugGroup()
+        }
     }
 
     /// `clearBuffer` — 버퍼의 한 구간을 0으로 채운다.

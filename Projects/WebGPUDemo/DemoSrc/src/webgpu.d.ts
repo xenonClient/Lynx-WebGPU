@@ -436,6 +436,27 @@ declare class GPUPassEncoderBase {
      */
     _retain(resource: object): void;
     /**
+     * 디버그 그룹을 연다 — **Xcode GPU 캡처에 구간 이름이 그대로 뜬다** (Metal `pushDebugGroup`).
+     *
+     * 없으면 캡처가 이름 없는 드로우 나열이 되어 어느 패스가 무엇인지 알 수 없다. 성능을 볼 때
+     * 가장 먼저 아쉬워지는 부분이라, 프레임 구조를 잡을 때 미리 넣어 두는 편이 낫다.
+     *
+     * `popDebugGroup()`과 **반드시 짝을 맞출 것.** 짝이 안 맞으면 네이티브가 validation 오류로
+     * 알려 준다 (Metal은 그 상황에서 단언으로 프로세스를 죽이므로 거기서 막는다).
+     *
+     * @param {string} groupLabel
+     * @returns {void}
+     */
+    pushDebugGroup(groupLabel: string): void;
+    /** @returns {void} */
+    popDebugGroup(): void;
+    /**
+     * 한 지점에 표식을 남긴다 (Metal `insertDebugSignpost`) — 구간이 아니라 점 이벤트다.
+     * @param {string} markerLabel
+     * @returns {void}
+     */
+    insertDebugMarker(markerLabel: string): void;
+    /**
      * @param {GPURenderPipeline | GPUComputePipeline} pipeline
      * @returns {void}
      */
@@ -732,6 +753,27 @@ declare class GPUCommandEncoder {
     } & Record<string, any>, destination: {
         texture: GPUTexture;
     } & Record<string, any>, copySize: GPUExtent3D): void;
+    /**
+     * 디버그 그룹을 연다 — **Xcode GPU 캡처에 구간 이름이 그대로 뜬다** (Metal `pushDebugGroup`).
+     *
+     * 없으면 캡처가 이름 없는 드로우 나열이 되어 어느 패스가 무엇인지 알 수 없다. 성능을 볼 때
+     * 가장 먼저 아쉬워지는 부분이라, 프레임 구조를 잡을 때 미리 넣어 두는 편이 낫다.
+     *
+     * `popDebugGroup()`과 **반드시 짝을 맞출 것.** 짝이 안 맞으면 네이티브가 validation 오류로
+     * 알려 준다 (Metal은 그 상황에서 단언으로 프로세스를 죽이므로 거기서 막는다).
+     *
+     * @param {string} groupLabel
+     * @returns {void}
+     */
+    pushDebugGroup(groupLabel: string): void;
+    /** @returns {void} */
+    popDebugGroup(): void;
+    /**
+     * 한 지점에 표식을 남긴다 (Metal `insertDebugSignpost`) — 구간이 아니라 점 이벤트다.
+     * @param {string} markerLabel
+     * @returns {void}
+     */
+    insertDebugMarker(markerLabel: string): void;
     /** @returns {GPUCommandBuffer} */
     finish(): GPUCommandBuffer;
 }

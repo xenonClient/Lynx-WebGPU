@@ -399,6 +399,72 @@ final class CommandInterpreterTests: XCTestCase {
         )
     }
 
+    // MARK: - 디버그 마커
+
+    /// 패스 안팎 모두에서 받아야 한다 — Xcode GPU 캡처의 구간 이름이 여기서 나온다.
+    func test_디버그_마커를_패스_안팎에서_받는다() {
+        let result = harness.execute([
+            ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
+            ["op": "createBuffer", "id": 1, "size": 16, "usage": TestUsage.copyDst],
+            // 패스 밖 — 커맨드 버퍼에 붙는다. writeBuffer가 blit 인코더를 연다.
+            ["op": "pushDebugGroup", "groupLabel": "업로드"],
+            ["op": "writeBuffer", "buffer": 1, "data": [Float](repeating: 1, count: 4).base64],
+            ["op": "insertDebugMarker", "markerLabel": "표식"],
+            ["op": "popDebugGroup"],
+            // 패스 안 — 렌더 인코더에 붙는다.
+            ["op": "getCurrentTexture", "id": 10, "canvas": "test"],
+            ["op": "createTextureView", "id": 11, "texture": 10],
+            ["op": "beginRenderPass", "colorAttachments": [[
+                "view": 11, "loadOp": "clear", "storeOp": "store",
+                "clearValue": ["r": 0, "g": 0, "b": 0, "a": 1],
+            ]]],
+            ["op": "pushDebugGroup", "groupLabel": "메인 패스"],
+            ["op": "insertDebugMarker", "markerLabel": "드로우 직전"],
+            ["op": "popDebugGroup"],
+            ["op": "endPass"],
+        ])
+
+        XCTAssertEqual(result["ok"] as? Bool, true, harness.describeErrors(result))
+    }
+
+    /// 짝이 맞지 않는 `pop`은 **Metal이 단언으로 프로세스를 죽인다.** 깊이를 세어 막고
+    /// validation 오류로 알린다 — 여기서 죽으면 진단할 기회조차 없다.
+    func test_짝이_없는_popDebugGroup은_프로세스를_죽이지_않고_오류다() {
+        let result = harness.execute([
+            ["op": "createBuffer", "id": 1, "size": 16, "usage": TestUsage.copyDst],
+            ["op": "writeBuffer", "buffer": 1, "data": [Float](repeating: 1, count: 4).base64],
+            ["op": "popDebugGroup"],
+        ])
+
+        XCTAssertEqual(errors(result).first?["kind"] as? String, "validation")
+        XCTAssertTrue(
+            ((errors(result).first?["message"] as? String) ?? "").contains("짝이 맞는"),
+            "\(errors(result))"
+        )
+    }
+
+    /// 열린 채로 패스가 끝나도 Metal이 죽는다 — 닫아 주고 오류로 알린다.
+    func test_열린_채_끝난_디버그_그룹은_닫아_주고_오류로_알린다() {
+        let result = harness.execute([
+            ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
+            ["op": "getCurrentTexture", "id": 10, "canvas": "test"],
+            ["op": "createTextureView", "id": 11, "texture": 10],
+            ["op": "beginRenderPass", "colorAttachments": [[
+                "view": 11, "loadOp": "clear", "storeOp": "store",
+                "clearValue": ["r": 0, "g": 0, "b": 0, "a": 1],
+            ]]],
+            ["op": "pushDebugGroup", "groupLabel": "안 닫음"],
+            ["op": "endPass"],
+        ])
+
+        XCTAssertEqual(errors(result).first?["kind"] as? String, "validation")
+        XCTAssertTrue(
+            ((errors(result).first?["message"] as? String) ?? "").contains("열린 채"),
+            "\(errors(result))"
+        )
+        // 그리고 프로세스가 살아 있다 — 이 단언에 도달한 것 자체가 증거다.
+    }
+
     // MARK: - clearBuffer
 
     /// `writeBuffer`로 0을 밀어 넣는 것과 결과는 같아야 한다 — 다른 것은 브리지를 안 건넌다는 점뿐이다.
