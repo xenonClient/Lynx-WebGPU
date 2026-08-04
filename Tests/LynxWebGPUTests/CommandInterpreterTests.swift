@@ -100,6 +100,39 @@ final class CommandInterpreterTests: XCTestCase {
         XCTAssertEqual(harness.context.liveObjectCount, before)
     }
 
+    /// 프레임의 경계는 **배치가 아니라 present**다.
+    ///
+    /// `popErrorScope`·`mapAsync`는 결과를 받으려고 프레임 중간에 제출한다. 배치가 끝날 때마다
+    /// 프레임 스코프를 닫으면 그 지점에서 스왑체인 핸들이 지워져, 이어지는 `beginRenderPass`가
+    /// "없는 핸들"로 깨진다 — 그 프레임이 통째로 날아간다.
+    func test_프레임_중간에_제출해도_스왑체인_핸들이_살아_있다() {
+        harness.executeExpectingSuccess([
+            ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
+        ])
+        let before = harness.context.liveObjectCount
+
+        // 배치 ①: 드로어블만 얻고 끝난다 (mid-frame flush가 만드는 상황).
+        harness.executeExpectingSuccess([
+            ["op": "getCurrentTexture", "id": 50, "canvas": "test"],
+            ["op": "createTextureView", "id": 51, "texture": 50],
+        ])
+        XCTAssertEqual(
+            harness.context.liveObjectCount, before + 2,
+            "아직 present하지 않았으므로 핸들이 살아 있어야 한다"
+        )
+
+        // 배치 ②: 앞 배치에서 얻은 뷰로 실제로 그린다.
+        harness.executeExpectingSuccess([
+            ["op": "beginRenderPass", "colorAttachments": [[
+                "view": 51, "loadOp": "clear", "storeOp": "store",
+                "clearValue": ["r": 0, "g": 0, "b": 0, "a": 1],
+            ]]],
+            ["op": "endPass"],
+        ])
+
+        XCTAssertEqual(harness.context.liveObjectCount, before, "present했으니 이제 회수된다")
+    }
+
     func test_버퍼_쓰기와_복사와_읽기가_순서대로_동작한다() throws {
         let source: [Float] = [1, 2, 3, 4]
         harness.executeExpectingSuccess([

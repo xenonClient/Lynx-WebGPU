@@ -208,6 +208,7 @@ public final class LynxWebGPUContext {
         executionLock.lock()
         registry.removeAll()
         interpreter.discardErrorScopes()
+        interpreter.discardFrameState()
         executionLock.unlock()
     }
 
