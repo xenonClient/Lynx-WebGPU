@@ -341,7 +341,10 @@ pass.executeBundles([bundle])                    // executeBundles
   다시 해야 한다 (이전 값으로 **복원되는 것이 아니다** — 명세 계약). 뷰포트·시저·블렌드 상수·
   스텐실 참조는 그대로 남는다.
 - `colorFormats`(와 `depthStencilFormat`·`sampleCount`)가 실제 패스와 어긋나면
-  `executeBundles`에서 오류다.
+  `executeBundles`에서 오류다. `colorFormats`의 **후행 `null`은 무시**하고 비교한다
+  (`['bgra8unorm', null]`은 컬러 1개짜리 패스와 맞는다 — 명세의 레이아웃 동치 규칙).
+- 어태치먼트가 **최소 하나** 있어야 한다 — `colorFormats`에 non-null 하나이거나
+  `depthStencilFormat`이거나. 둘 다 없으면 번들을 만들 때 거부한다.
 
 > **이 구현에서 번들이 무엇을 아껴 주나.** 브라우저는 드라이버 명령을 미리 만들어 두지만,
 > 여기서는 Metal에 대응 객체가 없어 명령 목록을 저장했다가 되풀이한다. 그래서 이득은

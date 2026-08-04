@@ -388,6 +388,31 @@ final class StencilTests: XCTestCase {
         }
     }
 
+    /// `GPUStencilValue`는 `u32`이고 WebIDL 변환은 modulo다 — 음수는 wrap될 뿐 트랩하지 않는다.
+    /// 비-truncating 이니셜라이저를 쓰면 이 한 줄로 프로세스가 죽는다.
+    func test_음수_스텐실_참조값이_프로세스를_죽이지_않는다() {
+        harness.executeExpectingSuccess(makeCommonResources() + [
+            ["op": "createTexture", "id": 2, "size": ["width": 64, "height": 64],
+             "format": "stencil8", "usage": TestUsage.renderAttachment],
+            ["op": "createTextureView", "id": 3, "texture": 2],
+            pipeline(id: 6, stencil: bothFaces(["compare": "always", "passOp": "replace"])),
+        ] + acquireDrawable + [
+            [
+                "op": "beginRenderPass",
+                "colorAttachments": [[
+                    "view": 21, "loadOp": "clear", "storeOp": "store",
+                    "clearValue": ["r": 0, "g": 0, "b": 1, "a": 1],
+                ]],
+                "depthStencilAttachment": [
+                    "view": 3,
+                    "stencilClearValue": -1, "stencilLoadOp": "clear", "stencilStoreOp": "store",
+                ],
+            ],
+            ["op": "setStencilReference", "reference": -1],
+            ["op": "endPass"],
+        ])
+    }
+
     /// 반대로 스텐실 상태를 주지 않으면 깊이 전용 포맷도 그대로 통과해야 한다.
     func test_스텐실_상태가_기본값이면_깊이_전용_포맷이_통과한다() {
         harness.executeExpectingSuccess(makeCommonResources() + [

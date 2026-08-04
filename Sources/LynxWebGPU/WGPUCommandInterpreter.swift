@@ -317,8 +317,11 @@ final class WGPUCommandInterpreter {
         case "setViewport": try setViewport(command)
         case "setScissorRect": try setScissorRect(command)
         case "setBlendConstant": try setBlendConstant(command)
+        // `truncatingIfNeeded`는 WebIDL의 `u32` 변환(modulo)과 같은 동작이다. 비-truncating
+        // 이니셜라이저를 쓰면 `setStencilReference(-1)` 한 줄로 Swift 런타임이 트랩한다 —
+        // "잘못된 인자로 프로세스를 죽이지 않는다"는 이 라이브러리의 계약(WGPUError.swift)에 어긋난다.
         case "setStencilReference": try requireRenderEncoder()
-            .setStencilReferenceValue(UInt32(command.int("reference", default: 0)))
+            .setStencilReferenceValue(UInt32(truncatingIfNeeded: command.int("reference", default: 0)))
         case "draw": try draw(command)
         case "drawIndexed": try drawIndexed(command)
         case "drawIndirect": try drawIndirect(command)
@@ -640,7 +643,7 @@ final class WGPUCommandInterpreter {
                 target.texture = view.texture
                 target.loadAction = WGPUMetalMapping.loadAction(depth.stencilLoadOp ?? .load)
                 target.storeAction = WGPUMetalMapping.storeAction(depth.stencilStoreOp ?? .store)
-                target.clearStencil = UInt32(depth.stencilClearValue)
+                target.clearStencil = UInt32(truncatingIfNeeded: depth.stencilClearValue)
             }
         }
 

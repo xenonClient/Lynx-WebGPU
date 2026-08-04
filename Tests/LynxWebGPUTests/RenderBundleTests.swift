@@ -283,6 +283,38 @@ final class RenderBundleTests: XCTestCase {
         )
     }
 
+    /// 명세의 레이아웃 동치 비교는 **후행 null을 무시한다.** 자르지 않으면 유효한 조합이 거부된다.
+    func test_번들_colorFormats의_후행_null은_무시한다() {
+        let result = harness.execute(setUpResources() + [
+            ["op": "createRenderBundle", "id": 10,
+             // JS가 `null`을 실어 보내면 브리지에서 NSNull로 도착한다.
+             "colorFormats": ["rgba8unorm", NSNull()] as [Any],
+             "commands": fullScreenDraw(bindGroup: 6)],
+        ] + acquireDrawable + [
+            beginPass,   // 컬러 어태치먼트 1개
+            ["op": "executeBundles", "bundles": [10]],
+            ["op": "endPass"],
+        ])
+
+        XCTAssertEqual(result["ok"] as? Bool, true, harness.describeErrors(result))
+    }
+
+    /// 어태치먼트가 하나도 없는 번들은 **만들 때** 거부한다.
+    /// 지금도 결국 `makeRenderCommandEncoder`가 실패하지만, 그러면 오류가 엉뚱한 자리에서 난다.
+    func test_어태치먼트가_없는_번들은_만들_때_거부한다() {
+        let result = harness.execute([
+            ["op": "createRenderBundle", "id": 10, "colorFormats": [String?](),
+             "commands": [[String: Any]]()],
+        ])
+
+        XCTAssertEqual(errors(result).first?["kind"] as? String, "validation")
+        XCTAssertTrue(
+            ((errors(result).first?["message"] as? String) ?? "").contains("어태치먼트"),
+            harness.describeErrors(result)
+        )
+        XCTAssertEqual(harness.context.liveObjectCount, 0, "거부한 번들이 등록되면 안 된다")
+    }
+
     func test_번들의_깊이_포맷이_패스와_다르면_거부한다() {
         let result = harness.execute(setUpResources() + [
             ["op": "createRenderBundle", "id": 10, "colorFormats": ["rgba8unorm"],

@@ -311,13 +311,16 @@ public final class WGPURenderBundleObject {
     /// (파이프라인이 패스와 맞기만 하면 그냥 그려진다). 여기서 막지 않으면 브라우저에서만
     /// 깨지는 코드가 나간다.
     func checkCompatibility(color: [WGPUTextureFormat], depthStencil: WGPUTextureFormat?, sampleCount: Int) throws {
-        guard descriptor.colorFormats.count == color.count else {
+        // 명세의 "render pass layout equals"는 **후행 null을 무시하고** colorFormats를 비교한다.
+        // 자르지 않으면 `['bgra8unorm', null]` 번들이 컬러 1개짜리 패스에서 오탐으로 거부된다.
+        let bundleFormats = Self.trimmingTrailingNulls(descriptor.colorFormats)
+        guard bundleFormats.count == color.count else {
             throw WGPUError.validation(
-                "번들의 컬러 어태치먼트 수(\(descriptor.colorFormats.count))가 "
+                "번들의 컬러 어태치먼트 수(\(bundleFormats.count))가 "
                     + "패스(\(color.count))와 다르다"
             )
         }
-        for (index, expected) in descriptor.colorFormats.enumerated() where expected != color[index] {
+        for (index, expected) in bundleFormats.enumerated() where expected != color[index] {
             throw WGPUError.validation(
                 "번들의 colorFormats[\(index)]가 패스와 다르다 — "
                     + "번들 \(expected?.rawValue ?? "null"), 패스 \(color[index].rawValue)"
@@ -335,6 +338,13 @@ public final class WGPURenderBundleObject {
                 "번들의 sampleCount(\(descriptor.sampleCount))가 패스(\(sampleCount))와 다르다"
             )
         }
+    }
+
+    /// 후행 `null` 슬롯을 잘라낸다 — 명세의 레이아웃 동치 비교가 이것들을 무시한다.
+    private static func trimmingTrailingNulls(_ formats: [WGPUTextureFormat?]) -> [WGPUTextureFormat?] {
+        var trimmed = formats
+        while let last = trimmed.last, last == nil { trimmed.removeLast() }
+        return trimmed
     }
 }
 

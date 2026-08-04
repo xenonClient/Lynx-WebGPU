@@ -282,11 +282,16 @@ public struct WGPUBindGroupEntry {
         binding = try reader.requiredInt("binding")
         let resourceReader = try reader.requiredObject("resource")
         if let buffer = resourceReader.optionalHandle("buffer") {
-            resource = .buffer(
-                handle: buffer,
-                offset: resourceReader.int("offset", default: 0),
-                size: resourceReader.optionalInt("size")
-            )
+            let offset = resourceReader.int("offset", default: 0)
+            let size = resourceReader.optionalInt("size")
+            // 음수가 들어오면 `arrayLength()`용 크기 표를 채울 때 UInt32 변환이 트랩한다 —
+            // 잘못된 인자로 프로세스를 죽이지 않는다는 계약을 지키려면 여기서 거른다.
+            guard offset >= 0, size.map({ $0 > 0 }) ?? true else {
+                throw WGPUError.validation(
+                    "바인딩의 offset은 0 이상, size는 1 이상이어야 한다", path: resourceReader.path
+                )
+            }
+            resource = .buffer(handle: buffer, offset: offset, size: size)
         } else if let sampler = resourceReader.optionalHandle("sampler") {
             resource = .sampler(sampler)
         } else if let view = resourceReader.optionalHandle("textureView") {
@@ -723,6 +728,15 @@ public struct WGPURenderBundleDescriptor {
         depthStencilFormat = try reader.optionalEnum("depthStencilFormat", WGPUTextureFormat.self)
         sampleCount = reader.int("sampleCount", default: 1)
         label = reader.optionalString("label")
+        // 명세는 어태치먼트가 최소 하나 있기를 요구한다. 없으면 이 구현에서도 결국
+        // `makeRenderCommandEncoder`가 실패하지만, 오류가 몇 프레임 뒤 엉뚱한 자리에서 난다.
+        guard colorFormats.contains(where: { $0 != nil }) || depthStencilFormat != nil else {
+            throw WGPUError.validation(
+                "번들에는 어태치먼트가 최소 하나 있어야 한다 "
+                    + "(colorFormats에 non-null 하나 또는 depthStencilFormat)",
+                path: reader.path
+            )
+        }
     }
 }
 
