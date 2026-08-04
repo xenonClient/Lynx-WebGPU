@@ -9,7 +9,8 @@
     "sync": "npm run build && cp dist/*.lynx.bundle ../Resources/"
   },
   "dependencies": {
-    "@lynx-js/react": "^0.122.1"
+    "@lynx-js/react": "^0.122.1",
+    "three": "^0.185.1"
   },
   "devDependencies": {
     "@lynx-js/react-rsbuild-plugin": "^0.17.2",

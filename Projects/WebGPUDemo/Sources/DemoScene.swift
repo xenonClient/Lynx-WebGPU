@@ -24,6 +24,7 @@ enum DemoScene: String, CaseIterable {
     case bench
     case hdr
     case scrollpass
+    case three
 
     /// 화면 전체를 덮어 띄울 씬 — 네비게이션 컨트롤러가 아니라 **모달로 표시**한다.
     ///
@@ -53,6 +54,7 @@ enum DemoScene: String, CaseIterable {
         case .bench: return "브리지 비용 측정"
         case .hdr: return "HDR 게인맵 재구성"
         case .scrollpass: return "스크롤 통과"
+        case .three: return "three.js 렌더러"
         }
     }
 
@@ -78,6 +80,7 @@ enum DemoScene: String, CaseIterable {
         case .bench: return "base64 문자열 vs ArrayBuffer — 인코딩·제출 비용 비교"
         case .hdr: return "loadAsset + 게인맵 컴퓨트 → rgba16float 중간 텍스처 → 톤매핑"
         case .scrollpass: return "<scroll-view> 위 캔버스 — passthrough-touches 히트 테스트 검증"
+        case .three: return "WebGPURenderer 부트스트랩 전체 + 노드 셰이더 + 커맨드 스트림 덤프"
         }
     }
 }

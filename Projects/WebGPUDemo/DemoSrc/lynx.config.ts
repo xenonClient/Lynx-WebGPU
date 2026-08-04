@@ -25,6 +25,7 @@ export default defineConfig({
       bench: './src/bench/index.tsx',
       hdr: './src/hdr/index.tsx',
       scrollpass: './src/scrollpass/index.tsx',
+      three: './src/three/index.tsx',
     },
     // PrimJS에는 self/performance/navigator 같은 웹 전역이 없고, `globalThis.X = …` 대입은
     // bare 식별자 해석에 반영되지 않는다. 그래서 웹 라이브러리(Three.js 등)가 쓰는 이름을
