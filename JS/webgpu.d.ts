@@ -180,6 +180,8 @@ declare class Recorder {
     /** @returns {number} 새 핸들 id */
     allocate(): number;
     /**
+     * 명령을 **기록 시점 값으로 고정해** 쌓는다 (`snapshotValue` 참고) — 디바이스/큐 op은
+     * 여기가 곧 호출 시점이라, 호출 뒤 디스크립터 재사용이 스트림을 오염시키지 못한다.
      * @param {GPUCommand} command
      * @returns {GPUCommand}
      */

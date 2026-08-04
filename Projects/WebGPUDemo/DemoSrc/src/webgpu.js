@@ -197,6 +197,34 @@ const ERROR_FILTERS = ['validation', 'out-of-memory', 'internal'];
 // 커맨드 레코더
 // ---------------------------------------------------------------------------
 
+/**
+ * 커맨드에 실을 값의 **기록 시점 스냅샷**.
+ *
+ * 브라우저 WebGPU는 호출 시점에 인자를 직렬화한다 — 호출 뒤에 디스크립터 객체를 재사용하거나
+ * 리셋해도 이미 기록된 명령은 변하지 않는다. 이 shim은 flush까지 명령을 들고 있으므로, 참조를
+ * 그대로 실으면 그 사이의 변이가 스트림에 새어 든다. three.js가 싱글턴 디스크립터를 인코딩 직후
+ * `reset()`하는 패턴이 정확히 이 경우다 — `copySize`가 flush 전에 0이 되어 **폭 0짜리 복사가
+ * 오류 없이** 나가고, 텍스처 업로드도 같은 식으로 조용히 사라진다.
+ *
+ * `ArrayBuffer`(전송 페이로드 — shim이 이미 복사해 만든다)와 TypedArray는 그대로 둔다.
+ *
+ * @param {any} value
+ * @returns {any}
+ */
+function snapshotValue(value) {
+  if (!value || typeof value !== 'object' || value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
+    return value;
+  }
+  if (Array.isArray(value)) return value.map(snapshotValue);
+  /** @type {Record<string, any>} */
+  const out = {};
+  for (const key in value) {
+    const entry = /** @type {Record<string, any>} */ (value)[key];
+    if (typeof entry !== 'function') out[key] = snapshotValue(entry);
+  }
+  return out;
+}
+
 class Recorder {
   constructor() {
     /** @type {GPUCommand[]} */
@@ -218,12 +246,15 @@ class Recorder {
   }
 
   /**
+   * 명령을 **기록 시점 값으로 고정해** 쌓는다 (`snapshotValue` 참고) — 디바이스/큐 op은
+   * 여기가 곧 호출 시점이라, 호출 뒤 디스크립터 재사용이 스트림을 오염시키지 못한다.
    * @param {GPUCommand} command
    * @returns {GPUCommand}
    */
   push(command) {
-    this.pending.push(command);
-    return command;
+    const frozen = snapshotValue(command);
+    this.pending.push(frozen);
+    return frozen;
   }
 
   /**
@@ -904,7 +935,8 @@ class GPUCommandEncoder {
         resolveTarget: attachment.resolveTarget ? attachment.resolveTarget.id : undefined,
         loadOp: attachment.loadOp || 'clear',
         storeOp: attachment.storeOp || 'store',
-        clearValue: attachment.clearValue,
+        // 호출자가 clearValue 객체를 프레임마다 재사용해도(three.js 패턴) 기록이 안 변하게.
+        clearValue: snapshotValue(attachment.clearValue),
       })
     );
     /** @type {GPUCommand} */
@@ -982,11 +1014,13 @@ class GPUCommandEncoder {
    * @returns {void}
    */
   copyTextureToBuffer(source, destination, copySize) {
+    // 인코더 명령은 submit까지 대기한다 — 그 사이 호출자가 디스크립터를 재사용/리셋해도
+    // 기록이 변하지 않도록 여기서 값으로 고정한다 (snapshotValue 참고, 아래 복사 계열 공통).
     this._commands.push({
       op: 'copyTextureToBuffer',
-      source: { ...source, texture: source.texture.id },
-      destination: { ...destination, buffer: destination.buffer.id },
-      copySize,
+      source: snapshotValue({ ...source, texture: source.texture.id }),
+      destination: snapshotValue({ ...destination, buffer: destination.buffer.id }),
+      copySize: snapshotValue(copySize),
     });
   }
 
@@ -999,9 +1033,9 @@ class GPUCommandEncoder {
   copyBufferToTexture(source, destination, copySize) {
     this._commands.push({
       op: 'copyBufferToTexture',
-      source: { ...source, buffer: source.buffer.id },
-      destination: { ...destination, texture: destination.texture.id },
-      copySize,
+      source: snapshotValue({ ...source, buffer: source.buffer.id }),
+      destination: snapshotValue({ ...destination, texture: destination.texture.id }),
+      copySize: snapshotValue(copySize),
     });
   }
 
@@ -1014,9 +1048,9 @@ class GPUCommandEncoder {
   copyTextureToTexture(source, destination, copySize) {
     this._commands.push({
       op: 'copyTextureToTexture',
-      source: { ...source, texture: source.texture.id },
-      destination: { ...destination, texture: destination.texture.id },
-      copySize,
+      source: snapshotValue({ ...source, texture: source.texture.id }),
+      destination: snapshotValue({ ...destination, texture: destination.texture.id }),
+      copySize: snapshotValue(copySize),
     });
   }
 
