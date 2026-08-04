@@ -218,6 +218,24 @@ const compute = device.createComputePipeline({                // createComputePi
 - 정점 버퍼 슬롯은 **최대 8개**, `arrayStride: 0`은 미지원.
 - 컴퓨트 워크그룹 크기는 WGSL의 `@workgroup_size`에서 리플렉션으로 가져온다 (MSL 모듈은 (1,1,1)).
 
+### 비동기 생성 — 실패를 그 자리에서 안다
+
+```js
+try {
+  const pipeline = await device.createRenderPipelineAsync(descriptor)   // createComputePipelineAsync 도 같다
+} catch (error) {
+  // error.name === 'GPUPipelineError', error.reason === 'validation' | 'internal'
+  console.error(error.message)     // 경로 + 사유 (셰이더 실패면 생성된 MSL까지)
+}
+```
+
+동기 판은 명령만 기록하므로 실패가 **다음 `submit()`의 오류 배열로 늦게** 온다. 비동기 판은
+생성을 오류 스코프로 감싸 즉시 제출하고 결과로 Promise를 푼다 — 명세대로 **오류를 디바이스로
+보내지 않고**(전역 `onError`에 안 뜬다) `GPUPipelineError`로 거부한다. `reason`은 셰이더
+번역·컴파일 실패면 `'internal'`, 그 밖은 `'validation'`이다.
+
+대가는 왕복 하나다. 프레임 루프가 아니라 **초기화 경로에서** 쓸 것 (§5의 `popErrorScope`와 같은 이유).
+
 ### 스텐실 상태
 
 ```js

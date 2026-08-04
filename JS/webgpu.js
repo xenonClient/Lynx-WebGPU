@@ -193,6 +193,25 @@ const canvasSizeCache = new Map();
 /** `pushErrorScope`가 받는 필터 (명세 `GPUErrorFilter` 철자 그대로). */
 const ERROR_FILTERS = ['validation', 'out-of-memory', 'internal'];
 
+/**
+ * `createRenderPipelineAsync` 계열이 거부할 때 쓰는 오류 (명세 `GPUPipelineError`).
+ *
+ * 명세의 `reason`은 `'validation' | 'internal'` 둘뿐이라, 커맨드 오류의 네 종류를 그리로
+ * 접는다 — 셰이더 번역·컴파일 실패(`backend`)가 `internal`이고 나머지는 `validation`이다.
+ * `pushErrorScope` 필터의 대응 관계와 같은 규칙이다.
+ *
+ * @param {WGPUError} error
+ * @returns {Error & {reason: string}}
+ */
+function makePipelineError(error) {
+  const failure = /** @type {Error & {reason: string}} */ (
+    new Error(`${error.path ? error.path + ' — ' : ''}${error.message}`)
+  );
+  failure.name = 'GPUPipelineError';
+  failure.reason = error.kind === 'backend' ? 'internal' : 'validation';
+  return failure;
+}
+
 // ---------------------------------------------------------------------------
 // 커맨드 레코더
 // ---------------------------------------------------------------------------
@@ -298,6 +317,23 @@ class Recorder {
     }
     if (result.ok === false) this.report(result.errors || []);
     return result;
+  }
+
+  /**
+   * `popErrorScope` 명령을 쌓고 결과 Promise를 돌려준다 — **flush하지 않는다.**
+   *
+   * 스코프 여러 개를 한 배치에 닫을 때 쓴다 (비동기 파이프라인 생성이 그렇다).
+   * 네이티브가 pop 순서 그대로 결과를 돌려주므로, 부른 순서가 곧 짝짓는 순서다.
+   *
+   * @returns {Promise<WGPUError | null>}
+   */
+  recordPop() {
+    this.push({ op: 'popErrorScope' });
+    return /** @type {Promise<WGPUError | null>} */ (
+      new Promise((resolve, reject) => {
+        this.pendingErrorScopes.push({ resolve, reject });
+      })
+    );
   }
 
   /**
@@ -1199,12 +1235,7 @@ class GPUDevice {
    * @returns {Promise<WGPUError | null>}
    */
   popErrorScope() {
-    this._recorder.push({ op: 'popErrorScope' });
-    const promise = /** @type {Promise<WGPUError | null>} */ (
-      new Promise((resolve, reject) => {
-        this._recorder.pendingErrorScopes.push({ resolve, reject });
-      })
-    );
+    const promise = this._recorder.recordPop();
     // 프레임 중간 제출 표시 — 획득해 둔 캔버스 텍스처를 present하지 않는다 (flush 참고).
     this._recorder.flush(false);
     return promise;
@@ -1341,6 +1372,64 @@ class GPUDevice {
       compute: { ...descriptor.compute, module: descriptor.compute.module.id },
     });
     return new GPUComputePipeline(this, id, descriptor.label);
+  }
+
+  /**
+   * `createRenderPipeline`의 비동기 판 — 실패를 **예외가 아니라 거부로** 알린다.
+   *
+   * 동기 판은 명령만 기록하므로 실패가 다음 `submit()`의 오류 배열로 늦게 온다. 이쪽은
+   * 생성 명령을 오류 스코프로 감싸 즉시 제출하고, 결과를 보고 Promise를 푼다. 그래서
+   * **"이 파이프라인이 쓸 수 있는가"를 그 자리에서 알 수 있다** (셰이더 번역 실패 포함).
+   *
+   * 대가는 왕복 하나다 — 초기화 경로에서 쓰는 것을 전제로 한 API다 (`docs/JS-AUTHORING.md` §5).
+   *
+   * @param {Record<string, any>} descriptor
+   * @returns {Promise<GPURenderPipeline>}
+   */
+  createRenderPipelineAsync(descriptor) {
+    return this._createPipelineAsync(() => this.createRenderPipeline(descriptor));
+  }
+
+  /**
+   * `createComputePipeline`의 비동기 판 (`createRenderPipelineAsync`와 같은 계약).
+   * @param {Record<string, any>} descriptor
+   * @returns {Promise<GPUComputePipeline>}
+   */
+  createComputePipelineAsync(descriptor) {
+    return this._createPipelineAsync(() => this.createComputePipeline(descriptor));
+  }
+
+  /**
+   * 파이프라인 생성을 오류 스코프로 감싸 즉시 제출하고 결과로 Promise를 푼다.
+   *
+   * 스코프가 **두 겹**인 이유: 파이프라인 생성은 두 종류로 실패한다. 디스크립터 문제는
+   * `validation`(+`unsupported`)이고, WGSL→MSL 번역·Metal 컴파일 실패는 `backend`라
+   * `internal` 필터로만 잡힌다. 한 겹만 치면 나머지 절반이 스코프를 빠져나가 전역
+   * 핸들러로 새고, Promise는 성공으로 풀려 **못 쓰는 파이프라인을 손에 쥔다.**
+   *
+   * 두 pop을 한 배치에 실어 왕복은 하나로 유지한다.
+   *
+   * @template {GPURenderPipeline | GPUComputePipeline} T
+   * @param {() => T} record 생성 명령을 기록하고 핸들을 돌려주는 함수
+   * @returns {Promise<T>}
+   */
+  async _createPipelineAsync(record) {
+    this.pushErrorScope('validation');
+    this.pushErrorScope('internal');
+    const pipeline = record();
+    // 안쪽(internal)부터 닫는다 — 네이티브가 pop 순서 그대로 결과를 돌려준다.
+    const internalPromise = this._recorder.recordPop();
+    const validationPromise = this._recorder.recordPop();
+    this._recorder.flush(false);
+
+    const [internalError, validationError] = await Promise.all([internalPromise, validationPromise]);
+    const failure = internalError || validationError;
+    if (failure) {
+      // 쓸 수 없는 핸들을 남기지 않는다 — 네이티브에는 애초에 객체가 없다.
+      pipeline.destroy();
+      throw makePipelineError(failure);
+    }
+    return pipeline;
   }
 
   /** @returns {GPUCommandEncoder} */

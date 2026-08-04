@@ -199,6 +199,15 @@ declare class Recorder {
      */
     flush(present?: boolean): WGPUExecuteResult;
     /**
+     * `popErrorScope` 명령을 쌓고 결과 Promise를 돌려준다 — **flush하지 않는다.**
+     *
+     * 스코프 여러 개를 한 배치에 닫을 때 쓴다 (비동기 파이프라인 생성이 그렇다).
+     * 네이티브가 pop 순서 그대로 결과를 돌려주므로, 부른 순서가 곧 짝짓는 순서다.
+     *
+     * @returns {Promise<WGPUError | null>}
+     */
+    recordPop(): Promise<WGPUError | null>;
+    /**
      * 기다리고 있던 `popErrorScope()` Promise들을 푼다.
      *
      * 네이티브가 인덱스를 밀지 않는다는 계약에 기대므로(pop이 실패해도 자리를 남긴다),
@@ -783,6 +792,40 @@ declare class GPUDevice {
      * @returns {GPUComputePipeline}
      */
     createComputePipeline(descriptor: Record<string, any>): GPUComputePipeline;
+    /**
+     * `createRenderPipeline`의 비동기 판 — 실패를 **예외가 아니라 거부로** 알린다.
+     *
+     * 동기 판은 명령만 기록하므로 실패가 다음 `submit()`의 오류 배열로 늦게 온다. 이쪽은
+     * 생성 명령을 오류 스코프로 감싸 즉시 제출하고, 결과를 보고 Promise를 푼다. 그래서
+     * **"이 파이프라인이 쓸 수 있는가"를 그 자리에서 알 수 있다** (셰이더 번역 실패 포함).
+     *
+     * 대가는 왕복 하나다 — 초기화 경로에서 쓰는 것을 전제로 한 API다 (`docs/JS-AUTHORING.md` §5).
+     *
+     * @param {Record<string, any>} descriptor
+     * @returns {Promise<GPURenderPipeline>}
+     */
+    createRenderPipelineAsync(descriptor: Record<string, any>): Promise<GPURenderPipeline>;
+    /**
+     * `createComputePipeline`의 비동기 판 (`createRenderPipelineAsync`와 같은 계약).
+     * @param {Record<string, any>} descriptor
+     * @returns {Promise<GPUComputePipeline>}
+     */
+    createComputePipelineAsync(descriptor: Record<string, any>): Promise<GPUComputePipeline>;
+    /**
+     * 파이프라인 생성을 오류 스코프로 감싸 즉시 제출하고 결과로 Promise를 푼다.
+     *
+     * 스코프가 **두 겹**인 이유: 파이프라인 생성은 두 종류로 실패한다. 디스크립터 문제는
+     * `validation`(+`unsupported`)이고, WGSL→MSL 번역·Metal 컴파일 실패는 `backend`라
+     * `internal` 필터로만 잡힌다. 한 겹만 치면 나머지 절반이 스코프를 빠져나가 전역
+     * 핸들러로 새고, Promise는 성공으로 풀려 **못 쓰는 파이프라인을 손에 쥔다.**
+     *
+     * 두 pop을 한 배치에 실어 왕복은 하나로 유지한다.
+     *
+     * @template {GPURenderPipeline | GPUComputePipeline} T
+     * @param {() => T} record 생성 명령을 기록하고 핸들을 돌려주는 함수
+     * @returns {Promise<T>}
+     */
+    _createPipelineAsync<T extends GPURenderPipeline | GPUComputePipeline>(record: () => T): Promise<T>;
     /** @returns {GPUCommandEncoder} */
     createCommandEncoder(): GPUCommandEncoder;
     /**
