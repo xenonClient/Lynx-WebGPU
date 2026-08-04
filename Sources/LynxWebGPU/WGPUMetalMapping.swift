@@ -286,3 +286,19 @@ enum WGPUMetalMapping {
         }
     }
 }
+
+/// Metal 기능 집합에서 오는 **기기 능력** — 없는 것을 부르면 Metal이 단언으로 죽는다.
+///
+/// 이 프로젝트의 검증 원칙은 "Metal에 맡길 수 있으면 맡긴다"지만, **단언으로 죽는 것은 예외**다.
+/// 프로세스가 사라지면 진단할 기회조차 없으므로 여기서 미리 걸러 오류로 알린다.
+public enum WGPUDeviceCapability {
+    /// 간접 드로우·디스패치 인자(`drawIndirect` 계열)를 쓸 수 있는가.
+    ///
+    /// Metal 기능 집합표: **Apple family 3 이상** 또는 Mac family 2. iOS 17을 최소로 잡는
+    /// 이 라이브러리에서 실기기는 A12(family 5) 이상이라 **항상 지원**하지만,
+    /// **iOS 시뮬레이터는 family 2로 보고**해서 빠진다 — 지원하지 않는 기기에서 부르면
+    /// `MTLValidateFeatureSupport ... failed assertion`으로 프로세스가 죽는다.
+    public static func supportsIndirectArguments(_ device: MTLDevice) -> Bool {
+        device.supportsFamily(.apple3) || device.supportsFamily(.mac2)
+    }
+}

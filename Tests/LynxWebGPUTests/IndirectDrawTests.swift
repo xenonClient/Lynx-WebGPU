@@ -17,6 +17,8 @@ final class IndirectDrawTests: XCTestCase {
     override func setUpWithError() throws {
         try XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, "Metal 디바이스 없음")
         harness = try XCTUnwrap(RenderHarness.make())
+        // 간접 인자는 Apple family 3 이상이 필요하다 — iOS 시뮬레이터는 family 2라 빠진다.
+        try XCTSkipUnless(harness.supports(.indirectArguments), "간접 인자를 지원하지 않는 기기")
     }
 
     override func tearDown() {

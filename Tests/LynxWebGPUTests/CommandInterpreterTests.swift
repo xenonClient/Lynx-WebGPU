@@ -680,6 +680,47 @@ final class CommandInterpreterTests: XCTestCase {
         )
     }
 
+    /// 기기가 간접 인자를 지원하지 않으면 **프로세스가 죽는 대신 오류**여야 한다.
+    ///
+    /// Metal은 `MTLValidateFeatureSupport … failed assertion`으로 앱을 끝내 버린다 —
+    /// iOS 시뮬레이터(Apple family 2)가 정확히 여기 해당한다. 실기기는 A12(family 5) 이상이라
+    /// 지원하지만, 시뮬레이터에서 개발하다 죽으면 이유를 남기지도 못한다.
+    func test_간접_인자_미지원_기기는_죽지_않고_오류를_낸다() throws {
+        try XCTSkipIf(
+            harness.supports(.indirectArguments),
+            "이 기기는 간접 인자를 지원한다 — 거부 경로는 미지원 기기에서만 볼 수 있다"
+        )
+        let result = harness.execute([
+            ["op": "createBuffer", "id": 1, "size": 32, "usage": TestUsage.indirect],
+            ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
+            ["op": "getCurrentTexture", "id": 2, "canvas": "test"],
+            ["op": "createTextureView", "id": 3, "texture": 2],
+            ["op": "beginRenderPass", "colorAttachments": [[
+                "view": 3, "loadOp": "clear", "storeOp": "store",
+                "clearValue": ["r": 0, "g": 0, "b": 0, "a": 1],
+            ]]],
+            ["op": "drawIndirect", "indirectBuffer": 1],
+            ["op": "endPass"],
+        ])
+
+        XCTAssertEqual(errors(result).first?["kind"] as? String, "unsupported")
+        XCTAssertTrue(
+            ((errors(result).first?["message"] as? String) ?? "").contains("시뮬레이터"),
+            "어디서 왜 안 되는지 알려 줘야 한다: \(errors(result))"
+        )
+    }
+
+    /// 반대 방향 — 지원하는 기기에서는 `indirect-first-instance`를 광고하고, 못 하면 감춘다.
+    /// 있다고 알려 놓고 첫 호출에서 거부하면 확인하고 쓴 앱이 오히려 배신당한다.
+    func test_간접_기능_광고는_기기_능력과_일치한다() throws {
+        let features = try XCTUnwrap(harness.context.adapterInfo()["features"] as? [String])
+        XCTAssertEqual(
+            features.contains("indirect-first-instance"),
+            harness.supports(.indirectArguments),
+            "광고와 실제 능력이 어긋난다"
+        )
+    }
+
     func test_파이프라인없는_간접_드로우는_op이름이_든_메시지로_거부한다() {
         // 한때 이 가드가 `applyDrawState()` 뒤에 있어 도달 불가였다 — 일반형 메시지("draw 전에…")가
         // 대신 나가 사용자가 어느 op이 문제인지 알 수 없었다. op 이름이 실제로 나가는지 못 박는다.

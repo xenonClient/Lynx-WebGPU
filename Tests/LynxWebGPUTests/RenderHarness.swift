@@ -205,6 +205,9 @@ struct RenderHarness {
     enum Capability {
         /// 타임스탬프 쿼리 — 패스 경계에서 GPU 카운터를 샘플링할 수 있는가.
         case timestampQuery
+        /// 간접 드로우·디스패치 인자 — Metal이 Apple family 3 이상을 요구한다.
+        /// **iOS 시뮬레이터는 family 2로 보고해 빠진다** (실기기 A12 이상은 지원한다).
+        case indirectArguments
     }
 
     func supports(_ capability: Capability) -> Bool {
@@ -214,6 +217,8 @@ struct RenderHarness {
             return context.device.counterSets?.contains {
                 $0.name == MTLCommonCounterSet.timestamp.rawValue
             } ?? false
+        case .indirectArguments:
+            return WGPUDeviceCapability.supportsIndirectArguments(context.device)
         }
     }
 

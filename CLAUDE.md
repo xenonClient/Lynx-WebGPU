@@ -17,7 +17,7 @@ Lynx 연동: `docs/LYNX-INTEGRATION.md` · 번들(JS) 작성: `docs/JS-AUTHORING
 ```zsh
 # macOS 개발 루프 — Lynx 없이 엔진/트랜스파일러만 빌드·테스트 (가장 빠르다)
 swift build
-swift test                                   # 252개 테스트, ~4초
+swift test                                   # 254개 테스트, ~4초
 swift test --filter LynxWebGPUShaderTests    # WGSL → MSL 트랜스파일러만
 swift test --filter RenderPipelineTests      # GPU 오프스크린 렌더 검증
 
@@ -168,6 +168,11 @@ git tag -a 0.2.0 -m "0.2.0 — 요약"
 - 데모 앱에 **소스나 리소스 파일을 추가/삭제한 뒤에는 반드시 `mise exec -- tuist generate`** 로 재생성한다.
   소스를 빠뜨리면 "cannot find type in scope"로 깨지고, **번들(.lynx.bundle)을 빠뜨리면 앱이 조용히
   "번들이 없다"를 띄운다** — glob은 생성 시점에 펼쳐진다. 라이브러리 쪽은 SPM이라 재생성이 필요 없다.
+- **iOS 시뮬레이터는 간접 드로우·디스패치를 지원하지 않는다** (Apple GPU family 2로 보고 —
+  Metal은 family 3 이상을 요구). `gpudriven` 씬처럼 `drawIndirect` 계열을 쓰는 경로는
+  시뮬레이터에서 `unsupported` 오류가 나고, **실기기(A12 이상)에서는 정상 동작**한다.
+  막지 않으면 `MTLValidateFeatureSupport … failed assertion`으로 프로세스가 죽는다
+  (`WGPUDeviceCapability.supportsIndirectArguments`가 걸러 준다).
 - **시뮬레이터에는 터치 주입 수단이 없다** (`simctl`에 탭 API가 없고 `osascript` 클릭은 접근성 권한이 필요).
   터치로만 보이는 상태는 런치 인자로 고정해 캡처한다 (`-cardTilt` 참고 — initData로 JS까지 전달된다).
 - **EDR(HDR 출력)은 시뮬레이터에서 확인할 수 없다.** 실기기 디스플레이 기능이라 스크린샷에도

@@ -341,7 +341,11 @@ public final class LynxWebGPUContext {
         // WebGPU와 같아 `baseInstance`를 그대로 존중하므로, 여기서는 항상 "기능이 활성된
         // 어댑터"와 같은 자리에 선다. 인자 값이 GPU 버퍼 안에 있어 인코딩 시점에 검사할 수
         // 없으므로, 이 기능을 알리는 것이 앱에 상황을 전달하는 유일한 수단이다.
-        result.append("indirect-first-instance")
+        // 기기가 간접 인자 자체를 못 하면 이 기능도 광고하지 않는다 — 시뮬레이터가 그렇다.
+        // 있다고 알려 놓고 첫 호출에서 거부하면, 확인하고 쓴 앱이 오히려 배신당한다.
+        if WGPUDeviceCapability.supportsIndirectArguments(device) {
+            result.append("indirect-first-instance")
+        }
         return result
     }
 

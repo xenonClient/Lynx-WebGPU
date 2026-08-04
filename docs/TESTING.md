@@ -20,7 +20,7 @@ GPU 코드는 "돌려 보고 눈으로 확인"에 기대기 쉽다. 이 저장�
 ## 2. 실행
 
 ```zsh
-swift test                                      # 전체 (252개, 약 4초)
+swift test                                      # 전체 (254개, 약 4초)
 swift test --filter LynxWebGPUCoreTests         # 디스크립터/핸들
 swift test --filter LynxWebGPUShaderTests       # 트랜스파일러 (+ Metal 컴파일 검증)
 swift test --filter LynxWebGPUTests             # GPU 렌더 + 해석기
@@ -167,6 +167,7 @@ let values = try harness.readBufferSync(handle: 3, as: Float.self, size: 32)
 
 ```swift
 try XCTSkipUnless(harness.supports(.timestampQuery), "타임스탬프 카운터를 지원하지 않는 기기")
+try XCTSkipUnless(harness.supports(.indirectArguments), "간접 인자를 지원하지 않는 기기")
 ```
 
 ## 5. 컨벤션
@@ -178,7 +179,7 @@ try XCTSkipUnless(harness.supports(.timestampQuery), "타임스탬프 카운터�
 - 비동기 경로(`readBuffer`)는 `XCTestExpectation`으로 검증한다.
 - 테스트 더블은 손으로 만든다 (모킹 라이브러리 없음).
 
-## 6. 커버리지 대상 (Swift 252개 + JS 104개)
+## 6. 커버리지 대상 (Swift 254개 + JS 104개)
 
 | 영역 | 파일 | 주요 케이스 |
 |---|---|---|
@@ -198,7 +199,7 @@ try XCTSkipUnless(harness.supports(.timestampQuery), "타임스탬프 카운터�
 | 하네스 자신 | `RenderHarnessTests` | **동치성 단언이 다름을 실제로 잡는지**(§4-2), 동기 리드백의 실패 보고 |
 | Metal 매핑 | `MetalMappingTests` | 스텐실 연산·비교 함수 **전수**(CaseIterable), 네 연산이 제 슬롯에 들어가는지, 마스크, **모든 텍스처 포맷의 Metal 대응**(케이스를 늘리고 매핑을 빠뜨리면 걸린다)·팩된 32비트 픽셀 크기. GPU 불필요 |
 | 스텐실 | `StencilTests` | 마스킹(안/밖) + **같은 영역의 시저와 프레임 전체 비교**, `setStencilReference`가 쓰기와 비교 양쪽에, read/writeMask, `depthFailOp`(섀도 볼륨 경로), `stencil8` 단독 포맷 회귀, **스텐실 성분 없는 포맷 + 비기본 상태 거부**, **`depthReadOnly`/`stencilReadOnly` 강제**(읽기만 하는 파이프라인은 통과), **음수 참조값이 프로세스를 죽이지 않는지** |
-| 간접 드로우 | `IndirectDrawTests` | **직접 호출과 프레임 전체 동치성**(인자 칸 순서), `firstVertex`, 인덱스 바인딩 오프셋 + `firstIndex` 이중 적용 회귀, 간접 디스패치, **컴퓨트가 인자를 쓰는 GPU-driven 경로** |
+| 간접 드로우 | `IndirectDrawTests` (미지원 기기 skip) | **직접 호출과 프레임 전체 동치성**(인자 칸 순서), `firstVertex`, 인덱스 바인딩 오프셋 + `firstIndex` 이중 적용 회귀, 간접 디스패치, **컴퓨트가 인자를 쓰는 GPU-driven 경로** |
 | 오류 스코프 | `ErrorScopeTests` | 가로채기(전역으로 안 샘), 필터 매칭, 중첩에서 안쪽 우선 + 안 맞으면 바깥으로, **배치를 넘는 수명**, 처음 잡힌 하나만, **짝 없는 pop은 오류 대신 reject 상태**(인덱스도 안 민다), **필터를 못 읽어도 스택 깊이 유지**, reset, **두 겹(validation+internal)이 파이프라인의 두 실패를 모두 가져가는지** — 비동기 생성이 기대는 계약 |
 | 렌더 번들 | `RenderBundleTests` | **직접 인코딩과 프레임 전체 동치성**, 재사용(두 프레임 연속), 실행 순서, **상태 격리 양방향**(파이프라인·바인드 그룹·정점 버퍼 셋 다), **실행 중 오류가 나도 격리가 성립하는지**, 포맷·어태치먼트 수 불일치, **후행 `null` 무시**, **어태치먼트 최소 하나**, **깊이 전용 MSAA 패스의 `sampleCount`**, **`depthReadOnly` 패스에는 readOnly 번들만**, 번들에 금지된 명령, **하나만 비호환이어도 앞의 호환 번들까지 미실행**, **디버그 마커는 담을 수 있다**(명세가 `GPUDebugCommandsMixin`을 포함한다 — 빠뜨리면 마커 하나로 번들 전체가 거부된다) |
 | 쿼리셋 | `QuerySetTests` | occlusion은 **값 단언**(전체 통과 = 64×64, 완전히 잘린 드로우 = 정확히 0), 구간 resolve, 타임스탬프는 **구조만**(길이·단조·초기값 아님, 절대 시간 임계 금지), 기기 지원과 `adapter.features` 일치, 중첩·범위·usage·256 정렬 계약, **개수 상한(4096)**, **`timestampWrites` 인덱스 최소 하나·중복 금지**, **occlusion 미종료·인덱스 재사용 거부** |

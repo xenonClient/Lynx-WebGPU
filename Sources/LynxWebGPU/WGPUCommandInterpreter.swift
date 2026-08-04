@@ -1361,6 +1361,16 @@ final class WGPUCommandInterpreter {
         _ command: WGPUValueReader,
         argumentSize: Int
     ) throws -> (buffer: MTLBuffer, offset: Int) {
+        // 기기가 간접 인자를 지원하지 않으면 **여기서 막는다.** 그대로 Metal에 넘기면
+        // `MTLValidateFeatureSupport ... failed assertion`으로 프로세스가 죽어, 앱은
+        // 이유를 남기지도 못한다. 세 간접 op이 모두 이 함수를 지나므로 한 자리로 충분하다.
+        guard WGPUDeviceCapability.supportsIndirectArguments(device) else {
+            throw WGPUError.unsupported(
+                "이 기기는 간접 드로우·디스패치 인자를 지원하지 않는다 (Metal이 Apple GPU family 3 "
+                    + "이상을 요구한다). **iOS 시뮬레이터가 여기 해당한다** — 실기기(A12 이상)에서는 "
+                    + "동작하므로, 직접 드로우로 대체하거나 실기기에서 확인할 것"
+            )
+        }
         let object = try unmappedBuffer(command, field: "indirectBuffer")
         let offset = command.int("indirectOffset", default: 0)
         guard offset >= 0, offset % 4 == 0 else {

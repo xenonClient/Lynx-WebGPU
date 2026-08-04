@@ -632,7 +632,8 @@ if (error) fallBackToSimplePipeline()
 | 기능 | 조건 |
 |---|---|
 | 타임스탬프 쿼리 | `adapter.features.has('timestamp-query')`. **컴퓨트 패스 쪽 값은 신뢰할 수 없다** (§6) |
-| 간접 드로우의 `firstInstance ≠ 0` | 여기서는 항상 되고 `adapter.features`에도 `indirect-first-instance`로 보고된다. **브라우저에서는 기능을 요청해야** 한다 (§6) |
+| **간접 드로우·디스패치 자체** | Metal이 **Apple GPU family 3 이상**을 요구한다. 실기기는 iOS 17 최소 사양(A12 = family 5)이라 **항상 지원**하지만, **iOS 시뮬레이터는 family 2로 보고해 빠진다.** 지원하지 않으면 `unsupported` 오류로 거부하고 `adapter.features`의 `indirect-first-instance`도 감춘다 — 그대로 Metal에 넘기면 `MTLValidateFeatureSupport … failed assertion`으로 **프로세스가 죽는다** |
+| 간접 드로우의 `firstInstance ≠ 0` | 지원 기기에서는 항상 되고 `adapter.features`에도 `indirect-first-instance`로 보고된다. **브라우저에서는 기능을 요청해야** 한다 (§6) |
 | 캔버스 EDR 출력 (`toneMapping: 'extended'`) | 실기기 디스플레이 기능 — 시뮬레이터에서는 확인되지 않는다 (§2) |
 
 새 명령을 추가하는 절차는 `.claude/skills/webgpu-command/SKILL.md` 참고.
