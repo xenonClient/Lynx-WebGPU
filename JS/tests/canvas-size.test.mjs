@@ -107,3 +107,25 @@ test('device.destroy가 캐시를 비운다', async () => {
   context.getSize();
   assert.equal(state.canvasInfoCalls, 2, '캐시가 비워졌으므로 다시 동기 조회한다');
 });
+
+test('unconfigure 뒤에는 그릴 수 없고 getConfiguration이 null이다', async () => {
+  installNativeMock();
+  const device = await makeDevice();
+  const context = gpu.getCanvasContext('main');
+
+  assert.equal(context.getConfiguration(), null, '설정 전에는 null이다');
+
+  context.configure({ device, format: 'rgba8unorm' });
+  const configuration = context.getConfiguration();
+  assert.equal(configuration.format, 'rgba8unorm');
+  assert.equal(configuration.device, device);
+
+  context.unconfigure();
+  assert.equal(context.getConfiguration(), null);
+  assert.throws(() => context.getCurrentTexture(), /configure/, '설정을 푼 뒤에는 그릴 수 없다');
+
+  // 다시 설정하면 살아난다 — 포맷을 바꿔 재구성하는 경로가 이것이다.
+  context.configure({ device, format: 'rgba16float' });
+  assert.equal(context.getConfiguration().format, 'rgba16float');
+  assert.doesNotThrow(() => context.getCurrentTexture());
+});

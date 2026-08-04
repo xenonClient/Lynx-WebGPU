@@ -64,12 +64,19 @@ context.configure({ device, format, alphaMode: 'opaque' })   // configureCanvas
 const texture = context.getCurrentTexture()                  // getCurrentTexture
 const view = texture.createView()                            // createTextureView
 const { width, height } = context.getSize()                  // 캐시 (execute 응답으로 갱신)
+
+context.getConfiguration()   // 마지막 설정 (없으면 null)
+context.unconfigure()        // 다시 configure하기 전까지 그릴 수 없다
 ```
 
 - `configure`는 `CAMetalLayer` 설정을 메인 스레드에 **비동기**로 반영한다. `getPreferredCanvasFormat()`
   (= `bgra8unorm`)을 쓰면 엘리먼트 기본값과 같아 첫 프레임부터 일치한다.
 - `getSize()`는 **제출 응답의 `canvases`로 갱신되는 캐시**를 읽는다. 동기 네이티브 조회는
   캐시가 빌 때(= `configure` 직후) 한 번뿐이므로 프레임 안에서 불러도 왕복이 없다.
+- `unconfigure()`는 포맷을 바꿔 재구성하는 코드(HDR 토글 등)가 밟는 자리다. 이후
+  `getCurrentTexture()`는 거부된다. **이미 화면에 나간 프레임을 지우지는 않는다** — 브라우저는
+  캔버스를 투명 검정으로 비우지만, 여기서 그러려면 표면을 클리어해 present해야 하고
+  설정을 푸는 호출이 프레임을 하나 소비하는 편이 더 놀랍다고 봤다.
 - `getCurrentTexture()`가 돌려준 텍스처와 그 뷰는 **그 프레임 안에서만** 유효하다.
 - present는 자동이다 — 배치가 끝날 때 획득한 드로어블이 화면에 올라간다.
 

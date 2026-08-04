@@ -1100,6 +1100,11 @@ declare class GPUCanvasContext {
     /** @type {GPUDevice | null} */
     _device: GPUDevice | null;
     format: string;
+    /**
+     * `getConfiguration()`이 돌려줄 마지막 설정 — 아직 없으면 `null` (명세와 같다).
+     * @type {GPUCanvasConfiguration | null}
+     */
+    _configuration: GPUCanvasConfiguration | null;
     /** @param {string} canvasId `<webgpu-canvas canvas-id="…">` 의 값 */
     constructor(canvasId: string);
     /**
@@ -1107,6 +1112,24 @@ declare class GPUCanvasContext {
      * @returns {void}
      */
     configure(configuration: GPUCanvasConfiguration): void;
+    /**
+     * 설정을 푼다 — 다시 `configure()`하기 전까지 이 컨텍스트로는 그릴 수 없다.
+     *
+     * 포맷을 바꿔 재구성하는 코드(HDR 토글 등)가 밟는 자리다. 이후 `getCurrentTexture()`는
+     * "configure()를 먼저"로 거부한다.
+     *
+     * **이미 화면에 나간 프레임을 지우지는 않는다.** 브라우저는 캔버스를 투명 검정으로
+     * 비우지만, 여기서 그러려면 표면을 한 번 클리어해 present해야 한다 — 설정을 푸는 호출이
+     * 프레임을 하나 소비하는 편이 더 놀랍다고 보고 하지 않는다 (`docs/WEBGPU-API.md` §2).
+     *
+     * @returns {void}
+     */
+    unconfigure(): void;
+    /**
+     * 마지막으로 준 설정 (아직 없거나 `unconfigure()` 뒤면 `null`).
+     * @returns {GPUCanvasConfiguration | null}
+     */
+    getConfiguration(): GPUCanvasConfiguration | null;
     /**
      * 이번 프레임의 스왑체인 텍스처. 프레임이 끝나면 무효해진다 (브라우저와 같은 규칙).
      * @returns {GPUTexture}

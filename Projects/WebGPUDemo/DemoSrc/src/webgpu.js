@@ -1889,6 +1889,11 @@ class GPUCanvasContext {
     /** @type {GPUDevice | null} */
     this._device = null;
     this.format = 'bgra8unorm';
+    /**
+     * `getConfiguration()`이 돌려줄 마지막 설정 — 아직 없으면 `null` (명세와 같다).
+     * @type {GPUCanvasConfiguration | null}
+     */
+    this._configuration = null;
   }
 
   /**
@@ -1898,6 +1903,7 @@ class GPUCanvasContext {
   configure(configuration) {
     this._device = configuration.device;
     this.format = configuration.format || 'bgra8unorm';
+    this._configuration = { ...configuration, format: this.format };
     this._device._recorder.push({
       op: 'configureCanvas',
       canvas: this.canvasId,
@@ -1909,6 +1915,33 @@ class GPUCanvasContext {
     });
     // 크기를 미리 캐시한다 — 이후에는 제출 응답이 갱신하므로 동기 조회는 사실상 이 1회뿐이다.
     this._fetchSize();
+  }
+
+  /**
+   * 설정을 푼다 — 다시 `configure()`하기 전까지 이 컨텍스트로는 그릴 수 없다.
+   *
+   * 포맷을 바꿔 재구성하는 코드(HDR 토글 등)가 밟는 자리다. 이후 `getCurrentTexture()`는
+   * "configure()를 먼저"로 거부한다.
+   *
+   * **이미 화면에 나간 프레임을 지우지는 않는다.** 브라우저는 캔버스를 투명 검정으로
+   * 비우지만, 여기서 그러려면 표면을 한 번 클리어해 present해야 한다 — 설정을 푸는 호출이
+   * 프레임을 하나 소비하는 편이 더 놀랍다고 보고 하지 않는다 (`docs/WEBGPU-API.md` §2).
+   *
+   * @returns {void}
+   */
+  unconfigure() {
+    this._device = null;
+    this._configuration = null;
+    // 크기 캐시도 버린다 — 다음 configure가 새 크기를 다시 읽게 한다.
+    canvasSizeCache.delete(this.canvasId);
+  }
+
+  /**
+   * 마지막으로 준 설정 (아직 없거나 `unconfigure()` 뒤면 `null`).
+   * @returns {GPUCanvasConfiguration | null}
+   */
+  getConfiguration() {
+    return this._configuration;
   }
 
   /**
