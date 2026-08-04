@@ -336,10 +336,14 @@ pass.executeBundles([bundle])                    // executeBundles
 - 번들에 담을 수 있는 것은 `setPipeline` `setBindGroup` `setVertexBuffer` `setIndexBuffer`
   `draw` `drawIndexed` `drawIndirect` `drawIndexedIndirect` **여덟 개뿐**이다. 뷰포트·시저·
   블렌드 상수·스텐실 참조·중첩 번들·복사는 담을 수 없다 — 번들 인코더에 그 메서드가 아예 없다.
-- **상태는 양방향으로 격리된다.** 번들은 패스가 지정해 둔 파이프라인·바인드 그룹을 물려받지
-  않고, 번들 실행이 끝나면 패스 쪽 바인딩도 무효화된다. 이어서 그리려면 `setPipeline`부터
-  다시 해야 한다 (이전 값으로 **복원되는 것이 아니다** — 명세 계약). 뷰포트·시저·블렌드 상수·
-  스텐실 참조는 그대로 남는다.
+- **상태는 양방향으로 격리된다.** 파이프라인·바인드 그룹·정점 버퍼·인덱스 버퍼 네 가지가
+  대상이다. 번들은 패스가 지정해 둔 것을 물려받지 않고, 번들 실행이 끝나면 패스 쪽 바인딩도
+  무효화된다. 이어서 그리려면 `setPipeline`·`setBindGroup`·`setVertexBuffer`를 **다시 해야
+  한다** (이전 값으로 **복원되는 것이 아니다** — 명세 계약). 뷰포트·시저·블렌드 상수·스텐실
+  참조는 그대로 남는다.
+  > Metal 인코더에는 "바인딩 해제"가 없어서, 격리는 이 구현이 **드로우 직전에 직접 확인**해
+  > 성립시킨다 — 파이프라인이 요구하는 바인드 그룹·정점 버퍼 슬롯이 빠져 있으면 그 드로우를
+  > 거부한다. 그러지 않으면 브라우저에서 무효인 코드가 여기서만 조용히 그려진다.
 - `colorFormats`(와 `depthStencilFormat`·`sampleCount`)가 실제 패스와 어긋나면
   `executeBundles`에서 오류다. `colorFormats`의 **후행 `null`은 무시**하고 비교한다
   (`['bgra8unorm', null]`은 컬러 1개짜리 패스와 맞는다 — 명세의 레이아웃 동치 규칙).

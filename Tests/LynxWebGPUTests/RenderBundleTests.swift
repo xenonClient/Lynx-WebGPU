@@ -195,6 +195,144 @@ final class RenderBundleTests: XCTestCase {
         )
     }
 
+    /// 반대 방향 — 번들은 패스가 이미 올려 둔 바인드 그룹도 물려받지 않는다.
+    ///
+    /// 파이프라인과 달리 바인드 그룹은 **Metal 인코더에 그대로 남아 있어서** 그림자 상태만
+    /// 비워서는 격리되지 않는다. 레이아웃이 요구하는 그룹이 다 바인드되었는지 봐야 잡힌다.
+    func test_번들은_패스의_바인드_그룹을_물려받지_않는다() {
+        let result = harness.execute(setUpResources() + [
+            createBundle(id: 10, commands: [
+                ["op": "setPipeline", "pipeline": 2],   // setBindGroup 없이
+                ["op": "draw", "vertexCount": 3],
+            ]),
+        ] + acquireDrawable + [
+            beginPass,
+            ["op": "setPipeline", "pipeline": 2],
+            ["op": "setBindGroup", "index": 0, "bindGroup": 6],   // 패스 쪽에서 미리 올려 둔다
+            ["op": "executeBundles", "bundles": [10]],
+            ["op": "endPass"],
+        ])
+
+        XCTAssertTrue(
+            ((errors(result).first?["message"] as? String) ?? "").contains("@group(0)"),
+            "번들 안에서 다시 바인드해야 한다: \(harness.describeErrors(result))"
+        )
+    }
+
+    /// 번들 실행 뒤 `setPipeline`만 다시 하고 그리면, 바인드 그룹은 번들이 남긴 것이 쓰인다.
+    func test_번들_실행_뒤에는_바인드_그룹도_다시_지정해야_한다() {
+        let result = harness.execute(setUpResources() + [
+            createBundle(id: 10, commands: fullScreenDraw(bindGroup: 6)),
+        ] + acquireDrawable + [
+            beginPass,
+            ["op": "executeBundles", "bundles": [10]],
+            ["op": "setPipeline", "pipeline": 2],   // setBindGroup 없이
+            ["op": "draw", "vertexCount": 3],
+            ["op": "endPass"],
+        ])
+
+        XCTAssertTrue(
+            ((errors(result).first?["message"] as? String) ?? "").contains("@group(0)"),
+            harness.describeErrors(result)
+        )
+    }
+
+    // MARK: - 상태 격리 (정점 버퍼)
+
+    /// 정점 버퍼를 실제로 읽는 파이프라인 — 격리를 보려면 슬롯을 요구하는 쪽이 있어야 한다.
+    private static let vertexPullingShader = """
+    @vertex
+    fn vs_main(@location(0) position: vec2f) -> @builtin(position) vec4f {
+        return vec4f(position, 0.0, 1.0);
+    }
+
+    @fragment
+    fn fs_main() -> @location(0) vec4f {
+        return vec4f(1.0, 0.0, 0.0, 1.0);
+    }
+    """
+
+    /// 셰이더(40) · 파이프라인(41) · 정점 버퍼(42).
+    private func setUpVertexPulling() -> [[String: Any]] {
+        [
+            ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
+            ["op": "createShaderModule", "id": 40, "code": Self.vertexPullingShader],
+            ["op": "createRenderPipeline", "id": 41, "layout": "auto",
+             "vertex": ["module": 40, "entryPoint": "vs_main",
+                        "buffers": [[
+                            "arrayStride": 8,
+                            "attributes": [["shaderLocation": 0, "offset": 0, "format": "float32x2"]],
+                        ]]],
+             "fragment": ["module": 40, "entryPoint": "fs_main",
+                          "targets": [["format": "rgba8unorm"]]]],
+            ["op": "createBuffer", "id": 42, "size": 24, "usage": TestUsage.vertex,
+             "data": [Float]([-1, -1, 3, -1, -1, 3]).base64],
+        ]
+    }
+
+    private func vertexBundle(id: Int, commands: [[String: Any]]) -> [String: Any] {
+        ["op": "createRenderBundle", "id": id, "colorFormats": ["rgba8unorm"], "commands": commands]
+    }
+
+    /// 기준 — 번들이 자기 정점 버퍼를 담으면 정상으로 그려진다.
+    func test_정점_버퍼를_담은_번들은_정상으로_그린다() throws {
+        harness.executeExpectingSuccess(setUpVertexPulling() + [
+            vertexBundle(id: 43, commands: [
+                ["op": "setPipeline", "pipeline": 41],
+                ["op": "setVertexBuffer", "slot": 0, "buffer": 42],
+                ["op": "draw", "vertexCount": 3],
+            ]),
+        ] + acquireDrawable + [
+            beginPass,
+            ["op": "executeBundles", "bundles": [43]],
+            ["op": "endPass"],
+        ])
+
+        try harness.assertPixel(x: 32, y: 32, equals: red)
+    }
+
+    /// 패스 쪽에서만 정점 버퍼를 올린 경우 — 번들은 물려받지 않으므로 거부되어야 한다.
+    func test_번들은_패스의_정점_버퍼를_물려받지_않는다() {
+        let result = harness.execute(setUpVertexPulling() + [
+            vertexBundle(id: 43, commands: [
+                ["op": "setPipeline", "pipeline": 41],   // setVertexBuffer 없이
+                ["op": "draw", "vertexCount": 3],
+            ]),
+        ] + acquireDrawable + [
+            beginPass,
+            ["op": "setVertexBuffer", "slot": 0, "buffer": 42],   // 패스 쪽에서 미리 올려 둔다
+            ["op": "executeBundles", "bundles": [43]],
+            ["op": "endPass"],
+        ])
+
+        XCTAssertTrue(
+            ((errors(result).first?["message"] as? String) ?? "").contains("정점 버퍼 슬롯 0"),
+            harness.describeErrors(result)
+        )
+    }
+
+    /// 반대 방향 — 번들이 올린 정점 버퍼는 실행이 끝나면 무효화된다.
+    func test_번들_실행_뒤에는_정점_버퍼도_다시_지정해야_한다() {
+        let result = harness.execute(setUpVertexPulling() + [
+            vertexBundle(id: 43, commands: [
+                ["op": "setPipeline", "pipeline": 41],
+                ["op": "setVertexBuffer", "slot": 0, "buffer": 42],
+                ["op": "draw", "vertexCount": 3],
+            ]),
+        ] + acquireDrawable + [
+            beginPass,
+            ["op": "executeBundles", "bundles": [43]],
+            ["op": "setPipeline", "pipeline": 41],   // setVertexBuffer 없이
+            ["op": "draw", "vertexCount": 3],
+            ["op": "endPass"],
+        ])
+
+        XCTAssertTrue(
+            ((errors(result).first?["message"] as? String) ?? "").contains("정점 버퍼 슬롯 0"),
+            harness.describeErrors(result)
+        )
+    }
+
     /// 회귀 — 번들 명령 하나가 실패해도 패스 바인딩 초기화는 건너뛰면 안 된다.
     ///
     /// 해석기의 계약은 "오류가 프레임을 죽이지 않고 누적된다"이므로 실행은 다음 명령부터 계속된다.

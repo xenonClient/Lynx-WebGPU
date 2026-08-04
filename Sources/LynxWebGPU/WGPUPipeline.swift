@@ -20,10 +20,14 @@ public final class WGPUBindGroupLayoutObject {
 public final class WGPUPipelineLayoutObject {
     public let groups: [WGPUBindGroupLayoutObject]
     let assignment: WGSLBindingAssignment
+    /// 드로우/디스패치 전에 반드시 바인드되어 있어야 하는 그룹 인덱스.
+    /// 빈 그룹(선언에 구멍이 있어 생긴 자리)은 요구하지 않는다.
+    let requiredGroups: Set<Int>
 
     init(groups: [WGPUBindGroupLayoutObject]) throws {
         self.groups = groups
         self.assignment = try WGSLBindingAssigner.assign(groups: groups.map(\.entries))
+        self.requiredGroups = Set(groups.indices.filter { !groups[$0].entries.isEmpty })
     }
 
     func group(at index: Int) -> WGPUBindGroupLayoutObject? {
@@ -83,6 +87,8 @@ public final class WGPURenderPipelineObject {
     let depthBiasClamp: Float
     /// 셰이더가 `arrayLength()`를 쓰는가 — 쓰면 버퍼 크기 표를 바인딩해야 한다.
     let needsBufferSizes: Bool
+    /// 드로우 전에 반드시 바인드되어 있어야 하는 정점 버퍼 슬롯 (`vertex.buffers`에 선언된 것).
+    let requiredVertexSlots: Set<Int>
 
     init(
         device: MTLDevice,
@@ -108,6 +114,7 @@ public final class WGPURenderPipelineObject {
             ) ?? false)
         }
         self.needsBufferSizes = wantsBufferSizes
+        self.requiredVertexSlots = Set(descriptor.vertex.buffers.indices)
 
         let metalDescriptor = MTLRenderPipelineDescriptor()
         // Metal 검증 레이어는 label에 nil을 넣으면 단언으로 죽는다 — 있을 때만 설정한다.

@@ -32,6 +32,11 @@ final class WGPUCommandInterpreter {
     /// 바인드 그룹을 적용할 때마다 갱신하고, 셰이더가 쓸 때만 인코더에 올린다.
     private var bufferSizes = [UInt32](repeating: 0, count: WGSLMetalLimits.maxBindGroupBuffers)
     private var indexBinding: (buffer: MTLBuffer, offset: Int, type: MTLIndexType, stride: Int)?
+    /// 슬롯별 정점 버퍼 바인딩. **인코더에 직행하지 않고 여기 모아 두었다가** 드로우 직전에 올린다.
+    /// 그래야 `resetPassBindings()`가 번들 경계에서 바인딩을 실제로 무효화할 수 있다 —
+    /// Metal 인코더에는 "바인딩 해제"가 없으므로, 무효화는 그림자 상태로만 표현된다.
+    private var vertexBindings: [Int: (buffer: MTLBuffer, offset: Int)] = [:]
+    private var dirtyVertexSlots: Set<Int> = []
     /// 지금 렌더 패스의 어태치먼트 모양 — 렌더 번들이 이 패스에서 유효한지 볼 때 쓴다.
     private var passFormats: (color: [WGPUTextureFormat], depthStencil: WGPUTextureFormat?, sampleCount: Int)?
     /// 지금 렌더 패스가 물고 있는 occlusion 쿼리셋 (`beginRenderPass`에서만 붙일 수 있다).
@@ -808,7 +813,7 @@ final class WGPUCommandInterpreter {
         }
     }
 
-    /// 파이프라인·바인드 그룹·인덱스 버퍼 바인딩을 "지정되지 않음"으로 되돌린다.
+    /// 파이프라인·바인드 그룹·정점/인덱스 버퍼 바인딩을 "지정되지 않음"으로 되돌린다.
     ///
     /// 패스를 새로 열 때와 `executeBundles` 앞뒤에 쓴다. 명세는 번들 실행이 **이전 상태를
     /// 복원하는 것이 아니라 무효화한다**고 정한다 — 번들은 패스 상태를 물려받지 않고,
@@ -819,6 +824,8 @@ final class WGPUCommandInterpreter {
         boundGroups.removeAll()
         dirtyGroups.removeAll()
         indexBinding = nil
+        vertexBindings.removeAll()
+        dirtyVertexSlots.removeAll()
     }
 
     private func executeBundles(_ command: WGPUValueReader) throws {
@@ -889,7 +896,12 @@ final class WGPUCommandInterpreter {
         dirtyGroups.insert(index)
     }
 
-    private func applyBindGroups() throws {
+    /// 드로우·디스패치 직전에 파이프라인이 요구하는 상태를 전부 확인하고 인코더에 올린다.
+    ///
+    /// 바인드 그룹과 정점 버퍼를 한자리에서 다루는 이유는, 둘 다 **번들 경계에서 무효화되는
+    /// 상태**라 검사 시점이 같아야 하기 때문이다. 새 드로우 op을 추가할 때 이 함수 하나만
+    /// 부르면 격리 계약이 자동으로 따라온다.
+    private func applyDrawState() throws {
         let layout: WGPUPipelineLayoutObject
         let needsSizes: Bool
         if renderEncoder != nil {
@@ -906,11 +918,23 @@ final class WGPUCommandInterpreter {
             needsSizes = pipeline.needsBufferSizes
         }
 
+        // 레이아웃이 요구하는 그룹이 전부 바인드되어 있어야 한다. 이 검사가 없으면 번들이
+        // 남긴 바인딩(또는 패스가 미리 올려 둔 바인딩)으로 조용히 그려진다 — Metal 인코더에는
+        // "바인딩 해제"가 없으므로 `resetPassBindings()`만으로는 실제로 격리되지 않는다.
+        for groupIndex in layout.requiredGroups.sorted() where boundGroups[groupIndex] == nil {
+            throw WGPUError.validation(
+                "파이프라인 레이아웃이 요구하는 @group(\(groupIndex))이 바인드되지 않았다 "
+                    + "(번들 실행 앞뒤로는 바인딩이 무효화된다 — setBindGroup을 다시 할 것)"
+            )
+        }
+
         for groupIndex in dirtyGroups.sorted() {
             guard let bound = boundGroups[groupIndex] else { continue }
             try apply(bound.group, at: groupIndex, dynamicOffsets: bound.offsets, layout: layout)
         }
         dirtyGroups.removeAll()
+
+        try applyVertexBuffers()
 
         // `arrayLength()`용 버퍼 크기 표. 88바이트라 setBytes로 매 드로우 올려도 부담이 없다.
         guard needsSizes else { return }
@@ -992,7 +1016,7 @@ final class WGPUCommandInterpreter {
     }
 
     private func setVertexBuffer(_ command: WGPUValueReader) throws {
-        let encoder = try requireRenderEncoder()
+        _ = try requireRenderEncoder()
         let slot = try command.requiredInt("slot")
         guard slot >= 0, slot < WGSLMetalLimits.maxVertexBufferSlots else {
             throw WGPUError.validation("정점 버퍼 슬롯은 0~\(WGSLMetalLimits.maxVertexBufferSlots - 1) 범위다")
@@ -1000,11 +1024,40 @@ final class WGPUCommandInterpreter {
         let buffer = try registry.lookup(
             try command.requiredHandle("buffer"), as: WGPUBufferObject.self, kind: "GPUBuffer"
         )
-        encoder.setVertexBuffer(
-            buffer.buffer,
-            offset: command.int("offset", default: 0),
-            index: WGSLMetalLimits.vertexBufferIndex(slot: slot)
-        )
+        let offset = command.int("offset", default: 0)
+        guard offset >= 0, offset <= buffer.size else {
+            throw WGPUError.validation(
+                "정점 버퍼 offset(\(offset))이 버퍼 크기(\(buffer.size)B)를 벗어난다",
+                path: command.fieldPath("offset")
+            )
+        }
+        // 인코더에 바로 올리지 않는다 — 드로우 직전에 올려야 번들 경계의 무효화가 성립한다.
+        vertexBindings[slot] = (buffer.buffer, offset)
+        dirtyVertexSlots.insert(slot)
+    }
+
+    /// 드로우 직전에 파이프라인이 요구하는 정점 버퍼가 다 있는지 보고 인코더에 올린다.
+    ///
+    /// 명세는 "`vertex.buffers[slot]`이 null이 아니면 `[[vertex_buffers]]`가 그 슬롯을 담아야
+    /// 한다"고 정한다. 이 검사가 없으면 패스가 미리 올려 둔 정점 버퍼로 번들이 그려지고,
+    /// 번들이 올린 것으로 패스가 그려진다 — 브라우저에서는 둘 다 무효인 코드다.
+    private func applyVertexBuffers() throws {
+        guard let encoder = renderEncoder, let pipeline = currentRenderPipeline else { return }
+        for slot in pipeline.requiredVertexSlots.sorted() where vertexBindings[slot] == nil {
+            throw WGPUError.validation(
+                "파이프라인이 요구하는 정점 버퍼 슬롯 \(slot)이 바인드되지 않았다 "
+                    + "(번들 실행 앞뒤로는 바인딩이 무효화된다 — setVertexBuffer를 다시 할 것)"
+            )
+        }
+        for slot in dirtyVertexSlots.sorted() {
+            guard let binding = vertexBindings[slot] else { continue }
+            encoder.setVertexBuffer(
+                binding.buffer,
+                offset: binding.offset,
+                index: WGSLMetalLimits.vertexBufferIndex(slot: slot)
+            )
+        }
+        dirtyVertexSlots.removeAll()
     }
 
     private func setIndexBuffer(_ command: WGPUValueReader) throws {
@@ -1053,7 +1106,7 @@ final class WGPUCommandInterpreter {
 
     private func draw(_ command: WGPUValueReader) throws {
         let encoder = try requireRenderEncoder()
-        try applyBindGroups()
+        try applyDrawState()
         guard let pipeline = currentRenderPipeline else {
             throw WGPUError.validation("draw 전에 setPipeline이 필요하다")
         }
@@ -1068,7 +1121,7 @@ final class WGPUCommandInterpreter {
 
     private func drawIndexed(_ command: WGPUValueReader) throws {
         let encoder = try requireRenderEncoder()
-        try applyBindGroups()
+        try applyDrawState()
         guard let pipeline = currentRenderPipeline else {
             throw WGPUError.validation("drawIndexed 전에 setPipeline이 필요하다")
         }
@@ -1130,11 +1183,11 @@ final class WGPUCommandInterpreter {
 
     private func drawIndirect(_ command: WGPUValueReader) throws {
         let encoder = try requireRenderEncoder()
-        // 인자 검증을 `applyBindGroups()`보다 **먼저** 한다 — 거부할 명령이 인코더 상태를
+        // 인자 검증을 `applyDrawState()`보다 **먼저** 한다 — 거부할 명령이 인코더 상태를
         // 이미 바꿔 놓는 일이 없어야 한다 (오류는 프레임을 죽이지 않고 누적되므로 더 그렇다).
         // vertexCount, instanceCount, firstVertex, firstInstance — u32 4개.
         let arguments = try indirectArguments(command, argumentSize: 16)
-        try applyBindGroups()
+        try applyDrawState()
         guard let pipeline = currentRenderPipeline else {
             throw WGPUError.validation("drawIndirect 전에 setPipeline이 필요하다")
         }
@@ -1149,7 +1202,7 @@ final class WGPUCommandInterpreter {
         let encoder = try requireRenderEncoder()
         // indexCount, instanceCount, firstIndex, baseVertex(i32), firstInstance — 5칸.
         let arguments = try indirectArguments(command, argumentSize: 20)
-        try applyBindGroups()
+        try applyDrawState()
         guard let pipeline = currentRenderPipeline else {
             throw WGPUError.validation("drawIndexedIndirect 전에 setPipeline이 필요하다")
         }
@@ -1172,7 +1225,7 @@ final class WGPUCommandInterpreter {
         let encoder = try requireComputeEncoder()
         // x, y, z — u32 3개.
         let arguments = try indirectArguments(command, argumentSize: 12)
-        try applyBindGroups()
+        try applyDrawState()
         guard let pipeline = currentComputePipeline else {
             throw WGPUError.validation("dispatchWorkgroupsIndirect 전에 setPipeline이 필요하다")
         }
@@ -1213,7 +1266,7 @@ final class WGPUCommandInterpreter {
 
     private func dispatchWorkgroups(_ command: WGPUValueReader) throws {
         let encoder = try requireComputeEncoder()
-        try applyBindGroups()
+        try applyDrawState()
         guard let pipeline = currentComputePipeline else {
             throw WGPUError.validation("dispatchWorkgroups 전에 setPipeline이 필요하다")
         }
