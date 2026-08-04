@@ -359,8 +359,8 @@ class GPUBuffer extends GPUObjectBase {
     this.usage = descriptor.usage;
     /** @type {ArrayBuffer | null} */
     this._mapped = null;
-    /** @type {ArrayBuffer | null} */
-    this._mappedRange = null;
+    /** `mappedAtCreation`의 초기 데이터인가 (unmap이 생성 명령을 기록해야 하는가). */
+    this._mappedAtCreation = false;
   }
 
   /** `mappedAtCreation: true`로 만든 버퍼의 초기 데이터 영역. */
@@ -371,22 +371,40 @@ class GPUBuffer extends GPUObjectBase {
     return this._mapped;
   }
 
-  /** 매핑을 풀면서 실제 생성 명령(초기 데이터 포함)을 기록한다. @returns {void} */
+  /**
+   * 매핑을 푼다.
+   *
+   * `mappedAtCreation`이면 여기서 실제 생성 명령(초기 데이터 포함)이 기록되고,
+   * `mapAsync`로 매핑한 것이면 네이티브에 "이제 큐 작업에 써도 된다"를 알린다 —
+   * 매핑 중인 버퍼는 명세대로 큐 작업에서 거부되므로 **읽고 나면 반드시 불러야 한다.**
+   *
+   * @returns {void}
+   */
   unmap() {
     if (!this._mapped) return;
-    this._recorder.push({
-      op: 'createBuffer',
-      id: this.id,
-      size: this.size,
-      usage: this.usage,
-      label: this.label,
-      data: this._mapped,   // 이미 ArrayBuffer다
-    });
+    if (this._mappedAtCreation) {
+      this._recorder.push({
+        op: 'createBuffer',
+        id: this.id,
+        size: this.size,
+        usage: this.usage,
+        label: this.label,
+        data: this._mapped,   // 이미 ArrayBuffer다
+      });
+      this._mappedAtCreation = false;
+    } else {
+      this._recorder.push({ op: 'unmapBuffer', buffer: this.id });
+    }
     this._mapped = null;
   }
 
   /**
    * 버퍼 내용을 읽는다. WebGPU의 `mapAsync` + `getMappedRange`를 하나로 합친 형태다.
+   *
+   * 읽는 동안 이 버퍼는 명세대로 **"unavailable"**이 되어 큐 작업(쓰기·복사·resolve·드로우
+   * 바인딩)에서 거부된다. 그러지 않으면 리드백이 GPU 완료를 기다리는 사이 다음 프레임의
+   * 쓰기가 같은 메모리에 겹쳐, 받은 값이 어느 프레임 것인지 보장되지 않는다.
+   * **다 읽었으면 `unmap()`을 부를 것.**
    *
    * @param {number} [_mode] 스펙 호환용 — 이 구현은 보지 않는다
    * @param {number} [offset] 바이트 오프셋
@@ -407,6 +425,7 @@ class GPUBuffer extends GPUObjectBase {
     // 네이티브가 `Data`로 돌려주면 Lynx가 ArrayBuffer로 바꿔 준다 — 디코딩할 것이 없다.
     const mapped = result.data;
     this._mapped = mapped;
+    this._mappedAtCreation = false;
     return mapped;
   }
 }
@@ -1138,6 +1157,7 @@ class GPUDevice {
     if (descriptor.mappedAtCreation) {
       // 생성 명령은 unmap()에서 초기 데이터와 함께 기록된다.
       buffer._mapped = new ArrayBuffer(descriptor.size);
+      buffer._mappedAtCreation = true;
     } else {
       this._recorder.push({
         op: 'createBuffer', id,

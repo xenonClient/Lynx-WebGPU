@@ -85,12 +85,24 @@ vertexBuffer.unmap()                                  // 여기서 createBuffer 
 // (2) 나중에 쓰기
 device.queue.writeBuffer(buffer, 0, float32Array)      // writeBuffer
 
-// (3) 읽기 — GPU 완료를 기다리므로 비동기
-const bytes = await buffer.mapAsync(GPUMapMode.READ)   // readBuffer (콜백형 네이티브 호출)
+// (3) 읽기 — GPU 완료를 기다리므로 비동기. 다 읽었으면 unmap()
+const bytes = await staging.mapAsync(GPUMapMode.READ)  // readBuffer (콜백형 네이티브 호출)
+staging.unmap()
 ```
 
 `usage` 플래그: `MAP_READ` `MAP_WRITE` `COPY_SRC` `COPY_DST` `INDEX` `VERTEX` `UNIFORM` `STORAGE`
 `INDIRECT` `QUERY_RESOLVE`.
+
+- **`MAP_READ`는 `COPY_DST`와만, `MAP_WRITE`는 `COPY_SRC`와만** 조합할 수 있다 (명세 요구).
+  Metal은 `.storageModeShared` 하나로 전부 되지만, 안 막으면 브라우저에서만 깨진다.
+- 그래서 계산 결과를 읽는 정석은 **2단**이다 — 결과 버퍼(`STORAGE|COPY_SRC`)를
+  `copyBufferToBuffer`로 스테이징 버퍼(`COPY_DST|MAP_READ`)에 옮기고 그쪽을 매핑한다.
+
+> **매핑 중인 버퍼는 큐 작업에 쓸 수 없다.** `mapAsync`는 명세대로 버퍼를 "unavailable"로
+> 만들고, `unmap()`을 부를 때까지 쓰기·복사·resolve·드로우 바인딩을 전부 거부한다.
+> 이 구현은 스테이징 없이 `.storageModeShared` 버퍼를 직접 읽으므로, 이 상태가 없으면
+> 리드백이 GPU 완료를 기다리는 사이 다음 프레임의 쓰기가 같은 메모리에 겹쳐
+> **받은 값이 어느 프레임 것인지 보장되지 않는다.** 읽고 나면 반드시 `unmap()`할 것.
 
 > `writeBuffer`는 스테이징 버퍼 + blit으로 큐에 **순서를 태워** 올라간다. 직접 memcpy 하면
 > 직전 프레임 GPU 작업과 경쟁하기 때문이다. 스테이징 버퍼는 네이티브가 풀로 재사용하므로
@@ -275,7 +287,9 @@ device.queue.submit([encoder.finish()])   // ← 여기서 한 번에 네이티�
 
 ```js
 const querySet = device.createQuerySet({ type: 'occlusion', count: 2 })   // createQuerySet
-const results  = device.createBuffer({ size: 16, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.MAP_READ })
+const results  = device.createBuffer({ size: 16, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC })
+// MAP_READ는 COPY_DST와만 조합할 수 있다 — 리드백은 스테이징 버퍼로 받는다.
+const staging  = device.createBuffer({ size: 16, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ })
 
 const pass = encoder.beginRenderPass({ colorAttachments, occlusionQuerySet: querySet })
 pass.beginOcclusionQuery(0)        // beginOcclusionQuery
@@ -284,8 +298,10 @@ pass.endOcclusionQuery()           // endOcclusionQuery
 pass.end()
 
 encoder.resolveQuerySet(querySet, 0, 2, results, 0)   // resolveQuerySet
+encoder.copyBufferToBuffer(results, 0, staging, 0, 16)
 device.queue.submit([encoder.finish()])
-const counts = new BigUint64Array(await results.mapAsync(GPUMapMode.READ))
+const counts = new BigUint64Array(await staging.mapAsync(GPUMapMode.READ))
+staging.unmap()                    // 다음 주기의 복사가 이 버퍼를 다시 쓸 수 있게
 ```
 
 - 결과 하나는 `u64` 8바이트다. `occlusion`은 **통과한 샘플 수**이므로 0이면 완전히 가려진 것이다.

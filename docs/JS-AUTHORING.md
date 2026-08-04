@@ -47,7 +47,7 @@ context.configure({ device, format })
 |---|---|---|
 | 캔버스 얻기 | `canvas.getContext('webgpu')` | `gpu.getCanvasContext('main')` — `<webgpu-canvas canvas-id>` 이름 |
 | 프레임 루프 | `requestAnimationFrame` | `startFrameLoop(handler)` (§4) |
-| 버퍼 읽기 | `mapAsync` + `getMappedRange` | `await buffer.mapAsync()` 가 ArrayBuffer를 바로 돌려준다 |
+| 버퍼 읽기 | `mapAsync` + `getMappedRange` | `await buffer.mapAsync()` 가 ArrayBuffer를 바로 돌려준다. **다 읽었으면 `unmap()`** — 매핑 중인 버퍼는 브라우저와 마찬가지로 큐 작업에서 거부된다 |
 | 오류 | `pushErrorScope` / `uncapturederror` | `device.onError()` + `submit()` 반환의 `errors` |
 | 캔버스 크기 | `canvas.width/height` | `context.getSize()` (제출 응답으로 캐시 갱신) 또는 `bindcanvasresize` |
 | 애셋 가져오기 | `fetch()` / `<img>` | `await loadAsset(name)` → `ArrayBuffer` (등록 이름·파일 경로·번들 상대 경로 — 해석은 호스트의 `assetProvider`가 정한다) |
