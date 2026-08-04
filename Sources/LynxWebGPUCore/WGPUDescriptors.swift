@@ -522,6 +522,16 @@ public struct WGPUDepthStencilState {
         guard format.isDepthOrStencil else {
             throw WGPUError.validation("depthStencil.format은 깊이/스텐실 포맷이어야 한다", path: reader.path)
         }
+        // 스텐실 상태를 줬는데 포맷에 스텐실 성분이 없으면 Metal은 조용히 무시한다 —
+        // 스텐실 어태치먼트 없는 파이프라인에 스텐실 테스트만 붙은 물건이 오류 없이 생성되어
+        // "스텐실 마스킹이 왜 안 먹지"를 단서 없이 디버깅하게 된다.
+        guard !usesStencil || format.hasStencil else {
+            throw WGPUError.validation(
+                "stencilFront/stencilBack을 기본값 밖으로 주려면 format에 스텐실 성분이 있어야 한다 "
+                    + "(받은 것: \(format.rawValue))",
+                path: reader.path
+            )
+        }
     }
 
     /// 스텐실 테스트를 실제로 쓰는가 — 어느 면이든 기본값이 아니면 스텐실 상태를 만든다.

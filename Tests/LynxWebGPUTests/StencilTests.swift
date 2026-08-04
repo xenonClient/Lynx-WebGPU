@@ -369,4 +369,29 @@ final class StencilTests: XCTestCase {
             pipeline(id: 6, stencil: bothFaces(["compare": "equal", "passOp": "replace"])),
         ])
     }
+
+    // MARK: - 계약
+
+    /// 스텐실 성분이 없는 포맷에 스텐실 상태를 붙이면 Metal은 **조용히 무시**한다.
+    /// 그러면 "스텐실 마스킹이 왜 안 먹지"를 오류 하나 없이 디버깅하게 되므로 여기서 막는다.
+    func test_스텐실_없는_깊이_포맷에_스텐실_상태를_주면_거부한다() {
+        for format in ["depth32float", "depth24plus", "depth16unorm"] {
+            let result = harness.execute(makeCommonResources() + [
+                pipeline(id: 6, format: format,
+                         stencil: bothFaces(["compare": "equal", "passOp": "replace"])),
+            ])
+            let message = (result["errors"] as? [[String: Any]])?.first?["message"] as? String ?? ""
+            XCTAssertTrue(
+                message.contains("스텐실 성분"),
+                "\(format) + 비기본 stencilFront는 거부되어야 한다 — 받은 것: \(message)"
+            )
+        }
+    }
+
+    /// 반대로 스텐실 상태를 주지 않으면 깊이 전용 포맷도 그대로 통과해야 한다.
+    func test_스텐실_상태가_기본값이면_깊이_전용_포맷이_통과한다() {
+        harness.executeExpectingSuccess(makeCommonResources() + [
+            pipeline(id: 6, format: "depth32float", stencil: [:], depthCompare: "less", depthWrite: true),
+        ])
+    }
 }
