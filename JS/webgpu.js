@@ -1619,3 +1619,23 @@ export {
   GPURenderBundle, GPURenderBundleEncoder, GPUQuerySet,
 };
 export default gpu;
+
+// ---------------------------------------------------------------------------
+// PrimJS 전역 브리지 — 웹 라이브러리(Three.js 등) 이식용
+// ---------------------------------------------------------------------------
+// 웹 전역(`navigator.gpu`, `performance`, `GPUBufferUsage` …)을 기대하는 라이브러리를 위해
+// **네임스페이스가 붙은** 전역을 얹는다. PrimJS + rspeedy 번들에서는 `globalThis.navigator = …`
+// 같은 전역 대입이 bare 식별자(`navigator`) 해석에 반영되지 않으므로, 대입만으로는 이식이
+// 안 된다 — 번들 설정(`lynx.config.ts`)의 `source.define`이 bare 식별자를 아래 이름으로
+// 바꿔치기해야 완성된다. 전체 조리법은 docs/JS-AUTHORING.md §10.
+//
+// 이름을 lynx*로 좁힌 것은 진짜 전역이 있는 런타임(node 테스트 등)을 덮어쓰지 않기 위해서다.
+
+globalThis.lynxNavigator = { gpu };
+globalThis.lynxPerformance =
+  typeof performance !== 'undefined' && performance ? performance : { now: () => Date.now() };
+globalThis.lynxGPUBufferUsage = GPUBufferUsage;
+globalThis.lynxGPUTextureUsage = GPUTextureUsage;
+globalThis.lynxGPUShaderStage = GPUShaderStage;
+globalThis.lynxGPUColorWrite = GPUColorWrite;
+globalThis.lynxGPUMapMode = GPUMapMode;

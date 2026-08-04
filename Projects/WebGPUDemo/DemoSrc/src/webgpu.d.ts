@@ -134,6 +134,10 @@ export type GPUQuerySetDescriptor = {
     count: number;
     label?: string;
 };
+export type GPUDeviceLostInfo = {
+    reason: 'unknown' | 'destroyed';
+    message: string;
+};
 export type GPUPassTimestampWrites = {
     querySet: GPUQuerySet;
     beginningOfPassWriteIndex?: number;
@@ -667,10 +671,32 @@ declare class GPUQueue {
 declare class GPUDevice {
     adapter: GPUAdapter;
     limits: Record<string, number>;
+    /**
+     * 이 디바이스에 활성화된 기능 — 명세대로 **요청한 것만** 들어 있다 (어댑터가 지원해도
+     * `requiredFeatures`로 요청하지 않았으면 `has()`는 false다). Three.js 등 웹 코드가
+     * 어댑터에서 고른 기능을 그대로 요청하고 여기서 다시 확인하는 패턴을 쓴다.
+     */
+    features: {
+        has: (name: string) => boolean;
+        size: number;
+        values: () => string[];
+    };
+    /**
+     * 디바이스 유실 통지 (`device.lost.then(...)` 대응).
+     *
+     * 이 구현은 유실을 보고하지 않으므로 **영원히 pending**이다 — Metal 디바이스가 사라지는
+     * 시나리오(eGPU 분리 등)가 iOS에는 없고, 프로세스가 죽는 경우는 JS도 함께 죽는다.
+     * 속성 자체는 있어야 `WebGPUBackend.init()`류의 부트스트랩이 TypeError 없이 지나간다.
+     * @type {Promise<GPUDeviceLostInfo>}
+     */
+    lost: Promise<GPUDeviceLostInfo>;
     _recorder: Recorder;
     queue: GPUQueue;
-    /** @param {GPUAdapter} adapter */
-    constructor(adapter: GPUAdapter);
+    /**
+     * @param {GPUAdapter} adapter
+     * @param {string[]} [requiredFeatures] `requestDevice()`에서 검증을 마친 기능 이름들
+     */
+    constructor(adapter: GPUAdapter, requiredFeatures?: string[]);
     /**
      * 커맨드 실행 오류 핸들러 (`{kind, message, path}`). 등록하지 않으면 console.error로 나간다.
      * @param {(error: WGPUError, text: string) => void} handler
@@ -765,7 +791,7 @@ declare class GPUDevice {
      *
      * `'occlusion'`은 드로우가 통과시킨 샘플 수를 센다 — 결정적이라 값을 믿을 수 있다.
      * `'timestamp'`는 GPU 시계라 같은 입력에도 값이 매번 다르다. 기기에 따라 아예 만들 수
-     * 없으므로(`adapter.limits.timestampQuery`) 실패를 처리할 것.
+     * 없으므로(`adapter.features.has('timestamp-query')`) 실패를 처리할 것.
      *
      * `count`는 1 이상 4096 이하다 (명세 상한).
      *
@@ -831,8 +857,17 @@ declare class GPUAdapter {
     };
     /** @param {WGPUAdapterInfo} info */
     constructor(info: WGPUAdapterInfo);
-    /** @returns {Promise<GPUDevice>} */
-    requestDevice(): Promise<GPUDevice>;
+    /**
+     * 어댑터가 지원하지 않는 기능을 요구하면 명세대로 **거부**한다 — 조용히 빼고 만들면
+     * 이후 `createQuerySet` 같은 호출이 훨씬 먼 곳에서 터진다.
+     * @param {{label?: string, requiredFeatures?: string[], requiredLimits?: Record<string, number>}} [descriptor]
+     * @returns {Promise<GPUDevice>}
+     */
+    requestDevice(descriptor?: {
+        label?: string;
+        requiredFeatures?: string[];
+        requiredLimits?: Record<string, number>;
+    }): Promise<GPUDevice>;
 }
 export declare const gpu: {
     /**

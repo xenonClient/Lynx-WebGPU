@@ -100,6 +100,9 @@ export const GPUMapMode = { READ: 0x1, WRITE: 0x2 };
 
 /** @typedef {{type: 'occlusion' | 'timestamp', count: number, label?: string}} GPUQuerySetDescriptor */
 
+/** `device.lost`가 (유실을 보고하는 구현에서) 풀리는 값 — 이 구현은 영원히 pending이다. */
+/** @typedef {{reason: 'unknown' | 'destroyed', message: string}} GPUDeviceLostInfo */
+
 /**
  * 패스 경계에서 타임스탬프를 찍을 자리. 두 인덱스는 각각 생략할 수 있다.
  */
@@ -1086,10 +1089,28 @@ class GPUQueue {
 }
 
 class GPUDevice {
-  /** @param {GPUAdapter} adapter */
-  constructor(adapter) {
+  /**
+   * @param {GPUAdapter} adapter
+   * @param {string[]} [requiredFeatures] `requestDevice()`에서 검증을 마친 기능 이름들
+   */
+  constructor(adapter, requiredFeatures) {
     this.adapter = adapter;
     this.limits = adapter.limits;
+    /**
+     * 이 디바이스에 활성화된 기능 — 명세대로 **요청한 것만** 들어 있다 (어댑터가 지원해도
+     * `requiredFeatures`로 요청하지 않았으면 `has()`는 false다). Three.js 등 웹 코드가
+     * 어댑터에서 고른 기능을 그대로 요청하고 여기서 다시 확인하는 패턴을 쓴다.
+     */
+    this.features = makeFeatureSet(requiredFeatures || []);
+    /**
+     * 디바이스 유실 통지 (`device.lost.then(...)` 대응).
+     *
+     * 이 구현은 유실을 보고하지 않으므로 **영원히 pending**이다 — Metal 디바이스가 사라지는
+     * 시나리오(eGPU 분리 등)가 iOS에는 없고, 프로세스가 죽는 경우는 JS도 함께 죽는다.
+     * 속성 자체는 있어야 `WebGPUBackend.init()`류의 부트스트랩이 TypeError 없이 지나간다.
+     * @type {Promise<GPUDeviceLostInfo>}
+     */
+    this.lost = new Promise(() => {});
     this._recorder = new Recorder();
     this.queue = new GPUQueue(this);
   }
@@ -1303,7 +1324,7 @@ class GPUDevice {
    *
    * `'occlusion'`은 드로우가 통과시킨 샘플 수를 센다 — 결정적이라 값을 믿을 수 있다.
    * `'timestamp'`는 GPU 시계라 같은 입력에도 값이 매번 다르다. 기기에 따라 아예 만들 수
-   * 없으므로(`adapter.limits.timestampQuery`) 실패를 처리할 것.
+   * 없으므로(`adapter.features.has('timestamp-query')`) 실패를 처리할 것.
    *
    * `count`는 1 이상 4096 이하다 (명세 상한).
    *
@@ -1466,9 +1487,23 @@ class GPUAdapter {
     this.features = makeFeatureSet(info.features || []);
   }
 
-  /** @returns {Promise<GPUDevice>} */
-  async requestDevice() {
-    return new GPUDevice(this);
+  /**
+   * 어댑터가 지원하지 않는 기능을 요구하면 명세대로 **거부**한다 — 조용히 빼고 만들면
+   * 이후 `createQuerySet` 같은 호출이 훨씬 먼 곳에서 터진다.
+   * @param {{label?: string, requiredFeatures?: string[], requiredLimits?: Record<string, number>}} [descriptor]
+   * @returns {Promise<GPUDevice>}
+   */
+  async requestDevice(descriptor) {
+    const required = (descriptor && descriptor.requiredFeatures) || [];
+    for (const name of required) {
+      if (!this.features.has(name)) {
+        throw new Error(
+          `requestDevice: 이 어댑터는 '${name}' 기능을 지원하지 않는다 ` +
+            `(지원 목록: ${this.features.values().join(', ') || '없음'})`
+        );
+      }
+    }
+    return new GPUDevice(this, required);
   }
 }
 
@@ -1584,3 +1619,23 @@ export {
   GPURenderBundle, GPURenderBundleEncoder, GPUQuerySet,
 };
 export default gpu;
+
+// ---------------------------------------------------------------------------
+// PrimJS 전역 브리지 — 웹 라이브러리(Three.js 등) 이식용
+// ---------------------------------------------------------------------------
+// 웹 전역(`navigator.gpu`, `performance`, `GPUBufferUsage` …)을 기대하는 라이브러리를 위해
+// **네임스페이스가 붙은** 전역을 얹는다. PrimJS + rspeedy 번들에서는 `globalThis.navigator = …`
+// 같은 전역 대입이 bare 식별자(`navigator`) 해석에 반영되지 않으므로, 대입만으로는 이식이
+// 안 된다 — 번들 설정(`lynx.config.ts`)의 `source.define`이 bare 식별자를 아래 이름으로
+// 바꿔치기해야 완성된다. 전체 조리법은 docs/JS-AUTHORING.md §10.
+//
+// 이름을 lynx*로 좁힌 것은 진짜 전역이 있는 런타임(node 테스트 등)을 덮어쓰지 않기 위해서다.
+
+globalThis.lynxNavigator = { gpu };
+globalThis.lynxPerformance =
+  typeof performance !== 'undefined' && performance ? performance : { now: () => Date.now() };
+globalThis.lynxGPUBufferUsage = GPUBufferUsage;
+globalThis.lynxGPUTextureUsage = GPUTextureUsage;
+globalThis.lynxGPUShaderStage = GPUShaderStage;
+globalThis.lynxGPUColorWrite = GPUColorWrite;
+globalThis.lynxGPUMapMode = GPUMapMode;

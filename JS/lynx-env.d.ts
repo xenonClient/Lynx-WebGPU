@@ -130,3 +130,18 @@ declare function setInterval(handler: () => void, timeout?: number): number;
 declare function clearInterval(handle: number): void;
 declare function setTimeout(handler: () => void, timeout?: number): number;
 declare function clearTimeout(handle: number): void;
+
+// --- PrimJS 전역 브리지 --------------------------------------------------
+// shim이 모듈 로드 시점에 얹는 lynx* 전역 (docs/JS-AUTHORING.md §10).
+// 번들 쪽 `source.define`이 웹 전역의 bare 식별자를 이 이름들로 바꿔치기한다.
+
+/** 브라우저/Node에는 있고 PrimJS에는 없다 — shim이 폴백을 고를 때만 확인한다. */
+declare const performance: { now(): number } | undefined;
+
+declare var lynxNavigator: unknown;
+declare var lynxPerformance: unknown;
+declare var lynxGPUBufferUsage: unknown;
+declare var lynxGPUTextureUsage: unknown;
+declare var lynxGPUShaderStage: unknown;
+declare var lynxGPUColorWrite: unknown;
+declare var lynxGPUMapMode: unknown;

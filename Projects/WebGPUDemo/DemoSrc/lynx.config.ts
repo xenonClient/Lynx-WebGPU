@@ -26,6 +26,21 @@ export default defineConfig({
       hdr: './src/hdr/index.tsx',
       scrollpass: './src/scrollpass/index.tsx',
     },
+    // PrimJS에는 self/performance/navigator 같은 웹 전역이 없고, `globalThis.X = …` 대입은
+    // bare 식별자 해석에 반영되지 않는다. 그래서 웹 라이브러리(Three.js 등)가 쓰는 이름을
+    // shim(webgpu.js)이 로드 시점에 얹는 lynx* 전역으로 컴파일 타임에 바꿔치기한다.
+    // 선언된 바인딩(shim 자신의 `export const GPUBufferUsage` 등)은 치환되지 않는다.
+    // 전체 조리법: docs/JS-AUTHORING.md §10.
+    define: {
+      self: 'globalThis',
+      performance: 'globalThis.lynxPerformance',
+      navigator: 'globalThis.lynxNavigator',
+      GPUBufferUsage: 'globalThis.lynxGPUBufferUsage',
+      GPUTextureUsage: 'globalThis.lynxGPUTextureUsage',
+      GPUShaderStage: 'globalThis.lynxGPUShaderStage',
+      GPUColorWrite: 'globalThis.lynxGPUColorWrite',
+      GPUMapMode: 'globalThis.lynxGPUMapMode',
+    },
   },
   output: {
     filenameHash: false,

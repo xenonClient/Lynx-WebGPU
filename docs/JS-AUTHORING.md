@@ -225,3 +225,52 @@ device.onError((error, text) => {
   WGSL이 어떻게 번역됐는지 그대로 볼 수 있다.
 - 화면이 검게만 나오면: (1) `getSize()`가 0인지, (2) `configure` 했는지,
   (3) `submit()`을 불렀는지 순서로 확인한다.
+
+## 10. 웹 라이브러리 이식 (Three.js 등) — PrimJS 전역 브리지
+
+브라우저 전역을 기대하는 라이브러리는 PrimJS에서 세 가지 벽에 부딪힌다:
+
+| 문제 | 증상 (Three.js 기준) |
+|---|---|
+| `self`가 없다 | `Animation`이 `typeof self !== 'undefined' ? self : null`로 컨텍스트를 잡아 `null` → `renderer.init()`이 오류 없이 영구 정지 |
+| `performance`가 없다 | `NodeFrame.update()`의 `performance.now()`에서 같은 정지 |
+| `globalThis.X = v` 대입이 **bare 식별자 `X`로 안 보인다** | 부트스트랩으로 `globalThis.navigator = …`를 넣어도 `navigator` → *undefined is not an object* |
+
+세 번째가 핵심이다 — 런타임 대입으로는 해결할 수 없고, **번들러가 컴파일 타임에 식별자를
+바꿔치기**해야 한다. shim(`webgpu.js`)이 로드 시점에 네임스페이스가 붙은 전역을 얹어 두므로
+(`lynxNavigator`, `lynxPerformance`, `lynxGPUBufferUsage` …), `lynx.config.ts`에서 그 이름으로
+연결하면 된다:
+
+```ts
+// lynx.config.ts
+export default defineConfig({
+  source: {
+    entry: { /* … */ },
+    define: {
+      self: 'globalThis',
+      performance: 'globalThis.lynxPerformance',
+      navigator: 'globalThis.lynxNavigator',
+      GPUBufferUsage: 'globalThis.lynxGPUBufferUsage',
+      GPUTextureUsage: 'globalThis.lynxGPUTextureUsage',
+      GPUShaderStage: 'globalThis.lynxGPUShaderStage',
+      GPUColorWrite: 'globalThis.lynxGPUColorWrite',
+      GPUMapMode: 'globalThis.lynxGPUMapMode',
+    },
+  },
+  // …
+})
+```
+
+- `define`은 **자유 식별자만** 치환한다. shim 자신의 `export const GPUBufferUsage`나
+  `import { GPUBufferUsage } from './webgpu.js'` 같은 선언된 바인딩은 건드리지 않는다 —
+  두 방식을 섞어 써도 안전하다.
+- 전역이 실제로 깔리는 시점은 `webgpu.js` 모듈 로드다. `define` 결과는 호출 시점에
+  평가되므로(`performance.now()` → `globalThis.lynxPerformance.now()`) import 순서에
+  민감하지 않지만, 라이브러리가 모듈 초기화에서 전역을 **캡처**한다면 shim을 먼저 import한다.
+- Three.js가 다시 읽는 디바이스 표면(`device.features`, `device.lost`)은 shim이 명세대로
+  제공한다 — `requestDevice({ requiredFeatures })`로 요청한 것만 `features`에 들어가므로,
+  어댑터에서 고른 기능을 **요청에 실어 넘길 것**.
+- 프레임 루프는 `renderer.setAnimationLoop` 대신 `startFrameLoop`(§4)에서
+  `renderer.renderAsync(...)`를 직접 부른다 — `requestAnimationFrame`은 제공하지 않는다.
+- Three.js는 파이프라인을 **지연 생성**하며 그 경로에 `popErrorScope()`가 섞여 있다.
+  §5의 규칙대로 이 호출은 프레임 중간 제출을 만들지만, 프레임을 깨지는 않는다.
