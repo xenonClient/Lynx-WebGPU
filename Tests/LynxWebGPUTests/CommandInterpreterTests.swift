@@ -356,6 +356,31 @@ final class CommandInterpreterTests: XCTestCase {
         )
     }
 
+    func test_파이프라인없는_간접_드로우는_op이름이_든_메시지로_거부한다() {
+        // 한때 이 가드가 `applyDrawState()` 뒤에 있어 도달 불가였다 — 일반형 메시지("draw 전에…")가
+        // 대신 나가 사용자가 어느 op이 문제인지 알 수 없었다. op 이름이 실제로 나가는지 못 박는다.
+        let renderSetup = indirectSetup(usage: TestUsage.indirect)
+        let renderResult = harness.execute(renderSetup + [
+            ["op": "drawIndirect", "indirectBuffer": 1],
+        ])
+        XCTAssertEqual(errors(renderResult).first?["kind"] as? String, "validation")
+        XCTAssertTrue(
+            ((errors(renderResult).first?["message"] as? String) ?? "")
+                .contains("drawIndirect 전에 setPipeline"),
+            "op 이름(drawIndirect)이 든 메시지여야 한다: \(errors(renderResult))"
+        )
+
+        let computeSetup = indirectSetup(usage: TestUsage.indirect, compute: true)
+        let computeResult = harness.execute(computeSetup + [
+            ["op": "dispatchWorkgroupsIndirect", "indirectBuffer": 1],
+        ])
+        XCTAssertTrue(
+            ((errors(computeResult).first?["message"] as? String) ?? "")
+                .contains("dispatchWorkgroupsIndirect 전에 setPipeline"),
+            "op 이름(dispatchWorkgroupsIndirect)이 든 메시지여야 한다: \(errors(computeResult))"
+        )
+    }
+
     func test_어댑터_정보가_한계값을_보고한다() {
         let info = harness.context.adapterInfo()
 

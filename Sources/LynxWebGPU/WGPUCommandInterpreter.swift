@@ -1031,6 +1031,9 @@ final class WGPUCommandInterpreter {
     /// 바인드 그룹과 정점 버퍼를 한자리에서 다루는 이유는, 둘 다 **번들 경계에서 무효화되는
     /// 상태**라 검사 시점이 같아야 하기 때문이다. 새 드로우 op을 추가할 때 이 함수 하나만
     /// 부르면 격리 계약이 자동으로 따라온다.
+    ///
+    /// 파이프라인 가드는 각 드로우 op이 자기 이름이 든 메시지로 **이 함수보다 먼저** 세운다 —
+    /// 아래의 같은 검사는 그 가드를 빠뜨린 op을 위한 안전망이라 메시지가 일반형이다.
     private func applyDrawState() throws {
         let layout: WGPUPipelineLayoutObject
         let needsSizes: Bool
@@ -1242,10 +1245,12 @@ final class WGPUCommandInterpreter {
 
     private func draw(_ command: WGPUValueReader) throws {
         let encoder = try requireRenderEncoder()
-        try applyDrawState()
+        // 파이프라인 가드는 `applyDrawState()`보다 **먼저** 둔다 — 그 안의 같은 검사가 먼저
+        // 던지면 이 op 이름이 든 메시지가 영영 나가지 못하는 죽은 코드가 된다 (아래 draw 계열 공통).
         guard let pipeline = currentRenderPipeline else {
             throw WGPUError.validation("draw 전에 setPipeline이 필요하다")
         }
+        try applyDrawState()
         encoder.drawPrimitives(
             type: pipeline.primitiveType,
             vertexStart: command.int("firstVertex", default: 0),
@@ -1257,13 +1262,13 @@ final class WGPUCommandInterpreter {
 
     private func drawIndexed(_ command: WGPUValueReader) throws {
         let encoder = try requireRenderEncoder()
-        try applyDrawState()
         guard let pipeline = currentRenderPipeline else {
             throw WGPUError.validation("drawIndexed 전에 setPipeline이 필요하다")
         }
         guard let indexBinding else {
             throw WGPUError.validation("drawIndexed 전에 setIndexBuffer가 필요하다")
         }
+        try applyDrawState()
         let firstIndex = command.int("firstIndex", default: 0)
         encoder.drawIndexedPrimitives(
             type: pipeline.primitiveType,
@@ -1321,10 +1326,10 @@ final class WGPUCommandInterpreter {
         // 이미 바꿔 놓는 일이 없어야 한다 (오류는 프레임을 죽이지 않고 누적되므로 더 그렇다).
         // vertexCount, instanceCount, firstVertex, firstInstance — u32 4개.
         let arguments = try indirectArguments(command, argumentSize: 16)
-        try applyDrawState()
         guard let pipeline = currentRenderPipeline else {
             throw WGPUError.validation("drawIndirect 전에 setPipeline이 필요하다")
         }
+        try applyDrawState()
         encoder.drawPrimitives(
             type: pipeline.primitiveType,
             indirectBuffer: arguments.buffer,
@@ -1336,13 +1341,13 @@ final class WGPUCommandInterpreter {
         let encoder = try requireRenderEncoder()
         // indexCount, instanceCount, firstIndex, baseVertex(i32), firstInstance — 5칸.
         let arguments = try indirectArguments(command, argumentSize: 20)
-        try applyDrawState()
         guard let pipeline = currentRenderPipeline else {
             throw WGPUError.validation("drawIndexedIndirect 전에 setPipeline이 필요하다")
         }
         guard let indexBinding else {
             throw WGPUError.validation("drawIndexedIndirect 전에 setIndexBuffer가 필요하다")
         }
+        try applyDrawState()
         encoder.drawIndexedPrimitives(
             type: pipeline.primitiveType,
             indexType: indexBinding.type,
@@ -1359,10 +1364,10 @@ final class WGPUCommandInterpreter {
         let encoder = try requireComputeEncoder()
         // x, y, z — u32 3개.
         let arguments = try indirectArguments(command, argumentSize: 12)
-        try applyDrawState()
         guard let pipeline = currentComputePipeline else {
             throw WGPUError.validation("dispatchWorkgroupsIndirect 전에 setPipeline이 필요하다")
         }
+        try applyDrawState()
         encoder.dispatchThreadgroups(
             indirectBuffer: arguments.buffer,
             indirectBufferOffset: arguments.offset,
@@ -1400,10 +1405,10 @@ final class WGPUCommandInterpreter {
 
     private func dispatchWorkgroups(_ command: WGPUValueReader) throws {
         let encoder = try requireComputeEncoder()
-        try applyDrawState()
         guard let pipeline = currentComputePipeline else {
             throw WGPUError.validation("dispatchWorkgroups 전에 setPipeline이 필요하다")
         }
+        try applyDrawState()
         encoder.dispatchThreadgroups(
             MTLSize(
                 width: max(command.int("x", default: 1), 1),
