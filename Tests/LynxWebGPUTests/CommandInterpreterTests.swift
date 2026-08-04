@@ -399,6 +399,74 @@ final class CommandInterpreterTests: XCTestCase {
         )
     }
 
+    // MARK: - 진입점 해석 (명세의 "get the entry point")
+
+    /// 셰이더: 정점 하나(`mainVS`) + 프래그먼트 셋(`main_2d` …) — three.js 밉맵 셰이더와 같은 모양.
+    private static let multiEntryShader = """
+    @vertex fn mainVS() -> @builtin(position) vec4f { return vec4f(0.0, 0.0, 0.0, 1.0); }
+    @fragment fn main_2d() -> @location(0) vec4f { return vec4f(1.0, 0.0, 0.0, 1.0); }
+    @fragment fn main_cube() -> @location(0) vec4f { return vec4f(0.0, 1.0, 0.0, 1.0); }
+    """
+
+    /// `entryPoint`는 명세에서 **필수가 아니다.** 생략하면 그 스테이지의 유일한 진입점을 쓴다.
+    /// `"main"`으로 넘겨짚으면 이름이 다른 셰이더가 통째로 거부된다 — three.js 밉맵 생성이
+    /// 정확히 그렇게 깨졌다 (`mainVS`가 있는데 `main`을 찾다 실패).
+    func test_entryPoint를_생략하면_그_스테이지의_유일한_진입점을_쓴다() {
+        let result = harness.execute([
+            ["op": "createShaderModule", "id": 1, "code": Self.multiEntryShader],
+            // 정점은 생략(유일한 mainVS로 해석돼야 한다), 프래그먼트는 셋 중 하나를 지정한다.
+            ["op": "createRenderPipeline", "id": 2, "layout": "auto",
+             "vertex": ["module": 1],
+             "fragment": ["module": 1, "entryPoint": "main_2d",
+                          "targets": [["format": "rgba8unorm"]]]],
+        ])
+
+        XCTAssertEqual(result["ok"] as? Bool, true, harness.describeErrors(result))
+    }
+
+    func test_후보가_둘_이상이면_고르지_않고_거부한다() {
+        let result = harness.execute([
+            ["op": "createShaderModule", "id": 1, "code": Self.multiEntryShader],
+            // 프래그먼트 진입점이 둘이라 생략하면 고를 수 없다 — 조용히 하나를 집으면 안 된다.
+            ["op": "createRenderPipeline", "id": 2, "layout": "auto",
+             "vertex": ["module": 1],
+             "fragment": ["module": 1, "targets": [["format": "rgba8unorm"]]]],
+        ])
+
+        XCTAssertEqual(errors(result).first?["kind"] as? String, "validation")
+        let message = (errors(result).first?["message"] as? String) ?? ""
+        XCTAssertTrue(message.contains("main_2d"), "후보 이름을 알려 줘야 한다: \(message)")
+        XCTAssertTrue(message.contains("main_cube"))
+    }
+
+    func test_컴퓨트도_entryPoint를_생략할_수_있다() {
+        let result = harness.execute([
+            ["op": "createShaderModule", "id": 1, "code": """
+             @compute @workgroup_size(4) fn onlyKernel() {}
+             """],
+            ["op": "createComputePipeline", "id": 2, "layout": "auto", "compute": ["module": 1]],
+        ])
+
+        XCTAssertEqual(result["ok"] as? Bool, true, harness.describeErrors(result))
+    }
+
+    func test_스테이지가_다른_진입점을_지정하면_거부한다() {
+        let result = harness.execute([
+            ["op": "createShaderModule", "id": 1, "code": Self.multiEntryShader],
+            // 프래그먼트 자리에 정점 진입점을 줬다.
+            ["op": "createRenderPipeline", "id": 2, "layout": "auto",
+             "vertex": ["module": 1, "entryPoint": "mainVS"],
+             "fragment": ["module": 1, "entryPoint": "mainVS",
+                          "targets": [["format": "rgba8unorm"]]]],
+        ])
+
+        XCTAssertEqual(errors(result).first?["kind"] as? String, "validation")
+        XCTAssertTrue(
+            ((errors(result).first?["message"] as? String) ?? "").contains("vertex"),
+            "어느 스테이지인지 알려 줘야 한다: \(errors(result))"
+        )
+    }
+
     func test_파이프라인없는_간접_드로우는_op이름이_든_메시지로_거부한다() {
         // 한때 이 가드가 `applyDrawState()` 뒤에 있어 도달 불가였다 — 일반형 메시지("draw 전에…")가
         // 대신 나가 사용자가 어느 op이 문제인지 알 수 없었다. op 이름이 실제로 나가는지 못 박는다.

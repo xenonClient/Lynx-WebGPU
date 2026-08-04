@@ -619,7 +619,7 @@ final class WGPUCommandInterpreter {
 
     private func createRenderPipeline(_ command: WGPUValueReader) throws {
         let handle = try command.requiredHandle("id")
-        let descriptor = try WGPURenderPipelineDescriptor(from: command)
+        var descriptor = try WGPURenderPipelineDescriptor(from: command)
         let vertexModule = try registry.lookup(
             descriptor.vertex.module, as: WGPUShaderModuleObject.self, kind: "GPUShaderModule"
         )
@@ -627,13 +627,25 @@ final class WGPUCommandInterpreter {
             try registry.lookup($0.module, as: WGPUShaderModuleObject.self, kind: "GPUShaderModule")
         }
 
+        // 명세의 "get the entry point" — 이름을 생략하면 그 스테이지의 유일한 진입점을 쓴다.
+        // 여기서 한 번 확정해 두면 아래 계층은 전부 결정된 이름만 다룬다.
+        descriptor.vertex.entryPoint = try vertexModule.resolveEntryPoint(
+            descriptor.vertex.entryPoint, stage: .vertex, path: command.fieldPath("vertex.entryPoint")
+        )
+        if let fragmentModule, let fragment = descriptor.fragment {
+            descriptor.fragment?.entryPoint = try fragmentModule.resolveEntryPoint(
+                fragment.entryPoint, stage: .fragment, path: command.fieldPath("fragment.entryPoint")
+            )
+        }
+        let vertexEntry = descriptor.vertex.entryPoint!
+
         var stages: [(module: WGPUShaderModuleObject, entryPoints: [String])] = []
         if let fragmentModule, fragmentModule === vertexModule, let fragment = descriptor.fragment {
-            stages = [(vertexModule, [descriptor.vertex.entryPoint, fragment.entryPoint])]
+            stages = [(vertexModule, [vertexEntry, fragment.entryPoint!])]
         } else {
-            stages = [(vertexModule, [descriptor.vertex.entryPoint])]
+            stages = [(vertexModule, [vertexEntry])]
             if let fragmentModule, let fragment = descriptor.fragment {
-                stages.append((fragmentModule, [fragment.entryPoint]))
+                stages.append((fragmentModule, [fragment.entryPoint!]))
             }
         }
         let layout = try WGPUPipelineLayoutResolver.resolve(descriptor.layout, stages: stages, registry: registry)
@@ -646,12 +658,15 @@ final class WGPUCommandInterpreter {
 
     private func createComputePipeline(_ command: WGPUValueReader) throws {
         let handle = try command.requiredHandle("id")
-        let descriptor = try WGPUComputePipelineDescriptor(from: command)
+        var descriptor = try WGPUComputePipelineDescriptor(from: command)
         let module = try registry.lookup(
             descriptor.module, as: WGPUShaderModuleObject.self, kind: "GPUShaderModule"
         )
+        descriptor.entryPoint = try module.resolveEntryPoint(
+            descriptor.entryPoint, stage: .compute, path: command.fieldPath("compute.entryPoint")
+        )
         let layout = try WGPUPipelineLayoutResolver.resolve(
-            descriptor.layout, stages: [(module, [descriptor.entryPoint])], registry: registry
+            descriptor.layout, stages: [(module, [descriptor.entryPoint!])], registry: registry
         )
         registry.insert(
             try WGPUComputePipelineObject(device: device, descriptor: descriptor, layout: layout, module: module),

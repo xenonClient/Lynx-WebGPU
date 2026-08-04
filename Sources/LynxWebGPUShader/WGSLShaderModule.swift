@@ -103,6 +103,29 @@ public final class WGSLShaderModule {
         reflection.entryPoint(named: entryPoint)?.workgroupSize
     }
 
+    /// 명세의 **"get the entry point"** — 이름이 없으면 그 스테이지의 **유일한** 진입점을 쓴다.
+    ///
+    /// `entryPoint`는 명세에서 필수가 아니다. 생략하면 스테이지가 같은 진입점이 정확히 하나일 때
+    /// 그것을 쓰고, 없거나 둘 이상이면 오류다. `"main"`으로 넘겨짚으면 진입점 이름이 다른 셰이더가
+    /// 통째로 거부된다 — three.js의 밉맵 셰이더(`mainVS` + `main_2d` …)가 실제로 그렇게 깨졌다.
+    public func resolveEntryPoint(_ requested: String?, stage: WGSLStage) throws -> String {
+        if let requested {
+            _ = try requireEntryPoint(requested, stage: stage)
+            return requested
+        }
+        let candidates = reflection.entryPoints.filter { $0.stage == stage }
+        guard let only = candidates.first, candidates.count == 1 else {
+            let available = reflection.entryPoints.map { "\($0.name)(\($0.stage.rawValue))" }
+            throw WGPUError.validation(
+                candidates.isEmpty
+                    ? "셰이더에 \(stage.rawValue) 진입점이 없다 (있는 것: \(available.joined(separator: ", ")))"
+                    : "\(stage.rawValue) 진입점이 \(candidates.count)개라 하나를 고를 수 없다 — "
+                        + "entryPoint를 지정할 것 (\(candidates.map(\.name).joined(separator: ", ")))"
+            )
+        }
+        return only.name
+    }
+
     /// 진입점이 존재하고 기대한 스테이지인지 확인한다.
     public func requireEntryPoint(_ name: String, stage: WGSLStage) throws -> WGSLEntryPointInfo {
         guard let entryPoint = reflection.entryPoint(named: name) else {

@@ -55,11 +55,16 @@ const CHECK_LABELS = [
   '셰이더 파이프라인 (단색 쿼드)',
   '텍스처 업로드·샘플링',
   '조명 (Standard + Directional)',
+  '깊이 테스트 (앞뒤 가림)',
+  '인스턴싱 (InstancedMesh)',
+  '밉맵 생성 (자체 컴퓨트 패스)',
+  '알파 블렌딩 (합성 공식)',
+  '비동기 파이프라인 (compileAsync)',
   '애니메이션 루프',
   '커맨드 스트림 무오류',
 ]
-const CHECK_ANIMATION = 7
-const CHECK_STREAM = 8
+const CHECK_ANIMATION = 12
+const CHECK_STREAM = 13
 
 /**
  * three를 거치지 않는 shim 직접 왕복 — three 검증이 실패할 때 어느 층인지 가른다.
@@ -107,9 +112,11 @@ async function runShimProbes(
   }
 }
 
-/** 렌더 타깃 중앙 픽셀 [r, g, b] (0~255). */
-async function readCenter(renderer: any, target: any): Promise<[number, number, number]> {
-  const data = await renderer.readRenderTargetPixelsAsync(target, 4, 4, 1, 1)
+/** 렌더 타깃의 한 픽셀 [r, g, b] (0~255). 기본은 8×8 타깃의 중앙 근처. */
+async function readPixel(
+  renderer: any, target: any, x = 4, y = 4
+): Promise<[number, number, number]> {
+  const data = await renderer.readRenderTargetPixelsAsync(target, x, y, 1, 1)
   return [data[0], data[1], data[2]]
 }
 
@@ -118,49 +125,66 @@ function formatRGB([r, g, b]: [number, number, number]) {
 }
 
 /**
- * 픽셀 값 검증 4종. 각각이 서로 다른 경로를 밟는다:
+ * 픽셀 값 검증 — 각 항목이 **서로 다른 GPU 경로**를 밟도록 고른 것들이다.
+ *
  * 클리어(패스 초기화) → 단색 쿼드(노드 셰이더 → WGSL 변환 → 파이프라인) →
- * 텍스처 쿼드(writeTexture 업로드 + 샘플러) → 조명 플레인(라이팅 유니폼 + BRDF).
- * 리드백 자체가 copyTextureToBuffer + mapAsync라, 통과하면 그 경로까지 함께 검증된다.
+ * 텍스처(writeTexture + 샘플러) → 조명(라이팅 유니폼 + BRDF) → 깊이(깊이 어태치먼트 +
+ * 비교 함수) → 인스턴싱(인스턴스 버퍼 + `@builtin(instance_index)`) → 밉맵(three가 도는
+ * 자체 컴퓨트 패스) → 블렌딩(고정 함수 합성) → 비동기 컴파일(`createRenderPipelineAsync`).
+ *
+ * 리드백 자체가 `copyTextureToBuffer` + `mapAsync`라, 통과하면 그 경로도 함께 검증된다.
  */
 async function runPixelChecks(
   renderer: any,
   mark: (index: number, state: 'ok' | 'fail', detail?: string) => void
 ) {
-  const target = new THREE.RenderTarget(8, 8)
+  const target = new THREE.RenderTarget(8, 8, { depthBuffer: true })
   const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 10)
   camera.position.z = 1
 
-  async function renderAndRead(scene: any): Promise<[number, number, number]> {
+  async function renderAndRead(
+    scene: any, x = 4, y = 4, useCamera: any = camera
+  ): Promise<[number, number, number]> {
     renderer.setRenderTarget(target)
-    await renderer.renderAsync(scene, camera)
+    await renderer.renderAsync(scene, useCamera)
     renderer.setRenderTarget(null)
-    return readCenter(renderer, target)
+    return readPixel(renderer, target, x, y)
+  }
+
+  /** 검증 하나가 던져도 나머지는 계속 돈다 — 첫 실패에서 멈추면 정보가 가장 적다. */
+  async function check(
+    index: number,
+    run: () => Promise<{ ok: boolean, detail: string }>
+  ) {
+    try {
+      const result = await run()
+      mark(index, result.ok ? 'ok' : 'fail', result.detail)
+    } catch (error) {
+      mark(index, 'fail', `예외: ${(error && (error as Error).message) || error}`.slice(0, 80))
+    }
   }
 
   // ① 클리어 색 — 빨강 배경만 있는 씬.
-  {
+  await check(3, async () => {
     const scene = new THREE.Scene()
     scene.background = new THREE.Color(1, 0, 0)
     const rgb = await renderAndRead(scene)
-    const ok = rgb[0] > 180 && rgb[1] < 60 && rgb[2] < 60
-    mark(3, ok ? 'ok' : 'fail', formatRGB(rgb))
-  }
+    return { ok: rgb[0] > 180 && rgb[1] < 60 && rgb[2] < 60, detail: formatRGB(rgb) }
+  })
 
   // ② 단색 쿼드 — 초록 MeshBasicMaterial이 화면을 덮는다.
-  {
+  await check(4, async () => {
     const scene = new THREE.Scene()
     scene.add(new THREE.Mesh(
       new THREE.PlaneGeometry(2, 2),
       new THREE.MeshBasicMaterial({ color: 0x00ff00 })
     ))
     const rgb = await renderAndRead(scene)
-    const ok = rgb[1] > 180 && rgb[0] < 60 && rgb[2] < 60
-    mark(4, ok ? 'ok' : 'fail', formatRGB(rgb))
-  }
+    return { ok: rgb[1] > 180 && rgb[0] < 60 && rgb[2] < 60, detail: formatRGB(rgb) }
+  })
 
   // ③ 텍스처 — 주황 단색 2×2 DataTexture를 샘플링한다.
-  {
+  await check(5, async () => {
     const texels = new Uint8Array(16)
     for (let index = 0; index < 4; index++) texels.set([255, 128, 0, 255], index * 4)
     const texture = new THREE.DataTexture(texels, 2, 2, THREE.RGBAFormat, THREE.UnsignedByteType)
@@ -172,12 +196,14 @@ async function runPixelChecks(
       new THREE.MeshBasicMaterial({ map: texture })
     ))
     const rgb = await renderAndRead(scene)
-    const ok = rgb[0] > 180 && rgb[1] > 60 && rgb[1] < 220 && rgb[2] < 60
-    mark(5, ok ? 'ok' : 'fail', formatRGB(rgb))
-  }
+    return {
+      ok: rgb[0] > 180 && rgb[1] > 60 && rgb[1] < 220 && rgb[2] < 60,
+      detail: formatRGB(rgb),
+    }
+  })
 
   // ④ 조명 — 흰 StandardMaterial 플레인에 정면 직사광. 라이팅이 죽었으면 검게 나온다.
-  {
+  await check(6, async () => {
     const scene = new THREE.Scene()
     scene.add(new THREE.Mesh(
       new THREE.PlaneGeometry(2, 2),
@@ -187,9 +213,117 @@ async function runPixelChecks(
     light.position.set(0, 0, 1)
     scene.add(light)
     const rgb = await renderAndRead(scene)
-    const ok = rgb[0] > 80 && rgb[1] > 80 && rgb[2] > 80
-    mark(6, ok ? 'ok' : 'fail', formatRGB(rgb))
-  }
+    return { ok: rgb[0] > 80 && rgb[1] > 80 && rgb[2] > 80, detail: formatRGB(rgb) }
+  })
+
+  // ⑤ 깊이 테스트 — 파랑이 앞, 빨강이 뒤. 깊이 비교가 죽으면 그리는 순서대로 빨강이 이긴다.
+  await check(7, async () => {
+    const scene = new THREE.Scene()
+    const back = new THREE.Mesh(
+      new THREE.PlaneGeometry(2, 2), new THREE.MeshBasicMaterial({ color: 0xff0000 })
+    )
+    back.position.z = -0.5
+    const front = new THREE.Mesh(
+      new THREE.PlaneGeometry(2, 2), new THREE.MeshBasicMaterial({ color: 0x0000ff })
+    )
+    front.position.z = 0.5
+    // 앞의 것을 **먼저** 그리게 해서 깊이 테스트가 아니면 통과할 수 없게 만든다.
+    front.renderOrder = 0
+    back.renderOrder = 1
+    scene.add(front, back)
+
+    const rgb = await renderAndRead(scene)
+    return { ok: rgb[2] > 180 && rgb[0] < 60, detail: formatRGB(rgb) }
+  })
+
+  // ⑥ 인스턴싱 — 인스턴스마다 다른 위치·색. 인스턴스 버퍼가 안 오면 하나만 그려진다.
+  await check(8, async () => {
+    const mesh = new THREE.InstancedMesh(
+      new THREE.PlaneGeometry(0.8, 2),
+      new THREE.MeshBasicMaterial(),
+      2
+    )
+    const matrix = new THREE.Matrix4()
+    matrix.setPosition(-0.5, 0, 0)
+    mesh.setMatrixAt(0, matrix)
+    mesh.setColorAt(0, new THREE.Color(1, 0, 0))
+    matrix.setPosition(0.5, 0, 0)
+    mesh.setMatrixAt(1, matrix)
+    mesh.setColorAt(1, new THREE.Color(0, 0, 1))
+    mesh.instanceMatrix.needsUpdate = true
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
+
+    const scene = new THREE.Scene()
+    scene.add(mesh)
+
+    // 왼쪽(빨강)과 오른쪽(파랑)을 각각 본다 — 인스턴스 1이 안 그려지면 오른쪽이 검다.
+    const left = await renderAndRead(scene, 1, 4)
+    const right = await renderAndRead(scene, 6, 4)
+    return {
+      ok: left[0] > 150 && left[2] < 80 && right[2] > 150 && right[0] < 80,
+      detail: `L${formatRGB(left)} R${formatRGB(right)}`,
+    }
+  })
+
+  // ⑦ 밉맵 — three가 자체 컴퓨트 패스로 밉을 만든다. 낮은 밉을 강제로 샘플링해
+  //    두 색의 평균이 나오는지 본다 (밉 생성이 죽으면 원본 색 그대로거나 검다).
+  await check(9, async () => {
+    const size = 4
+    const texels = new Uint8Array(size * size * 4)
+    for (let index = 0; index < size * size; index++) {
+      // 절반은 빨강, 절반은 초록 — 평균은 (128, 128, 0) 근처여야 한다.
+      texels.set(index % 2 === 0 ? [255, 0, 0, 255] : [0, 255, 0, 255], index * 4)
+    }
+    const texture = new THREE.DataTexture(texels, size, size, THREE.RGBAFormat, THREE.UnsignedByteType)
+    texture.generateMipmaps = true
+    texture.minFilter = THREE.LinearMipmapLinearFilter
+    texture.magFilter = THREE.LinearFilter
+    texture.needsUpdate = true
+
+    const material = new THREE.MeshBasicMaterial({ map: texture })
+    const scene = new THREE.Scene()
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material)
+    scene.add(mesh)
+
+    const rgb = await renderAndRead(scene)
+    // **밉을 실제로 만들었는지**를 본다 — 만들었으면 아래 밉에서 두 색이 섞여 양쪽 채널이
+    // 함께 살아 있다. 생성이 죽으면 원본 텍셀 하나(순빨강 또는 순초록)가 그대로 나온다.
+    // 느슨하게 "검지 않으면 통과"로 두면, 밉 파이프라인이 통째로 실패해도 초록불이 켜진다
+    // (실제로 그렇게 진입점 해석 버그를 놓칠 뻔했다).
+    const ok = rgb[0] > 40 && rgb[1] > 40
+    return { ok, detail: `${formatRGB(rgb)}${ok ? '' : ' 섞이지 않음'}` }
+  })
+
+  // ⑧ 알파 블렌딩 — 불투명 빨강 위에 50% 파랑. 합성이 죽으면 순색이 나온다.
+  await check(10, async () => {
+    const scene = new THREE.Scene()
+    const back = new THREE.Mesh(
+      new THREE.PlaneGeometry(2, 2), new THREE.MeshBasicMaterial({ color: 0xff0000 })
+    )
+    back.position.z = -0.5
+    const front = new THREE.Mesh(
+      new THREE.PlaneGeometry(2, 2),
+      new THREE.MeshBasicMaterial({ color: 0x0000ff, transparent: true, opacity: 0.5 })
+    )
+    front.position.z = 0.5
+    scene.add(back, front)
+
+    const rgb = await renderAndRead(scene)
+    // 0.5씩 섞이면 양쪽 채널이 모두 중간값이다 — 순색(255/0)이면 합성이 안 된 것이다.
+    return { ok: rgb[0] > 60 && rgb[0] < 210 && rgb[2] > 60 && rgb[2] < 210, detail: formatRGB(rgb) }
+  })
+
+  // ⑨ 비동기 파이프라인 — three의 compileAsync가 createRenderPipelineAsync를 탄다.
+  await check(11, async () => {
+    const scene = new THREE.Scene()
+    scene.add(new THREE.Mesh(
+      new THREE.PlaneGeometry(2, 2),
+      new THREE.MeshBasicMaterial({ color: 0x00ffff })
+    ))
+    await renderer.compileAsync(scene, camera)
+    const rgb = await renderAndRead(scene)
+    return { ok: rgb[1] > 150 && rgb[2] > 150 && rgb[0] < 90, detail: formatRGB(rgb) }
+  })
 
   target.dispose()
 }
@@ -238,7 +372,7 @@ function ThreeScene() {
     CHECK_LABELS.map((label) => ({ label, state: 'wait' }))
   )
   const [stats, setStats] = useState('')
-  const [lastError, setLastError] = useState('')
+  const [errorLines, setErrorLines] = useState<string[]>([])
 
   useEffect(() => {
     let disposed = false
@@ -306,7 +440,7 @@ function ThreeScene() {
       device.onError((_error: any, text: string) => {
         streamStats.errors += 1
         console.log(`[3js-error] ${text}`)
-        setLastError(text)
+        setErrorLines((previous) => (previous.length < 5 ? [...previous, text] : previous))
         mark(CHECK_STREAM, 'fail', `${streamStats.errors}건`)
       })
       attachStreamCounter(device)
@@ -317,7 +451,10 @@ function ThreeScene() {
         console[level] = (...parts: any[]) => {
           original(...parts)
           const text = parts.map((part) => (part && part.message) || String(part)).join(' ')
-          if (!disposed) setLastError(`console.${level}: ${text.slice(0, 160)}`)
+          if (disposed) return
+          setErrorLines((previous) => (
+            previous.length < 5 ? [...previous, `console.${level}: ${text.slice(0, 200)}`] : previous
+          ))
         }
       }
 
@@ -382,7 +519,9 @@ function ThreeScene() {
           </text>
         ))}
         {stats !== '' && <text className="check-stats">{stats}</text>}
-        {lastError !== '' && <text className="check-row check-fail">{lastError}</text>}
+        {errorLines.map((line, index) => (
+          <text className="check-row check-fail" key={`err-${index}`}>{line}</text>
+        ))}
       </view>
     </view>
   )

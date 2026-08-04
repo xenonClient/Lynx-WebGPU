@@ -312,6 +312,22 @@ public final class WGPUShaderModuleObject {
         self.wgsl = descriptor.language == .wgsl ? try WGSLShaderModule(source: descriptor.code) : nil
     }
 
+    /// 명세의 **"get the entry point"** — 이름을 생략하면 그 스테이지의 **유일한** 진입점을 쓴다.
+    ///
+    /// `entryPoint`는 명세에서 필수 멤버가 아니다. 넘겨짚어 `"main"`을 쓰면 진입점 이름이 다른
+    /// 셰이더가 통째로 거부된다 — three.js의 밉맵 셰이더(`mainVS` + `main_2d` …)가 그렇게 깨졌다.
+    ///
+    /// MSL 모듈은 리플렉션이 없어 스테이지를 셀 수 없다. 그쪽은 `"main"`을 관례로 삼되,
+    /// **함수가 실제로 없으면 Metal이 그 자리에서 잡는다** (`makeFunction`이 nil을 준다).
+    func resolveEntryPoint(_ requested: String?, stage: WGSLStage, path: String? = nil) throws -> String {
+        guard let wgsl else { return requested ?? "main" }
+        do {
+            return try wgsl.resolveEntryPoint(requested, stage: stage)
+        } catch let error as WGPUError {
+            throw WGPUError(kind: error.kind, message: error.message, path: error.path ?? path)
+        }
+    }
+
     /// 진입점 목록과 바인딩 배정에 맞는 `MTLLibrary`를 얻는다 (같은 조합은 재사용).
     func library(
         entryPoints: [String],

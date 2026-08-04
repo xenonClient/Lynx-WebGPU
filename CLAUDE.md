@@ -17,7 +17,7 @@ Lynx 연동: `docs/LYNX-INTEGRATION.md` · 번들(JS) 작성: `docs/JS-AUTHORING
 ```zsh
 # macOS 개발 루프 — Lynx 없이 엔진/트랜스파일러만 빌드·테스트 (가장 빠르다)
 swift build
-swift test                                   # 230개 테스트, ~4초
+swift test                                   # 234개 테스트, ~4초
 swift test --filter LynxWebGPUShaderTests    # WGSL → MSL 트랜스파일러만
 swift test --filter RenderPipelineTests      # GPU 오프스크린 렌더 검증
 

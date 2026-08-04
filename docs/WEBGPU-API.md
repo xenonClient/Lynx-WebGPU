@@ -213,6 +213,8 @@ const compute = device.createComputePipeline({                // createComputePi
 })
 ```
 
+- **`entryPoint`는 생략할 수 있다.** 그러면 그 스테이지의 **유일한** 진입점을 쓴다 (명세의
+  "get the entry point"). 후보가 없거나 둘 이상이면 이름을 알려 주는 validation 오류다.
 - `vertex` / `fragment` / `compute` 각각 `constants: { name: value }` 로 셰이더의 `override` 값을 준다
   (`docs/WGSL.md` §2-2). 같은 셰이더라도 상수가 다르면 별도로 컴파일·캐시된다.
 - 정점 버퍼 슬롯은 **최대 8개**, `arrayStride: 0`은 미지원.
