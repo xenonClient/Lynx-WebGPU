@@ -53,6 +53,8 @@ interface WGPUAdapterInfo {
   backend: string;
   limits?: Record<string, number>;
   hasUnifiedMemory?: boolean;
+  /** 명세 `GPUAdapterInfo` (vendor/architecture/device/description …). */
+  info?: Record<string, any>;
   /** 기기마다 갈리는 기능의 명세 철자 (`'timestamp-query'` 등). */
   features?: string[];
 }

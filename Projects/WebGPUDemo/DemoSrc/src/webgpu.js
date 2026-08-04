@@ -100,6 +100,9 @@ export const GPUMapMode = { READ: 0x1, WRITE: 0x2 };
 
 /** @typedef {{type: 'occlusion' | 'timestamp', count: number, label?: string}} GPUQuerySetDescriptor */
 
+/** 명세 `GPUAdapterInfo`. */
+/** @typedef {{vendor: string, architecture: string, device: string, description: string, isFallbackAdapter: boolean, subgroupMinSize: number, subgroupMaxSize: number}} GPUAdapterInfoView */
+
 /** 셰이더 컴파일 진단 하나 (명세 `GPUCompilationMessage`). */
 /** @typedef {{message: string, type: 'error' | 'warning' | 'info', lineNum: number, linePos: number, offset: number, length: number}} GPUCompilationMessage */
 
@@ -1398,6 +1401,8 @@ class GPUDevice {
   constructor(adapter, requiredFeatures) {
     this.adapter = adapter;
     this.limits = adapter.limits;
+    /** 명세 `GPUDevice.adapterInfo` — 어댑터의 것을 그대로 본다. */
+    this.adapterInfo = adapter.info;
     /**
      * 이 디바이스에 활성화된 기능 — 명세대로 **요청한 것만** 들어 있다 (어댑터가 지원해도
      * `requiredFeatures`로 요청하지 않았으면 `has()`는 false다). Three.js 등 웹 코드가
@@ -1888,9 +1893,36 @@ function makeFeatureSet(names) {
   };
 }
 
+/**
+ * 명세의 `GPUAdapterInfo` — 웹 코드가 GPU 종류로 분기할 때 읽는 표준 이름들.
+ *
+ * 값을 모르는 자리는 **빈 문자열**이다 (명세 규칙). 지어내면 그 문자열로 분기하는 코드가
+ * 잘못된 우회로를 탄다.
+ *
+ * @param {Record<string, any> | undefined} raw
+ * @returns {GPUAdapterInfoView}
+ */
+function makeAdapterInfo(raw) {
+  const source = raw || {};
+  return {
+    vendor: source.vendor || '',
+    architecture: source.architecture || '',
+    device: source.device || '',
+    description: source.description || '',
+    isFallbackAdapter: !!source.isFallbackAdapter,
+    subgroupMinSize: source.subgroupMinSize || 0,
+    subgroupMaxSize: source.subgroupMaxSize || 0,
+  };
+}
+
 class GPUAdapter {
   /** @param {WGPUAdapterInfo} info */
   constructor(info) {
+    /**
+     * 명세 `GPUAdapterInfo`. 아래 `name`·`backend`·`hasUnifiedMemory`는 **이 구현의 추가**로,
+     * 명세 이름이 없던 시절부터 있던 것이라 그대로 둔다 (기존 코드가 쓴다).
+     */
+    this.info = makeAdapterInfo(info.info);
     this.name = info.name;
     this.backend = info.backend;
     this.limits = info.limits || {};

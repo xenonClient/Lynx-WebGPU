@@ -684,6 +684,21 @@ final class CommandInterpreterTests: XCTestCase {
         XCTAssertNotNil(limits?["maxVertexBuffers"])
     }
 
+    /// 명세 `GPUAdapterInfo` — 웹 코드가 GPU 종류로 분기할 때 읽는 표준 이름들.
+    func test_어댑터_정보가_명세_GPUAdapterInfo를_싣는다() throws {
+        let info = try XCTUnwrap(harness.context.adapterInfo()["info"] as? [String: Any])
+
+        XCTAssertEqual(info["vendor"] as? String, "apple")
+        XCTAssertFalse((info["description"] as? String ?? "").isEmpty, "디바이스 이름이 있어야 한다")
+        // Metal에 계열 조회가 없는 자리는 **빈 문자열**이다 (명세 규칙) — 지어내지 않는다.
+        XCTAssertEqual(info["device"] as? String, "")
+        XCTAssertEqual(info["isFallbackAdapter"] as? Bool, false)
+        // subgroups 기능을 광고하지 않으므로 0이다.
+        XCTAssertEqual(info["subgroupMinSize"] as? Int, 0)
+        // architecture는 알아낸 만큼만 — 못 알아내면 빈 문자열이지만 nil은 아니다.
+        XCTAssertNotNil(info["architecture"] as? String)
+    }
+
     /// limits의 **키는 명세 철자여야 한다.** 웹 라이브러리가 이 이름으로 읽고 예산을 정하므로,
     /// 우리 식으로 지으면 그쪽은 `undefined`를 보고 잘못된 가정을 세운다 (값이 있는데도 없는 것처럼).
     func test_limits는_명세_이름을_전부_싣는다() throws {

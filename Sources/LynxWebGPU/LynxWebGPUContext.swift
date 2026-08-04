@@ -283,8 +283,24 @@ public final class LynxWebGPUContext {
             "maxComputeWorkgroupsPerDimension": 65535,
         ]
 
+        // 명세의 `GPUAdapterInfo` — 웹 코드가 GPU 종류로 분기할 때 읽는 표준 이름이다.
+        // 값을 모르는 자리는 **빈 문자열**로 둔다 (명세가 그렇게 정한다) — 지어내면
+        // 그 문자열로 분기하는 코드가 잘못된 우회로를 탄다.
+        let info: [String: Any] = [
+            "vendor": "apple",
+            "architecture": architectureName(),
+            // 명세의 `device`는 벤더별 식별자다 (PCI device ID 같은 것). Metal에는 없다.
+            "device": "",
+            "description": device.name,
+            "isFallbackAdapter": false,
+            // `subgroups` 기능을 광고하지 않으므로 명세대로 0이다.
+            "subgroupMinSize": 0,
+            "subgroupMaxSize": 0,
+        ]
+
         return [
             "ok": true,
+            "info": info,
             "name": device.name,
             "backend": "metal",
             "hasUnifiedMemory": device.hasUnifiedMemory,
@@ -293,6 +309,21 @@ public final class LynxWebGPUContext {
             "limits": limits,
             "features": features(),
         ]
+    }
+
+    /// `GPUAdapterInfo.architecture` — GPU 계열 이름.
+    ///
+    /// 명세는 "가족/계열 이름, 모르면 빈 문자열"이라고만 정한다. Metal에는 계열을 묻는 API가
+    /// 없고 `supportsFamily`로 **아래에서부터 확인**하는 것만 된다. 가장 높은 것부터 짚어
+    /// 알아낸 만큼만 답한다 — 모르면 빈 문자열이다.
+    private func architectureName() -> String {
+        let families: [(MTLGPUFamily, String)] = [
+            (.apple9, "apple-9"), (.apple8, "apple-8"), (.apple7, "apple-7"),
+            (.apple6, "apple-6"), (.apple5, "apple-5"), (.apple4, "apple-4"),
+            (.apple3, "apple-3"), (.apple2, "apple-2"), (.apple1, "apple-1"),
+        ]
+        for (family, name) in families where device.supportsFamily(family) { return name }
+        return device.supportsFamily(.mac2) ? "mac-2" : ""
     }
 
     /// 기기마다 갈리는 기능 (`adapter.features` — 명세 철자 그대로).

@@ -40,6 +40,19 @@ const format  = gpu.getPreferredCanvasFormat()      // "bgra8unorm"
 if (adapter.features.has('timestamp-query')) { /* 타임스탬프 쿼리셋을 만들 수 있다 */ }
 ```
 
+`adapter.info`(= `device.adapterInfo`)는 명세 `GPUAdapterInfo`다 — GPU 종류로 분기하는 코드가
+읽는 표준 이름이다:
+
+```js
+adapter.info.vendor          // 'apple'
+adapter.info.architecture    // 'apple-8' 등 — Metal의 supportsFamily로 알아낸 만큼
+adapter.info.description     // MTLDevice.name ("Apple M3")
+adapter.info.device          // '' — Metal에 벤더 식별자 개념이 없다
+```
+
+**모르는 자리는 빈 문자열이다** (명세 규칙). 지어내면 그 값으로 분기하는 코드가 잘못된
+우회로를 탄다. 이 구현만의 `adapter.name`·`backend`·`hasUnifiedMemory`도 그대로 남아 있다.
+
 `device.features`에는 명세대로 **`requestDevice({ requiredFeatures })`로 요청한 것만** 들어간다 —
 어댑터가 지원해도 요청하지 않았으면 `has()`는 false다. 지원하지 않는 기능을 요구하면
 `requestDevice`가 거부한다. `device.lost`는 존재하되 영원히 pending이다 (§8).

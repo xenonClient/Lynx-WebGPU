@@ -134,6 +134,15 @@ export type GPUQuerySetDescriptor = {
     count: number;
     label?: string;
 };
+export type GPUAdapterInfoView = {
+    vendor: string;
+    architecture: string;
+    device: string;
+    description: string;
+    isFallbackAdapter: boolean;
+    subgroupMinSize: number;
+    subgroupMaxSize: number;
+};
 export type GPUCompilationMessage = {
     message: string;
     type: 'error' | 'warning' | 'info';
@@ -842,6 +851,8 @@ declare class GPUQueue {
 declare class GPUDevice {
     adapter: GPUAdapter;
     limits: Record<string, number>;
+    /** 명세 `GPUDevice.adapterInfo` — 어댑터의 것을 그대로 본다. */
+    adapterInfo: GPUAdapterInfoView;
     /**
      * 이 디바이스에 활성화된 기능 — 명세대로 **요청한 것만** 들어 있다 (어댑터가 지원해도
      * `requiredFeatures`로 요청하지 않았으면 `has()`는 false다). Three.js 등 웹 코드가
@@ -1096,6 +1107,11 @@ declare class GPUCanvasContext {
     };
 }
 declare class GPUAdapter {
+    /**
+     * 명세 `GPUAdapterInfo`. 아래 `name`·`backend`·`hasUnifiedMemory`는 **이 구현의 추가**로,
+     * 명세 이름이 없던 시절부터 있던 것이라 그대로 둔다 (기존 코드가 쓴다).
+     */
+    info: GPUAdapterInfoView;
     name: string;
     backend: string;
     limits: Record<string, number>;
