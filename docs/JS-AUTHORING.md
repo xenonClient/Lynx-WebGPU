@@ -83,7 +83,7 @@ ReactLynx라면 `useEffect`의 정리 함수에서 부를 것.
 |---|---|---|
 | `buffer.mapAsync()` | GPU 완료를 기다린다 | 결과가 필요한 프레임에만 |
 | `device.popErrorScope()` | 결과를 받으려고 즉시 제출한다 | 초기화·진단에서. **여는 쪽(`pushErrorScope`)은 기록만 하므로 프레임 안에서 써도 된다** |
-| ↳ | 왕복이 느는 것뿐이고 **프레임을 깨지는 않는다** — 스왑체인 텍스처는 배치가 아니라 `present` 시점에 무효해지므로, 중간 제출 뒤에도 `getCurrentTexture()`로 얻은 뷰를 계속 쓸 수 있다 | |
+| ↳ | 왕복이 느는 것뿐이고 **프레임을 깨지는 않는다** — `popErrorScope`·`mapAsync`의 중간 제출은 `present: false`로 표시되어 스왑체인 텍스처를 present하지 않고 프레임 핸들도 만료시키지 않는다. present는 `queue.submit()`에서만 일어나므로, 중간 제출 뒤에도 `getCurrentTexture()`로 얻은 뷰를 계속 쓸 수 있다 (**중간 배치가 `writeBuffer` 등으로 GPU 작업을 만들어도** 그렇다) | |
 | `gpu.requestAdapter()` | 동기 네이티브 호출 | 초기화에서 1회 |
 | `device.createRenderPipeline()` | 셰이더 컴파일이 붙는다 | 초기화에서 1회 |
 
@@ -273,4 +273,6 @@ export default defineConfig({
 - 프레임 루프는 `renderer.setAnimationLoop` 대신 `startFrameLoop`(§4)에서
   `renderer.renderAsync(...)`를 직접 부른다 — `requestAnimationFrame`은 제공하지 않는다.
 - Three.js는 파이프라인을 **지연 생성**하며 그 경로에 `popErrorScope()`가 섞여 있다.
-  §5의 규칙대로 이 호출은 프레임 중간 제출을 만들지만, 프레임을 깨지는 않는다.
+  §5의 규칙대로 이 호출은 프레임 중간 제출을 만들지만 `present: false`로 표시되어
+  프레임을 깨지 않는다 — 획득해 둔 캔버스 텍스처와 출력 패스가 그대로 살아남는다.
+  (데모의 `three` 씬이 이 경로 전체를 시뮬레이터에서 재현·검증한다.)

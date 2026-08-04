@@ -186,9 +186,16 @@ declare class Recorder {
     push(command: GPUCommand): GPUCommand;
     /**
      * 모아 둔 명령을 네이티브로 넘긴다. 실행할 것이 없으면 아무것도 하지 않는다.
+     *
+     * `present: false`는 **프레임 중간의 내부 제출**이라는 표시다 (`popErrorScope`·`mapAsync`가
+     * 결과를 받으려고 미리 흘려보내는 배치). 네이티브는 이 배치를 커밋하되 드로어블 present와
+     * 스왑체인 핸들 만료를 진짜 프레임 제출(`queue.submit`)까지 미룬다 — 안 그러면 획득해 둔
+     * 캔버스 텍스처가 그리기도 전에 present되어 남은 패스가 통째로 거부된다.
+     *
+     * @param {boolean} [present] 이 배치가 프레임 제출인가 (기본 true)
      * @returns {WGPUExecuteResult}
      */
-    flush(): WGPUExecuteResult;
+    flush(present?: boolean): WGPUExecuteResult;
     /**
      * 기다리고 있던 `popErrorScope()` Promise들을 푼다.
      *

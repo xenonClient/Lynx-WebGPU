@@ -228,9 +228,16 @@ class Recorder {
 
   /**
    * 모아 둔 명령을 네이티브로 넘긴다. 실행할 것이 없으면 아무것도 하지 않는다.
+   *
+   * `present: false`는 **프레임 중간의 내부 제출**이라는 표시다 (`popErrorScope`·`mapAsync`가
+   * 결과를 받으려고 미리 흘려보내는 배치). 네이티브는 이 배치를 커밋하되 드로어블 present와
+   * 스왑체인 핸들 만료를 진짜 프레임 제출(`queue.submit`)까지 미룬다 — 안 그러면 획득해 둔
+   * 캔버스 텍스처가 그리기도 전에 present되어 남은 패스가 통째로 거부된다.
+   *
+   * @param {boolean} [present] 이 배치가 프레임 제출인가 (기본 true)
    * @returns {WGPUExecuteResult}
    */
-  flush() {
+  flush(present = true) {
     if (this.pending.length === 0) {
       this.settleErrorScopes([]);
       return { ok: true, commandCount: 0 };
@@ -240,7 +247,7 @@ class Recorder {
     /** @type {WGPUExecuteResult} */
     let result;
     try {
-      result = /** @type {WGPUExecuteResult} */ (nativeModule().execute({ commands }) || {});
+      result = /** @type {WGPUExecuteResult} */ (nativeModule().execute({ commands, present }) || {});
     } catch (error) {
       // 브리지 호출 자체가 실패해도 기다리던 Promise는 반드시 풀어 준다. 안 그러면 영원히
       // pending으로 남아 초기화 진단이 매달리고, 다음 pop이 stale resolver를 가져가
@@ -415,7 +422,7 @@ class GPUBuffer extends GPUObjectBase {
    * @returns {Promise<ArrayBuffer>}
    */
   async mapAsync(_mode, offset, size) {
-    this._recorder.flush();
+    this._recorder.flush(false);
     const result = await /** @type {Promise<WGPUReadBufferResult | undefined>} */ (
       new Promise((resolve) => {
         nativeModule().readBuffer({ buffer: this.id, offset: offset || 0, size }, resolve);
@@ -1164,7 +1171,8 @@ class GPUDevice {
         this._recorder.pendingErrorScopes.push({ resolve, reject });
       })
     );
-    this._recorder.flush();
+    // 프레임 중간 제출 표시 — 획득해 둔 캔버스 텍스처를 present하지 않는다 (flush 참고).
+    this._recorder.flush(false);
     return promise;
   }
 

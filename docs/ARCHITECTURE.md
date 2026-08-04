@@ -157,9 +157,16 @@ struct Light { direction: vec3f, intensity: f32 }   // WGSL: 16바이트
 JS는 문자열 id(`canvas-id` prop)로 표면을 지목한다. 엘리먼트가 화면에 붙을 때 컨텍스트에 등록하고,
 사라질 때 해제한다.
 
-`present`는 명시적 명령이 아니다. WebGPU와 마찬가지로, 한 배치 안에서 `getCurrentTexture()`로 얻은
-드로어블은 **배치가 끝날 때 자동으로 present** 된다. 드로어블 텍스처와 그 뷰의 핸들은 프레임이 끝나면
+`present`는 명시적 명령이 아니다. WebGPU와 마찬가지로, `getCurrentTexture()`로 얻은 드로어블은
+**프레임 제출 배치가 끝날 때 자동으로 present** 되고, 드로어블 텍스처와 그 뷰의 핸들도 그때
 회수된다 (브라우저와 같은 규칙 — 프레임 밖에서는 유효하지 않다).
+
+어느 배치가 프레임 제출인지는 shim이 정한다 — `execute({commands, present})`의 `present`가
+false면 `popErrorScope`·`mapAsync`가 결과를 받으려고 흘려보낸 **프레임 중간의 내부 제출**이라,
+커밋만 하고 present와 핸들 회수를 뒤따라올 `queue.submit()` 배치로 미룬다. 이 구분이 없으면
+내부 배치가 `writeBuffer` 하나로라도 커맨드 버퍼를 만든 순간, 획득해 둔 드로어블이 그리기도
+전에 present되어 그 프레임의 남은 패스가 통째로 거부된다 (Three.js의 지연 파이프라인 생성이
+정확히 이 모양이었다 — `WGPUCommandInterpreter.finish(present:)` 참고).
 
 ## 6. 프레임 루프
 

@@ -111,7 +111,7 @@ final class WGPUCommandInterpreter {
 
     // MARK: - 실행
 
-    func execute(_ commands: [WGPUValueReader]) -> [String: Any] {
+    func execute(_ commands: [WGPUValueReader], present: Bool = true) -> [String: Any] {
         reset()
 
         // 앞선 배치의 GPU 실행 실패를 먼저 흘려보낸다 — 오류 스코프가 열려 있으면 그쪽이 잡는다.
@@ -131,7 +131,7 @@ final class WGPUCommandInterpreter {
             }
         }
 
-        finish()
+        finish(present: present)
 
         // objects: live 네이티브 객체 수 — JS가 destroy 누락(레지스트리 증식)을 감시할 수 있게.
         var result: [String: Any] = [
@@ -222,11 +222,22 @@ final class WGPUCommandInterpreter {
         // 아니라 **present**이고, 한 프레임이 배치 여러 개로 쪼개질 수 있다 (아래 finish() 참고).
     }
 
-    private func finish() {
+    /// 배치 하나를 마무리한다.
+    ///
+    /// `present`가 false면 프레임 **중간**의 내부 제출이다 — shim의 `popErrorScope`·`mapAsync`가
+    /// 결과를 받으려고 미리 흘려보낸 배치. GPU 작업은 커밋하되(리드백이 완료를 기다린다),
+    /// 드로어블 present와 프레임 스코프 핸들 만료는 **뒤따라올 진짜 프레임 제출로 미룬다.**
+    /// 안 미루면: 그 배치가 `writeBuffer` 하나로라도 커맨드 버퍼를 만든 경우, 방금 획득한
+    /// 드로어블이 그리기도 전에 present되고 핸들이 만료되어, 이어지는 `beginRenderPass`가
+    /// "GPUTextureView가 존재하지 않는다"로 통째로 거부된다 — Three.js의 지연 파이프라인
+    /// 생성(pop 즉시 flush)이 정확히 이 경로를 밟았다.
+    private func finish(present: Bool) {
         endActiveEncoders()
         if let commandBuffer {
-            for acquired in acquiredDrawables {
-                acquired.drawable.present(with: commandBuffer)
+            if present {
+                for acquired in acquiredDrawables {
+                    acquired.drawable.present(with: commandBuffer)
+                }
             }
             // 완료 핸들러는 commit 전에만 붙일 수 있다 (Metal 단언).
             if !frameStagingBuffers.isEmpty {
@@ -235,11 +246,14 @@ final class WGPUCommandInterpreter {
                 commandBuffer.addCompletedHandler { _ in pool.recycle(buffers) }
             }
             // in-flight 회계 — 프레임 티커가 이 수를 보고 포화 시 틱을 건너뛴다.
-            let presentedSurfaces = uniquePresentedSurfaces()
-            if !presentedSurfaces.isEmpty {
-                for surface in presentedSurfaces { surface.noteFrameCommitted() }
-                commandBuffer.addCompletedHandler { _ in
-                    for surface in presentedSurfaces { surface.noteFrameCompleted() }
+            // present하지 않는 배치는 프레임이 아니므로 세지 않는다.
+            if present {
+                let presentedSurfaces = uniquePresentedSurfaces()
+                if !presentedSurfaces.isEmpty {
+                    for surface in presentedSurfaces { surface.noteFrameCommitted() }
+                    commandBuffer.addCompletedHandler { _ in
+                        for surface in presentedSurfaces { surface.noteFrameCompleted() }
+                    }
                 }
             }
             // GPU 측 실패(.outOfMemory / .timeout / .deviceRemoved 등)를 주워 담는다.
@@ -253,10 +267,9 @@ final class WGPUCommandInterpreter {
             commandBuffer.commit()
             lastCommittedBuffer = commandBuffer
             // 드로어블 텍스처와 그 뷰는 **present할 때** 무효해진다 (명세의 "Expire the current
-            // texture"가 정한 시점). 배치가 끝날 때마다 회수하면, `popErrorScope`·`mapAsync`처럼
-            // 프레임 중간에 제출하는 API가 그 프레임의 스왑체인 핸들을 지워 버려 뒤이은
-            // `beginRenderPass`가 "없는 핸들"로 깨진다.
-            if !acquiredDrawables.isEmpty {
+            // texture"가 정한 시점). 배치가 끝날 때마다 회수하면 프레임 중간 제출이 그 프레임의
+            // 스왑체인 핸들을 지워 버려 뒤이은 `beginRenderPass`가 "없는 핸들"로 깨진다.
+            if present, !acquiredDrawables.isEmpty {
                 for handle in frameScopedHandles { registry.remove(handle) }
                 frameScopedHandles.removeAll()
                 acquiredDrawables.removeAll()

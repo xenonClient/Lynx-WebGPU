@@ -95,7 +95,10 @@ public final class LynxWebGPUContext {
         } catch {
             return ["ok": false, "errors": [WGPUError.validation("\(error)").payload]]
         }
-        return interpreter.execute(commands)
+        // `present: false`는 프레임 **중간**의 내부 제출이라는 뜻이다 (shim의 popErrorScope·
+        // mapAsync). 커밋은 하되 드로어블 present와 프레임 핸들 만료를 미룬다 — 진짜 프레임
+        // 제출(queue.submit)이 뒤따라온다.
+        return interpreter.execute(commands, present: reader.bool("present", default: true))
     }
 
     /// 편의 오버로드 — 배열을 그대로 넘긴다.

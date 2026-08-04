@@ -79,7 +79,8 @@ interface WGPULoadAssetResult {
 
 /** `NativeModules.WebGPU` — 커맨드 스트림 입구. */
 interface WebGPUNativeModule {
-  execute(payload: { commands: Record<string, any>[] }): WGPUExecuteResult | undefined;
+  /** `present: false` = 프레임 중간의 내부 제출 — 드로어블 present·핸들 만료를 미룬다. */
+  execute(payload: { commands: Record<string, any>[]; present?: boolean }): WGPUExecuteResult | undefined;
   adapterInfo(): WGPUAdapterInfo | undefined;
   canvasInfo(params: { canvas: string }): WGPUCanvasInfo | undefined;
   readBuffer(

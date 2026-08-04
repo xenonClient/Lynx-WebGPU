@@ -133,6 +133,49 @@ final class CommandInterpreterTests: XCTestCase {
         XCTAssertEqual(harness.context.liveObjectCount, before, "present했으니 이제 회수된다")
     }
 
+    /// 프레임 중간 배치가 **커맨드 버퍼를 만들어도**(writeBuffer 등) 스왑체인이 살아남아야 한다.
+    ///
+    /// Three.js의 지연 파이프라인 생성이 정확히 이 모양이다 — 드로어블을 획득해 둔 채로
+    /// 유니폼 writeBuffer + popErrorScope 즉시 flush. shim은 이런 내부 제출에 `present: false`를
+    /// 실어 보내고, 해석기는 커밋만 하고 present·핸들 만료를 진짜 프레임 제출까지 미룬다.
+    /// 이 구분이 없으면 그리지도 않은 드로어블이 present되고, 뒤따르는 출력 패스가
+    /// "GPUTextureView가 존재하지 않는다"로 통째로 거부된다.
+    func test_present_false_배치는_커맨드버퍼가_있어도_드로어블을_유지한다() {
+        harness.executeExpectingSuccess([
+            ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
+        ])
+        let before = harness.context.liveObjectCount
+
+        // 배치 ①: 드로어블 획득 + writeBuffer(블릿 인코더 → 커맨드 버퍼 생성) — 내부 제출.
+        let midFrame = harness.context.execute([
+            "commands": [
+                ["op": "getCurrentTexture", "id": 50, "canvas": "test"],
+                ["op": "createTextureView", "id": 51, "texture": 50],
+                ["op": "createBuffer", "id": 52, "size": 16, "usage": TestUsage.copyDst],
+                ["op": "writeBuffer", "buffer": 52, "data": [Float]([1, 2, 3, 4]).base64],
+            ] as [[String: Any]],
+            "present": false,
+        ])
+        XCTAssertEqual(midFrame["ok"] as? Bool, true, harness.describeErrors(midFrame))
+        XCTAssertEqual(
+            harness.context.liveObjectCount, before + 3,
+            "내부 제출에서는 프레임 스코프 핸들이 만료되면 안 된다"
+        )
+
+        // 배치 ②: 진짜 프레임 제출 — 앞 배치에서 얻은 뷰로 그린다. present는 여기서 일어난다.
+        harness.executeExpectingSuccess([
+            ["op": "beginRenderPass", "colorAttachments": [[
+                "view": 51, "loadOp": "clear", "storeOp": "store",
+                "clearValue": ["r": 0, "g": 1, "b": 0, "a": 1],
+            ]]],
+            ["op": "endPass"],
+        ])
+        XCTAssertEqual(
+            harness.context.liveObjectCount, before + 1,
+            "present 후에는 프레임 스코프 핸들만 회수된다 (버퍼 52는 남는다)"
+        )
+    }
+
     func test_버퍼_쓰기와_복사와_읽기가_순서대로_동작한다() throws {
         let source: [Float] = [1, 2, 3, 4]
         harness.executeExpectingSuccess([
