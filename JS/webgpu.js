@@ -1303,7 +1303,7 @@ class GPUDevice {
    *
    * `'occlusion'`은 드로우가 통과시킨 샘플 수를 센다 — 결정적이라 값을 믿을 수 있다.
    * `'timestamp'`는 GPU 시계라 같은 입력에도 값이 매번 다르다. 기기에 따라 아예 만들 수
-   * 없으므로(`adapter.limits.timestampQuery`) 실패를 처리할 것.
+   * 없으므로(`adapter.features.has('timestamp-query')`) 실패를 처리할 것.
    *
    * `count`는 1 이상 4096 이하다 (명세 상한).
    *

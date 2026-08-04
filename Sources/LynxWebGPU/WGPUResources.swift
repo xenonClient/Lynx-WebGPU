@@ -104,7 +104,7 @@ public final class WGPUQuerySetObject {
                   ) else {
                 throw WGPUError.unsupported(
                     "이 기기는 패스 경계 타임스탬프 샘플링을 지원하지 않는다 "
-                        + "(adapter 정보의 timestampQuery로 미리 확인할 것)"
+                        + "(adapter.features.has('timestamp-query')로 미리 확인할 것)"
                 )
             }
             let counterDescriptor = MTLCounterSampleBufferDescriptor()
