@@ -164,11 +164,14 @@ declare class Recorder {
     /** @type {((error: WGPUError, text: string) => void)[]} */
     errorHandlers: ((error: WGPUError, text: string) => void)[];
     /**
-     * `popErrorScope()`가 돌려준 Promise의 resolve 함수들 — **pop한 순서 그대로**다.
+     * `popErrorScope()`가 돌려준 Promise의 결과 함수들 — **pop한 순서 그대로**다.
      * 네이티브가 같은 순서로 `errorScopes` 배열을 돌려주므로 인덱스로 짝을 맞춘다.
-     * @type {((error: WGPUError | null) => void)[]}
+     * @type {{resolve: (error: WGPUError | null) => void, reject: (reason: Error) => void}[]}
      */
-    pendingErrorScopes: ((error: WGPUError | null) => void)[];
+    pendingErrorScopes: {
+        resolve: (error: WGPUError | null) => void;
+        reject: (reason: Error) => void;
+    }[];
     constructor();
     /** @returns {number} 새 핸들 id */
     allocate(): number;
@@ -189,10 +192,16 @@ declare class Recorder {
      * 여기서는 순서대로 짝지어 주기만 하면 된다. 응답에 결과가 모자라면 `null`이다 —
      * Promise가 영원히 안 풀리는 것보다 낫다.
      *
-     * @param {(WGPUError | null)[]} popped
+     * 슬롯이 `{rejected: true}`면 `push`와 짝이 맞지 않았다는 뜻이다. 명세는 그 경우
+     * `OperationError`로 **reject**하라고 정하므로(오류를 만들지 않는다) 그대로 따른다 —
+     * 그래야 앱이 "스코프가 깨끗했다(null)"와 "짝이 안 맞았다"를 구분할 수 있다.
+     *
+     * @param {(WGPUError | {rejected: true} | null)[]} popped
      * @returns {void}
      */
-    settleErrorScopes(popped: (WGPUError | null)[]): void;
+    settleErrorScopes(popped: (WGPUError | {
+        rejected: true;
+    } | null)[]): void;
     /** @param {WGPUError[]} errors */
     report(errors: WGPUError[]): void;
 }
@@ -626,6 +635,10 @@ declare class GPUDevice {
      * 스코프는 중첩할 수 있고, 오류는 **가장 안쪽의 맞는 스코프**가 가져간다.
      *
      * 기록만 하므로 왕복이 늘지 않는다. 프레임 안에서 마음껏 써도 된다.
+     *
+     * 알 수 없는 `filter`는 브라우저(WebIDL enum 변환)와 같은 자리에서 **동기 `TypeError`**다.
+     * 여기서 막지 않으면 네이티브 스코프 스택이 밀려 이후 `pop`이 바깥 스코프를 가져간다 —
+     * 진단하려고 연 스코프가 오히려 오진을 만든다.
      *
      * @param {'validation' | 'out-of-memory' | 'internal'} filter
      * @returns {void}

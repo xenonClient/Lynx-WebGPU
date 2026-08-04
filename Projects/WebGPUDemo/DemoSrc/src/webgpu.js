@@ -187,6 +187,9 @@ function nativeModule() {
  */
 const canvasSizeCache = new Map();
 
+/** `pushErrorScope`가 받는 필터 (명세 `GPUErrorFilter` 철자 그대로). */
+const ERROR_FILTERS = ['validation', 'out-of-memory', 'internal'];
+
 // ---------------------------------------------------------------------------
 // 커맨드 레코더
 // ---------------------------------------------------------------------------
@@ -199,9 +202,9 @@ class Recorder {
     /** @type {((error: WGPUError, text: string) => void)[]} */
     this.errorHandlers = [];
     /**
-     * `popErrorScope()`가 돌려준 Promise의 resolve 함수들 — **pop한 순서 그대로**다.
+     * `popErrorScope()`가 돌려준 Promise의 결과 함수들 — **pop한 순서 그대로**다.
      * 네이티브가 같은 순서로 `errorScopes` 배열을 돌려주므로 인덱스로 짝을 맞춘다.
-     * @type {((error: WGPUError | null) => void)[]}
+     * @type {{resolve: (error: WGPUError | null) => void, reject: (reason: Error) => void}[]}
      */
     this.pendingErrorScopes = [];
   }
@@ -231,7 +234,18 @@ class Recorder {
     }
     const commands = this.pending;
     this.pending = [];
-    const result = /** @type {WGPUExecuteResult} */ (nativeModule().execute({ commands }) || {});
+    /** @type {WGPUExecuteResult} */
+    let result;
+    try {
+      result = /** @type {WGPUExecuteResult} */ (nativeModule().execute({ commands }) || {});
+    } catch (error) {
+      // 브리지 호출 자체가 실패해도 기다리던 Promise는 반드시 풀어 준다. 안 그러면 영원히
+      // pending으로 남아 초기화 진단이 매달리고, 다음 pop이 stale resolver를 가져가
+      // **인덱스가 어긋난다**.
+      this.settleErrorScopes([]);
+      this.report([{ kind: 'backend', message: `네이티브 실행 실패: ${(error && /** @type {Error} */ (error).message) || error}` }]);
+      return { ok: false, commandCount: commands.length };
+    }
     this.settleErrorScopes(result.errorScopes || []);
     if (result.canvases) {
       for (const canvasId in result.canvases) {
@@ -252,14 +266,27 @@ class Recorder {
    * 여기서는 순서대로 짝지어 주기만 하면 된다. 응답에 결과가 모자라면 `null`이다 —
    * Promise가 영원히 안 풀리는 것보다 낫다.
    *
-   * @param {(WGPUError | null)[]} popped
+   * 슬롯이 `{rejected: true}`면 `push`와 짝이 맞지 않았다는 뜻이다. 명세는 그 경우
+   * `OperationError`로 **reject**하라고 정하므로(오류를 만들지 않는다) 그대로 따른다 —
+   * 그래야 앱이 "스코프가 깨끗했다(null)"와 "짝이 안 맞았다"를 구분할 수 있다.
+   *
+   * @param {(WGPUError | {rejected: true} | null)[]} popped
    * @returns {void}
    */
   settleErrorScopes(popped) {
     if (this.pendingErrorScopes.length === 0) return;
     const waiting = this.pendingErrorScopes;
     this.pendingErrorScopes = [];
-    waiting.forEach((resolve, index) => resolve(popped[index] || null));
+    waiting.forEach((settle, index) => {
+      const slot = popped[index];
+      if (slot && /** @type {{rejected?: boolean}} */ (slot).rejected) {
+        const error = new Error('popErrorScope: 열려 있는 오류 스코프가 없다 (push와 짝이 맞는지 확인)');
+        error.name = 'OperationError';
+        settle.reject(error);
+        return;
+      }
+      settle.resolve(/** @type {WGPUError | null} */ (slot) || null);
+    });
   }
 
   /** @param {WGPUError[]} errors */
@@ -1005,10 +1032,19 @@ class GPUDevice {
    *
    * 기록만 하므로 왕복이 늘지 않는다. 프레임 안에서 마음껏 써도 된다.
    *
+   * 알 수 없는 `filter`는 브라우저(WebIDL enum 변환)와 같은 자리에서 **동기 `TypeError`**다.
+   * 여기서 막지 않으면 네이티브 스코프 스택이 밀려 이후 `pop`이 바깥 스코프를 가져간다 —
+   * 진단하려고 연 스코프가 오히려 오진을 만든다.
+   *
    * @param {'validation' | 'out-of-memory' | 'internal'} filter
    * @returns {void}
    */
   pushErrorScope(filter) {
+    if (ERROR_FILTERS.indexOf(filter) === -1) {
+      throw new TypeError(
+        `pushErrorScope: filter는 ${ERROR_FILTERS.join(' / ')} 중 하나여야 한다 (받은 값 ${String(filter)})`
+      );
+    }
     this._recorder.push({ op: 'pushErrorScope', filter });
   }
 
@@ -1024,8 +1060,8 @@ class GPUDevice {
   popErrorScope() {
     this._recorder.push({ op: 'popErrorScope' });
     const promise = /** @type {Promise<WGPUError | null>} */ (
-      new Promise((resolve) => {
-        this._recorder.pendingErrorScopes.push(resolve);
+      new Promise((resolve, reject) => {
+        this._recorder.pendingErrorScopes.push({ resolve, reject });
       })
     );
     this._recorder.flush();
@@ -1204,6 +1240,8 @@ class GPUDevice {
   destroy() {
     this._recorder.pending = [];
     // 기다리던 popErrorScope Promise를 그냥 두면 영원히 안 풀린다 — null로 닫는다.
+    // 지금은 `flush()`가 어느 경로로 끝나든(성공·실패 모두) 스코프를 풀어 주므로 여기까지
+    // 오는 경우가 없다. 마지막 안전망으로만 남긴다.
     this._recorder.settleErrorScopes([]);
     canvasSizeCache.clear();
     nativeModule().reset();

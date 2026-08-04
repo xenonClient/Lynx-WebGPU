@@ -83,6 +83,7 @@ ReactLynx라면 `useEffect`의 정리 함수에서 부를 것.
 |---|---|---|
 | `buffer.mapAsync()` | GPU 완료를 기다린다 | 결과가 필요한 프레임에만 |
 | `device.popErrorScope()` | 결과를 받으려고 즉시 제출한다 | 초기화·진단에서. **여는 쪽(`pushErrorScope`)은 기록만 하므로 프레임 안에서 써도 된다** |
+| ↳ | 왕복이 느는 것뿐이고 **프레임을 깨지는 않는다** — 스왑체인 텍스처는 배치가 아니라 `present` 시점에 무효해지므로, 중간 제출 뒤에도 `getCurrentTexture()`로 얻은 뷰를 계속 쓸 수 있다 | |
 | `gpu.requestAdapter()` | 동기 네이티브 호출 | 초기화에서 1회 |
 | `device.createRenderPipeline()` | 셰이더 컴파일이 붙는다 | 초기화에서 1회 |
 

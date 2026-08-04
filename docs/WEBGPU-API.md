@@ -442,6 +442,16 @@ if (error) fallBackToSimplePipeline()
   `push`와 `pop` 사이에 프레임이 몇 개 들어가도 된다.
 - `popErrorScope()`는 `mapAsync`처럼 **즉시 제출한다** (안 그러면 다음 `submit()`까지 Promise가
   안 풀린다). 그래서 프레임 루프 안에서 부르면 왕복이 하나 는다 — 초기화·진단용 API다.
+  왕복이 느는 것뿐이고 프레임을 깨지는 않는다 (`getCurrentTexture()`로 얻은 뷰는 `present`
+  전까지 유효하다).
+- **스코프는 `submit()`으로 넘어간 명령만 관측한다.** `GPUCommandEncoder`의 메서드는 명령을
+  자기 배열에 모으고 `queue.submit()`에서야 네이티브로 넘어가므로, 인코더 명령을 감싸려면
+  `pop` **전에** `submit()`을 부를 것. 디바이스 레벨 호출(`createRenderPipeline` 등)은
+  기록 시점에 실행되므로 이 제약이 없다.
+- `push`와 짝이 맞지 않는 `pop`은 **Promise가 `OperationError`로 reject된다** (명세와 같다).
+  이 실패는 GPUError가 아니므로 `onError`로 가지 않는다 — 그래야 "스코프가 깨끗했다(`null`)"와
+  "짝이 안 맞았다"를 구분할 수 있다.
+- 알 수 없는 필터는 **동기 `TypeError`**다 (브라우저의 WebIDL enum 변환과 같은 자리).
 
 ## 8. 미지원 목록
 
