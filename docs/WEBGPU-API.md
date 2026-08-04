@@ -357,6 +357,9 @@ pass.executeBundles([bundle])                    // executeBundles
   `depthStencilFormat`이거나. 둘 다 없으면 번들을 만들 때 거부한다.
 - `depthReadOnly` / `stencilReadOnly` 패스에서 실행하려면 번들도 같은 플래그를 `true`로 두고
   만들어야 한다. 반대(쓰기 가능 패스에 read-only 번들)는 제약이 없다.
+- `finish()`는 **한 번만** 부를 수 있다. 두 번째 호출은 오류를 내고 무효한 번들을 돌려준다.
+- 번들은 자기가 쓰는 리소스 래퍼를 붙잡는다 — 초기화 함수가 번들만 반환해도 안전하다
+  (`docs/JS-AUTHORING.md` §8). 단 **명시적 `destroy()`는 별개다.**
 
 > **이 구현에서 번들이 무엇을 아껴 주나.** 브라우저는 드라이버 명령을 미리 만들어 두지만,
 > 여기서는 Metal에 대응 객체가 없어 명령 목록을 저장했다가 되풀이한다. 그래서 이득은

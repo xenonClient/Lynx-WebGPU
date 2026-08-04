@@ -108,18 +108,48 @@ test('createRenderBundle이 executeBundles보다 먼저 스트림에 온다', as
   );
 });
 
-test('finish는 명령을 비워 두 번째 번들에 새지 않는다', async () => {
+test('finish를 두 번 부르면 거부하고 무효한 번들을 돌려준다', async () => {
   const { state, device } = await setUp();
+  /** @type {{kind: string, message: string}[]} */
+  const reported = [];
+  device.onError((error) => reported.push(error));
+
   const encoder = device.createRenderBundleEncoder({ colorFormats: ['rgba8unorm'] });
   encoder.draw(3);
-  encoder.finish();
-  encoder.draw(6);
-  encoder.finish();
+  const first = encoder.finish();
+  const second = encoder.finish();
   device.queue.submit([]);
 
+  // 조용히 빈 번들을 주면 executeBundles가 아무것도 안 그리고 오류도 없어 원인을 못 찾는다.
+  assert.equal(reported.length, 1, `두 번째 finish는 오류다: ${JSON.stringify(reported)}`);
+  assert.equal(reported[0].kind, 'validation');
+  assert.notEqual(second.id, first.id);
+
   const bundles = commandsOf(state).filter((command) => command.op === 'createRenderBundle');
+  assert.equal(bundles.length, 1, '무효한 번들은 네이티브에 만들지 않는다');
   assert.deepEqual(bundles[0].commands.map((entry) => entry.vertexCount), [3]);
-  assert.deepEqual(bundles[1].commands.map((entry) => entry.vertexCount), [6]);
+});
+
+test('번들이 자기가 쓰는 리소스 래퍼를 붙잡는다', async () => {
+  const { device } = await setUp();
+  const buffer = device.createBuffer({ size: 16, usage: 0x20 });
+  const bindGroup = { id: 77 };
+
+  const encoder = device.createRenderBundleEncoder({ colorFormats: ['rgba8unorm'] });
+  encoder.setBindGroup(0, /** @type {any} */ (bindGroup));
+  encoder.setVertexBuffer(0, buffer);
+  encoder.draw(3);
+  const bundle = encoder.finish();
+
+  // 기록된 명령이 래퍼보다 오래 사는 유일한 구조다 — 붙잡지 않으면 GC가 destroy를 끼워 넣어
+  // 번들이 조용히 안 그려진다.
+  assert.ok(bundle._retained.includes(buffer), '정점 버퍼를 붙잡아야 한다');
+  assert.ok(bundle._retained.includes(bindGroup), '바인드 그룹을 붙잡아야 한다');
+  assert.deepEqual(
+    device.createRenderBundleEncoder({ colorFormats: ['rgba8unorm'] }).finish()._retained,
+    [],
+    '다음 인코더로 새면 안 된다'
+  );
 });
 
 test('번들을 써도 프레임당 브리지 왕복은 1회다', async () => {

@@ -189,6 +189,29 @@ device.queue.writeBuffer(uniformBuffer, 0, data)
 안전망이 켜진다. 단 PrimJS 지원 여부에 기대지 말 것 — **명시적 destroy가 정답**이고,
 자동 해제는 놓친 것을 주워 담는 보조 장치다.
 
+### 렌더 번들이 참조하는 리소스
+
+번들은 **기록한 명령이 래퍼보다 오래 사는 유일한 구조**다. 그래서 번들 인코더는 기록 중
+만난 파이프라인·바인드 그룹·버퍼 래퍼를 모아 두었다가 `finish()`가 만든 번들에 붙인다
+(명세의 `[[used_bind_groups]]`와 같은 소유 관계다). 초기화 함수가 번들만 반환하고 나머지를
+지역 변수로 버려도 안전하다.
+
+```js
+function buildBundle(device, format) {
+  const pipeline = device.createRenderPipeline(/* … */)
+  const vertices  = device.createBuffer(/* … */)
+  const encoder = device.createRenderBundleEncoder({ colorFormats: [format] })
+  encoder.setPipeline(pipeline)
+  encoder.setVertexBuffer(0, vertices)
+  encoder.draw(3)
+  return encoder.finish()      // ← pipeline·vertices 를 번들이 붙잡는다
+}
+```
+
+**명시적 `destroy()`는 여전히 별개다.** 번들이 붙잡는 것은 JS 래퍼의 수명일 뿐이라,
+번들이 살아 있는 동안 그 리소스를 직접 `destroy()`하면 `executeBundles`가
+*"GPUBuffer #N 이 존재하지 않는다"*로 거부된다 (브라우저도 같다).
+
 ## 9. 디버깅
 
 ```js

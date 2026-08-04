@@ -287,8 +287,22 @@ declare class GPURenderPipeline extends GPUPipelineBase {
 }
 declare class GPUComputePipeline extends GPUPipelineBase {
 }
-/** `bundleEncoder.finish()`가 돌려주는 재사용 가능한 드로우 묶음. */
+/**
+ * `bundleEncoder.finish()`가 돌려주는 재사용 가능한 드로우 묶음.
+ *
+ * 기록한 명령이 **래퍼보다 오래 사는** 유일한 구조라, 자기가 쓰는 리소스 래퍼를 붙잡는다
+ * (`_retained`). 그러지 않으면 초기화 함수가 번들만 반환하고 파이프라인·버퍼를 버렸을 때
+ * GC가 `destroy`를 끼워 넣어 번들이 **조용히 안 그려진다** (`docs/JS-AUTHORING.md` §8).
+ */
 declare class GPURenderBundle extends GPUObjectBase {
+    /** @type {object[]} 이 번들이 참조하는 리소스 래퍼 — 수명을 함께 묶는다. */
+    _retained: object[];
+    /**
+     * @param {GPUDevice} device
+     * @param {number} id
+     * @param {string} [label]
+     */
+    constructor(device: GPUDevice, id: number, label?: string);
 }
 /** `device.createQuerySet()`이 돌려주는 쿼리 저장소. */
 declare class GPUQuerySet extends GPUObjectBase {
@@ -309,8 +323,22 @@ declare class GPUCommandBuffer {
 }
 declare class GPUPassEncoderBase {
     _commands: GPUCommand[];
+    /**
+     * 기록 중 만난 리소스 래퍼 — **번들 인코더만** 채운다.
+     *
+     * 번들은 기록한 명령이 래퍼보다 오래 사는 유일한 구조라서, 자동 해제(GC)가 붙은 엔진에서는
+     * 초기화 함수가 번들만 반환하고 파이프라인·버퍼 래퍼를 버리면 번들이 조용히 안 그려진다.
+     * 명세 모델에서 번들은 자기가 쓰는 객체를 **소유**하므로, 여기서도 같은 소유 관계를 만든다.
+     * @type {object[] | null}
+     */
+    _retained: object[] | null;
     /** @param {GPUCommand[]} commands */
     constructor(commands: GPUCommand[]);
+    /**
+     * @param {object} resource
+     * @returns {void}
+     */
+    _retain(resource: object): void;
     /**
      * @param {GPURenderPipeline | GPUComputePipeline} pipeline
      * @returns {void}
@@ -461,6 +489,9 @@ declare class GPURenderPassEncoder extends GPURenderCommandsBase {
  * 번들을 실행하는 명령은 핸들 하나뿐이고, 되풀이는 네이티브가 한다.
  */
 declare class GPURenderBundleEncoder extends GPURenderCommandsBase {
+    /** @type {object[]} 기록 중 만난 래퍼 — 만든 번들이 이어받아 붙잡는다. */
+    _retained: object[];
+    _finished: boolean;
     _device: GPUDevice;
     _descriptor: GPURenderBundleEncoderDescriptor;
     /**
@@ -470,6 +501,11 @@ declare class GPURenderBundleEncoder extends GPURenderCommandsBase {
     constructor(device: GPUDevice, descriptor: GPURenderBundleEncoderDescriptor);
     /**
      * 기록을 끝내고 재사용 가능한 번들을 만든다.
+     *
+     * **한 번만 부를 수 있다.** 두 번째 호출은 명세대로 오류를 내고 **무효한 번들**을 돌려준다 —
+     * 조용히 빈 번들을 주면 `executeBundles`가 아무것도 그리지 않고 오류도 없어서 원인을
+     * 찾기 어렵다.
+     *
      * @param {{label?: string}} [descriptor]
      * @returns {GPURenderBundle}
      */

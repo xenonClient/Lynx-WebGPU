@@ -463,8 +463,25 @@ class GPUPipelineBase extends GPUObjectBase {
 class GPURenderPipeline extends GPUPipelineBase {}
 class GPUComputePipeline extends GPUPipelineBase {}
 
-/** `bundleEncoder.finish()`가 돌려주는 재사용 가능한 드로우 묶음. */
-class GPURenderBundle extends GPUObjectBase {}
+/**
+ * `bundleEncoder.finish()`가 돌려주는 재사용 가능한 드로우 묶음.
+ *
+ * 기록한 명령이 **래퍼보다 오래 사는** 유일한 구조라, 자기가 쓰는 리소스 래퍼를 붙잡는다
+ * (`_retained`). 그러지 않으면 초기화 함수가 번들만 반환하고 파이프라인·버퍼를 버렸을 때
+ * GC가 `destroy`를 끼워 넣어 번들이 **조용히 안 그려진다** (`docs/JS-AUTHORING.md` §8).
+ */
+class GPURenderBundle extends GPUObjectBase {
+  /**
+   * @param {GPUDevice} device
+   * @param {number} id
+   * @param {string} [label]
+   */
+  constructor(device, id, label) {
+    super(device, id, label);
+    /** @type {object[]} 이 번들이 참조하는 리소스 래퍼 — 수명을 함께 묶는다. */
+    this._retained = [];
+  }
+}
 
 /** `device.createQuerySet()`이 돌려주는 쿼리 저장소. */
 class GPUQuerySet extends GPUObjectBase {
@@ -496,6 +513,23 @@ class GPUPassEncoderBase {
   /** @param {GPUCommand[]} commands */
   constructor(commands) {
     this._commands = commands;
+    /**
+     * 기록 중 만난 리소스 래퍼 — **번들 인코더만** 채운다.
+     *
+     * 번들은 기록한 명령이 래퍼보다 오래 사는 유일한 구조라서, 자동 해제(GC)가 붙은 엔진에서는
+     * 초기화 함수가 번들만 반환하고 파이프라인·버퍼 래퍼를 버리면 번들이 조용히 안 그려진다.
+     * 명세 모델에서 번들은 자기가 쓰는 객체를 **소유**하므로, 여기서도 같은 소유 관계를 만든다.
+     * @type {object[] | null}
+     */
+    this._retained = null;
+  }
+
+  /**
+   * @param {object} resource
+   * @returns {void}
+   */
+  _retain(resource) {
+    if (this._retained) this._retained.push(resource);
   }
 
   /**
@@ -503,6 +537,7 @@ class GPUPassEncoderBase {
    * @returns {void}
    */
   setPipeline(pipeline) {
+    this._retain(pipeline);
     this._commands.push({ op: 'setPipeline', pipeline: pipeline.id });
   }
 
@@ -513,6 +548,7 @@ class GPUPassEncoderBase {
    * @returns {void}
    */
   setBindGroup(index, bindGroup, dynamicOffsets) {
+    this._retain(bindGroup);
     /** @type {GPUCommand} */
     const command = { op: 'setBindGroup', index, bindGroup: bindGroup.id };
     if (dynamicOffsets && dynamicOffsets.length) command.dynamicOffsets = Array.from(dynamicOffsets);
@@ -535,6 +571,7 @@ class GPURenderCommandsBase extends GPUPassEncoderBase {
    * @returns {void}
    */
   setVertexBuffer(slot, buffer, offset) {
+    this._retain(buffer);
     this._commands.push({ op: 'setVertexBuffer', slot, buffer: buffer.id, offset: offset || 0 });
   }
 
@@ -545,6 +582,7 @@ class GPURenderCommandsBase extends GPUPassEncoderBase {
    * @returns {void}
    */
   setIndexBuffer(buffer, format, offset) {
+    this._retain(buffer);
     this._commands.push({ op: 'setIndexBuffer', buffer: buffer.id, format, offset: offset || 0 });
   }
 
@@ -597,6 +635,7 @@ class GPURenderCommandsBase extends GPUPassEncoderBase {
    * @returns {void}
    */
   drawIndirect(indirectBuffer, indirectOffset) {
+    this._retain(indirectBuffer);
     this._commands.push({
       op: 'drawIndirect', indirectBuffer: indirectBuffer.id, indirectOffset: indirectOffset || 0,
     });
@@ -618,6 +657,7 @@ class GPURenderCommandsBase extends GPUPassEncoderBase {
    * @returns {void}
    */
   drawIndexedIndirect(indirectBuffer, indirectOffset) {
+    this._retain(indirectBuffer);
     this._commands.push({
       op: 'drawIndexedIndirect',
       indirectBuffer: indirectBuffer.id,
@@ -731,12 +771,20 @@ class GPURenderBundleEncoder extends GPURenderCommandsBase {
     super([]);
     /** @type {GPUCommand[]} 번들 인코더는 자기 배열에만 모은다 (패스 스트림과 섞이지 않는다). */
     this._commands = [];
+    /** @type {object[]} 기록 중 만난 래퍼 — 만든 번들이 이어받아 붙잡는다. */
+    this._retained = [];
+    this._finished = false;
     this._device = device;
     this._descriptor = descriptor || { colorFormats: [] };
   }
 
   /**
    * 기록을 끝내고 재사용 가능한 번들을 만든다.
+   *
+   * **한 번만 부를 수 있다.** 두 번째 호출은 명세대로 오류를 내고 **무효한 번들**을 돌려준다 —
+   * 조용히 빈 번들을 주면 `executeBundles`가 아무것도 그리지 않고 오류도 없어서 원인을
+   * 찾기 어렵다.
+   *
    * @param {{label?: string}} [descriptor]
    * @returns {GPURenderBundle}
    */
@@ -744,6 +792,15 @@ class GPURenderBundleEncoder extends GPURenderCommandsBase {
     const recorder = this._device._recorder;
     const id = recorder.allocate();
     const label = (descriptor && descriptor.label) || this._descriptor.label;
+    if (this._finished) {
+      recorder.report([{
+        kind: 'validation',
+        message: 'GPURenderBundleEncoder.finish()는 한 번만 부를 수 있다 (이미 끝난 인코더)',
+      }]);
+      // 네이티브에 만들지 않으므로 이 핸들을 쓰면 "존재하지 않는다"로 거부된다 (= invalid).
+      return new GPURenderBundle(this._device, id, label);
+    }
+    this._finished = true;
     recorder.push({
       op: 'createRenderBundle', id,
       commands: this._commands,
@@ -754,9 +811,12 @@ class GPURenderBundleEncoder extends GPURenderCommandsBase {
       stencilReadOnly: this._descriptor.stencilReadOnly,
       label,
     });
-    // 인코더는 한 번만 finish할 수 있다 — 남겨 두면 다음 finish에 같은 명령이 또 실린다.
+    const bundle = new GPURenderBundle(this._device, id, label);
+    // 번들이 자기가 쓰는 리소스를 붙잡는다 — 명세의 `[[used_bind_groups]]`와 같은 소유 관계다.
+    bundle._retained = this._retained;
     this._commands = [];
-    return new GPURenderBundle(this._device, id, label);
+    this._retained = [];
+    return bundle;
   }
 }
 
