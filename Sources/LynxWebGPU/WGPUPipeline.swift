@@ -313,9 +313,14 @@ public final class WGPUComputePipelineObject {
 public final class WGPURenderBundleObject {
     /// 번들 안에서 쓸 수 있는 명령. 명세가 정한 목록 그대로다 — 뷰포트·시저·블렌드 상수·
     /// 스텐실 참조·복사·중첩 번들은 번들에 담을 수 없다.
+    ///
+    /// 디버그 마커는 **담을 수 있다** — 명세의 `GPURenderBundleEncoder`가
+    /// `GPUDebugCommandsMixin`을 포함한다. 빠뜨리면 마커를 하나 넣은 것만으로 번들 전체가
+    /// 거부되고, 사용자는 마커가 원인이라고 생각하기 어렵다.
     static let allowedOps: Set<String> = [
         "setPipeline", "setBindGroup", "setVertexBuffer", "setIndexBuffer",
         "draw", "drawIndexed", "drawIndirect", "drawIndexedIndirect",
+        "pushDebugGroup", "popDebugGroup", "insertDebugMarker",
     ]
 
     let commands: [WGPUValueReader]

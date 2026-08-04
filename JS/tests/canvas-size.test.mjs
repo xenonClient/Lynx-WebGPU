@@ -129,3 +129,21 @@ test('unconfigure 뒤에는 그릴 수 없고 getConfiguration이 null이다', a
   assert.equal(context.getConfiguration().format, 'rgba16float');
   assert.doesNotThrow(() => context.getCurrentTexture());
 });
+
+test('같은 canvasId에는 같은 컨텍스트를 준다', async () => {
+  installNativeMock();
+  const device = await makeDevice();
+
+  const first = gpu.getCanvasContext('shared');
+  const second = gpu.getCanvasContext('shared');
+  assert.equal(first, second, '브라우저의 getContext와 같다');
+
+  // 매번 새로 만들면 여기서 갈라진다 — 한 핸들로 설정하고 다른 핸들로 그리면
+  // "configure()를 먼저"가 나거나, 반대로 해제가 안 먹는다.
+  first.configure({ device, format: 'rgba8unorm' });
+  assert.equal(second.getConfiguration().format, 'rgba8unorm');
+  second.unconfigure();
+  assert.equal(first.getConfiguration(), null);
+
+  assert.notEqual(gpu.getCanvasContext('other'), first, '다른 캔버스는 다른 객체다');
+});

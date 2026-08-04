@@ -196,6 +196,15 @@ function nativeModule() {
  */
 const canvasSizeCache = new Map();
 
+/**
+ * canvasId → `GPUCanvasContext`.
+ *
+ * 브라우저의 `canvas.getContext('webgpu')`가 늘 같은 객체를 주는 것과 맞춘다 — 매번 새로
+ * 만들면 설정 상태(`configure`/`unconfigure`)가 핸들마다 갈라진다.
+ * @type {Map<string, GPUCanvasContext>}
+ */
+const canvasContexts = new Map();
+
 /** `pushErrorScope`가 받는 필터 (명세 `GPUErrorFilter` 철자 그대로). */
 const ERROR_FILTERS = ['validation', 'out-of-memory', 'internal'];
 
@@ -2094,11 +2103,21 @@ export const gpu = {
 
   /**
    * `<webgpu-canvas canvas-id="…">` 의 표면에 붙는다 (`canvas.getContext('webgpu')` 대응).
+   *
+   * 같은 `canvasId`에는 **같은 객체**를 돌려준다 — 브라우저의 `getContext('webgpu')`와 같다.
+   * 새로 만들어 주면 한 핸들로 `configure()`하고 다른 핸들로 `unconfigure()`했을 때 설정
+   * 상태가 갈라져, 그린다고 생각한 컨텍스트가 실은 설정되지 않은 쪽이 된다.
+   *
    * @param {string} canvasId
    * @returns {GPUCanvasContext}
    */
   getCanvasContext(canvasId) {
-    return new GPUCanvasContext(canvasId);
+    let context = canvasContexts.get(canvasId);
+    if (!context) {
+      context = new GPUCanvasContext(canvasId);
+      canvasContexts.set(canvasId, context);
+    }
+    return context;
   },
 };
 

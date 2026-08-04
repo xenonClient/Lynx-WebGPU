@@ -527,6 +527,37 @@ final class CommandInterpreterTests: XCTestCase {
         // 그리고 프로세스가 살아 있다 — 이 단언에 도달한 것 자체가 증거다.
     }
 
+    /// 마커만 있는 배치 — 다른 작업이 없어도 오류 없이 지나가야 한다.
+    ///
+    /// 프레임 구간 마커는 커맨드 버퍼에 붙는데, 아직 만들어지지 않았으면 만들어야 짝이 맞는다.
+    /// (안 만들면 push는 사라지고 pop만 남아 "짝이 없다"가 된다.)
+    func test_마커만_있는_배치도_오류가_없다() {
+        let result = harness.execute([
+            ["op": "pushDebugGroup", "groupLabel": "빈 프레임"],
+            ["op": "insertDebugMarker", "markerLabel": "표식"],
+            ["op": "popDebugGroup"],
+        ])
+
+        XCTAssertEqual(result["ok"] as? Bool, true, harness.describeErrors(result))
+    }
+
+    /// MSL 모듈은 WGSL 리플렉션이 없다 — 진단은 비어 있고 **유효**해야 한다.
+    /// 잘못 다루면 "컴파일에 실패했다"로 오인해 멀쩡한 MSL 탈출구가 막힌다.
+    func test_MSL_모듈은_진단이_비어_있고_쓸_수_있다() {
+        let result = harness.execute([
+            ["op": "createShaderModule", "id": 1, "language": "msl", "code": """
+             #include <metal_stdlib>
+             using namespace metal;
+             vertex float4 vs_main() { return float4(0, 0, 0, 1); }
+             """],
+        ])
+
+        XCTAssertEqual(result["ok"] as? Bool, true, harness.describeErrors(result))
+        let info = harness.context.shaderCompilationInfo(handle: 1)
+        XCTAssertEqual(info["ok"] as? Bool, true)
+        XCTAssertEqual((info["messages"] as? [[String: Any]])?.count, 0)
+    }
+
     // MARK: - clearBuffer
 
     /// `writeBuffer`로 0을 밀어 넣는 것과 결과는 같아야 한다 — 다른 것은 브리지를 안 건넌다는 점뿐이다.
