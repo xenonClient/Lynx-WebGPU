@@ -74,7 +74,7 @@ final class QuerySetTests: XCTestCase {
         harness.executeExpectingSuccess(setUpResources() + [
             ["op": "createQuerySet", "id": 3, "type": "occlusion", "count": 2],
             ["op": "createBuffer", "id": 4, "size": 16,
-             "usage": TestUsage.queryResolve | TestUsage.copySrc | TestUsage.mapRead],
+             "usage": TestUsage.queryResolve | TestUsage.copySrc],
         ] + acquireDrawable + [
             beginPass(occlusionQuerySet: 3),
             ["op": "setPipeline", "pipeline": 2],
@@ -102,7 +102,7 @@ final class QuerySetTests: XCTestCase {
         harness.executeExpectingSuccess(setUpResources() + [
             ["op": "createQuerySet", "id": 3, "type": "occlusion", "count": 3],
             ["op": "createBuffer", "id": 4, "size": 8,
-             "usage": TestUsage.queryResolve | TestUsage.copySrc | TestUsage.mapRead],
+             "usage": TestUsage.queryResolve | TestUsage.copySrc],
         ] + acquireDrawable + [
             beginPass(occlusionQuerySet: 3),
             ["op": "setPipeline", "pipeline": 2],
@@ -131,7 +131,7 @@ final class QuerySetTests: XCTestCase {
         harness.executeExpectingSuccess(setUpResources() + [
             ["op": "createQuerySet", "id": 3, "type": "timestamp", "count": 2],
             ["op": "createBuffer", "id": 4, "size": 16,
-             "usage": TestUsage.queryResolve | TestUsage.copySrc | TestUsage.mapRead],
+             "usage": TestUsage.queryResolve | TestUsage.copySrc],
         ] + acquireDrawable + [
             [
                 "op": "beginRenderPass",
@@ -191,7 +191,7 @@ final class QuerySetTests: XCTestCase {
              "entries": [["binding": 0, "resource": ["buffer": 8]]]],
             ["op": "createQuerySet", "id": 1, "type": "timestamp", "count": 2],
             ["op": "createBuffer", "id": 2, "size": 16,
-             "usage": TestUsage.queryResolve | TestUsage.copySrc | TestUsage.mapRead],
+             "usage": TestUsage.queryResolve | TestUsage.copySrc],
             ["op": "beginComputePass",
              "timestampWrites": ["querySet": 1, "beginningOfPassWriteIndex": 0,
                                  "endOfPassWriteIndex": 1]],

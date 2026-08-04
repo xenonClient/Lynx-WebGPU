@@ -10,6 +10,16 @@ public final class WGPUBufferObject {
     public let usage: WGPUBufferUsage
     public let label: String?
 
+    /// 지금 CPU에 매핑되어 있는가 (`mapAsync` ~ `unmap` 사이).
+    ///
+    /// 명세는 매핑 중인 버퍼를 "unavailable"로 두어 **큐 작업에 쓰지 못하게** 한다. 이 구현은
+    /// `.storageModeShared` 버퍼를 스테이징 없이 그대로 읽으므로, 이 상태가 없으면 리드백이
+    /// GPU 완료를 기다리는 동안 다음 프레임의 쓰기가 같은 메모리에 겹칠 수 있다 — JS가 받는
+    /// 값이 기다린 프레임의 것이라는 보장이 사라진다.
+    ///
+    /// 읽기·쓰기 모두 `LynxWebGPUContext.executionLock` 아래에서만 일어난다.
+    public var isMapped = false
+
     init(device: MTLDevice, descriptor: WGPUBufferDescriptor) throws {
         // 통합 메모리(Apple GPU)에서는 shared가 CPU/GPU 양쪽에서 보이며 복사가 없다.
         // writeBuffer / readBuffer 가 blit 없이 바로 memcpy로 끝나는 이유다.

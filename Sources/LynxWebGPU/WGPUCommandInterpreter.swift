@@ -58,6 +58,14 @@ final class WGPUCommandInterpreter {
     private var touchedCanvases: [String: WGPUSurface] = [:]
     private var errors: [WGPUError] = []
 
+    /// 앞선 배치의 GPU 실행이 실패했다는 보고 — **완료 핸들러(Metal 스레드)가 채운다.**
+    ///
+    /// `record()`가 도는 시점은 이미 커밋 전이라 GPU 측 실패는 구조상 그때 잡을 수 없다.
+    /// 그래서 완료 핸들러가 여기 모아 두었다가 **다음 배치 결과**에 실어 보낸다. 이것이 없으면
+    /// `.outOfMemory`·`.timeout` 같은 실패가 어디에도 나타나지 않고 무성으로 남는다.
+    private let gpuFailureLock = NSLock()
+    private var gpuFailures: [WGPUError] = []
+
     /// 열려 있는 오류 스코프 (안쪽이 뒤). **배치 사이에도 살아 있다** — WebGPU에서 오류 스코프는
     /// 디바이스 상태이고, `push`와 `pop` 사이에 `submit`이 몇 번이든 들어갈 수 있기 때문이다.
     /// `filter`가 nil이면 **아무것도 잡지 않는 자리표시자**다 — 필터 파싱이 실패했을 때
@@ -105,6 +113,9 @@ final class WGPUCommandInterpreter {
 
     func execute(_ commands: [WGPUValueReader]) -> [String: Any] {
         reset()
+
+        // 앞선 배치의 GPU 실행 실패를 먼저 흘려보낸다 — 오류 스코프가 열려 있으면 그쪽이 잡는다.
+        for failure in drainGPUFailures() { record(failure) }
 
         for (index, command) in commands.enumerated() {
             do {
@@ -231,6 +242,14 @@ final class WGPUCommandInterpreter {
                     for surface in presentedSurfaces { surface.noteFrameCompleted() }
                 }
             }
+            // GPU 측 실패(.outOfMemory / .timeout / .deviceRemoved 등)를 주워 담는다.
+            commandBuffer.addCompletedHandler { [weak self] buffer in
+                guard buffer.status == .error else { return }
+                guard let self else { return }
+                self.gpuFailureLock.lock()
+                self.gpuFailures.append(LynxWebGPUContext.commandBufferError(buffer))
+                self.gpuFailureLock.unlock()
+            }
             commandBuffer.commit()
             lastCommittedBuffer = commandBuffer
             // 드로어블 텍스처와 그 뷰는 **present할 때** 무효해진다 (명세의 "Expire the current
@@ -256,6 +275,16 @@ final class WGPUCommandInterpreter {
         acquiredDrawables.removeAll()
         frameScopedHandles.removeAll()
         lastCommittedBuffer = nil
+        _ = drainGPUFailures()
+    }
+
+    /// 모아 둔 GPU 실행 실패를 꺼내 비운다 (완료 핸들러가 다른 스레드에서 채운다).
+    private func drainGPUFailures() -> [WGPUError] {
+        gpuFailureLock.lock()
+        defer { gpuFailureLock.unlock() }
+        let failures = gpuFailures
+        gpuFailures.removeAll()
+        return failures
     }
 
     /// 이번 프레임에 드로어블을 내준 표면들 (중복 제거 — 한 표면에서 여러 번 얻어도 프레임은 하나다).
@@ -342,6 +371,7 @@ final class WGPUCommandInterpreter {
         // 리소스
         case "createBuffer": try createBuffer(command)
         case "writeBuffer": try writeBuffer(command)
+        case "unmapBuffer": try unmapBuffer(command)
         case "createTexture": try createTexture(command)
         case "writeTexture": try writeTexture(command)
         case "createTextureView": try createTextureView(command)
@@ -414,10 +444,35 @@ final class WGPUCommandInterpreter {
         registry.insert(object, at: handle)
     }
 
-    private func writeBuffer(_ command: WGPUValueReader) throws {
-        let target = try registry.lookup(
+    /// 큐 작업에 쓸 버퍼를 꺼낸다 — **매핑 중이면 거부한다.**
+    ///
+    /// 명세는 `mapAsync`가 버퍼를 "unavailable"로 만들어 `unmap()` 전까지 큐 작업에 못 쓰게 해
+    /// 경쟁 자체를 없앤다. 이 구현은 `.storageModeShared` 버퍼를 스테이징 없이 읽으므로,
+    /// 이 검사가 없으면 리드백이 GPU 완료를 기다리는 동안 다음 프레임의 쓰기가 같은 메모리에
+    /// 겹쳐 **JS가 받는 값이 어느 프레임 것인지 보장되지 않는다.**
+    ///
+    /// 버퍼를 쓰는 모든 명령이 이 함수를 지나야 한다 — 한 곳이라도 빠지면 그 경로로 경쟁이 샌다.
+    private func unmappedBuffer(_ reader: WGPUValueReader, field: String) throws -> WGPUBufferObject {
+        let handle = try reader.requiredHandle(field)
+        let object = try registry.lookup(handle, as: WGPUBufferObject.self, kind: "GPUBuffer")
+        guard !object.isMapped else {
+            throw WGPUError.validation(
+                "매핑 중인 GPUBuffer \(handle)은(는) 큐 작업에 쓸 수 없다 "
+                    + "(mapAsync로 읽은 뒤 unmap()을 부를 것)",
+                path: reader.fieldPath(field)
+            )
+        }
+        return object
+    }
+
+    private func unmapBuffer(_ command: WGPUValueReader) throws {
+        try registry.lookup(
             try command.requiredHandle("buffer"), as: WGPUBufferObject.self, kind: "GPUBuffer"
-        )
+        ).isMapped = false
+    }
+
+    private func writeBuffer(_ command: WGPUValueReader) throws {
+        let target = try unmappedBuffer(command, field: "buffer")
         let data = try command.requiredData("data")
         let offset = command.int("bufferOffset", default: 0)
         guard offset >= 0, offset + data.count <= target.size else {
@@ -820,9 +875,7 @@ final class WGPUCommandInterpreter {
         let querySet = try registry.lookup(
             try command.requiredHandle("querySet"), as: WGPUQuerySetObject.self, kind: "GPUQuerySet"
         )
-        let destination = try registry.lookup(
-            try command.requiredHandle("destination"), as: WGPUBufferObject.self, kind: "GPUBuffer"
-        )
+        let destination = try unmappedBuffer(command, field: "destination")
         let first = command.int("firstQuery", default: 0)
         let count = command.int("queryCount", default: querySet.count - first)
         let offset = command.int("destinationOffset", default: 0)
@@ -1005,6 +1058,16 @@ final class WGPUCommandInterpreter {
             )
         }
 
+        // 바인드 그룹이 물고 있는 버퍼가 매핑 중이면 이 드로우도 큐 작업이므로 거부한다.
+        // (그룹은 만들 때 버퍼를 고정하므로, 만든 뒤에 매핑된 경우가 여기서 걸린다.)
+        for (_, bound) in boundGroups {
+            for buffer in bound.group.bufferObjects where buffer.isMapped {
+                throw WGPUError.validation(
+                    "매핑 중인 버퍼를 물고 있는 바인드 그룹으로는 그릴 수 없다 (unmap()을 먼저 부를 것)"
+                )
+            }
+        }
+
         for groupIndex in dirtyGroups.sorted() {
             guard let bound = boundGroups[groupIndex] else { continue }
             try apply(bound.group, at: groupIndex, dynamicOffsets: bound.offsets, layout: layout)
@@ -1098,9 +1161,7 @@ final class WGPUCommandInterpreter {
         guard slot >= 0, slot < WGSLMetalLimits.maxVertexBufferSlots else {
             throw WGPUError.validation("정점 버퍼 슬롯은 0~\(WGSLMetalLimits.maxVertexBufferSlots - 1) 범위다")
         }
-        let buffer = try registry.lookup(
-            try command.requiredHandle("buffer"), as: WGPUBufferObject.self, kind: "GPUBuffer"
-        )
+        let buffer = try unmappedBuffer(command, field: "buffer")
         let offset = command.int("offset", default: 0)
         guard offset >= 0, offset <= buffer.size else {
             throw WGPUError.validation(
@@ -1139,9 +1200,7 @@ final class WGPUCommandInterpreter {
 
     private func setIndexBuffer(_ command: WGPUValueReader) throws {
         _ = try requireRenderEncoder()
-        let buffer = try registry.lookup(
-            try command.requiredHandle("buffer"), as: WGPUBufferObject.self, kind: "GPUBuffer"
-        )
+        let buffer = try unmappedBuffer(command, field: "buffer")
         let format = try command.requiredEnum("format", WGPUIndexFormat.self)
         indexBinding = (
             buffer.buffer,
@@ -1232,9 +1291,7 @@ final class WGPUCommandInterpreter {
         _ command: WGPUValueReader,
         argumentSize: Int
     ) throws -> (buffer: MTLBuffer, offset: Int) {
-        let object = try registry.lookup(
-            try command.requiredHandle("indirectBuffer"), as: WGPUBufferObject.self, kind: "GPUBuffer"
-        )
+        let object = try unmappedBuffer(command, field: "indirectBuffer")
         let offset = command.int("indirectOffset", default: 0)
         guard offset >= 0, offset % 4 == 0 else {
             throw WGPUError.validation(
@@ -1360,12 +1417,8 @@ final class WGPUCommandInterpreter {
     // MARK: - 복사
 
     private func copyBufferToBuffer(_ command: WGPUValueReader) throws {
-        let source = try registry.lookup(
-            try command.requiredHandle("source"), as: WGPUBufferObject.self, kind: "GPUBuffer"
-        )
-        let destination = try registry.lookup(
-            try command.requiredHandle("destination"), as: WGPUBufferObject.self, kind: "GPUBuffer"
-        )
+        let source = try unmappedBuffer(command, field: "source")
+        let destination = try unmappedBuffer(command, field: "destination")
         let size = try command.requiredInt("size")
         let encoder = try activeBlitEncoder()
         encoder.copy(
@@ -1381,9 +1434,7 @@ final class WGPUCommandInterpreter {
         let texture = try registry.lookup(
             try sourceReader.requiredHandle("texture"), as: WGPUTextureObject.self, kind: "GPUTexture"
         )
-        let buffer = try registry.lookup(
-            try destinationReader.requiredHandle("buffer"), as: WGPUBufferObject.self, kind: "GPUBuffer"
-        )
+        let buffer = try unmappedBuffer(destinationReader, field: "buffer")
         let size = try command.requiredExtent("copySize")
         let bytesPerRow = destinationReader.int("bytesPerRow", default: size.width * texture.format.bytesPerPixel)
         let origin = try sourceReader.origin("origin")
@@ -1405,9 +1456,7 @@ final class WGPUCommandInterpreter {
     private func copyBufferToTexture(_ command: WGPUValueReader) throws {
         let sourceReader = try command.requiredObject("source")
         let destinationReader = try command.requiredObject("destination")
-        let buffer = try registry.lookup(
-            try sourceReader.requiredHandle("buffer"), as: WGPUBufferObject.self, kind: "GPUBuffer"
-        )
+        let buffer = try unmappedBuffer(sourceReader, field: "buffer")
         let texture = try registry.lookup(
             try destinationReader.requiredHandle("texture"), as: WGPUTextureObject.self, kind: "GPUTexture"
         )

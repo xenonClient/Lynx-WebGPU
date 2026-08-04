@@ -47,9 +47,13 @@ enum WGPUResolvedBinding {
 public final class WGPUBindGroupObject {
     let layout: WGPUBindGroupLayoutObject
     let bindings: [(binding: Int, visibility: WGPUShaderStage, resource: WGPUResolvedBinding)]
+    /// 이 그룹이 물고 있는 버퍼 객체 — 드로우 직전에 "매핑 중인가"를 보려면 필요하다
+    /// (바인딩은 `MTLBuffer`만 들고 있어서 매핑 상태를 알 수 없다).
+    let bufferObjects: [WGPUBufferObject]
 
     init(layout: WGPUBindGroupLayoutObject, descriptor: WGPUBindGroupDescriptor, registry: WGPUObjectRegistry) throws {
         self.layout = layout
+        var buffers: [WGPUBufferObject] = []
         self.bindings = try descriptor.entries.map { entry in
             guard let layoutEntry = layout.entry(binding: entry.binding) else {
                 throw WGPUError.validation("바인드 그룹 레이아웃에 binding \(entry.binding)이 없다")
@@ -58,6 +62,7 @@ public final class WGPUBindGroupObject {
             switch entry.resource {
             case .buffer(let handle, let offset, let size):
                 let object = try registry.lookup(handle, as: WGPUBufferObject.self, kind: "GPUBuffer")
+                buffers.append(object)
                 resolved = .buffer(
                     object.buffer, offset: offset, boundSize: size ?? max(object.size - offset, 0)
                 )
@@ -70,6 +75,7 @@ public final class WGPUBindGroupObject {
             }
             return (entry.binding, layoutEntry.visibility, resolved)
         }
+        self.bufferObjects = buffers
     }
 }
 

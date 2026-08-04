@@ -324,7 +324,7 @@ final class RenderPipelineTests: XCTestCase {
             ["op": "createBuffer", "id": 2, "usage": TestUsage.storage | TestUsage.copyDst,
              "data": input.base64],
             ["op": "createBuffer", "id": 3, "size": 32,
-             "usage": TestUsage.storage | TestUsage.copySrc | TestUsage.mapRead],
+             "usage": TestUsage.storage | TestUsage.copySrc],
             ["op": "createComputePipeline", "id": 4, "layout": "auto",
              "compute": ["module": 1, "entryPoint": "double_values"]],
             ["op": "getBindGroupLayout", "id": 5, "pipeline": 4, "index": 0],
@@ -373,7 +373,7 @@ final class RenderPipelineTests: XCTestCase {
             // count(4) + 패딩(12) + vec4f 2개(32) = 48바이트 → items 길이 2
             ["op": "createBuffer", "id": 4, "size": 48, "usage": TestUsage.storage],
             ["op": "createBuffer", "id": 5, "size": 16,
-             "usage": TestUsage.storage | TestUsage.copySrc | TestUsage.mapRead],
+             "usage": TestUsage.storage | TestUsage.copySrc],
             ["op": "createComputePipeline", "id": 6, "layout": "auto",
              "compute": ["module": 1, "entryPoint": "probe"]],
             ["op": "getBindGroupLayout", "id": 7, "pipeline": 6, "index": 0],

@@ -39,6 +39,27 @@ public struct WGPUBufferDescriptor {
                 "초기 데이터(\(initialData.count)B)가 버퍼 크기(\(size)B)를 넘는다", path: reader.path
             )
         }
+        // 매핑 usage는 복사와만 조합할 수 있다. Metal은 `.storageModeShared` 하나로 전부 되지만,
+        // 여기서 안 막으면 `QUERY_RESOLVE | MAP_READ` 같은 조합이 브라우저에서만 거부된다.
+        try Self.validateMapUsage(usage, path: reader.path)
+    }
+
+    /// 명세의 매핑 usage 배타 규칙 — `MAP_READ`는 `COPY_DST`와만, `MAP_WRITE`는 `COPY_SRC`와만.
+    static func validateMapUsage(_ usage: WGPUBufferUsage, path: String?) throws {
+        let rules: [(flag: WGPUBufferUsage, name: String, allowed: WGPUBufferUsage, allowedName: String)] = [
+            (.mapRead, "MAP_READ", .copyDst, "COPY_DST"),
+            (.mapWrite, "MAP_WRITE", .copySrc, "COPY_SRC"),
+        ]
+        for rule in rules where usage.contains(rule.flag) {
+            let extra = usage.subtracting([rule.flag, rule.allowed])
+            guard extra.isEmpty else {
+                throw WGPUError.validation(
+                    "\(rule.name)는 \(rule.allowedName) 외의 usage와 함께 쓸 수 없다 "
+                        + "— 리드백은 \(rule.allowedName) 버퍼로 copyBufferToBuffer한 뒤 매핑할 것",
+                    path: path
+                )
+            }
+        }
     }
 }
 
