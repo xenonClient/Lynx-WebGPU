@@ -194,6 +194,43 @@ const canvasSizeCache = new Map();
 const ERROR_FILTERS = ['validation', 'out-of-memory', 'internal'];
 
 /**
+ * 명세의 `GPUError` 계층 — `uncapturederror` 이벤트가 실어 나르는 객체.
+ *
+ * 명세는 `message` 하나만 요구하지만 `kind`·`path`를 함께 둔다. 커맨드 스트림에서 온 오류는
+ * "몇 번째 명령의 어느 필드"까지 알고 있고, 그걸 버리면 진단이 크게 나빠지기 때문이다.
+ * 웹 코드가 종류를 볼 때는 `instanceof`(또는 `constructor.name`)를 쓴다 — 그래서 하위 클래스로 나눈다.
+ */
+class GPUError {
+  /** @param {WGPUError} payload */
+  constructor(payload) {
+    this.message = payload.message;
+    /** 이 구현이 붙이는 추가 정보 — 명세에는 없다. */
+    this.kind = payload.kind;
+    this.path = payload.path;
+  }
+}
+class GPUValidationError extends GPUError {}
+class GPUOutOfMemoryError extends GPUError {}
+class GPUInternalError extends GPUError {}
+
+/**
+ * 커맨드 오류의 네 종류를 명세의 세 `GPUError` 하위 클래스로 접는다.
+ *
+ * `unsupported`가 `GPUValidationError`인 것은 `pushErrorScope('validation')`이 그것을 잡는 것과
+ * 같은 이유다 — 브라우저에서 같은 코드는 validation으로 나거나 성공하므로, 앱의 분기가 맞아떨어진다.
+ *
+ * @param {WGPUError} payload
+ * @returns {GPUError}
+ */
+function makeGPUError(payload) {
+  switch (payload.kind) {
+    case 'out-of-memory': return new GPUOutOfMemoryError(payload);
+    case 'backend': return new GPUInternalError(payload);
+    default: return new GPUValidationError(payload);
+  }
+}
+
+/**
  * `createRenderPipelineAsync` 계열이 거부할 때 쓰는 오류 (명세 `GPUPipelineError`).
  *
  * 명세의 `reason`은 `'validation' | 'internal'` 둘뿐이라, 커맨드 오류의 네 종류를 그리로
@@ -251,6 +288,12 @@ class Recorder {
     this.nextId = 1;
     /** @type {((error: WGPUError, text: string) => void)[]} */
     this.errorHandlers = [];
+    /**
+     * 스코프에 안 잡힌 오류를 명세의 `uncapturederror` 경로로도 흘려보내는 훅.
+     * 디바이스가 자기 자신을 꽂는다. 하나라도 받아 갔으면 `true`를 돌려준다.
+     * @type {((error: WGPUError) => boolean) | null}
+     */
+    this.uncapturedDispatch = null;
     /**
      * `popErrorScope()`가 돌려준 Promise의 결과 함수들 — **pop한 순서 그대로**다.
      * 네이티브가 같은 순서로 `errorScopes` 배열을 돌려주므로 인덱스로 짝을 맞춘다.
@@ -366,12 +409,25 @@ class Recorder {
     });
   }
 
-  /** @param {WGPUError[]} errors */
+  /**
+   * 스코프에 안 잡힌 오류를 등록된 모든 통로로 보낸다.
+   *
+   * 통로는 둘이고 **함께** 받는다 — 이 구현의 `onError`(경로가 붙은 텍스트까지 준다)와
+   * 명세의 `uncapturederror`(웹 코드가 아는 이름). 아무도 안 듣고 있을 때만 콘솔로 떨어뜨린다:
+   * 조용히 사라지는 오류가 없어야 하고, 듣고 있는데 콘솔에도 찍히면 로그가 두 번 남는다.
+   *
+   * @param {WGPUError[]} errors
+   */
   report(errors) {
     for (const error of errors) {
       const text = `[WebGPU:${error.kind}] ${error.path ? error.path + ' — ' : ''}${error.message}`;
-      if (this.errorHandlers.length === 0) console.error(text);
-      else for (const handler of this.errorHandlers) handler(error, text);
+      let delivered = false;
+      for (const handler of this.errorHandlers) {
+        handler(error, text);
+        delivered = true;
+      }
+      if (this.uncapturedDispatch && this.uncapturedDispatch(error)) delivered = true;
+      if (!delivered) console.error(text);
     }
   }
 }
@@ -1188,17 +1244,76 @@ class GPUDevice {
      * @type {Promise<GPUDeviceLostInfo>}
      */
     this.lost = new Promise(() => {});
+    /**
+     * 스코프에 안 잡힌 오류 (명세 `GPUDevice.onuncapturederror`).
+     *
+     * 웹 코드가 아는 이름이라 그대로 둔다 — Three.js가 여기에 대입해 `renderer.onError`로
+     * 넘긴다. 받는 값은 `{type, error}`이고 `error`는 `GPUValidationError` 계열이다.
+     * @type {((event: {type: string, error: GPUError}) => void) | null}
+     */
+    this.onuncapturederror = null;
+    /** @type {((event: {type: string, error: GPUError}) => void)[]} */
+    this._uncapturedListeners = [];
     this._recorder = new Recorder();
+    this._recorder.uncapturedDispatch = (error) => this._dispatchUncaptured(error);
     this.queue = new GPUQueue(this);
   }
 
   /**
    * 커맨드 실행 오류 핸들러 (`{kind, message, path}`). 등록하지 않으면 console.error로 나간다.
+   *
+   * 명세의 `onuncapturederror`와 **함께** 동작한다 — 둘 다 등록하면 둘 다 받는다.
+   * 이쪽은 경로가 붙은 완성된 텍스트까지 주므로 진단에는 더 편하다.
+   *
    * @param {(error: WGPUError, text: string) => void} handler
    * @returns {void}
    */
   onError(handler) {
     this._recorder.errorHandlers.push(handler);
+  }
+
+  /**
+   * `uncapturederror` 리스너 등록 (명세의 `EventTarget` 자리 — 이 이벤트만 받는다).
+   * @param {string} type
+   * @param {(event: {type: string, error: GPUError}) => void} listener
+   * @returns {void}
+   */
+  addEventListener(type, listener) {
+    if (type === 'uncapturederror') this._uncapturedListeners.push(listener);
+  }
+
+  /**
+   * @param {string} type
+   * @param {(event: {type: string, error: GPUError}) => void} listener
+   * @returns {void}
+   */
+  removeEventListener(type, listener) {
+    if (type !== 'uncapturederror') return;
+    const index = this._uncapturedListeners.indexOf(listener);
+    if (index >= 0) this._uncapturedListeners.splice(index, 1);
+  }
+
+  /**
+   * 오류 하나를 `uncapturederror` 통로로 흘린다. 받아 간 곳이 하나라도 있으면 `true`.
+   *
+   * 리스너가 던져도 **나머지 리스너와 다음 오류는 계속 간다** — 하나의 실수가 전체 보고를
+   * 삼키면, 정작 원인인 오류가 사라져 진단이 불가능해진다.
+   *
+   * @param {WGPUError} payload
+   * @returns {boolean}
+   */
+  _dispatchUncaptured(payload) {
+    const event = { type: 'uncapturederror', error: makeGPUError(payload) };
+    const listeners = this._uncapturedListeners.slice();
+    if (typeof this.onuncapturederror === 'function') listeners.push(this.onuncapturederror);
+    for (const listener of listeners) {
+      try {
+        listener(event);
+      } catch (error) {
+        console.error(`uncapturederror 리스너가 던졌다: ${(error && /** @type {Error} */ (error).message) || error}`);
+      }
+    }
+    return listeners.length > 0;
   }
 
   /**
@@ -1748,6 +1863,8 @@ export async function loadAsset(name) {
 export {
   GPUBuffer, GPUTexture, GPUTextureView, GPUSampler, GPUDevice, GPUCanvasContext,
   GPURenderBundle, GPURenderBundleEncoder, GPUQuerySet,
+  // `uncapturederror`가 실어 나르는 오류 — `instanceof`로 종류를 가를 때 쓴다.
+  GPUError, GPUValidationError, GPUOutOfMemoryError, GPUInternalError,
 };
 export default gpu;
 

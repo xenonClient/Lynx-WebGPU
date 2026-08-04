@@ -451,7 +451,20 @@ device.onError((error, text) => console.error(text))
 //           message: '…', path: 'commands[3].vertex.buffers[0].format' }
 ```
 
-핸들러를 등록하지 않으면 `console.error`로 나간다.
+명세의 통로도 그대로 쓸 수 있다 — 웹 코드를 옮길 때 이름을 안 바꿔도 된다:
+
+```js
+device.onuncapturederror = (event) => console.error(event.error.message)
+device.addEventListener('uncapturederror', (event) => { /* … */ })   // 같은 이벤트
+```
+
+- `event.error`는 `GPUValidationError` · `GPUOutOfMemoryError` · `GPUInternalError` 중 하나다
+  (`instanceof`로 갈린다). `unsupported`는 `GPUValidationError`로 접힌다 — 스코프 필터와 같은 규칙.
+- 명세에 없는 `kind`·`path`도 함께 실린다. 커맨드 스트림은 "몇 번째 명령의 어느 필드"까지
+  알고 있고, 그걸 버리면 진단이 크게 나빠진다.
+- **두 통로는 함께 동작한다.** 둘 다 등록하면 둘 다 받고, **아무도 안 듣고 있을 때만**
+  `console.error`로 떨어진다 (조용히 사라지는 오류도, 두 번 찍히는 로그도 없게).
+- 리스너가 던져도 나머지 리스너와 다음 오류는 계속 간다.
 
 | kind | 뜻 |
 |---|---|

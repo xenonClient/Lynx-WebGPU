@@ -161,12 +161,39 @@ export type GPUTextureInit = {
     label?: string;
     frameScoped?: boolean;
 };
+/**
+ * 명세의 `GPUError` 계층 — `uncapturederror` 이벤트가 실어 나르는 객체.
+ *
+ * 명세는 `message` 하나만 요구하지만 `kind`·`path`를 함께 둔다. 커맨드 스트림에서 온 오류는
+ * "몇 번째 명령의 어느 필드"까지 알고 있고, 그걸 버리면 진단이 크게 나빠지기 때문이다.
+ * 웹 코드가 종류를 볼 때는 `instanceof`(또는 `constructor.name`)를 쓴다 — 그래서 하위 클래스로 나눈다.
+ */
+declare class GPUError {
+    message: string;
+    /** 이 구현이 붙이는 추가 정보 — 명세에는 없다. */
+    kind: "backend" | "out-of-memory" | "unsupported" | "validation";
+    path: string | undefined;
+    /** @param {WGPUError} payload */
+    constructor(payload: WGPUError);
+}
+declare class GPUValidationError extends GPUError {
+}
+declare class GPUOutOfMemoryError extends GPUError {
+}
+declare class GPUInternalError extends GPUError {
+}
 declare class Recorder {
     /** @type {GPUCommand[]} */
     pending: GPUCommand[];
     nextId: number;
     /** @type {((error: WGPUError, text: string) => void)[]} */
     errorHandlers: ((error: WGPUError, text: string) => void)[];
+    /**
+     * 스코프에 안 잡힌 오류를 명세의 `uncapturederror` 경로로도 흘려보내는 훅.
+     * 디바이스가 자기 자신을 꽂는다. 하나라도 받아 갔으면 `true`를 돌려준다.
+     * @type {((error: WGPUError) => boolean) | null}
+     */
+    uncapturedDispatch: ((error: WGPUError) => boolean) | null;
     /**
      * `popErrorScope()`가 돌려준 Promise의 결과 함수들 — **pop한 순서 그대로**다.
      * 네이티브가 같은 순서로 `errorScopes` 배열을 돌려주므로 인덱스로 짝을 맞춘다.
@@ -224,7 +251,15 @@ declare class Recorder {
     settleErrorScopes(popped: (WGPUError | {
         rejected: true;
     } | null)[]): void;
-    /** @param {WGPUError[]} errors */
+    /**
+     * 스코프에 안 잡힌 오류를 등록된 모든 통로로 보낸다.
+     *
+     * 통로는 둘이고 **함께** 받는다 — 이 구현의 `onError`(경로가 붙은 텍스트까지 준다)와
+     * 명세의 `uncapturederror`(웹 코드가 아는 이름). 아무도 안 듣고 있을 때만 콘솔로 떨어뜨린다:
+     * 조용히 사라지는 오류가 없어야 하고, 듣고 있는데 콘솔에도 찍히면 로그가 두 번 남는다.
+     *
+     * @param {WGPUError[]} errors
+     */
     report(errors: WGPUError[]): void;
 }
 declare class GPUObjectBase {
@@ -708,6 +743,22 @@ declare class GPUDevice {
      * @type {Promise<GPUDeviceLostInfo>}
      */
     lost: Promise<GPUDeviceLostInfo>;
+    /**
+     * 스코프에 안 잡힌 오류 (명세 `GPUDevice.onuncapturederror`).
+     *
+     * 웹 코드가 아는 이름이라 그대로 둔다 — Three.js가 여기에 대입해 `renderer.onError`로
+     * 넘긴다. 받는 값은 `{type, error}`이고 `error`는 `GPUValidationError` 계열이다.
+     * @type {((event: {type: string, error: GPUError}) => void) | null}
+     */
+    onuncapturederror: ((event: {
+        type: string;
+        error: GPUError;
+    }) => void) | null;
+    /** @type {((event: {type: string, error: GPUError}) => void)[]} */
+    _uncapturedListeners: ((event: {
+        type: string;
+        error: GPUError;
+    }) => void)[];
     _recorder: Recorder;
     queue: GPUQueue;
     /**
@@ -717,10 +768,43 @@ declare class GPUDevice {
     constructor(adapter: GPUAdapter, requiredFeatures?: string[]);
     /**
      * 커맨드 실행 오류 핸들러 (`{kind, message, path}`). 등록하지 않으면 console.error로 나간다.
+     *
+     * 명세의 `onuncapturederror`와 **함께** 동작한다 — 둘 다 등록하면 둘 다 받는다.
+     * 이쪽은 경로가 붙은 완성된 텍스트까지 주므로 진단에는 더 편하다.
+     *
      * @param {(error: WGPUError, text: string) => void} handler
      * @returns {void}
      */
     onError(handler: (error: WGPUError, text: string) => void): void;
+    /**
+     * `uncapturederror` 리스너 등록 (명세의 `EventTarget` 자리 — 이 이벤트만 받는다).
+     * @param {string} type
+     * @param {(event: {type: string, error: GPUError}) => void} listener
+     * @returns {void}
+     */
+    addEventListener(type: string, listener: (event: {
+        type: string;
+        error: GPUError;
+    }) => void): void;
+    /**
+     * @param {string} type
+     * @param {(event: {type: string, error: GPUError}) => void} listener
+     * @returns {void}
+     */
+    removeEventListener(type: string, listener: (event: {
+        type: string;
+        error: GPUError;
+    }) => void): void;
+    /**
+     * 오류 하나를 `uncapturederror` 통로로 흘린다. 받아 간 곳이 하나라도 있으면 `true`.
+     *
+     * 리스너가 던져도 **나머지 리스너와 다음 오류는 계속 간다** — 하나의 실수가 전체 보고를
+     * 삼키면, 정작 원인인 오류가 사라져 진단이 불가능해진다.
+     *
+     * @param {WGPUError} payload
+     * @returns {boolean}
+     */
+    _dispatchUncaptured(payload: WGPUError): boolean;
     /**
      * 여기서부터 `popErrorScope()`까지 사이에 난 오류 중 **필터에 맞는 것**을 가로챈다.
      *
@@ -974,5 +1058,5 @@ export declare function startFrameLoop(handler: (frame: {
  * @returns {Promise<ArrayBuffer>}
  */
 export declare function loadAsset(name: string): Promise<ArrayBuffer>;
-export { GPUBuffer, GPUTexture, GPUTextureView, GPUSampler, GPUDevice, GPUCanvasContext, GPURenderBundle, GPURenderBundleEncoder, GPUQuerySet, };
+export { GPUBuffer, GPUTexture, GPUTextureView, GPUSampler, GPUDevice, GPUCanvasContext, GPURenderBundle, GPURenderBundleEncoder, GPUQuerySet, GPUError, GPUValidationError, GPUOutOfMemoryError, GPUInternalError, };
 export default gpu;
