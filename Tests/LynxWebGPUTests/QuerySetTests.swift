@@ -331,4 +331,128 @@ final class QuerySetTests: XCTestCase {
         XCTAssertEqual(errors(result).first?["kind"] as? String, "validation")
         XCTAssertEqual(errors(result).first?["path"] as? String, "commands[0].count")
     }
+
+    /// 상한을 넘는 쿼리셋은 여기서 만들어지지만 브라우저에서는 validation 오류다.
+    /// (occlusion이면 `count * 8`바이트를 그대로 할당하기까지 한다.)
+    func test_쿼리_개수_상한을_넘으면_거부한다() {
+        let result = harness.execute([
+            ["op": "createQuerySet", "id": 1, "type": "occlusion",
+             "count": WGPUQuerySetDescriptor.maxCount + 1],
+        ])
+        XCTAssertEqual(errors(result).first?["kind"] as? String, "validation")
+        XCTAssertEqual(errors(result).first?["path"] as? String, "commands[0].count")
+
+        harness.executeExpectingSuccess([
+            ["op": "createQuerySet", "id": 2, "type": "occlusion",
+             "count": WGPUQuerySetDescriptor.maxCount],
+        ])
+    }
+
+    /// 두 인덱스를 모두 생략하면 Metal 샘플 인덱스가 전부 `MTLCounterDontSample`이 되어
+    /// **오류 없이 아무것도 찍지 않는 패스**가 된다. 앱은 GPU 시간을 0ns로 읽는다.
+    func test_timestampWrites에_인덱스가_하나도_없으면_거부한다() throws {
+        try XCTSkipUnless(harness.supports(.timestampQuery), "타임스탬프 미지원 기기")
+
+        let result = harness.execute(setUpResources() + [
+            ["op": "createQuerySet", "id": 3, "type": "timestamp", "count": 2],
+        ] + acquireDrawable + [
+            [
+                "op": "beginRenderPass",
+                "colorAttachments": [[
+                    "view": 21, "loadOp": "clear", "storeOp": "store",
+                    "clearValue": ["r": 0, "g": 0, "b": 0, "a": 1],
+                ]],
+                "timestampWrites": ["querySet": 3],
+            ],
+            ["op": "endPass"],
+        ])
+
+        XCTAssertTrue(
+            ((errors(result).first?["message"] as? String) ?? "").contains("최소 하나"),
+            harness.describeErrors(result)
+        )
+    }
+
+    /// 같은 슬롯을 가리키면 끝 샘플이 시작 샘플을 덮어 델타가 의미를 잃는다.
+    func test_timestampWrites의_두_인덱스가_같으면_거부한다() throws {
+        try XCTSkipUnless(harness.supports(.timestampQuery), "타임스탬프 미지원 기기")
+
+        let result = harness.execute(setUpResources() + [
+            ["op": "createQuerySet", "id": 3, "type": "timestamp", "count": 2],
+        ] + acquireDrawable + [
+            [
+                "op": "beginRenderPass",
+                "colorAttachments": [[
+                    "view": 21, "loadOp": "clear", "storeOp": "store",
+                    "clearValue": ["r": 0, "g": 0, "b": 0, "a": 1],
+                ]],
+                "timestampWrites": [
+                    "querySet": 3, "beginningOfPassWriteIndex": 1, "endOfPassWriteIndex": 1,
+                ],
+            ],
+            ["op": "endPass"],
+        ])
+
+        XCTAssertTrue(
+            ((errors(result).first?["message"] as? String) ?? "").contains("서로 달라야"),
+            harness.describeErrors(result)
+        )
+    }
+
+    /// Metal은 `endEncoding` 시점에 visibility 결과를 그대로 써 주므로 **값까지 정상으로 보인다.**
+    /// 브라우저에서는 부모 커맨드 인코더가 무효화되어 프레임이 통째로 날아간다.
+    func test_occlusion_쿼리를_닫지_않고_endPass하면_거부한다() {
+        let result = harness.execute(setUpResources() + [
+            ["op": "createQuerySet", "id": 3, "type": "occlusion", "count": 2],
+        ] + acquireDrawable + [
+            beginPass(occlusionQuerySet: 3),
+            ["op": "setPipeline", "pipeline": 2],
+            ["op": "beginOcclusionQuery", "queryIndex": 0],
+            ["op": "draw", "vertexCount": 3],
+            ["op": "endPass"],   // endOcclusionQuery 없이
+        ])
+
+        XCTAssertTrue(
+            ((errors(result).first?["message"] as? String) ?? "").contains("열린 채로"),
+            harness.describeErrors(result)
+        )
+    }
+
+    /// 같은 인덱스를 두 번 쓰면 두 구간이 같은 8바이트 슬롯을 나눠 쓴다 —
+    /// 남는 값이 Metal의 누적/덮어쓰기 동작에 달린 값이 되어 브라우저와 결과가 갈린다.
+    func test_같은_패스에서_occlusion_인덱스를_재사용하면_거부한다() {
+        let result = harness.execute(setUpResources() + [
+            ["op": "createQuerySet", "id": 3, "type": "occlusion", "count": 2],
+        ] + acquireDrawable + [
+            beginPass(occlusionQuerySet: 3),
+            ["op": "setPipeline", "pipeline": 2],
+            ["op": "beginOcclusionQuery", "queryIndex": 0],
+            ["op": "draw", "vertexCount": 3],
+            ["op": "endOcclusionQuery"],
+            ["op": "beginOcclusionQuery", "queryIndex": 0],
+            ["op": "draw", "vertexCount": 3],
+            ["op": "endOcclusionQuery"],
+            ["op": "endPass"],
+        ])
+
+        XCTAssertTrue(
+            ((errors(result).first?["message"] as? String) ?? "").contains("이미 썼다"),
+            harness.describeErrors(result)
+        )
+    }
+
+    /// 반대로 **패스가 다르면** 같은 인덱스를 다시 쓸 수 있어야 한다 (명세는 패스 안에서만 막는다).
+    func test_패스가_다르면_같은_occlusion_인덱스를_다시_쓸_수_있다() {
+        let pass: [[String: Any]] = [
+            beginPass(occlusionQuerySet: 3),
+            ["op": "setPipeline", "pipeline": 2],
+            ["op": "beginOcclusionQuery", "queryIndex": 0],
+            ["op": "draw", "vertexCount": 3],
+            ["op": "endOcclusionQuery"],
+            ["op": "endPass"],
+        ]
+        harness.executeExpectingSuccess(setUpResources() + [
+            ["op": "createQuerySet", "id": 3, "type": "occlusion", "count": 2],
+        ] + acquireDrawable + pass + pass)
+    }
 }

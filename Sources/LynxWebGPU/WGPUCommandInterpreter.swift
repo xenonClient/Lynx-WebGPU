@@ -38,6 +38,9 @@ final class WGPUCommandInterpreter {
     private var passOcclusionQuerySet: WGPUQuerySetObject?
     /// 열려 있는 occlusion 쿼리 인덱스 — 중첩·미종료를 잡는다.
     private var openOcclusionQuery: Int?
+    /// 지금 패스에서 이미 쓴 occlusion 쿼리 인덱스 — 명세는 같은 패스에서 재사용을 금지한다.
+    /// (같은 8바이트 슬롯을 두 구간이 나눠 쓰면 남는 값이 Metal 동작에 달린 값이 된다.)
+    private var usedOcclusionQueries: Set<Int> = []
     private var acquiredDrawables: [(handle: WGPUHandle, drawable: WGPUDrawable, surface: WGPUSurface)] = []
     /// 이번 프레임 업로드에 쓴 스테이징 버퍼 — 커맨드 버퍼 완료 시 풀로 돌아간다.
     private var frameStagingBuffers: [MTLBuffer] = []
@@ -157,6 +160,7 @@ final class WGPUCommandInterpreter {
         passFormats = nil
         passOcclusionQuerySet = nil
         openOcclusionQuery = nil
+        usedOcclusionQueries.removeAll()
         acquiredDrawables.removeAll()
         frameScopedHandles.removeAll()
         touchedCanvases.removeAll()
@@ -222,6 +226,23 @@ final class WGPUCommandInterpreter {
     }
 
     private func endActiveEncoders() {
+        if renderEncoder != nil {
+            // 명세는 패스를 닫을 때 열려 있는 occlusion 쿼리가 없기를 요구한다. Metal은 그냥
+            // 값을 써 주므로 여기서 안 잡으면 **값까지 정상으로 보이고**, 브라우저에서만 프레임이
+            // 통째로 날아간다. 패스는 이미 닫히는 중이라 throw 대신 기록한다.
+            if let index = openOcclusionQuery {
+                record(.validation(
+                    "occlusion 쿼리 \(index)이(가) 열린 채로 렌더 패스가 끝났다 "
+                        + "(endOcclusionQuery를 빠뜨렸다)"
+                ))
+            }
+            // 패스 상태는 패스 밖으로 새면 안 된다 — 지금은 뒤따르는 beginRenderPass가 다시
+            // 설정해서 드러나지 않지만, 새 op이 추가될 때 걸리기 쉬운 자리다.
+            openOcclusionQuery = nil
+            usedOcclusionQueries.removeAll()
+            passOcclusionQuerySet = nil
+            passFormats = nil
+        }
         renderEncoder?.endEncoding()
         renderEncoder = nil
         computeEncoder?.endEncoding()
@@ -656,6 +677,7 @@ final class WGPUCommandInterpreter {
         passFormats = (colorFormats, depthStencilFormat, sampleCount)
         passOcclusionQuerySet = occlusionQuerySet
         openOcclusionQuery = nil
+        usedOcclusionQueries.removeAll()
         resetPassBindings()
     }
 
@@ -667,6 +689,22 @@ final class WGPUCommandInterpreter {
         guard querySet.type == .timestamp, let buffer = querySet.counterBuffer else {
             throw WGPUError.validation(
                 "timestampWrites의 쿼리셋은 type: \"timestamp\"여야 한다 (받은 것: \(querySet.type.rawValue))"
+            )
+        }
+        // 둘 다 생략하면 Metal 샘플 인덱스가 전부 `MTLCounterDontSample`이 되어 **조용한 no-op
+        // 패스**가 된다. 오류 없이 쿼리셋 초기값(0)이 resolve되므로 앱은 GPU 시간을 0ns로 읽는다.
+        guard writes.beginningOfPassWriteIndex != nil || writes.endOfPassWriteIndex != nil else {
+            throw WGPUError.validation(
+                "timestampWrites는 beginningOfPassWriteIndex와 endOfPassWriteIndex 중 "
+                    + "최소 하나를 줘야 한다",
+                path: "timestampWrites"
+            )
+        }
+        // 같은 슬롯을 가리키면 나중 샘플이 앞의 것을 덮어 델타가 의미를 잃는다.
+        if let begin = writes.beginningOfPassWriteIndex, begin == writes.endOfPassWriteIndex {
+            throw WGPUError.validation(
+                "timestampWrites의 두 인덱스는 서로 달라야 한다 (둘 다 \(begin))",
+                path: "timestampWrites"
             )
         }
         for index in [writes.beginningOfPassWriteIndex, writes.endOfPassWriteIndex].compactMap({ $0 }) {
@@ -687,6 +725,14 @@ final class WGPUCommandInterpreter {
         }
         let index = try command.requiredInt("queryIndex")
         try querySet.checkRange(first: index, count: 1, path: command.fieldPath("queryIndex"))
+        // 한 패스에서 같은 인덱스를 두 번 쓰면 두 구간이 같은 8바이트 슬롯을 나눠 쓴다 —
+        // 최종 값이 Metal의 누적/덮어쓰기 동작에 달린 값이 되어 브라우저와 결과가 갈린다.
+        guard usedOcclusionQueries.insert(index).inserted else {
+            throw WGPUError.validation(
+                "occlusion 쿼리 인덱스 \(index)은(는) 이 패스에서 이미 썼다",
+                path: command.fieldPath("queryIndex")
+            )
+        }
         // `.counting`은 통과한 **샘플 수**를 센다 — 명세의 occlusion 결과와 같은 뜻이다.
         encoder.setVisibilityResultMode(.counting, offset: index * WGPUQuerySetObject.resultStride)
         openOcclusionQuery = index

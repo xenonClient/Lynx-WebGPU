@@ -283,7 +283,14 @@ const counts = new BigUint64Array(await results.mapAsync(GPUMapMode.READ))
 ```
 
 - 결과 하나는 `u64` 8바이트다. `occlusion`은 **통과한 샘플 수**이므로 0이면 완전히 가려진 것이다.
+- `count`는 **1 이상 4096 이하**다 (명세 상한 — Metal은 더 큰 것도 받지만 여기서 막는다).
 - 쿼리셋은 **패스를 열 때만** 붙일 수 있고(`occlusionQuerySet`), occlusion 쿼리는 중첩할 수 없다.
+- occlusion 쿼리는 **패스를 닫기 전에 `endOcclusionQuery`로 닫아야** 하고, 같은 인덱스를
+  **한 패스에서 두 번 쓸 수 없다**. 둘 다 Metal은 그냥 넘어가지만(값까지 정상으로 보인다)
+  브라우저에서는 패스가 통째로 무효화되므로 여기서 직접 막는다.
+- `timestampWrites`는 `beginningOfPassWriteIndex`·`endOfPassWriteIndex` 중 **최소 하나**를 줘야 하고,
+  둘 다 주면 **서로 달라야** 한다. 둘 다 빠지면 아무것도 찍히지 않은 채 0ns로 읽히고,
+  같으면 끝 샘플이 시작 샘플을 덮는다.
 - 목적지 버퍼는 `GPUBufferUsage.QUERY_RESOLVE`로 만들어야 하고 `destinationOffset`은
   **256의 배수**여야 한다 (명세 요구 — Metal은 더 느슨해서 여기서 직접 막는다).
 

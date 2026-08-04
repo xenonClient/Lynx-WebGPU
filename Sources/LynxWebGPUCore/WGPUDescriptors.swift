@@ -674,6 +674,9 @@ public struct WGPUComputePassDescriptor {
 // MARK: - 쿼리
 
 public struct WGPUQuerySetDescriptor {
+    /// 명세가 정한 쿼리셋 크기 상한 (`GPUQuerySetDescriptor.count` ≤ 4096).
+    public static let maxCount = 4096
+
     public var type: WGPUQueryType
     public var count: Int
     public var label: String?
@@ -682,8 +685,13 @@ public struct WGPUQuerySetDescriptor {
         type = try reader.requiredEnum("type", WGPUQueryType.self)
         count = try reader.requiredInt("count")
         label = reader.optionalString("label")
-        guard count > 0 else {
-            throw WGPUError.validation("쿼리 개수는 1 이상이어야 한다", path: reader.fieldPath("count"))
+        // 상한은 명세가 정한 값이다. Metal은 훨씬 큰 쿼리셋도 받아 주지만, 여기서 막지 않으면
+        // 브라우저에서만 깨지는 코드가 나간다 (`INDIRECT`/`QUERY_RESOLVE` usage와 같은 기준).
+        guard count > 0, count <= WGPUQuerySetDescriptor.maxCount else {
+            throw WGPUError.validation(
+                "쿼리 개수는 1 이상 \(WGPUQuerySetDescriptor.maxCount) 이하여야 한다 (받은 값 \(count))",
+                path: reader.fieldPath("count")
+            )
         }
     }
 }

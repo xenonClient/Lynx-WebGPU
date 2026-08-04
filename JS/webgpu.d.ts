@@ -412,6 +412,8 @@ declare class GPURenderPassEncoder extends GPURenderCommandsBase {
      * 이 드로우들이 통과시킨 샘플 수를 세기 시작한다.
      *
      * `beginRenderPass`에 `occlusionQuerySet`을 준 패스에서만 쓸 수 있고, 중첩할 수 없다.
+     * 같은 인덱스를 한 패스에서 두 번 쓸 수 없고, 패스를 닫기 전에 `endOcclusionQuery`로
+     * 반드시 닫아야 한다.
      *
      * @param {number} queryIndex
      * @returns {void}
@@ -694,6 +696,8 @@ declare class GPUDevice {
      * `'occlusion'`은 드로우가 통과시킨 샘플 수를 센다 — 결정적이라 값을 믿을 수 있다.
      * `'timestamp'`는 GPU 시계라 같은 입력에도 값이 매번 다르다. 기기에 따라 아예 만들 수
      * 없으므로(`adapter.limits.timestampQuery`) 실패를 처리할 것.
+     *
+     * `count`는 1 이상 4096 이하다 (명세 상한).
      *
      * @param {GPUQuerySetDescriptor} descriptor
      * @returns {GPUQuerySet}
