@@ -30,6 +30,10 @@ const format  = gpu.getPreferredCanvasFormat()      // "bgra8unorm"
 if (adapter.features.has('timestamp-query')) { /* 타임스탬프 쿼리셋을 만들 수 있다 */ }
 ```
 
+`device.features`에는 명세대로 **`requestDevice({ requiredFeatures })`로 요청한 것만** 들어간다 —
+어댑터가 지원해도 요청하지 않았으면 `has()`는 false다. 지원하지 않는 기능을 요구하면
+`requestDevice`가 거부한다. `device.lost`는 존재하되 영원히 pending이다 (§8).
+
 ## 2. 캔버스 (`GPUCanvasContext`)
 
 ```js
@@ -479,7 +483,7 @@ if (error) fallBackToSimplePipeline()
 | 블록 압축 텍스처 (BC/ETC/ASTC) | **보류** — 렌더 타깃도 스토리지 텍스처도 될 수 없어 편집 파이프라인에 끼울 수 없다. 읽기 전용 에셋이 많아지면 다시 본다 (`docs/ROADMAP.md`) |
 | `GPUExternalTexture` (`importExternalTexture`) | Lynx에 비디오 엘리먼트 핸들이 없다. 다만 WGSL `texture_external` + `textureSampleBaseClampToEdge`는 **지원**하므로, 프레임을 텍스처로 올려 그 자리에 `GPUTextureView`를 묶으면 된다 |
 | `writeTimestamp` | Metal은 패스 경계에서만 카운터를 샘플링한다 — `timestampWrites`(§6)를 쓸 것 |
-| `device.lost` | iOS/macOS에는 디바이스 손실에 해당하는 사건이 사실상 없다. 테스트 전용 주입 경로만 남는 API라 넣지 않았다. **GPU 실행 자체의 실패**(`.outOfMemory`·`.timeout` 등)는 다음 `submit()` 응답에 `backend` 오류로 실려 나온다 |
+| `device.lost`의 **유실 통지** | iOS/macOS에는 디바이스 손실에 해당하는 사건이 사실상 없다. **속성 자체는 있다** — 웹 코드(`Three.js WebGPUBackend.init()` 등)가 `device.lost.then(...)`을 걸어도 TypeError가 나지 않도록 영원히 pending인 Promise를 준다. **GPU 실행 자체의 실패**(`.outOfMemory`·`.timeout` 등)는 다음 `submit()` 응답에 `backend` 오류로 실려 나온다 |
 
 ### 기기에 따라 갈리는 것
 
