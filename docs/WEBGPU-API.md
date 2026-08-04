@@ -604,6 +604,28 @@ if (error) fallBackToSimplePipeline()
 | `GPUExternalTexture` (`importExternalTexture`) | Lynx에 비디오 엘리먼트 핸들이 없다. 다만 WGSL `texture_external` + `textureSampleBaseClampToEdge`는 **지원**하므로, 프레임을 텍스처로 올려 그 자리에 `GPUTextureView`를 묶으면 된다 |
 | `writeTimestamp` | Metal은 패스 경계에서만 카운터를 샘플링한다 — `timestampWrites`(§6)를 쓸 것 |
 | `device.lost`의 **유실 통지** | iOS/macOS에는 디바이스 손실에 해당하는 사건이 사실상 없다. **속성 자체는 있다** — 웹 코드(`Three.js WebGPUBackend.init()` 등)가 `device.lost.then(...)`을 걸어도 TypeError가 나지 않도록 영원히 pending인 Promise를 준다. **GPU 실행 자체의 실패**(`.outOfMemory`·`.timeout` 등)는 다음 `submit()` 응답에 `backend` 오류로 실려 나온다 |
+| `queue.copyExternalImageToTexture` | `importExternalTexture`와 같은 이유 — Lynx에는 `ImageBitmap`·`HTMLCanvasElement` 같은 DOM 이미지 핸들이 없다. 픽셀을 `ArrayBuffer`로 얻어 `writeTexture`로 올릴 것 (`loadAsset`이 그 통로다) |
+| `setBindGroup`의 `Uint32Array` 오버로드 | 동적 오프셋을 `(data, start, length)`로 넘기는 형태. 배열 형태(`setBindGroup(i, group, [o1, o2])`)와 결과가 같고, 브리지를 건널 때 어차피 배열로 펴진다 — 두 경로를 두면 검증만 두 배가 된다 |
+| `GPURenderPassColorAttachment.depthSlice` | 3D 텍스처의 한 슬라이스를 렌더 타깃으로 삼는 값. 지금은 **읽지 않으므로 항상 0번 슬라이스**에 그린다. 3D 렌더 타깃을 쓰게 되면 그때 넣는다 (2D 배열은 `baseArrayLayer`로 이미 된다) |
+| `GPURenderPassDescriptor.maxDrawCount` | 드라이버에 주는 검증 힌트다. 무시해도 그림은 같고, 넘겼을 때의 거부는 명세상 선택이다 |
+| `GPUCanvasContext.canvas` | 명세는 `HTMLCanvasElement`를 돌려준다 — Lynx에는 대응하는 엘리먼트 객체가 없다. `context.canvasId`(문자열)가 그 자리다 |
+| `setImmediates` (immediate data) | 명세에 최근 들어온 기능이고 `maxImmediateSize` 한계도 따라온다. 유니폼 버퍼로 대체할 수 있어 미룬다 |
+
+### 선택 기능 (`adapter.features`에 광고하지 않는다)
+
+명세가 **선택**으로 둔 것들이라 없어도 적합하다. 쓰려면 `adapter.features.has(...)`로 확인하는
+웹 코드가 알아서 다른 길로 간다 — 문제는 "왜 없는지"가 안 적혀 있는 것이라 여기 남긴다.
+
+| 기능 | 상태 |
+|---|---|
+| `texture-formats-tier1` / `tier2` | 16비트 unorm/snorm 6종(`r16unorm` `rgba16snorm` …)과 추가 스토리지 텍스처 조합이 여기 묶여 있다. Metal에는 포맷이 있으므로 **필요해지면 매핑만 추가하면 된다** — 지금은 쓰는 곳이 없어 광고하지 않는다 |
+| `depth-clip-control` (`unclippedDepth`) | Metal의 `depthClipMode`로 대응할 수 있다. 그림자 볼륨처럼 깊이 클리핑을 끄는 기법을 쓰게 되면 넣는다 |
+| `shader-f16` | WGSL `f16`. 트랜스파일러는 `f16`→`half`를 이미 옮기지만(`enable f16` 포함), 명세가 요구하는 기능 선언·한계값 검증을 하지 않아 광고하지 않는다 |
+| `float32-filterable` / `float32-blendable` | `r32float` 계열의 필터링·블렌딩. Apple GPU는 지원하지만 광고 전에 확인 경로를 만들어야 한다 |
+| `bgra8unorm-storage` | `bgra8unorm`에 `STORAGE_BINDING`. 이미지 처리에서 쓸 만해 우선순위가 있는 편이다 |
+| `dual-source-blending` · `clip-distances` · `subgroups` · `subgroup-size-control` · `primitive-index` · `texture-component-swizzle` | WGSL 확장이 함께 필요하다 (`@blend_src`, `clip_distances`, 서브그룹 내장 함수 …). 트랜스파일러 작업이 붙으므로 실사용 요구가 생길 때 본다 |
+| `rg11b10ufloat-renderable` | `rg11b10ufloat`을 렌더 타깃으로. 포맷 자체는 지원한다 |
+| `texture-compression-*` | 위 블록 압축 항목과 같다 |
 
 ### 기기에 따라 갈리는 것
 

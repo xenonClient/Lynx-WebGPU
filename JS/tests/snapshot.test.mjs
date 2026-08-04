@@ -82,3 +82,24 @@ test('큐 명령: 호출 뒤 writeTexture의 origin·size를 리셋해도 기록
   assert.equal(command.origin.x, 2);
   assert.equal(command.size.width, 2);
 });
+
+test('번들 인코더: 호출 뒤 디스크립터를 리셋해도 어태치먼트가 남는다', async () => {
+  const state = installNativeMock();
+  const device = await makeDevice();
+
+  // three.js의 createBundleEncoder가 정확히 이 모양이다 — 싱글턴을 넘기고 곧바로 리셋한다.
+  const descriptor = { label: 'bundle', colorFormats: ['bgra8unorm'], depthStencilFormat: 'depth32float' };
+  const encoder = device.createRenderBundleEncoder(descriptor);
+  descriptor.colorFormats = [];
+  descriptor.depthStencilFormat = undefined;
+
+  encoder.finish();
+  device.queue.submit([]);
+
+  const create = commandsOf(state).find((command) => command.op === 'createRenderBundle');
+  assert.deepEqual(
+    create.colorFormats, ['bgra8unorm'],
+    '리셋이 새면 어태치먼트 없는 번들이 만들어져 executeBundles에서야 원인이 드러난다'
+  );
+  assert.equal(create.depthStencilFormat, 'depth32float');
+});

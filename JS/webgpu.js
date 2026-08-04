@@ -1100,7 +1100,11 @@ class GPURenderBundleEncoder extends GPURenderCommandsBase {
     this._retained = [];
     this._finished = false;
     this._device = device;
-    this._descriptor = descriptor || { colorFormats: [] };
+    // **기록 시점 값으로 고정한다.** 이 디스크립터는 `finish()`까지 들고 있는데, 호출자가
+    // 싱글턴을 넘기고 곧바로 `reset()`하는 패턴이 흔하다 (three.js의 `createBundleEncoder`가
+    // 정확히 그렇다). 참조를 그대로 쥐면 `colorFormats`가 빈 채로 번들이 만들어져
+    // "어태치먼트가 없다"로 거부된다 — 원인이 한참 뒤 `executeBundles`에서 드러난다.
+    this._descriptor = snapshotValue(descriptor) || { colorFormats: [] };
   }
 
   /**

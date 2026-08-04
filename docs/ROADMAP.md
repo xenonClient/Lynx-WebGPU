@@ -40,6 +40,7 @@ Three.js `WebGPURenderer`를 실제로 올려 보며(데모 `three` 씬) 드러�
 | 항목 | 규모 | 왜 필요한가 |
 |---|---|---|
 | 상위 기능 검증 — 남은 것 (섀도맵 · 포스트프로세싱 · TSL 컴퓨트 · glTF 로딩) | 중 | 체크리스트에 행을 늘려 가며 하나씩. 각각이 다른 경로(비교 샘플러 · 다중 패스 · 자체 컴퓨트 파이프라인 · `fetch`→`loadAsset`)를 밟는다 |
+| 선택 기능 중 쓸 것 고르기 (`bgra8unorm-storage` · `texture-formats-tier1` · `shader-f16`) | 소~중 | 전부 Metal에 대응이 있어 **매핑과 광고만** 하면 된다. 이미지 처리에서 먼저 아쉬워질 순서로 적어 두었다 (`docs/WEBGPU-API.md` §8) |
 | 실기기 확인 | — | 지금까지 전부 시뮬레이터다. `three` 체크리스트와 `hdr` EDR(시뮬레이터로는 원리적으로 불가)은 기기에서 한 번 봐야 한다 |
 
 ### 이미 메운 것 (참고)
@@ -59,6 +60,7 @@ Three.js `WebGPURenderer`를 실제로 올려 보며(데모 `three` 씬) 드러�
 | 명세 읽기 전용 속성 | `GPUTexture` 7종 · `GPUBuffer.mapState` |
 | `clearBuffer` · `copyBufferToBuffer` 짧은 형태 | 명세 오버로드까지 |
 | 상위 기능 검증 (깊이 · 인스턴싱 · 밉맵 · 블렌딩 · 비동기 컴파일) | `three` 씬 체크리스트 14종이 픽셀 값으로 확인한다 |
+| 명세 표면 감사 (`.claude/docs`의 W3C 스펙 대조) | 디버그 마커 · `getCompilationInfo` · `adapter.info` · `getMappedRange` 인자 · 캔버스 `unconfigure` · core 포맷 2종을 채웠다. 남은 미지원은 전부 **이유와 함께** §8에 적혀 있다 |
 
 ---
 

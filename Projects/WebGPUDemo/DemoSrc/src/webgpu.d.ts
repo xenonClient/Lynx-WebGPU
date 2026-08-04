@@ -671,7 +671,7 @@ declare class GPURenderBundleEncoder extends GPURenderCommandsBase {
     _retained: object[];
     _finished: boolean;
     _device: GPUDevice;
-    _descriptor: GPURenderBundleEncoderDescriptor;
+    _descriptor: any;
     /**
      * @param {GPUDevice} device
      * @param {GPURenderBundleEncoderDescriptor} descriptor
