@@ -151,9 +151,14 @@ const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' 
 > 앞선 렌더 패스가 그린 내용과의 순서도 스트림 그대로 보존된다. 배열 텍스처는
 > `depthOrArrayLayers`만큼 슬라이스별로 복사된다.
 
-지원 포맷: 8/16/32비트 컬러 전 계열(`r8unorm` … `rgba32float`), `bgra8unorm(-srgb)`, `rgb10a2unorm`,
-`rg11b10ufloat`, 깊이/스텐실(`depth16unorm` `depth24plus` `depth32float` `stencil8` + `-stencil8` 조합).
-**블록 압축(BC/ETC/ASTC)은 미지원.**
+지원 포맷: 8/16/32비트 컬러 전 계열(`r8unorm` … `rgba32float`), `bgra8unorm(-srgb)`,
+팩된 32비트(`rgb10a2unorm` `rgb10a2uint` `rg11b10ufloat` `rgb9e5ufloat`),
+깊이/스텐실(`depth16unorm` `depth24plus` `depth32float` `stencil8` + `-stencil8` 조합).
+**블록 압축(BC/ETC/ASTC)은 미지원**이고, 16비트 unorm/snorm 6종은 명세에서도 선택 기능이다 (§8).
+
+> `rgb9e5ufloat`는 채널마다 가수 9비트 + 공통 지수 5비트를 쓰는 공유 지수 HDR 포맷이다 —
+> `rgba16float`의 **절반 크기로 같은 동적 범위**를 담으므로 읽기 전용 HDR 소스(환경맵 등)에 맞다.
+> 팩된 포맷은 `readPixels`가 채널로 펴 주지 않는다 (`data`를 직접 해석할 것 — `docs/TESTING.md` §4-1).
 
 > `depth24plus`는 Apple GPU에 24비트 깊이 포맷이 없어 `depth32Float`으로 올려 준다 (명세가 "24비트 이상"을 요구하므로 적법).
 

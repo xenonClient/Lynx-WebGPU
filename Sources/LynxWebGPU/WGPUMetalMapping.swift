@@ -36,7 +36,9 @@ enum WGPUMetalMapping {
         case .bgra8unorm: return .bgra8Unorm
         case .bgra8unormSRGB: return .bgra8Unorm_srgb
         case .rgb10a2unorm: return .rgb10a2Unorm
+        case .rgb10a2uint: return .rgb10a2Uint
         case .rg11b10ufloat: return .rg11b10Float
+        case .rgb9e5ufloat: return .rgb9e5Float
         case .rg32uint: return .rg32Uint
         case .rg32sint: return .rg32Sint
         case .rg32float: return .rg32Float
@@ -66,6 +68,8 @@ enum WGPUMetalMapping {
         case .rgba8Unorm_srgb: return .rgba8unormSRGB
         case .rgba16Float: return .rgba16float
         case .rgb10a2Unorm: return .rgb10a2unorm
+        case .rgb10a2Uint: return .rgb10a2uint
+        case .rgb9e5Float: return .rgb9e5ufloat
         case .depth32Float: return .depth32float
         case .depth32Float_stencil8: return .depth32floatStencil8
         case .depth16Unorm: return .depth16unorm

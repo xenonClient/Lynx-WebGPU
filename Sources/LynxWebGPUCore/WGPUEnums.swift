@@ -19,7 +19,11 @@ public enum WGPUTextureFormat: String, CaseIterable, Sendable {
     case bgra8unorm
     case bgra8unormSRGB = "bgra8unorm-srgb"
     case rgb10a2unorm
+    case rgb10a2uint
     case rg11b10ufloat
+    /// 공유 지수 HDR — 채널마다 가수 9비트 + 공통 지수 5비트. 렌더 타깃은 될 수 없고
+    /// **읽기 전용 HDR 소스**로 쓴다 (`rgba16float`의 절반 크기로 같은 동적 범위를 담는다).
+    case rgb9e5ufloat
     // 64-bit
     case rg32uint, rg32sint, rg32float
     case rgba16uint, rgba16sint, rgba16float
@@ -64,8 +68,8 @@ public enum WGPUTextureFormat: String, CaseIterable, Sendable {
         case .r16uint, .r16sint, .r16float, .rg8unorm, .rg8snorm, .rg8uint, .rg8sint, .depth16unorm: return 2
         case .r32uint, .r32sint, .r32float, .rg16uint, .rg16sint, .rg16float,
              .rgba8unorm, .rgba8unormSRGB, .rgba8snorm, .rgba8uint, .rgba8sint,
-             .bgra8unorm, .bgra8unormSRGB, .rgb10a2unorm, .rg11b10ufloat,
-             .depth24plus, .depth32float: return 4
+             .bgra8unorm, .bgra8unormSRGB, .rgb10a2unorm, .rgb10a2uint, .rg11b10ufloat,
+             .rgb9e5ufloat, .depth24plus, .depth32float: return 4
         case .rg32uint, .rg32sint, .rg32float, .rgba16uint, .rgba16sint, .rgba16float,
              .depth24plusStencil8, .depth32floatStencil8: return 8
         case .rgba32uint, .rgba32sint, .rgba32float: return 16
