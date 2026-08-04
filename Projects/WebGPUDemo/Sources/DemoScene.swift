@@ -80,7 +80,7 @@ enum DemoScene: String, CaseIterable {
         case .bench: return "base64 문자열 vs ArrayBuffer — 인코딩·제출 비용 비교"
         case .hdr: return "loadAsset + 게인맵 컴퓨트 → rgba16float 중간 텍스처 → 톤매핑"
         case .scrollpass: return "<scroll-view> 위 캔버스 — passthrough-touches 히트 테스트 검증"
-        case .three: return "WebGPURenderer 부트스트랩 전체 + 노드 셰이더 + 커맨드 스트림 덤프"
+        case .three: return "부트스트랩→셰이더→텍스처→조명을 픽셀 값으로 검증하는 체크리스트 + 회전 큐브"
         }
     }
 }
