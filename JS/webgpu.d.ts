@@ -143,6 +143,8 @@ export type GPURenderBundleEncoderDescriptor = {
     colorFormats: (string | null)[];
     depthStencilFormat?: string;
     sampleCount?: number;
+    depthReadOnly?: boolean;
+    stencilReadOnly?: boolean;
     label?: string;
 };
 export type GPUPipelineLayoutSource = {

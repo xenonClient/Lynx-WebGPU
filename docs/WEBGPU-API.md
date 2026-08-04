@@ -264,6 +264,12 @@ device.queue.submit([encoder.finish()])   // ← 여기서 한 번에 네이티�
 
 - `beginRenderPass`는 멀티샘플 `resolveTarget`을 지원한다 (store op이 `multisampleResolve`로 바뀐다).
 - 복사 명령은 패스 **밖에서만** 쓸 수 있다.
+- `depthStencilAttachment`의 `depthReadOnly` / `stencilReadOnly`는 "이 패스는 그쪽을 쓰지
+  않는다"는 선언이다. 선언해 두면 **실제로 강제된다** — 깊이를 쓰는 파이프라인
+  (`depthWriteEnabled: true`)이나 스텐실을 쓰는 파이프라인(`failOp`·`depthFailOp`·`passOp` 중
+  하나라도 `"keep"`이 아닌 것)을 `setPipeline`에서 거부한다. Metal은 그냥 써 버리므로
+  여기서 안 막으면 read-only라고 적어 둔 버퍼가 조용히 변조된다.
+  `readOnly`인 쪽에는 `loadOp`/`storeOp`을 **함께 줄 수 없다** (명세 요구 — 모순이다).
 
 ### 쿼리 (occlusion · 타임스탬프)
 
@@ -349,6 +355,8 @@ pass.executeBundles([bundle])                    // executeBundles
   (`['bgra8unorm', null]`은 컬러 1개짜리 패스와 맞는다 — 명세의 레이아웃 동치 규칙).
 - 어태치먼트가 **최소 하나** 있어야 한다 — `colorFormats`에 non-null 하나이거나
   `depthStencilFormat`이거나. 둘 다 없으면 번들을 만들 때 거부한다.
+- `depthReadOnly` / `stencilReadOnly` 패스에서 실행하려면 번들도 같은 플래그를 `true`로 두고
+  만들어야 한다. 반대(쓰기 가능 패스에 read-only 번들)는 제약이 없다.
 
 > **이 구현에서 번들이 무엇을 아껴 주나.** 브라우저는 드라이버 명령을 미리 만들어 두지만,
 > 여기서는 Metal에 대응 객체가 없어 명령 목록을 저장했다가 되풀이한다. 그래서 이득은

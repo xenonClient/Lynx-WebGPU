@@ -489,6 +489,52 @@ final class RenderBundleTests: XCTestCase {
         }
     }
 
+    /// read-only로 연 패스에는 "나도 안 쓴다"고 선언한 번들만 넣을 수 있다.
+    /// 반대(쓰기 가능 패스에 read-only 번들)는 문제가 없으므로 한 방향만 본다.
+    func test_depthReadOnly_패스에는_readOnly_번들만_실행할_수_있다() {
+        let depthTarget: [[String: Any]] = [
+            ["op": "createTexture", "id": 50, "size": ["width": 64, "height": 64],
+             "format": "depth32float", "usage": TestUsage.renderAttachment],
+            ["op": "createTextureView", "id": 51, "texture": 50],
+        ]
+        let readOnlyPass: [String: Any] = [
+            "op": "beginRenderPass",
+            "colorAttachments": [[
+                "view": 21, "loadOp": "clear", "storeOp": "store",
+                "clearValue": ["r": 0, "g": 0, "b": 1, "a": 1],
+            ]],
+            "depthStencilAttachment": ["view": 51, "depthReadOnly": true],
+        ]
+        func bundle(id: Int, readOnly: Bool) -> [String: Any] {
+            var command: [String: Any] = [
+                "op": "createRenderBundle", "id": id, "colorFormats": ["rgba8unorm"],
+                "depthStencilFormat": "depth32float", "commands": [[String: Any]](),
+            ]
+            if readOnly { command["depthReadOnly"] = true }
+            return command
+        }
+
+        let rejected = harness.execute(setUpResources() + depthTarget + [
+            bundle(id: 52, readOnly: false),
+        ] + acquireDrawable + [
+            readOnlyPass,
+            ["op": "executeBundles", "bundles": [52]],
+            ["op": "endPass"],
+        ])
+        XCTAssertTrue(
+            ((errors(rejected).first?["message"] as? String) ?? "").contains("depthReadOnly"),
+            harness.describeErrors(rejected)
+        )
+
+        harness.executeExpectingSuccess(setUpResources() + depthTarget + [
+            bundle(id: 53, readOnly: true),
+        ] + acquireDrawable + [
+            readOnlyPass,
+            ["op": "executeBundles", "bundles": [53]],
+            ["op": "endPass"],
+        ])
+    }
+
     func test_패스없이_executeBundles하면_오류다() {
         let result = harness.execute(setUpResources() + [
             createBundle(id: 10, commands: fullScreenDraw(bindGroup: 6)),

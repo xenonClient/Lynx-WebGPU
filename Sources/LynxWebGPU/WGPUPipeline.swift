@@ -89,6 +89,9 @@ public final class WGPURenderPipelineObject {
     let needsBufferSizes: Bool
     /// 드로우 전에 반드시 바인드되어 있어야 하는 정점 버퍼 슬롯 (`vertex.buffers`에 선언된 것).
     let requiredVertexSlots: Set<Int>
+    /// 깊이/스텐실 값을 쓰는가 — `depthReadOnly`/`stencilReadOnly` 패스에서 거부할 때 쓴다.
+    let writesDepth: Bool
+    let writesStencil: Bool
 
     init(
         device: MTLDevice,
@@ -115,6 +118,12 @@ public final class WGPURenderPipelineObject {
         }
         self.needsBufferSizes = wantsBufferSizes
         self.requiredVertexSlots = Set(descriptor.vertex.buffers.indices)
+        self.writesDepth = descriptor.depthStencil?.depthWriteEnabled ?? false
+        // 명세의 기준은 **op**다 — 세 op이 전부 `keep`이면 쓰지 않는 것으로 본다
+        // (writeMask 0으로 막아 둔 경우까지 허용하면 브라우저보다 느슨해진다).
+        self.writesStencil = descriptor.depthStencil.map {
+            !$0.stencilFront.isWriteFree || !$0.stencilBack.isWriteFree
+        } ?? false
 
         let metalDescriptor = MTLRenderPipelineDescriptor()
         // Metal 검증 레이어는 label에 nil을 넣으면 단언으로 죽는다 — 있을 때만 설정한다.
@@ -317,7 +326,13 @@ public final class WGPURenderBundleObject {
     /// 어긋나면 브라우저는 오류를 내지만, 이 구현은 명령을 되풀이할 뿐이라 Metal이 못 잡는다
     /// (파이프라인이 패스와 맞기만 하면 그냥 그려진다). 여기서 막지 않으면 브라우저에서만
     /// 깨지는 코드가 나간다.
-    func checkCompatibility(color: [WGPUTextureFormat], depthStencil: WGPUTextureFormat?, sampleCount: Int) throws {
+    func checkCompatibility(
+        color: [WGPUTextureFormat],
+        depthStencil: WGPUTextureFormat?,
+        sampleCount: Int,
+        depthReadOnly: Bool,
+        stencilReadOnly: Bool
+    ) throws {
         // 명세의 "render pass layout equals"는 **후행 null을 무시하고** colorFormats를 비교한다.
         // 자르지 않으면 `['bgra8unorm', null]` 번들이 컬러 1개짜리 패스에서 오탐으로 거부된다.
         let bundleFormats = Self.trimmingTrailingNulls(descriptor.colorFormats)
@@ -343,6 +358,18 @@ public final class WGPURenderBundleObject {
         guard descriptor.sampleCount == sampleCount else {
             throw WGPUError.validation(
                 "번들의 sampleCount(\(descriptor.sampleCount))가 패스(\(sampleCount))와 다르다"
+            )
+        }
+        // 한 방향만 요구한다 — read-only 패스에는 read-only 번들만 넣을 수 있지만,
+        // 쓰기가 가능한 패스에 read-only 번들을 넣는 것은 문제가 없다.
+        guard !depthReadOnly || descriptor.depthReadOnly else {
+            throw WGPUError.validation(
+                "depthReadOnly 패스에서는 depthReadOnly: true로 만든 번들만 실행할 수 있다"
+            )
+        }
+        guard !stencilReadOnly || descriptor.stencilReadOnly else {
+            throw WGPUError.validation(
+                "stencilReadOnly 패스에서는 stencilReadOnly: true로 만든 번들만 실행할 수 있다"
             )
         }
     }

@@ -49,6 +49,10 @@ final class StencilTests: XCTestCase {
     private let red = (r: 255, g: 0, b: 0, a: 255)
     private let clearBlue = (r: 0, g: 0, b: 255, a: 255)
 
+    private func errors(_ result: [String: Any]) -> [[String: Any]] {
+        result["errors"] as? [[String: Any]] ?? []
+    }
+
     /// 색 유니폼 두 개(빨강/초록)와 셰이더를 올린다. 파이프라인은 테스트마다 다르므로 여기 없다.
     private func makeCommonResources() -> [[String: Any]] {
         [
@@ -108,6 +112,35 @@ final class StencilTests: XCTestCase {
         ["op": "getCurrentTexture", "id": 20, "canvas": "test"],
         ["op": "createTextureView", "id": 21, "texture": 20],
     ]
+
+    /// read-only로 연 깊이/스텐실 패스. `readOnly`인 쪽은 load/store op을 줄 수 없다.
+    private func readOnlyPass(
+        view: Int, depthReadOnly: Bool = false, stencilReadOnly: Bool = false
+    ) -> [String: Any] {
+        var attachment: [String: Any] = ["view": view]
+        if depthReadOnly {
+            attachment["depthReadOnly"] = true
+        } else {
+            attachment["depthClearValue"] = 1.0
+            attachment["depthLoadOp"] = "clear"
+            attachment["depthStoreOp"] = "store"
+        }
+        if stencilReadOnly {
+            attachment["stencilReadOnly"] = true
+        } else {
+            attachment["stencilClearValue"] = 0
+            attachment["stencilLoadOp"] = "clear"
+            attachment["stencilStoreOp"] = "store"
+        }
+        return [
+            "op": "beginRenderPass",
+            "colorAttachments": [[
+                "view": 21, "loadOp": "clear", "storeOp": "store",
+                "clearValue": ["r": 0, "g": 0, "b": 1, "a": 1],
+            ]],
+            "depthStencilAttachment": attachment,
+        ]
+    }
 
     // MARK: - 마스킹
 
@@ -386,6 +419,109 @@ final class StencilTests: XCTestCase {
                 "\(format) + 비기본 stencilFront는 거부되어야 한다 — 받은 것: \(message)"
             )
         }
+    }
+
+    // MARK: - read-only 어태치먼트
+
+    /// `depthReadOnly: true`는 "이 패스는 깊이를 쓰지 않는다"는 선언이다. Metal은 그냥 써 버리므로
+    /// 여기서 막지 않으면 read-only라고 적어 둔 깊이 버퍼가 실제로 변조된다.
+    func test_depthReadOnly_패스에서_깊이를_쓰는_파이프라인을_거부한다() {
+        let result = harness.execute(makeCommonResources() + [
+            ["op": "createTexture", "id": 2, "size": ["width": 64, "height": 64],
+             "format": "depth24plus-stencil8", "usage": TestUsage.renderAttachment],
+            ["op": "createTextureView", "id": 3, "texture": 2],
+            pipeline(id: 6, format: "depth24plus-stencil8", stencil: [:],
+                     depthCompare: "less", depthWrite: true),
+        ] + acquireDrawable + [
+            readOnlyPass(view: 3, depthReadOnly: true),
+            ["op": "setPipeline", "pipeline": 6],
+            ["op": "endPass"],
+        ])
+
+        XCTAssertTrue(
+            ((errors(result).first?["message"] as? String) ?? "").contains("depthReadOnly"),
+            harness.describeErrors(result)
+        )
+    }
+
+    /// 깊이를 읽기만 하는 파이프라인은 같은 패스에서 그대로 통과해야 한다.
+    func test_depthReadOnly_패스에서_읽기만_하는_파이프라인은_통과한다() {
+        harness.executeExpectingSuccess(makeCommonResources() + [
+            ["op": "createTexture", "id": 2, "size": ["width": 64, "height": 64],
+             "format": "depth24plus-stencil8", "usage": TestUsage.renderAttachment],
+            ["op": "createTextureView", "id": 3, "texture": 2],
+            pipeline(id: 6, format: "depth24plus-stencil8", stencil: [:],
+                     depthCompare: "less", depthWrite: false),
+            ["op": "getBindGroupLayout", "id": 8, "pipeline": 6, "index": 0],
+            ["op": "createBindGroup", "id": 9, "layout": 8,
+             "entries": [["binding": 0, "resource": ["buffer": 4]]]],
+        ] + acquireDrawable + [
+            readOnlyPass(view: 3, depthReadOnly: true),
+            ["op": "setPipeline", "pipeline": 6],
+            ["op": "setBindGroup", "index": 0, "bindGroup": 9],
+            ["op": "draw", "vertexCount": 3],
+            ["op": "endPass"],
+        ])
+    }
+
+    func test_stencilReadOnly_패스에서_스텐실을_쓰는_파이프라인을_거부한다() {
+        let result = harness.execute(makeCommonResources() + [
+            ["op": "createTexture", "id": 2, "size": ["width": 64, "height": 64],
+             "format": "depth24plus-stencil8", "usage": TestUsage.renderAttachment],
+            ["op": "createTextureView", "id": 3, "texture": 2],
+            pipeline(id: 6, format: "depth24plus-stencil8",
+                     stencil: bothFaces(["compare": "always", "passOp": "replace"])),
+        ] + acquireDrawable + [
+            readOnlyPass(view: 3, stencilReadOnly: true),
+            ["op": "setPipeline", "pipeline": 6],
+            ["op": "endPass"],
+        ])
+
+        XCTAssertTrue(
+            ((errors(result).first?["message"] as? String) ?? "").contains("stencilReadOnly"),
+            harness.describeErrors(result)
+        )
+    }
+
+    /// 비교만 하는 스텐실 상태는 "읽기"이므로 통과해야 한다.
+    func test_stencilReadOnly_패스에서_비교만_하는_파이프라인은_통과한다() {
+        harness.executeExpectingSuccess(makeCommonResources() + [
+            ["op": "createTexture", "id": 2, "size": ["width": 64, "height": 64],
+             "format": "depth24plus-stencil8", "usage": TestUsage.renderAttachment],
+            ["op": "createTextureView", "id": 3, "texture": 2],
+            pipeline(id: 6, format: "depth24plus-stencil8", stencil: bothFaces(["compare": "equal"])),
+        ] + acquireDrawable + [
+            readOnlyPass(view: 3, stencilReadOnly: true),
+            ["op": "setPipeline", "pipeline": 6],
+            ["op": "endPass"],
+        ])
+    }
+
+    /// `readOnly`와 load/store op을 함께 주는 것은 모순이라 명세가 금지한다.
+    func test_depthReadOnly와_loadOp을_함께_주면_거부한다() {
+        let result = harness.execute(makeCommonResources() + [
+            ["op": "createTexture", "id": 2, "size": ["width": 64, "height": 64],
+             "format": "depth24plus-stencil8", "usage": TestUsage.renderAttachment],
+            ["op": "createTextureView", "id": 3, "texture": 2],
+        ] + acquireDrawable + [
+            [
+                "op": "beginRenderPass",
+                "colorAttachments": [[
+                    "view": 21, "loadOp": "clear", "storeOp": "store",
+                    "clearValue": ["r": 0, "g": 0, "b": 1, "a": 1],
+                ]],
+                "depthStencilAttachment": [
+                    "view": 3, "depthReadOnly": true,
+                    "depthLoadOp": "clear", "depthStoreOp": "store",
+                ],
+            ],
+            ["op": "endPass"],
+        ])
+
+        XCTAssertTrue(
+            ((errors(result).first?["message"] as? String) ?? "").contains("함께 줄 수 없다"),
+            harness.describeErrors(result)
+        )
     }
 
     /// `GPUStencilValue`는 `u32`이고 WebIDL 변환은 modulo다 — 음수는 wrap될 뿐 트랩하지 않는다.

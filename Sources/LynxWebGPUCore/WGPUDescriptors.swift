@@ -497,6 +497,12 @@ public struct WGPUStencilFaceState: Equatable {
         )
     }
 
+    /// 스텐실 값을 **쓰지** 않는 상태인가 — `stencilReadOnly` 패스에서 허용되는 조건이다.
+    /// (비교만 하는 것은 읽기이므로 `compare`는 보지 않는다.)
+    public var isWriteFree: Bool {
+        failOp == .keep && depthFailOp == .keep && passOp == .keep
+    }
+
     /// 스텐실 값을 건드리지도 읽지도 않는 상태인가 — 기본값이면 상태를 만들 필요가 없다.
     public var isNoOp: Bool { self == WGPUStencilFaceState() }
 }
@@ -620,6 +626,7 @@ public struct WGPURenderPassDepthStencilAttachment {
     public var stencilClearValue: Int
     public var stencilLoadOp: WGPULoadOp?
     public var stencilStoreOp: WGPUStoreOp?
+    public var stencilReadOnly: Bool
 
     public init(from reader: WGPUValueReader) throws {
         view = try reader.requiredHandle("view")
@@ -630,6 +637,19 @@ public struct WGPURenderPassDepthStencilAttachment {
         stencilClearValue = reader.int("stencilClearValue", default: 0)
         stencilLoadOp = try reader.optionalEnum("stencilLoadOp", WGPULoadOp.self)
         stencilStoreOp = try reader.optionalEnum("stencilStoreOp", WGPUStoreOp.self)
+        stencilReadOnly = reader.bool("stencilReadOnly", default: false)
+        // 명세는 readOnly와 load/store op을 함께 주는 것을 금지한다 — 둘이 모순이기 때문이다
+        // ("쓰지 않겠다"면서 저장 방식을 정하는 셈).
+        guard !depthReadOnly || (depthLoadOp == nil && depthStoreOp == nil) else {
+            throw WGPUError.validation(
+                "depthReadOnly와 depthLoadOp/depthStoreOp는 함께 줄 수 없다", path: reader.path
+            )
+        }
+        guard !stencilReadOnly || (stencilLoadOp == nil && stencilStoreOp == nil) else {
+            throw WGPUError.validation(
+                "stencilReadOnly와 stencilLoadOp/stencilStoreOp는 함께 줄 수 없다", path: reader.path
+            )
+        }
     }
 }
 
@@ -713,6 +733,10 @@ public struct WGPURenderBundleDescriptor {
     public var colorFormats: [WGPUTextureFormat?]
     public var depthStencilFormat: WGPUTextureFormat?
     public var sampleCount: Int
+    /// 이 번들이 깊이/스텐실을 **쓰지 않겠다**고 선언했는가.
+    /// read-only 패스에서 실행하려면 번들도 read-only여야 한다 (명세 요구).
+    public var depthReadOnly: Bool
+    public var stencilReadOnly: Bool
     public var label: String?
 
     public init(from reader: WGPUValueReader) throws {
@@ -727,6 +751,8 @@ public struct WGPURenderBundleDescriptor {
         }
         depthStencilFormat = try reader.optionalEnum("depthStencilFormat", WGPUTextureFormat.self)
         sampleCount = reader.int("sampleCount", default: 1)
+        depthReadOnly = reader.bool("depthReadOnly", default: false)
+        stencilReadOnly = reader.bool("stencilReadOnly", default: false)
         label = reader.optionalString("label")
         // 명세는 어태치먼트가 최소 하나 있기를 요구한다. 없으면 이 구현에서도 결국
         // `makeRenderCommandEncoder`가 실패하지만, 오류가 몇 프레임 뒤 엉뚱한 자리에서 난다.

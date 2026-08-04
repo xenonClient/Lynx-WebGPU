@@ -39,6 +39,10 @@ final class WGPUCommandInterpreter {
     private var dirtyVertexSlots: Set<Int> = []
     /// 지금 렌더 패스의 어태치먼트 모양 — 렌더 번들이 이 패스에서 유효한지 볼 때 쓴다.
     private var passFormats: (color: [WGPUTextureFormat], depthStencil: WGPUTextureFormat?, sampleCount: Int)?
+    /// 지금 렌더 패스가 깊이/스텐실을 **쓰지 않겠다**고 선언했는가 (`depthReadOnly`/`stencilReadOnly`).
+    /// 선언해 놓고 쓰는 파이프라인·번들을 `setPipeline`/`executeBundles`에서 막는다.
+    private var passDepthReadOnly = false
+    private var passStencilReadOnly = false
     /// 지금 렌더 패스가 물고 있는 occlusion 쿼리셋 (`beginRenderPass`에서만 붙일 수 있다).
     private var passOcclusionQuerySet: WGPUQuerySetObject?
     /// 열려 있는 occlusion 쿼리 인덱스 — 중첩·미종료를 잡는다.
@@ -164,6 +168,8 @@ final class WGPUCommandInterpreter {
         indexBinding = nil
         passFormats = nil
         passOcclusionQuerySet = nil
+        passDepthReadOnly = false
+        passStencilReadOnly = false
         openOcclusionQuery = nil
         usedOcclusionQueries.removeAll()
         acquiredDrawables.removeAll()
@@ -247,6 +253,8 @@ final class WGPUCommandInterpreter {
             usedOcclusionQueries.removeAll()
             passOcclusionQuerySet = nil
             passFormats = nil
+            passDepthReadOnly = false
+            passStencilReadOnly = false
         }
         renderEncoder?.endEncoding()
         renderEncoder = nil
@@ -629,6 +637,8 @@ final class WGPUCommandInterpreter {
         }
 
         var depthStencilFormat: WGPUTextureFormat?
+        var depthReadOnly = false
+        var stencilReadOnly = false
         if let depth = descriptor.depthStencilAttachment {
             let view = try registry.lookup(depth.view, as: WGPUTextureViewObject.self, kind: "GPUTextureView")
             depthStencilFormat = view.format
@@ -639,6 +649,8 @@ final class WGPUCommandInterpreter {
             if view.format.hasDepth {
                 let target = passDescriptor.depthAttachment!
                 target.texture = view.texture
+                // readOnly면 load/store op을 줄 수 없으므로(디코딩에서 막는다) 내용을 그대로
+                // 읽고 그대로 남기는 조합이 된다.
                 target.loadAction = WGPUMetalMapping.loadAction(depth.depthLoadOp ?? .load)
                 target.storeAction = WGPUMetalMapping.storeAction(depth.depthStoreOp ?? .store)
                 target.clearDepth = depth.depthClearValue
@@ -650,6 +662,8 @@ final class WGPUCommandInterpreter {
                 target.storeAction = WGPUMetalMapping.storeAction(depth.stencilStoreOp ?? .store)
                 target.clearStencil = UInt32(truncatingIfNeeded: depth.stencilClearValue)
             }
+            depthReadOnly = depth.depthReadOnly
+            stencilReadOnly = depth.stencilReadOnly
         }
 
         // occlusion 쿼리는 **패스를 열 때만** 붙일 수 있다 (Metal도 WebGPU도 같은 제약).
@@ -684,6 +698,8 @@ final class WGPUCommandInterpreter {
         renderEncoder = encoder
         passFormats = (colorFormats, depthStencilFormat, sampleCount)
         passOcclusionQuerySet = occlusionQuerySet
+        passDepthReadOnly = depthReadOnly
+        passStencilReadOnly = stencilReadOnly
         openOcclusionQuery = nil
         usedOcclusionQueries.removeAll()
         resetPassBindings()
@@ -839,7 +855,11 @@ final class WGPUCommandInterpreter {
 
         for bundle in bundles {
             try bundle.checkCompatibility(
-                color: formats.color, depthStencil: formats.depthStencil, sampleCount: formats.sampleCount
+                color: formats.color,
+                depthStencil: formats.depthStencil,
+                sampleCount: formats.sampleCount,
+                depthReadOnly: passDepthReadOnly,
+                stencilReadOnly: passStencilReadOnly
             )
         }
         // 명세의 "Reset the render pass binding state"(step 4)는 호환성 검증만 통과하면 **무조건**
@@ -861,6 +881,19 @@ final class WGPUCommandInterpreter {
             let pipeline = try registry.lookup(
                 handle, as: WGPURenderPipelineObject.self, kind: "GPURenderPipeline"
             )
+            // read-only로 선언한 어태치먼트를 쓰는 파이프라인은 여기서 막는다 — Metal은 그냥
+            // 써 버리므로, 안 막으면 read-only라고 적어 둔 깊이 버퍼가 실제로 변조된다.
+            guard !passDepthReadOnly || !pipeline.writesDepth else {
+                throw WGPUError.validation(
+                    "depthReadOnly 패스에서는 depthWriteEnabled: true 파이프라인을 쓸 수 없다"
+                )
+            }
+            guard !passStencilReadOnly || !pipeline.writesStencil else {
+                throw WGPUError.validation(
+                    "stencilReadOnly 패스에서는 스텐실을 쓰는 파이프라인을 쓸 수 없다 "
+                        + "(failOp·depthFailOp·passOp가 모두 \"keep\"이어야 한다)"
+                )
+            }
             encoder.setRenderPipelineState(pipeline.state)
             encoder.setCullMode(pipeline.cullMode)
             encoder.setFrontFacing(pipeline.winding)

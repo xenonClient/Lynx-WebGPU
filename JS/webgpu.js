@@ -107,9 +107,11 @@ export const GPUMapMode = { READ: 0x1, WRITE: 0x2 };
 
 /**
  * `createRenderBundleEncoder`의 디스크립터 — 이 번들을 **실행할 패스의 모양**이다.
- * `colorFormats`의 `null`은 "그 슬롯은 비어 있다"는 뜻이다.
+ * `colorFormats`의 `null`은 "그 슬롯은 비어 있다"는 뜻이고, 후행 `null`은 비교에서 무시된다.
+ * `depthReadOnly`/`stencilReadOnly`는 "이 번들은 깊이/스텐실을 쓰지 않는다"는 선언이다 —
+ * 같은 이름으로 열린 패스에서 실행하려면 번들도 `true`여야 한다.
  */
-/** @typedef {{colorFormats: (string | null)[], depthStencilFormat?: string, sampleCount?: number, label?: string}} GPURenderBundleEncoderDescriptor */
+/** @typedef {{colorFormats: (string | null)[], depthStencilFormat?: string, sampleCount?: number, depthReadOnly?: boolean, stencilReadOnly?: boolean, label?: string}} GPURenderBundleEncoderDescriptor */
 
 /** `createPipelineLayout`이 받는 레이아웃 — id만 있으면 된다. */
 /** @typedef {{id: number}} GPUPipelineLayoutSource */
@@ -715,6 +717,8 @@ class GPURenderBundleEncoder extends GPURenderCommandsBase {
       colorFormats: this._descriptor.colorFormats || [],
       depthStencilFormat: this._descriptor.depthStencilFormat,
       sampleCount: this._descriptor.sampleCount,
+      depthReadOnly: this._descriptor.depthReadOnly,
+      stencilReadOnly: this._descriptor.stencilReadOnly,
       label,
     });
     // 인코더는 한 번만 finish할 수 있다 — 남겨 두면 다음 finish에 같은 명령이 또 실린다.
