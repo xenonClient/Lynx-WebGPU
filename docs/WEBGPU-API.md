@@ -479,13 +479,14 @@ if (error) fallBackToSimplePipeline()
 | 블록 압축 텍스처 (BC/ETC/ASTC) | **보류** — 렌더 타깃도 스토리지 텍스처도 될 수 없어 편집 파이프라인에 끼울 수 없다. 읽기 전용 에셋이 많아지면 다시 본다 (`docs/ROADMAP.md`) |
 | `GPUExternalTexture` (`importExternalTexture`) | Lynx에 비디오 엘리먼트 핸들이 없다. 다만 WGSL `texture_external` + `textureSampleBaseClampToEdge`는 **지원**하므로, 프레임을 텍스처로 올려 그 자리에 `GPUTextureView`를 묶으면 된다 |
 | `writeTimestamp` | Metal은 패스 경계에서만 카운터를 샘플링한다 — `timestampWrites`(§6)를 쓸 것 |
-| `device.lost` | iOS/macOS에는 디바이스 손실에 해당하는 사건이 사실상 없다. 테스트 전용 주입 경로만 남는 API라 넣지 않았다 |
+| `device.lost` | iOS/macOS에는 디바이스 손실에 해당하는 사건이 사실상 없다. 테스트 전용 주입 경로만 남는 API라 넣지 않았다. **GPU 실행 자체의 실패**(`.outOfMemory`·`.timeout` 등)는 다음 `submit()` 응답에 `backend` 오류로 실려 나온다 |
 
 ### 기기에 따라 갈리는 것
 
 | 기능 | 조건 |
 |---|---|
 | 타임스탬프 쿼리 | `adapter.features.has('timestamp-query')`. **컴퓨트 패스 쪽 값은 신뢰할 수 없다** (§6) |
+| 간접 드로우의 `firstInstance ≠ 0` | 여기서는 항상 되고 `adapter.features`에도 `indirect-first-instance`로 보고된다. **브라우저에서는 기능을 요청해야** 한다 (§6) |
 | 캔버스 EDR 출력 (`toneMapping: 'extended'`) | 실기기 디스플레이 기능 — 시뮬레이터에서는 확인되지 않는다 (§2) |
 
 새 명령을 추가하는 절차는 `.claude/skills/webgpu-command/SKILL.md` 참고.

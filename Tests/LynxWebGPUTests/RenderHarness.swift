@@ -145,7 +145,9 @@ struct RenderHarness {
         let bytesPerPixel = max(actual.bytesPerRow / max(actual.width, 1), 1)
         let y = first.offset / max(actual.bytesPerRow, 1)
         let x = (first.offset % max(actual.bytesPerRow, 1)) / bytesPerPixel
-        let detail = (try? readback().rgba(x: x, y: y)).map { " (실제 픽셀 \($0))" } ?? ""
+        // 이미 확보한 `actual`로 계산한다 — `readback()`을 다시 부르면 스테이징 버퍼 신규 할당 +
+        // 커맨드 버퍼 커밋 + `waitUntilCompleted()`(전체 GPU 동기 대기)가 한 번 더 돈다.
+        let detail = (try? actual.rgba(x: x, y: y)).map { " (실제 픽셀 \($0))" } ?? ""
         XCTFail(
             "프레임이 기준과 다르다 — \(differences.count)/\(expected.count)B 불일치, "
                 + "처음 어긋난 곳 (\(x), \(y)) 바이트 \(first.offset): "
