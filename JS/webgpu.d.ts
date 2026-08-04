@@ -158,6 +158,10 @@ export type GPUTextureInit = {
     size?: GPUExtent3D;
     format?: string;
     usage?: number;
+    dimension?: string;
+    mipLevelCount?: number;
+    sampleCount?: number;
+    textureBindingViewDimension?: string;
     label?: string;
     frameScoped?: boolean;
 };
@@ -283,12 +287,23 @@ declare class GPUBuffer extends GPUObjectBase {
     _mapped: ArrayBuffer | null;
     /** `mappedAtCreation`의 초기 데이터인가 (unmap이 생성 명령을 기록해야 하는가). */
     _mappedAtCreation: boolean;
+    /** `mapAsync`가 아직 결과를 기다리는 중인가 (명세의 `"pending"` 상태). */
+    _mapPending: boolean;
     /**
      * @param {GPUDevice} device
      * @param {number} id
      * @param {GPUBufferDescriptor} descriptor
      */
     constructor(device: GPUDevice, id: number, descriptor: GPUBufferDescriptor);
+    /**
+     * 명세의 `GPUBufferMapState` — `'unmapped'` · `'pending'` · `'mapped'`.
+     *
+     * 매핑 중인 버퍼는 큐 작업에서 거부되므로, 재사용하려는 코드가 **묻지 않고도** 상태를
+     * 알 수 있어야 한다. 없으면 `undefined`를 보고 "매핑 안 됐다"로 오해한다.
+     *
+     * @returns {'unmapped' | 'pending' | 'mapped'}
+     */
+    get mapState(): 'unmapped' | 'pending' | 'mapped';
     /** `mappedAtCreation: true`로 만든 버퍼의 초기 데이터 영역. */
     getMappedRange(): ArrayBuffer;
     /**
@@ -320,7 +335,18 @@ declare class GPUTexture extends GPUObjectBase {
     _frameScoped: boolean;
     width: any;
     height: any;
+    depthOrArrayLayers: any;
+    mipLevelCount: number;
+    sampleCount: number;
+    dimension: string;
     format: string | undefined;
+    usage: number;
+    /**
+     * 이 텍스처를 바인딩할 때의 기본 뷰 차원. 명세는 생략을 허용하고, 그때는 `dimension`과
+     * 레이어 수에서 정해진다 (2d + 레이어 2 이상이면 `2d-array`).
+     * @type {string}
+     */
+    textureBindingViewDimension: string;
     /**
      * @param {GPUDevice} device
      * @param {number} id

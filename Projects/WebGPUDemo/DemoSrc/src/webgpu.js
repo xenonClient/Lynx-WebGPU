@@ -120,7 +120,7 @@ export const GPUMapMode = { READ: 0x1, WRITE: 0x2 };
 /** @typedef {{id: number}} GPUPipelineLayoutSource */
 
 /** `GPUTexture` 생성자 내부용 — 스왑체인 텍스처는 usage/format이 없을 수 있다. */
-/** @typedef {{size?: GPUExtent3D, format?: string, usage?: number, label?: string, frameScoped?: boolean}} GPUTextureInit */
+/** @typedef {{size?: GPUExtent3D, format?: string, usage?: number, dimension?: string, mipLevelCount?: number, sampleCount?: number, textureBindingViewDimension?: string, label?: string, frameScoped?: boolean}} GPUTextureInit */
 
 // ---------------------------------------------------------------------------
 // 바이너리 유틸
@@ -494,6 +494,21 @@ class GPUBuffer extends GPUObjectBase {
     this._mapped = null;
     /** `mappedAtCreation`의 초기 데이터인가 (unmap이 생성 명령을 기록해야 하는가). */
     this._mappedAtCreation = false;
+    /** `mapAsync`가 아직 결과를 기다리는 중인가 (명세의 `"pending"` 상태). */
+    this._mapPending = false;
+  }
+
+  /**
+   * 명세의 `GPUBufferMapState` — `'unmapped'` · `'pending'` · `'mapped'`.
+   *
+   * 매핑 중인 버퍼는 큐 작업에서 거부되므로, 재사용하려는 코드가 **묻지 않고도** 상태를
+   * 알 수 있어야 한다. 없으면 `undefined`를 보고 "매핑 안 됐다"로 오해한다.
+   *
+   * @returns {'unmapped' | 'pending' | 'mapped'}
+   */
+  get mapState() {
+    if (this._mapped) return 'mapped';
+    return this._mapPending ? 'pending' : 'unmapped';
   }
 
   /** `mappedAtCreation: true`로 만든 버퍼의 초기 데이터 영역. */
@@ -546,11 +561,13 @@ class GPUBuffer extends GPUObjectBase {
    */
   async mapAsync(_mode, offset, size) {
     this._recorder.flush(false);
+    this._mapPending = true;
     const result = await /** @type {Promise<WGPUReadBufferResult | undefined>} */ (
       new Promise((resolve) => {
         nativeModule().readBuffer({ buffer: this.id, offset: offset || 0, size }, resolve);
       })
     );
+    this._mapPending = false;
     if (!result || result.ok === false) {
       this._recorder.report((result && result.errors) || []);
       throw new Error('버퍼 읽기 실패');
@@ -577,7 +594,21 @@ class GPUTexture extends GPUObjectBase {
     const size = descriptor && descriptor.size;
     this.width = size ? size.width || size[0] : 0;
     this.height = size ? size.height || size[1] || 1 : 0;
+    // 명세의 읽기 전용 속성들 — 웹 코드가 텍스처를 받아 스스로 판단할 때 읽는다
+    // (three.js는 밉맵 경로에서 `textureBindingViewDimension`을 본다).
+    this.depthOrArrayLayers = size ? size.depthOrArrayLayers || size[2] || 1 : 1;
+    this.mipLevelCount = (descriptor && descriptor.mipLevelCount) || 1;
+    this.sampleCount = (descriptor && descriptor.sampleCount) || 1;
+    this.dimension = (descriptor && descriptor.dimension) || '2d';
     this.format = descriptor && descriptor.format;
+    this.usage = (descriptor && descriptor.usage) || 0;
+    /**
+     * 이 텍스처를 바인딩할 때의 기본 뷰 차원. 명세는 생략을 허용하고, 그때는 `dimension`과
+     * 레이어 수에서 정해진다 (2d + 레이어 2 이상이면 `2d-array`).
+     * @type {string}
+     */
+    this.textureBindingViewDimension = (descriptor && descriptor.textureBindingViewDimension)
+      || (this.dimension === '2d' && this.depthOrArrayLayers > 1 ? '2d-array' : this.dimension);
   }
 
   /**

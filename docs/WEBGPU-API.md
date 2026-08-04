@@ -107,6 +107,18 @@ staging.unmap()
 `usage` 플래그: `MAP_READ` `MAP_WRITE` `COPY_SRC` `COPY_DST` `INDEX` `VERTEX` `UNIFORM` `STORAGE`
 `INDIRECT` `QUERY_RESOLVE`.
 
+버퍼·텍스처는 명세의 **읽기 전용 속성**을 그대로 갖는다 — 객체를 받아 스스로 판단하는
+코드(라이브러리)가 이 이름으로 읽는다:
+
+```js
+buffer.size · buffer.usage · buffer.mapState        // 'unmapped' | 'pending' | 'mapped'
+texture.width · height · depthOrArrayLayers · mipLevelCount · sampleCount
+texture.dimension · format · usage · textureBindingViewDimension
+```
+
+`textureBindingViewDimension`은 생략하면 `dimension`과 레이어 수에서 정해진다
+(2d + 레이어 2 이상 → `'2d-array'`).
+
 - **`MAP_READ`는 `COPY_DST`와만, `MAP_WRITE`는 `COPY_SRC`와만** 조합할 수 있다 (명세 요구).
   Metal은 `.storageModeShared` 하나로 전부 되지만, 안 막으면 브라우저에서만 깨진다.
 - 그래서 계산 결과를 읽는 정석은 **2단**이다 — 결과 버퍼(`STORAGE|COPY_SRC`)를
