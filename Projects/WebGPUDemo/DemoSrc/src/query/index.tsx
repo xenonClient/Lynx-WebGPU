@@ -106,8 +106,15 @@ async function setup(
   const occlusionQuerySet = device.createQuerySet({ type: 'occlusion', count: 1 })
   const occlusionResults = device.createBuffer({
     size: 8,
-    usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.MAP_READ,
+    usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC,
     label: 'occlusion.results',
+  })
+  // 리드백은 **전용 스테이징 버퍼**로 받는다 — MAP_READ는 COPY_DST와만 조합할 수 있고(명세),
+  // 매핑 중인 버퍼는 큐 작업에서 거부되므로 resolve 대상을 직접 매핑하면 다음 프레임이 막힌다.
+  const occlusionStaging = device.createBuffer({
+    size: 8,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    label: 'occlusion.staging',
   })
 
   // 타임스탬프는 기기 조건이 붙는다 — 만들기 전에 adapter.features로 물어본다.
@@ -117,8 +124,15 @@ async function setup(
   const timestampResults = hasTimestamp
     ? device.createBuffer({
         size: 16,
-        usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.MAP_READ,
+        usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC,
         label: 'timestamp.results',
+      })
+    : null
+  const timestampStaging = hasTimestamp
+    ? device.createBuffer({
+        size: 16,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+        label: 'timestamp.staging',
       })
     : null
 
@@ -247,13 +261,22 @@ async function setup(
       encoder.resolveQuerySet(timestampQuerySet, 0, 2, timestampResults, 0)
     }
 
+    // 20프레임에 한 번만 스테이징으로 복사한다 — 리드백은 GPU 완료를 기다리는 경로다.
+    const wantsReadback = ++frame % 20 === 0 && !reading
+    if (wantsReadback) {
+      encoder.copyBufferToBuffer(occlusionResults, 0, occlusionStaging, 0, 8)
+      if (timestampResults && timestampStaging) {
+        encoder.copyBufferToBuffer(timestampResults, 0, timestampStaging, 0, 16)
+      }
+    }
+
     device.queue.submit([encoder.finish()])
 
-    if (++frame % 20 !== 0 || reading) return
+    if (!wantsReadback) return
     reading = true
 
-    const pending: Promise<ArrayBuffer>[] = [occlusionResults.mapAsync(GPUMapMode.READ)]
-    if (timestampResults) pending.push(timestampResults.mapAsync(GPUMapMode.READ))
+    const pending: Promise<ArrayBuffer>[] = [occlusionStaging.mapAsync(GPUMapMode.READ)]
+    if (timestampStaging) pending.push(timestampStaging.mapAsync(GPUMapMode.READ))
 
     Promise.all(pending)
       .then(([occlusion, timestamps]: ArrayBuffer[]) => {
@@ -279,6 +302,9 @@ async function setup(
       })
       .catch((error: unknown) => report(`쿼리 리드백 실패: ${String(error)}`))
       .finally(() => {
+        // 매핑을 풀어야 다음 주기의 복사가 이 버퍼를 다시 쓸 수 있다.
+        occlusionStaging.unmap()
+        if (timestampStaging) timestampStaging.unmap()
         reading = false
       })
   }

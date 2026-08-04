@@ -93,14 +93,62 @@ test('popErrorScope는 submit 없이도 풀린다 (스스로 제출한다)', asy
   assert.equal(state.executeCalls.length, 1, 'pop이 스스로 제출한다');
 });
 
-test('device.destroy가 기다리던 스코프를 null로 닫는다', async () => {
-  installNativeMock({ executeResult: () => ({ ok: true }) });
+test('짝이 없는 pop은 OperationError로 reject된다', async () => {
+  // 네이티브는 짝이 맞지 않는 슬롯을 `{rejected: true}`로 표시해 보낸다.
+  mockWithScopes([{ rejected: true }]);
+  const device = await makeDevice();
+
+  // 명세는 이 경우 오류를 만들지 않고 Promise만 reject한다. "스코프가 깨끗했다(null)"와
+  // "push/pop 짝이 안 맞았다"를 앱이 구분할 수 있어야 하기 때문이다.
+  await assert.rejects(() => device.popErrorScope(), { name: 'OperationError' });
+});
+
+test('알 수 없는 filter는 동기 TypeError다', async () => {
+  const state = installNativeMock();
+  const device = await makeDevice();
+
+  // 브라우저(WebIDL enum 변환)와 같은 자리에서 실패해야 한다. 통과시키면 네이티브 스코프
+  // 스택이 밀려 이후 pop이 바깥 스코프를 가져간다.
+  assert.throws(() => device.pushErrorScope('Validation'), TypeError);
+  assert.throws(() => device.pushErrorScope('oom'), TypeError);
+  assert.equal(
+    commandsOf(state).filter((command) => command.op === 'pushErrorScope').length,
+    0,
+    '거부한 push가 커맨드로 실리면 안 된다'
+  );
+
+  for (const filter of ['validation', 'out-of-memory', 'internal']) {
+    device.pushErrorScope(filter);
+  }
+});
+
+test('네이티브 호출이 실패해도 기다리던 스코프가 풀린다', async () => {
+  installNativeMock({
+    executeResult: () => {
+      throw new Error('브리지가 죽었다');
+    },
+  });
   const device = await makeDevice();
 
   device.pushErrorScope('validation');
-  // 응답에 errorScopes가 없으므로 pop만으로는 안 풀린다 — destroy가 마무리해야 한다.
-  const pending = device.popErrorScope();
+  // 풀리지 않으면 초기화 진단이 매달리고, 다음 pop이 stale resolver를 가져가 인덱스가 어긋난다.
+  assert.equal(await device.popErrorScope(), null);
+});
+
+test('device.destroy가 기다리던 스코프를 null로 닫는다', async () => {
+  installNativeMock();
+  const device = await makeDevice();
+
+  // flush를 거치지 않고 직접 대기 상태를 만든다 — destroy가 마무리하는지만 본다.
+  const pending = new Promise((resolve, reject) => {
+    device._recorder.pendingErrorScopes.push({ resolve, reject });
+  });
   device.destroy();
 
-  assert.equal(await pending, null, '풀리지 않는 Promise를 남기면 안 된다');
+  // 안 풀리면 영원히 기다리게 되므로 경주를 붙인다 — 매달림도 실패로 드러나야 한다.
+  const settled = await Promise.race([
+    pending,
+    new Promise((resolve) => setTimeout(() => resolve('매달림'), 50)),
+  ]);
+  assert.equal(settled, null, '풀리지 않는 Promise를 남기면 안 된다');
 });

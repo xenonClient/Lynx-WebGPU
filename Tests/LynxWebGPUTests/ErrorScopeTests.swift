@@ -171,13 +171,38 @@ final class ErrorScopeTests: XCTestCase {
         )
     }
 
-    func test_짝이_없는_pop은_오류지만_결과_자리는_남긴다() {
+    /// 명세는 짝이 없는 `pop`을 **Promise reject**로 정하고, **오류를 생성하지 않는다.**
+    /// 그래서 GPUError로 흘리지 않고 슬롯에 "짝 없음"만 실어 보낸다 — 그러지 않으면
+    /// 명세에 없는 오류가 앱의 전역 핸들러·텔레메트리에 섞이고, 앱은 "깨끗했다(null)"와
+    /// "짝이 안 맞았다"를 구분할 수 없다.
+    func test_짝이_없는_pop은_오류_대신_reject_상태를_돌려준다() {
         let result = harness.execute([["op": "popErrorScope"]])
 
-        XCTAssertEqual(errors(result).first?["kind"] as? String, "validation")
+        XCTAssertEqual(result["ok"] as? Bool, true, "명세에 없는 GPUError를 만들면 안 된다")
+        XCTAssertNil(result["errors"])
         // 자리가 밀리면 JS가 Promise를 엉뚱한 결과로 풀게 된다 — 개수는 지켜야 한다.
         XCTAssertEqual(scopes(result).count, 1)
-        XCTAssertNil(scopes(result).first ?? nil)
+        XCTAssertEqual((scopes(result).first ?? nil)?["rejected"] as? Bool, true)
+    }
+
+    /// 필터를 못 읽어도 스택 깊이는 맞춰야 한다.
+    /// 안 그러면 이후 `pop`이 **바깥 스코프**를 가져가, 앱이 안쪽 구간의 결과라고 믿는 값이
+    /// 실제로는 바깥 구간의 결과가 된다 — 진단하려고 연 스코프가 오진을 만든다.
+    func test_필터를_못_읽어도_스코프_스택_깊이는_유지된다() {
+        let result = harness.execute([
+            ["op": "pushErrorScope", "filter": "validation"],   // 바깥 A
+            ["op": "pushErrorScope", "filter": "Validation"],   // 오타 — 자리표시자로 쌓인다
+            failingCommand,                                     // 자리표시자는 아무것도 잡지 않는다
+            ["op": "popErrorScope"],                            // 안쪽(자리표시자)
+            ["op": "popErrorScope"],                            // 바깥 A
+        ])
+
+        XCTAssertEqual(scopes(result).count, 2, "pop 두 번이면 결과도 두 개")
+        XCTAssertNil(scopes(result)[0], "자리표시자는 아무것도 잡지 않는다")
+        XCTAssertNotNil(
+            scopes(result)[1]?["message"],
+            "바깥 스코프가 오류를 잡아야 한다 — 스택이 밀렸다면 여기가 비어 있다"
+        )
     }
 
     func test_reset은_열려_있던_스코프를_버린다() {

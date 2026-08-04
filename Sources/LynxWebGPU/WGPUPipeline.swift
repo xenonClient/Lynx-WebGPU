@@ -20,10 +20,14 @@ public final class WGPUBindGroupLayoutObject {
 public final class WGPUPipelineLayoutObject {
     public let groups: [WGPUBindGroupLayoutObject]
     let assignment: WGSLBindingAssignment
+    /// 드로우/디스패치 전에 반드시 바인드되어 있어야 하는 그룹 인덱스.
+    /// 빈 그룹(선언에 구멍이 있어 생긴 자리)은 요구하지 않는다.
+    let requiredGroups: Set<Int>
 
     init(groups: [WGPUBindGroupLayoutObject]) throws {
         self.groups = groups
         self.assignment = try WGSLBindingAssigner.assign(groups: groups.map(\.entries))
+        self.requiredGroups = Set(groups.indices.filter { !groups[$0].entries.isEmpty })
     }
 
     func group(at index: Int) -> WGPUBindGroupLayoutObject? {
@@ -43,9 +47,13 @@ enum WGPUResolvedBinding {
 public final class WGPUBindGroupObject {
     let layout: WGPUBindGroupLayoutObject
     let bindings: [(binding: Int, visibility: WGPUShaderStage, resource: WGPUResolvedBinding)]
+    /// 이 그룹이 물고 있는 버퍼 객체 — 드로우 직전에 "매핑 중인가"를 보려면 필요하다
+    /// (바인딩은 `MTLBuffer`만 들고 있어서 매핑 상태를 알 수 없다).
+    let bufferObjects: [WGPUBufferObject]
 
     init(layout: WGPUBindGroupLayoutObject, descriptor: WGPUBindGroupDescriptor, registry: WGPUObjectRegistry) throws {
         self.layout = layout
+        var buffers: [WGPUBufferObject] = []
         self.bindings = try descriptor.entries.map { entry in
             guard let layoutEntry = layout.entry(binding: entry.binding) else {
                 throw WGPUError.validation("바인드 그룹 레이아웃에 binding \(entry.binding)이 없다")
@@ -54,6 +62,7 @@ public final class WGPUBindGroupObject {
             switch entry.resource {
             case .buffer(let handle, let offset, let size):
                 let object = try registry.lookup(handle, as: WGPUBufferObject.self, kind: "GPUBuffer")
+                buffers.append(object)
                 resolved = .buffer(
                     object.buffer, offset: offset, boundSize: size ?? max(object.size - offset, 0)
                 )
@@ -66,6 +75,7 @@ public final class WGPUBindGroupObject {
             }
             return (entry.binding, layoutEntry.visibility, resolved)
         }
+        self.bufferObjects = buffers
     }
 }
 
@@ -83,6 +93,11 @@ public final class WGPURenderPipelineObject {
     let depthBiasClamp: Float
     /// 셰이더가 `arrayLength()`를 쓰는가 — 쓰면 버퍼 크기 표를 바인딩해야 한다.
     let needsBufferSizes: Bool
+    /// 드로우 전에 반드시 바인드되어 있어야 하는 정점 버퍼 슬롯 (`vertex.buffers`에 선언된 것).
+    let requiredVertexSlots: Set<Int>
+    /// 깊이/스텐실 값을 쓰는가 — `depthReadOnly`/`stencilReadOnly` 패스에서 거부할 때 쓴다.
+    let writesDepth: Bool
+    let writesStencil: Bool
 
     init(
         device: MTLDevice,
@@ -108,6 +123,13 @@ public final class WGPURenderPipelineObject {
             ) ?? false)
         }
         self.needsBufferSizes = wantsBufferSizes
+        self.requiredVertexSlots = Set(descriptor.vertex.buffers.indices)
+        self.writesDepth = descriptor.depthStencil?.depthWriteEnabled ?? false
+        // 명세의 기준은 **op**다 — 세 op이 전부 `keep`이면 쓰지 않는 것으로 본다
+        // (writeMask 0으로 막아 둔 경우까지 허용하면 브라우저보다 느슨해진다).
+        self.writesStencil = descriptor.depthStencil.map {
+            !$0.stencilFront.isWriteFree || !$0.stencilBack.isWriteFree
+        } ?? false
 
         let metalDescriptor = MTLRenderPipelineDescriptor()
         // Metal 검증 레이어는 label에 nil을 넣으면 단언으로 죽는다 — 있을 때만 설정한다.
@@ -310,14 +332,23 @@ public final class WGPURenderBundleObject {
     /// 어긋나면 브라우저는 오류를 내지만, 이 구현은 명령을 되풀이할 뿐이라 Metal이 못 잡는다
     /// (파이프라인이 패스와 맞기만 하면 그냥 그려진다). 여기서 막지 않으면 브라우저에서만
     /// 깨지는 코드가 나간다.
-    func checkCompatibility(color: [WGPUTextureFormat], depthStencil: WGPUTextureFormat?, sampleCount: Int) throws {
-        guard descriptor.colorFormats.count == color.count else {
+    func checkCompatibility(
+        color: [WGPUTextureFormat],
+        depthStencil: WGPUTextureFormat?,
+        sampleCount: Int,
+        depthReadOnly: Bool,
+        stencilReadOnly: Bool
+    ) throws {
+        // 명세의 "render pass layout equals"는 **후행 null을 무시하고** colorFormats를 비교한다.
+        // 자르지 않으면 `['bgra8unorm', null]` 번들이 컬러 1개짜리 패스에서 오탐으로 거부된다.
+        let bundleFormats = Self.trimmingTrailingNulls(descriptor.colorFormats)
+        guard bundleFormats.count == color.count else {
             throw WGPUError.validation(
-                "번들의 컬러 어태치먼트 수(\(descriptor.colorFormats.count))가 "
+                "번들의 컬러 어태치먼트 수(\(bundleFormats.count))가 "
                     + "패스(\(color.count))와 다르다"
             )
         }
-        for (index, expected) in descriptor.colorFormats.enumerated() where expected != color[index] {
+        for (index, expected) in bundleFormats.enumerated() where expected != color[index] {
             throw WGPUError.validation(
                 "번들의 colorFormats[\(index)]가 패스와 다르다 — "
                     + "번들 \(expected?.rawValue ?? "null"), 패스 \(color[index].rawValue)"
@@ -335,6 +366,25 @@ public final class WGPURenderBundleObject {
                 "번들의 sampleCount(\(descriptor.sampleCount))가 패스(\(sampleCount))와 다르다"
             )
         }
+        // 한 방향만 요구한다 — read-only 패스에는 read-only 번들만 넣을 수 있지만,
+        // 쓰기가 가능한 패스에 read-only 번들을 넣는 것은 문제가 없다.
+        guard !depthReadOnly || descriptor.depthReadOnly else {
+            throw WGPUError.validation(
+                "depthReadOnly 패스에서는 depthReadOnly: true로 만든 번들만 실행할 수 있다"
+            )
+        }
+        guard !stencilReadOnly || descriptor.stencilReadOnly else {
+            throw WGPUError.validation(
+                "stencilReadOnly 패스에서는 stencilReadOnly: true로 만든 번들만 실행할 수 있다"
+            )
+        }
+    }
+
+    /// 후행 `null` 슬롯을 잘라낸다 — 명세의 레이아웃 동치 비교가 이것들을 무시한다.
+    private static func trimmingTrailingNulls(_ formats: [WGPUTextureFormat?]) -> [WGPUTextureFormat?] {
+        var trimmed = formats
+        while let last = trimmed.last, last == nil { trimmed.removeLast() }
+        return trimmed
     }
 }
 

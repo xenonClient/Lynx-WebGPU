@@ -124,37 +124,69 @@ public final class LynxWebGPUContext {
             return
         }
 
+        // 읽는 동안 이 버퍼는 "unavailable"이다 — 다음 프레임의 쓰기가 같은 메모리에 겹치면
+        // JS가 받는 값이 어느 프레임 것인지 보장되지 않는다 (`WGPUBufferObject.isMapped`).
+        executionLock.lock()
+        let alreadyMapped = target.isMapped
+        if !alreadyMapped { target.isMapped = true }
+        let pending = interpreter.lastCommittedBuffer
+        executionLock.unlock()
+
+        guard !alreadyMapped else {
+            completion([
+                "ok": false,
+                "errors": [WGPUError.validation(
+                    "GPUBuffer \(WGPUHandle(handle))은(는) 이미 매핑 중이다 (unmap()을 먼저 부를 것)"
+                ).payload],
+            ])
+            return
+        }
+
         let length = size ?? (target.size - offset)
-        let deliver = { [weak self] in
+        let deliver = { [weak self] (failure: WGPUError?) in
             guard let self else { return }
             self.executionLock.lock()
             defer { self.executionLock.unlock() }
+            // 실패했으면 매핑을 세우지 않는다 — 명세도 실패한 mapAsync는 버퍼를 매핑하지 않는다.
+            let fail = { (error: WGPUError) in
+                target.isMapped = false
+                completion(["ok": false, "errors": [error.payload]])
+            }
+            if let failure { return fail(failure) }
             do {
                 let data = try target.read(offset: offset, length: length)
                 // `Data`를 그대로 싣는다 — Lynx가 `NSData`를 JS의 `ArrayBuffer`로 바꿔 준다.
                 // base64로 만들면 33% 팽창에 JS 쪽 디코딩 루프까지 붙는다.
                 completion(["ok": true, "data": data, "byteLength": data.count])
             } catch let error as WGPUError {
-                completion(["ok": false, "errors": [error.payload]])
+                fail(error)
             } catch {
-                completion(["ok": false, "errors": [WGPUError.backend("\(error)").payload]])
+                fail(.backend("\(error)"))
             }
         }
 
         // 제출한 작업이 아직 돌고 있으면 완료 후에 읽는다.
         // `addCompletedHandler`는 commit 이후에 붙일 수 없으므로(Metal 단언) 전용 큐에서 기다린다.
-        executionLock.lock()
-        let pending = interpreter.lastCommittedBuffer
-        executionLock.unlock()
-
-        guard let pending, pending.status != .completed, pending.status != .error else {
-            deliver()
+        //
+        // `.error`는 **완료가 아니라 실패**다. 성공 경로로 흘려 보내면 GPU 작업이 실패한 버퍼의
+        // 내용을 그대로 읽어 `ok: true`로 돌려주게 된다 — 호출자는 실패를 성공으로 받는다.
+        if let pending, pending.status == .error {
+            deliver(Self.commandBufferError(pending))
+            return
+        }
+        guard let pending, pending.status != .completed else {
+            deliver(nil)
             return
         }
         Self.readbackQueue.async {
             pending.waitUntilCompleted()
-            deliver()
+            deliver(pending.status == .error ? Self.commandBufferError(pending) : nil)
         }
+    }
+
+    /// 실패한 커맨드 버퍼를 보고 가능한 오류로 바꾼다.
+    static func commandBufferError(_ buffer: MTLCommandBuffer) -> WGPUError {
+        .backend("GPU 작업이 실패했다: \(buffer.error?.localizedDescription ?? "원인 불명")")
     }
 
     /// GPU 완료를 기다리는 전용 큐 — JS 스레드를 막지 않는다.
@@ -194,6 +226,12 @@ public final class LynxWebGPUContext {
            device.counterSets?.contains(where: { $0.name == MTLCommonCounterSet.timestamp.rawValue }) == true {
             result.append("timestamp-query")
         }
+        // 간접 드로우 인자의 `firstInstance`를 존중하는가. 명세는 이것을 선택 기능으로 두고,
+        // 기능이 없으면 non-zero인 드로우를 **통째로 no-op**으로 만든다. Metal은 인자 배치가
+        // WebGPU와 같아 `baseInstance`를 그대로 존중하므로, 여기서는 항상 "기능이 활성된
+        // 어댑터"와 같은 자리에 선다. 인자 값이 GPU 버퍼 안에 있어 인코딩 시점에 검사할 수
+        // 없으므로, 이 기능을 알리는 것이 앱에 상황을 전달하는 유일한 수단이다.
+        result.append("indirect-first-instance")
         return result
     }
 
@@ -202,6 +240,7 @@ public final class LynxWebGPUContext {
         executionLock.lock()
         registry.removeAll()
         interpreter.discardErrorScopes()
+        interpreter.discardFrameState()
         executionLock.unlock()
     }
 

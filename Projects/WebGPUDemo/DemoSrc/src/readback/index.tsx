@@ -70,8 +70,15 @@ function setup({ device, context, format, report }: SceneContext) {
 
   const heights = device.createBuffer({
     size: BARS * 4,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.MAP_READ,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
     label: 'heights',
+  })
+  // 리드백은 **전용 스테이징 버퍼**로 받는다. MAP_READ는 COPY_DST와만 조합할 수 있고(명세),
+  // 매핑 중인 버퍼는 큐 작업에서 거부되므로 계산 버퍼를 직접 매핑하면 다음 프레임이 막힌다.
+  const staging = device.createBuffer({
+    size: BARS * 4,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    label: 'heights.staging',
   })
   const computeParams = device.createBuffer({
     size: 16,
@@ -144,12 +151,15 @@ function setup({ device, context, format, report }: SceneContext) {
     pass.draw(6, BARS)
     pass.end()
 
+    // 30프레임에 한 번만 CPU로 읽는다 — GPU 완료를 기다리는 경로라 프레임마다 하면 안 된다.
+    const wantsReadback = ++frame % 30 === 0 && !reading
+    if (wantsReadback) encoder.copyBufferToBuffer(heights, 0, staging, 0, BARS * 4)
+
     device.queue.submit([encoder.finish()])
 
-    // 30프레임에 한 번만 CPU로 읽는다 — GPU 완료를 기다리는 경로라 프레임마다 하면 안 된다.
-    if (++frame % 30 === 0 && !reading) {
+    if (wantsReadback) {
       reading = true
-      heights
+      staging
         .mapAsync(GPUMapMode.READ)
         .then((buffer: ArrayBuffer) => {
           const values = new Float32Array(buffer)
@@ -165,6 +175,8 @@ function setup({ device, context, format, report }: SceneContext) {
         })
         .catch((error: unknown) => report(`리드백 실패: ${String(error)}`))
         .finally(() => {
+          // 매핑을 풀어야 다음 프레임의 copyBufferToBuffer가 이 버퍼를 다시 쓸 수 있다.
+          staging.unmap()
           reading = false
         })
     }

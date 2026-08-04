@@ -149,12 +149,16 @@ function setup({ device, context, format, report }: SceneContext, indirectRef: {
   })
 
   // 컴퓨트가 쓰고(STORAGE) 커맨드 프로세서가 읽는(INDIRECT) 버퍼.
-  // HUD가 값을 되짚어 보려고 MAP_READ도 함께 준다.
   const drawArgs = device.createBuffer({
     size: 20,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT
-      | GPUBufferUsage.COPY_SRC | GPUBufferUsage.MAP_READ,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_SRC,
     label: 'drawArgs',
+  })
+  // HUD가 값을 되짚어 볼 스테이징 버퍼 — MAP_READ는 COPY_DST와만 조합할 수 있다(명세).
+  const drawArgsStaging = device.createBuffer({
+    size: 20,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    label: 'drawArgs.staging',
   })
   const dispatchArgs = device.createBuffer({
     size: 12,
@@ -285,16 +289,19 @@ function setup({ device, context, format, report }: SceneContext, indirectRef: {
     }
     pass.end()
 
+    // HUD — GPU가 정한 값을 20프레임에 한 번만 되짚는다 (리드백은 GPU 완료를 기다린다).
+    const wantsReadback = ++frame % 20 === 0 && !reading && indirect
+    if (wantsReadback) encoder.copyBufferToBuffer(drawArgs, 0, drawArgsStaging, 0, 20)
+
     device.queue.submit([encoder.finish()])
 
-    // HUD — GPU가 정한 값을 20프레임에 한 번만 되짚는다 (리드백은 GPU 완료를 기다린다).
-    if (++frame % 20 === 0 && !reading) {
-      if (!indirect) {
-        report(`직접 드로우 — 개수를 모르니 늘 최대치 ${MAX_PARTICLES}개를 그린다`)
-        return
-      }
+    if (frame % 20 === 0 && !indirect) {
+      report(`직접 드로우 — 개수를 모르니 늘 최대치 ${MAX_PARTICLES}개를 그린다`)
+      return
+    }
+    if (wantsReadback) {
       reading = true
-      drawArgs
+      drawArgsStaging
         .mapAsync(GPUMapMode.READ)
         .then((buffer: ArrayBuffer) => {
           const values = new Uint32Array(buffer)
@@ -305,6 +312,7 @@ function setup({ device, context, format, report }: SceneContext, indirectRef: {
         })
         .catch((error: unknown) => report(`인자 리드백 실패: ${String(error)}`))
         .finally(() => {
+          drawArgsStaging.unmap()
           reading = false
         })
     }

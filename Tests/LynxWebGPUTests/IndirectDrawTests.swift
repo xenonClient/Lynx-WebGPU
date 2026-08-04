@@ -217,9 +217,9 @@ final class IndirectDrawTests: XCTestCase {
              "compute": ["module": 1, "entryPoint": "mark"]],
             ["op": "getBindGroupLayout", "id": 3, "pipeline": 2, "index": 0],
             ["op": "createBuffer", "id": 4, "size": 32,
-             "usage": TestUsage.storage | TestUsage.copySrc | TestUsage.mapRead],
+             "usage": TestUsage.storage | TestUsage.copySrc],
             ["op": "createBuffer", "id": 5, "size": 32,
-             "usage": TestUsage.storage | TestUsage.copySrc | TestUsage.mapRead],
+             "usage": TestUsage.storage | TestUsage.copySrc],
             ["op": "createBindGroup", "id": 6, "layout": 3,
              "entries": [["binding": 0, "resource": ["buffer": 4]]]],
             ["op": "createBindGroup", "id": 7, "layout": 3,
@@ -267,7 +267,7 @@ final class IndirectDrawTests: XCTestCase {
             ["op": "getBindGroupLayout", "id": 12, "pipeline": 11, "index": 0],
             // 컴퓨트가 쓰고(STORAGE) 커맨드 프로세서가 읽는(INDIRECT) 버퍼. 처음엔 전부 0이다.
             ["op": "createBuffer", "id": 13, "size": 16,
-             "usage": TestUsage.storage | TestUsage.indirect | TestUsage.copySrc | TestUsage.mapRead],
+             "usage": TestUsage.storage | TestUsage.indirect | TestUsage.copySrc],
             ["op": "createBindGroup", "id": 14, "layout": 12,
              "entries": [["binding": 0, "resource": ["buffer": 13]]]],
         ])

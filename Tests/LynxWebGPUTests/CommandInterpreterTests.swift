@@ -100,6 +100,39 @@ final class CommandInterpreterTests: XCTestCase {
         XCTAssertEqual(harness.context.liveObjectCount, before)
     }
 
+    /// 프레임의 경계는 **배치가 아니라 present**다.
+    ///
+    /// `popErrorScope`·`mapAsync`는 결과를 받으려고 프레임 중간에 제출한다. 배치가 끝날 때마다
+    /// 프레임 스코프를 닫으면 그 지점에서 스왑체인 핸들이 지워져, 이어지는 `beginRenderPass`가
+    /// "없는 핸들"로 깨진다 — 그 프레임이 통째로 날아간다.
+    func test_프레임_중간에_제출해도_스왑체인_핸들이_살아_있다() {
+        harness.executeExpectingSuccess([
+            ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
+        ])
+        let before = harness.context.liveObjectCount
+
+        // 배치 ①: 드로어블만 얻고 끝난다 (mid-frame flush가 만드는 상황).
+        harness.executeExpectingSuccess([
+            ["op": "getCurrentTexture", "id": 50, "canvas": "test"],
+            ["op": "createTextureView", "id": 51, "texture": 50],
+        ])
+        XCTAssertEqual(
+            harness.context.liveObjectCount, before + 2,
+            "아직 present하지 않았으므로 핸들이 살아 있어야 한다"
+        )
+
+        // 배치 ②: 앞 배치에서 얻은 뷰로 실제로 그린다.
+        harness.executeExpectingSuccess([
+            ["op": "beginRenderPass", "colorAttachments": [[
+                "view": 51, "loadOp": "clear", "storeOp": "store",
+                "clearValue": ["r": 0, "g": 0, "b": 0, "a": 1],
+            ]]],
+            ["op": "endPass"],
+        ])
+
+        XCTAssertEqual(harness.context.liveObjectCount, before, "present했으니 이제 회수된다")
+    }
+
     func test_버퍼_쓰기와_복사와_읽기가_순서대로_동작한다() throws {
         let source: [Float] = [1, 2, 3, 4]
         harness.executeExpectingSuccess([
@@ -111,6 +144,66 @@ final class CommandInterpreterTests: XCTestCase {
         ])
 
         XCTAssertEqual(try harness.readBufferSync(handle: 2, as: Float.self), source)
+    }
+
+    // MARK: - 버퍼 매핑 상태
+
+    /// 명세는 `mapAsync`가 버퍼를 "unavailable"로 만들어 큐 작업에 못 쓰게 해 경쟁 자체를 없앤다.
+    /// 이 구현은 `.storageModeShared` 버퍼를 스테이징 없이 읽으므로, 이 검사가 없으면 리드백이
+    /// GPU 완료를 기다리는 동안 다음 프레임의 쓰기가 같은 메모리에 겹친다.
+    func test_매핑_중인_버퍼는_큐_작업에_쓸_수_없다() throws {
+        harness.executeExpectingSuccess([
+            ["op": "createBuffer", "id": 1, "size": 16, "usage": TestUsage.copyDst | TestUsage.mapRead],
+            ["op": "createBuffer", "id": 2, "size": 16, "usage": TestUsage.copySrc],
+        ])
+        _ = try harness.readBufferSync(handle: 1)   // 여기서 매핑된다
+
+        for command in [
+            ["op": "writeBuffer", "buffer": 1, "data": [Float]([1, 2, 3, 4]).base64],
+            ["op": "copyBufferToBuffer", "source": 2, "destination": 1, "size": 16],
+            ["op": "copyBufferToBuffer", "source": 1, "destination": 2, "size": 16],
+        ] as [[String: Any]] {
+            let result = harness.execute([command])
+            XCTAssertTrue(
+                ((errors(result).first?["message"] as? String) ?? "").contains("매핑 중인"),
+                "\(command["op"] ?? "?")이(가) 통과했다: \(harness.describeErrors(result))"
+            )
+        }
+
+        // unmap하면 다시 쓸 수 있어야 한다.
+        harness.executeExpectingSuccess([
+            ["op": "unmapBuffer", "buffer": 1],
+            ["op": "writeBuffer", "buffer": 1, "data": [Float]([1, 2, 3, 4]).base64],
+        ])
+    }
+
+    func test_이미_매핑된_버퍼를_다시_읽으면_거부한다() throws {
+        harness.executeExpectingSuccess([
+            ["op": "createBuffer", "id": 1, "size": 16, "usage": TestUsage.copyDst | TestUsage.mapRead],
+        ])
+        _ = try harness.readBufferSync(handle: 1)
+
+        XCTAssertThrowsError(try harness.readBufferSync(handle: 1), "두 번째 매핑은 거부된다")
+    }
+
+    /// 명세는 `MAP_READ`를 `COPY_DST`와만, `MAP_WRITE`를 `COPY_SRC`와만 조합하게 한다.
+    /// Metal은 `.storageModeShared` 하나로 전부 되지만, 안 막으면 브라우저에서만 깨진다.
+    func test_매핑_usage는_복사와만_조합할_수_있다() {
+        for usage in [
+            TestUsage.mapRead | TestUsage.queryResolve,
+            TestUsage.mapRead | TestUsage.copySrc,
+            TestUsage.mapRead | TestUsage.storage,
+        ] {
+            let result = harness.execute([["op": "createBuffer", "id": 1, "size": 16, "usage": usage]])
+            XCTAssertTrue(
+                ((errors(result).first?["message"] as? String) ?? "").contains("MAP_READ"),
+                "usage \(usage)가 통과했다: \(harness.describeErrors(result))"
+            )
+        }
+        harness.executeExpectingSuccess([
+            ["op": "createBuffer", "id": 1, "size": 16, "usage": TestUsage.mapRead | TestUsage.copyDst],
+            ["op": "createBuffer", "id": 2, "size": 16, "usage": TestUsage.mapRead],
+        ])
     }
 
     func test_범위를_벗어난_writeBuffer는_거부된다() {

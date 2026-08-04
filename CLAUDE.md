@@ -17,12 +17,12 @@ Lynx 연동: `docs/LYNX-INTEGRATION.md` · 번들(JS) 작성: `docs/JS-AUTHORING
 ```zsh
 # macOS 개발 루프 — Lynx 없이 엔진/트랜스파일러만 빌드·테스트 (가장 빠르다)
 swift build
-swift test                                   # 188개 테스트, ~4초
+swift test                                   # 217개 테스트, ~4초
 swift test --filter LynxWebGPUShaderTests    # WGSL → MSL 트랜스파일러만
 swift test --filter RenderPipelineTests      # GPU 오프스크린 렌더 검증
 
 # JS 클라이언트(shim) — 런타임 의존성 0. TypeScript는 **검사·선언 생성 전용**이다 (빌드 산출물 없음)
-cd JS && npm test            # node 내장 러너, 43개
+cd JS && npm test            # node 내장 러너, 47개
 cd JS && npm run typecheck   # JSDoc 기준 타입 검사 (tsc --noEmit)
 cd JS && npm run types       # webgpu.d.ts 를 JSDoc에서 다시 생성
 
@@ -149,6 +149,12 @@ git tag -a 0.2.0 -m "0.2.0 — 요약"
 - **커맨드 스트림의 필드 이름은 타입 검사가 잡아 주지 않는다.** JS는 `Record<string, any>`로 싣고
   Swift는 문자열 키로 읽으므로, 이름이 어긋나도 양쪽 다 컴파일된다. op를 추가·수정할 때는
   `.claude/skills/webgpu-command/SKILL.md`의 순서를 그대로 따라 양쪽을 함께 고칠 것.
+- **버퍼를 쓰는 새 op은 `WGPUCommandInterpreter.unmappedBuffer(_:field:)`를 거쳐야 한다.**
+  `registry.lookup(..., as: WGPUBufferObject.self, ...)`를 직접 부르면 매핑 검사를 건너뛰어,
+  `mapAsync` 중인 버퍼에 GPU가 쓰는 경쟁이 그 경로로 샌다 (명세의 "unavailable" 상태).
+  바인드 그룹 경로는 `applyDrawState()`가 `bufferObjects`를 훑어 따로 막는다.
+- **드로우·디스패치 전 상태 확인은 `applyDrawState()` 한 곳에 모여 있다.** 새 드로우 op을
+  추가하면 이 함수를 부를 것 — 바인드 그룹·정점 버퍼 완전성과 번들 격리 계약이 여기 걸려 있다.
 - 트랜스파일러를 고칠 때는 **반드시 `MetalCompilerHarness.assertCompiles`가 붙은 테스트**를 추가한다.
   문자열만 맞고 컴파일이 안 되는 MSL을 막기 위한 장치다.
 - Metal 검증 레이어는 디스크립터 `label`에 nil을 넣으면 단언으로 죽는다. `if let label = …` 로 감쌀 것.
