@@ -175,6 +175,19 @@ const raw    = device.createShaderModule({ code: MSL_SOURCE, language: 'msl' }) 
 `language: 'msl'`은 WGSL 트랜스파일러를 건너뛴다. 이때 바인딩 인덱스를 MSL에 직접 써야 하고
 `layout: 'auto'`를 쓸 수 없다 (`GPUPipelineLayout`을 명시할 것).
 
+```js
+const { messages } = await module.getCompilationInfo()   // shaderCompilationInfo
+// messages[] = { message, type: 'error', lineNum, linePos, offset, length }
+```
+
+- **셰이더 모듈은 컴파일에 실패해도 만들어진다** (명세 모델). 실패는 이 목록과 파이프라인 생성
+  실패로 드러나므로, `createShaderModule()`이 돌아온 뒤에도 확인할 값이 있다.
+  핸들이 아예 없으면 이후 명령이 전부 "존재하지 않는다"로만 깨져 **진짜 원인이 사라진다.**
+- `lineNum`은 WGSL 소스의 줄 번호(1부터)다. `linePos`·`offset`·`length`는 이 구현이 알지 못해
+  **0으로 둔다** — 모르는 값을 지어내면 편집기가 엉뚱한 곳에 밑줄을 긋는다.
+- Metal 런타임 API는 경고를 따로 주지 않으므로 `type`은 항상 `'error'`다.
+- 왕복이 하나 붙는다. 진단 경로에서만 쓸 것.
+
 ## 4. 바인딩
 
 ```js

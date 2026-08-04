@@ -305,11 +305,41 @@ public final class WGPUShaderModuleObject {
     private var libraryCache: [String: MTLLibrary] = [:]
     private let lock = NSLock()
 
-    init(descriptor: WGPUShaderModuleDescriptor) throws {
+    /// 컴파일 진단 (`getCompilationInfo()`가 돌려준다).
+    ///
+    /// 명세에서 **셰이더 모듈은 컴파일에 실패해도 만들어진다** — 오류는 이 목록과 파이프라인
+    /// 생성 실패로 드러난다. 그래서 파싱이 깨져도 객체를 등록하고 여기에 이유를 담는다.
+    /// (핸들이 아예 없으면 이후 명령이 "존재하지 않는다"로만 깨져 원인을 알 수 없다.)
+    public private(set) var compilationMessages: [WGPUError] = []
+
+    /// 이 모듈이 쓸 수 있는 상태인가 (WGSL 파싱이 성공했는가).
+    public var isValid: Bool { language != .wgsl || wgsl != nil }
+
+    init(descriptor: WGPUShaderModuleDescriptor) {
         self.language = descriptor.language
         self.label = descriptor.label
         self.rawSource = descriptor.code
-        self.wgsl = descriptor.language == .wgsl ? try WGSLShaderModule(source: descriptor.code) : nil
+        guard descriptor.language == .wgsl else {
+            self.wgsl = nil
+            return
+        }
+        do {
+            self.wgsl = try WGSLShaderModule(source: descriptor.code)
+        } catch let error as WGPUError {
+            self.wgsl = nil
+            self.compilationMessages = [error]
+        } catch {
+            self.wgsl = nil
+            self.compilationMessages = [.validation("WGSL 파싱 실패: \(error.localizedDescription)")]
+        }
+    }
+
+    /// 파이프라인 생성에서 나온 진단을 덧붙인다 (MSL 컴파일 실패 등).
+    func record(_ error: WGPUError) {
+        lock.lock()
+        defer { lock.unlock() }
+        // 같은 셰이더로 파이프라인을 여러 개 만들면 같은 오류가 되풀이된다 — 중복은 걸러 낸다.
+        if !compilationMessages.contains(error) { compilationMessages.append(error) }
     }
 
     /// 명세의 **"get the entry point"** — 이름을 생략하면 그 스테이지의 **유일한** 진입점을 쓴다.
@@ -320,6 +350,15 @@ public final class WGPUShaderModuleObject {
     /// MSL 모듈은 리플렉션이 없어 스테이지를 셀 수 없다. 그쪽은 `"main"`을 관례로 삼되,
     /// **함수가 실제로 없으면 Metal이 그 자리에서 잡는다** (`makeFunction`이 nil을 준다).
     func resolveEntryPoint(_ requested: String?, stage: WGSLStage, path: String? = nil) throws -> String {
+        // 파싱에 실패한 모듈이면 진짜 원인을 다시 알려 준다 — "진입점이 없다"로 바꿔 말하면
+        // 사용자가 셰이더 이름을 의심하며 엉뚱한 곳을 고친다.
+        if !isValid, let failure = compilationMessages.first {
+            throw WGPUError(
+                kind: failure.kind,
+                message: "이 셰이더 모듈은 컴파일에 실패했다 — \(failure.message)",
+                path: path, line: failure.line
+            )
+        }
         guard let wgsl else { return requested ?? "main" }
         do {
             return try wgsl.resolveEntryPoint(requested, stage: stage)

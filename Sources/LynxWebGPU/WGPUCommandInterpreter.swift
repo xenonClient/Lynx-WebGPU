@@ -124,10 +124,13 @@ final class WGPUCommandInterpreter {
             do {
                 try perform(command, at: index)
             } catch let error as WGPUError {
+                // 경로만 채우고 나머지는 **그대로 옮긴다** — 여기서 필드를 빠뜨리면
+                // (줄 번호처럼) 아래 계층이 애써 붙인 단서가 조용히 사라진다.
                 record(WGPUError(
                     kind: error.kind,
                     message: error.message,
-                    path: error.path ?? "commands[\(index)].\(command.optionalString("op") ?? "?")"
+                    path: error.path ?? "commands[\(index)].\(command.optionalString("op") ?? "?")",
+                    line: error.line
                 ))
             } catch {
                 record(.backend(error.localizedDescription, path: "commands[\(index)]"))
@@ -589,10 +592,21 @@ final class WGPUCommandInterpreter {
         registry.insert(object, at: handle)
     }
 
+    /// 명세에서 **셰이더 모듈은 컴파일에 실패해도 만들어진다** — 오류는 `getCompilationInfo()`와
+    /// 파이프라인 생성 실패로 드러난다. 그래서 파싱이 깨져도 등록하고 진단을 담아 둔다.
+    ///
+    /// 핸들이 아예 없으면 이후 명령이 전부 "존재하지 않는다"로만 깨져 **진짜 원인(파싱 실패)이
+    /// 화면에서 사라진다.** 여기서는 원인도 그 자리에서 보고한다.
     private func createShaderModule(_ command: WGPUValueReader) throws {
         let handle = try command.requiredHandle("id")
-        let object = try WGPUShaderModuleObject(descriptor: WGPUShaderModuleDescriptor(from: command))
+        let object = WGPUShaderModuleObject(descriptor: try WGPUShaderModuleDescriptor(from: command))
         registry.insert(object, at: handle)
+        if let failure = object.compilationMessages.first, !object.isValid {
+            throw WGPUError(
+                kind: failure.kind, message: failure.message,
+                path: failure.path ?? command.fieldPath("code"), line: failure.line
+            )
+        }
     }
 
     private func createBindGroupLayout(_ command: WGPUValueReader) throws {

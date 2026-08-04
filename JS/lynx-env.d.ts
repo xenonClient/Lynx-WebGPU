@@ -32,6 +32,20 @@ interface WGPUExecuteResult {
   errorScopes?: (WGPUErrorPayload | null)[];
 }
 
+/** `shaderCompilationInfo`의 반환. */
+interface WGPUShaderCompilationInfo {
+  ok?: boolean;
+  messages?: {
+    message: string;
+    type: 'error' | 'warning' | 'info';
+    lineNum: number;
+    linePos: number;
+    offset: number;
+    length: number;
+  }[];
+  errors?: WGPUErrorPayload[];
+}
+
 /** `adapterInfo`의 반환. */
 interface WGPUAdapterInfo {
   ok?: boolean;
@@ -82,6 +96,7 @@ interface WebGPUNativeModule {
   /** `present: false` = 프레임 중간의 내부 제출 — 드로어블 present·핸들 만료를 미룬다. */
   execute(payload: { commands: Record<string, any>[]; present?: boolean }): WGPUExecuteResult | undefined;
   adapterInfo(): WGPUAdapterInfo | undefined;
+  shaderCompilationInfo(params: { module: number }): WGPUShaderCompilationInfo | undefined;
   canvasInfo(params: { canvas: string }): WGPUCanvasInfo | undefined;
   readBuffer(
     params: { buffer: number; offset: number; size?: number },

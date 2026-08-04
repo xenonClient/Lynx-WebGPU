@@ -399,6 +399,68 @@ final class CommandInterpreterTests: XCTestCase {
         )
     }
 
+    // MARK: - 셰이더 컴파일 진단
+
+    /// 명세에서 **셰이더 모듈은 컴파일에 실패해도 만들어진다.** 핸들이 아예 없으면 이후 명령이
+    /// 전부 "존재하지 않는다"로만 깨져 **진짜 원인(파싱 실패)이 화면에서 사라진다.**
+    func test_파싱에_실패해도_모듈은_만들어지고_원인을_돌려준다() {
+        let result = harness.execute([
+            ["op": "createShaderModule", "id": 1, "code": """
+             @vertex
+             fn vs() -> @builtin(position) vec4f {
+                 return vec4f(1.0 1.0, 1.0, 1.0);
+             }
+             """],
+        ])
+
+        // ① 원인이 그 자리에서 보고된다 (줄 번호까지).
+        let first = errors(result).first
+        XCTAssertEqual(first?["kind"] as? String, "validation")
+        XCTAssertTrue(((first?["message"] as? String) ?? "").contains("파싱 실패"))
+        XCTAssertEqual(first?["line"] as? Int, 3, "줄 번호가 숫자로도 실려야 편집기가 점프할 수 있다")
+
+        // ② 그래도 모듈은 있고, 진단을 돌려준다.
+        let info = harness.context.shaderCompilationInfo(handle: 1)
+        XCTAssertEqual(info["ok"] as? Bool, true)
+        let messages = try? XCTUnwrap(info["messages"] as? [[String: Any]])
+        XCTAssertEqual(messages?.count, 1)
+        XCTAssertEqual(messages?.first?["type"] as? String, "error")
+        XCTAssertEqual(messages?.first?["lineNum"] as? Int, 3)
+    }
+
+    /// 깨진 모듈로 파이프라인을 만들면 **진짜 원인**을 다시 알려 줘야 한다 —
+    /// "진입점이 없다"로 바꿔 말하면 사용자가 셰이더 이름을 의심하며 엉뚱한 곳을 고친다.
+    func test_깨진_모듈로_파이프라인을_만들면_원인을_다시_알려_준다() {
+        let result = harness.execute([
+            ["op": "createShaderModule", "id": 1, "code": "fn broken( {"],
+            ["op": "createRenderPipeline", "id": 2, "layout": "auto",
+             "vertex": ["module": 1, "entryPoint": "vs"]],
+        ])
+
+        let messages = errors(result).compactMap { $0["message"] as? String }
+        XCTAssertTrue(
+            messages.contains { $0.contains("컴파일에 실패했다") },
+            "파이프라인 오류가 원인을 안 담고 있다: \(messages)"
+        )
+    }
+
+    func test_정상_모듈은_진단이_비어_있다() {
+        harness.executeExpectingSuccess([
+            ["op": "createShaderModule", "id": 1, "code": """
+             @fragment fn fs() -> @location(0) vec4f { return vec4f(1.0); }
+             """],
+        ])
+
+        let info = harness.context.shaderCompilationInfo(handle: 1)
+        XCTAssertEqual(info["ok"] as? Bool, true)
+        XCTAssertEqual((info["messages"] as? [[String: Any]])?.count, 0)
+    }
+
+    func test_없는_모듈의_진단은_오류다() {
+        let info = harness.context.shaderCompilationInfo(handle: 999)
+        XCTAssertEqual(info["ok"] as? Bool, false)
+    }
+
     // MARK: - 디버그 마커
 
     /// 패스 안팎 모두에서 받아야 한다 — Xcode GPU 캡처의 구간 이름이 여기서 나온다.

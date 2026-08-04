@@ -195,6 +195,36 @@ public final class LynxWebGPUContext {
     /// GPU 완료를 기다리는 전용 큐 — JS 스레드를 막지 않는다.
     private static let readbackQueue = DispatchQueue(label: "org.lynxwebgpu.readback")
 
+    /// `GPUShaderModule.getCompilationInfo()` — 그 모듈의 컴파일 진단.
+    ///
+    /// 명세의 `GPUCompilationMessage` 모양(`message`·`type`·`lineNum`·`linePos`·`offset`·`length`)
+    /// 으로 돌려준다. 우리가 실제로 아는 것은 메시지와 줄 번호뿐이라 나머지는 0이다 —
+    /// **모르는 값을 지어내면 편집기가 엉뚱한 곳에 밑줄을 긋는다.**
+    public func shaderCompilationInfo(handle: Int) -> [String: Any] {
+        executionLock.lock()
+        defer { executionLock.unlock() }
+
+        guard let module = try? registry.lookup(
+            WGPUHandle(handle), as: WGPUShaderModuleObject.self, kind: "GPUShaderModule"
+        ) else {
+            return ["ok": false, "errors": [
+                WGPUError.validation("GPUShaderModule #\(handle)이(가) 없다").payload,
+            ]]
+        }
+        let messages = module.compilationMessages.map { error -> [String: Any] in
+            [
+                "message": error.message,
+                // 이 구현의 진단은 전부 오류다 — Metal 런타임 API가 경고를 따로 주지 않는다.
+                "type": "error",
+                "lineNum": error.line ?? 0,
+                "linePos": 0,
+                "offset": 0,
+                "length": 0,
+            ]
+        }
+        return ["ok": true, "messages": messages]
+    }
+
     /// `navigator.gpu.requestAdapter()` 가 돌려줄 어댑터 정보와 한계값.
     ///
     /// 키는 **명세의 `GPUSupportedLimits` 철자 그대로**다. 웹 라이브러리가 이 이름으로 읽고

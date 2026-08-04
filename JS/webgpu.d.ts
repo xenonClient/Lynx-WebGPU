@@ -134,6 +134,14 @@ export type GPUQuerySetDescriptor = {
     count: number;
     label?: string;
 };
+export type GPUCompilationMessage = {
+    message: string;
+    type: 'error' | 'warning' | 'info';
+    lineNum: number;
+    linePos: number;
+    offset: number;
+    length: number;
+};
 export type GPUDeviceLostInfo = {
     reason: 'unknown' | 'destroyed';
     message: string;
@@ -364,6 +372,22 @@ declare class GPUTextureView extends GPUObjectBase {
 declare class GPUSampler extends GPUObjectBase {
 }
 declare class GPUShaderModule extends GPUObjectBase {
+    /**
+     * 이 모듈의 컴파일 진단 (명세 `GPUCompilationInfo`).
+     *
+     * 셰이더 모듈은 **컴파일에 실패해도 만들어진다** (명세 모델) — 실패는 여기와 파이프라인
+     * 생성 실패로 드러난다. 그래서 `createShaderModule()`이 성공한 뒤에도 확인할 값이 있다.
+     *
+     * `messages[].lineNum`은 WGSL 소스의 줄 번호(1부터)다. `linePos`·`offset`·`length`는
+     * 이 구현이 알지 못해 **0으로 둔다** — 모르는 값을 지어내면 편집기가 엉뚱한 곳에 밑줄을 긋는다.
+     *
+     * 왕복이 하나 붙으므로 진단 경로에서만 쓸 것.
+     *
+     * @returns {Promise<{messages: GPUCompilationMessage[]}>}
+     */
+    getCompilationInfo(): Promise<{
+        messages: GPUCompilationMessage[];
+    }>;
 }
 declare class GPUBindGroupLayout extends GPUObjectBase {
 }

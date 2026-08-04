@@ -100,6 +100,9 @@ export const GPUMapMode = { READ: 0x1, WRITE: 0x2 };
 
 /** @typedef {{type: 'occlusion' | 'timestamp', count: number, label?: string}} GPUQuerySetDescriptor */
 
+/** 셰이더 컴파일 진단 하나 (명세 `GPUCompilationMessage`). */
+/** @typedef {{message: string, type: 'error' | 'warning' | 'info', lineNum: number, linePos: number, offset: number, length: number}} GPUCompilationMessage */
+
 /** `device.lost`가 (유실을 보고하는 구현에서) 풀리는 값 — 이 구현은 영원히 pending이다. */
 /** @typedef {{reason: 'unknown' | 'destroyed', message: string}} GPUDeviceLostInfo */
 
@@ -625,7 +628,31 @@ class GPUTexture extends GPUObjectBase {
 
 class GPUTextureView extends GPUObjectBase {}
 class GPUSampler extends GPUObjectBase {}
-class GPUShaderModule extends GPUObjectBase {}
+class GPUShaderModule extends GPUObjectBase {
+  /**
+   * 이 모듈의 컴파일 진단 (명세 `GPUCompilationInfo`).
+   *
+   * 셰이더 모듈은 **컴파일에 실패해도 만들어진다** (명세 모델) — 실패는 여기와 파이프라인
+   * 생성 실패로 드러난다. 그래서 `createShaderModule()`이 성공한 뒤에도 확인할 값이 있다.
+   *
+   * `messages[].lineNum`은 WGSL 소스의 줄 번호(1부터)다. `linePos`·`offset`·`length`는
+   * 이 구현이 알지 못해 **0으로 둔다** — 모르는 값을 지어내면 편집기가 엉뚱한 곳에 밑줄을 긋는다.
+   *
+   * 왕복이 하나 붙으므로 진단 경로에서만 쓸 것.
+   *
+   * @returns {Promise<{messages: GPUCompilationMessage[]}>}
+   */
+  async getCompilationInfo() {
+    // 아직 안 보낸 명령이 있으면 이 모듈이 네이티브에 없다 — 먼저 흘려보낸다 (프레임 중간 제출).
+    this._recorder.flush(false);
+    const result = nativeModule().shaderCompilationInfo({ module: this.id });
+    if (!result || result.ok === false) {
+      this._recorder.report((result && result.errors) || []);
+      return { messages: [] };
+    }
+    return { messages: result.messages || [] };
+  }
+}
 class GPUBindGroupLayout extends GPUObjectBase {}
 class GPUPipelineLayout extends GPUObjectBase {}
 class GPUBindGroup extends GPUObjectBase {}

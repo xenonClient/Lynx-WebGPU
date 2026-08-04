@@ -17,12 +17,12 @@ Lynx 연동: `docs/LYNX-INTEGRATION.md` · 번들(JS) 작성: `docs/JS-AUTHORING
 ```zsh
 # macOS 개발 루프 — Lynx 없이 엔진/트랜스파일러만 빌드·테스트 (가장 빠르다)
 swift build
-swift test                                   # 244개 테스트, ~4초
+swift test                                   # 248개 테스트, ~4초
 swift test --filter LynxWebGPUShaderTests    # WGSL → MSL 트랜스파일러만
 swift test --filter RenderPipelineTests      # GPU 오프스크린 렌더 검증
 
 # JS 클라이언트(shim) — 런타임 의존성 0. TypeScript는 **검사·선언 생성 전용**이다 (빌드 산출물 없음)
-cd JS && npm test            # node 내장 러너, 88개
+cd JS && npm test            # node 내장 러너, 92개
 cd JS && npm run typecheck   # JSDoc 기준 타입 검사 (tsc --noEmit)
 cd JS && npm run types       # webgpu.d.ts 를 JSDoc에서 다시 생성
 
@@ -176,4 +176,8 @@ git tag -a 0.2.0 -m "0.2.0 — 요약"
 - **`<webgpu-canvas>`의 터치는 Lynx 표준 이벤트를 쓴다** (`bindtouchstart` 등). UIKit `touchesBegan`을
   가로채면 Lynx의 hitTest·pointer-events·버블링·제스처 아레나를 우회해 웹과 다르게 동작한다
   (`docs/LYNX-INTEGRATION.md` §5).
+- **`LynxWebGPUCore`의 public 저장 프로퍼티를 바꾸면 `rm -rf .build` 후 다시 빌드한다.**
+  SwiftPM 증분 빌드가 의존 모듈(Shader/LynxWebGPU)을 옛 메모리 레이아웃으로 남겨 두어,
+  테스트가 **signal 11로 죽는다** — 코드 버그처럼 보이지만 아니다 (`WGPUError`에 필드를
+  더했을 때 실제로 겪었다). 클린 빌드로 재현되지 않으면 그 경우다.
 - 임시 산출물(빌드 로그, 렌더 덤프 PNG 등)은 `.tmp/` 아래에 둔다 (git-ignored).
