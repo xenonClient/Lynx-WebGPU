@@ -6,7 +6,7 @@ Lynx 앱 안의 **이미지 에디터·필터**지 3D 렌더러가 아니다. �
 
 | 순서 | 기능 | 규모 | 효과 |
 |---|---|---|---|
-| 1 | 웹 라이브러리 이식 갭 메우기 (§1) | 소 | Three.js가 밟는 명세 표면 — 몇 줄로 경로가 열린다 |
+| 1 | 웹 라이브러리 이식 갭 (§1) | 중 | **표면은 다 메웠다** — 남은 것은 상위 기능 검증(섀도맵·포스트프로세싱·TSL)과 실기기 확인 |
 | 2 | 이미지 처리 경로 다듬기 (§2) | 소~중 | limits 노출 · 색공간 · 큰 이미지 업로드 |
 | 3 | 트랜스파일러 코퍼스 (§3) | — | **숙제 없음** — 92%, 남은 1건은 호스트 생성 코드가 필요한 셰이더다 |
 | — | 압축 텍스처 (ASTC · ETC2 · BC) | 대 | **보류** — 편집 파이프라인에 끼울 수 없다 (아래) |
@@ -39,10 +39,7 @@ Three.js `WebGPURenderer`를 실제로 올려 보며(데모 `three` 씬) 드러�
 
 | 항목 | 규모 | 왜 필요한가 |
 |---|---|---|
-| `createRenderPipelineAsync` / `createComputePipelineAsync` | 소 | three가 비동기 컴파일 경로에서 부른다. 없으면 그 경로에서 TypeError |
-| `device.onuncapturederror` | 소 | three가 대입만 하고 우리는 무시한다 → `renderer.onError` 콜백이 죽어 있다 |
-| `requestAnimationFrame` 심 | 소 | 지금은 데모 씬 안에 있다. three를 쓰는 번들마다 복사해야 하므로 shim의 선택적 헬퍼로 올린다 |
-| 상위 기능 검증 (섀도맵 · 밉맵 · 인스턴싱 · 포스트프로세싱 · TSL 컴퓨트) | 중 | 체크리스트에 행을 늘려 가며 하나씩. 각각이 다른 경로(비교 샘플러 · 자체 컴퓨트 파이프라인 · 인스턴스 버퍼)를 밟는다 |
+| 상위 기능 검증 — 남은 것 (섀도맵 · 포스트프로세싱 · TSL 컴퓨트 · glTF 로딩) | 중 | 체크리스트에 행을 늘려 가며 하나씩. 각각이 다른 경로(비교 샘플러 · 다중 패스 · 자체 컴퓨트 파이프라인 · `fetch`→`loadAsset`)를 밟는다 |
 | 실기기 확인 | — | 지금까지 전부 시뮬레이터다. `three` 체크리스트와 `hdr` EDR(시뮬레이터로는 원리적으로 불가)은 기기에서 한 번 봐야 한다 |
 
 ### 이미 메운 것 (참고)
@@ -54,6 +51,14 @@ Three.js `WebGPURenderer`를 실제로 올려 보며(데모 `three` 씬) 드러�
 | 프레임 중간 제출이 드로어블을 present하던 문제 | `execute({present})` — `popErrorScope`·`mapAsync`는 내부 제출로 표시 |
 | 커맨드 인자가 기록 뒤 변이되던 문제 | `Recorder.push`가 기록 시점 값으로 고정 (three가 디스크립터를 `reset()`한다) |
 | WGSL 전역 섀도잉 오역 | 사용 분석이 스코프를 따른다 (기계 생성 셰이더의 일상 패턴) |
+| `createRenderPipelineAsync` / `createComputePipelineAsync` | 오류 스코프 두 겹으로 감싸 즉시 제출, `GPUPipelineError`로 거부 |
+| `device.onuncapturederror` | 명세 통로 + `addEventListener`. `GPUValidationError` 계열로 갈린다 |
+| `requestAnimationFrame` | shim의 `installAnimationFrame()` — `startFrameLoop` 위에 얹힌다 |
+| `entryPoint` 생략 | 명세의 "get the entry point" — 그 스테이지의 유일한 진입점을 쓴다 (three 밉맵이 이걸 밟는다) |
+| `adapter.limits` | 명세 `GPUSupportedLimits` 전 항목을 명세 철자로 |
+| 명세 읽기 전용 속성 | `GPUTexture` 7종 · `GPUBuffer.mapState` |
+| `clearBuffer` · `copyBufferToBuffer` 짧은 형태 | 명세 오버로드까지 |
+| 상위 기능 검증 (깊이 · 인스턴싱 · 밉맵 · 블렌딩 · 비동기 컴파일) | `three` 씬 체크리스트 14종이 픽셀 값으로 확인한다 |
 
 ---
 
