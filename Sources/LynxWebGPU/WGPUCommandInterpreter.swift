@@ -603,6 +603,10 @@ final class WGPUCommandInterpreter {
         if let depth = descriptor.depthStencilAttachment {
             let view = try registry.lookup(depth.view, as: WGPUTextureViewObject.self, kind: "GPUTextureView")
             depthStencilFormat = view.format
+            // 깊이 뷰도 패스 레이아웃의 sampleCount에 반영한다 — 컬러 어태치먼트가 없는 MSAA 패스
+            // (그림자 맵·깊이 프리패스)에서 이걸 빠뜨리면 올바르게 선언한 번들이 거부된다.
+            // 명세는 모든 어태치먼트의 sampleCount가 같기를 요구하므로 max로 충분하다.
+            sampleCount = max(sampleCount, view.sampleCount)
             if view.format.hasDepth {
                 let target = passDescriptor.depthAttachment!
                 target.texture = view.texture
@@ -782,6 +786,10 @@ final class WGPUCommandInterpreter {
                 color: formats.color, depthStencil: formats.depthStencil, sampleCount: formats.sampleCount
             )
         }
+        // 명세의 "Reset the render pass binding state"(step 4)는 호환성 검증만 통과하면 **무조건**
+        // 실행된다. 번들 명령 하나가 실패해 throw해도 마찬가지다 — 여기서 빠뜨리면 그 뒤의 패스 명령이
+        // 번들이 남긴 파이프라인·바인드 그룹을 물고 그려져 잘못된 픽셀이 나간다.
+        defer { resetPassBindings() }
         // 하나라도 맞지 않으면 아무것도 실행하지 않는다 — 절반만 그려진 프레임을 남기지 않는다.
         for bundle in bundles {
             resetPassBindings()
@@ -789,7 +797,6 @@ final class WGPUCommandInterpreter {
                 try perform(bundleCommand, at: 0)
             }
         }
-        resetPassBindings()
     }
 
     private func setPipeline(_ command: WGPUValueReader) throws {

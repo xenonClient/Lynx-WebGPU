@@ -195,6 +195,60 @@ final class RenderBundleTests: XCTestCase {
         )
     }
 
+    /// 회귀 — 번들 명령 하나가 실패해도 패스 바인딩 초기화는 건너뛰면 안 된다.
+    ///
+    /// 해석기의 계약은 "오류가 프레임을 죽이지 않고 누적된다"이므로 실행은 다음 명령부터 계속된다.
+    /// 그때 초기화를 빠뜨리면 이어지는 draw가 번들이 남긴 파이프라인으로 **실제로 그려진다** —
+    /// 브라우저에서는 거부되는 코드가 여기서만 엉뚱한 픽셀을 낸다.
+    func test_번들_실행_중_오류가_나도_패스_바인딩이_초기화된다() {
+        let result = harness.execute(setUpResources() + [
+            // 두 번째 명령의 바인드 그룹 핸들이 없다 — 실행 도중에 실패한다.
+            createBundle(id: 10, commands: [
+                ["op": "setPipeline", "pipeline": 2],
+                ["op": "setBindGroup", "index": 0, "bindGroup": 999],
+            ]),
+        ] + acquireDrawable + [
+            beginPass,
+            ["op": "executeBundles", "bundles": [10]],
+            ["op": "draw", "vertexCount": 3],   // setPipeline 없이
+            ["op": "endPass"],
+        ])
+
+        let messages = errors(result).compactMap { $0["message"] as? String }
+        XCTAssertEqual(
+            messages.count, 2,
+            "번들 실패 1건 + draw 거부 1건이어야 한다: \(harness.describeErrors(result))"
+        )
+        XCTAssertTrue(
+            (messages.last ?? "").contains("setPipeline"),
+            "번들이 남긴 파이프라인을 물고 그리면 안 된다: \(harness.describeErrors(result))"
+        )
+    }
+
+    /// 회귀 — 패스의 `sampleCount`를 컬러 어태치먼트에서만 유도하면, 컬러 없이 깊이만 있는
+    /// MSAA 패스(그림자 맵·깊이 프리패스)에서 패스가 1로 잡힌다. 그러면 명세대로 정확히
+    /// `sampleCount: 4`를 선언한 번들이 오탐으로 거부된다.
+    func test_컬러_없는_MSAA_깊이_패스에서_sampleCount가_깊이_뷰로_결정된다() throws {
+        try XCTSkipUnless(harness.context.device.supportsTextureSampleCount(4), "4x MSAA 미지원")
+
+        let result = harness.execute([
+            ["op": "createTexture", "id": 2, "size": ["width": 64, "height": 64],
+             "format": "depth32float", "sampleCount": 4, "usage": TestUsage.renderAttachment],
+            ["op": "createTextureView", "id": 3, "texture": 2],
+            ["op": "createRenderBundle", "id": 10, "colorFormats": [String?](),
+             "depthStencilFormat": "depth32float", "sampleCount": 4, "commands": [[String: Any]]()],
+            ["op": "beginRenderPass",
+             "colorAttachments": [[String: Any]](),
+             "depthStencilAttachment": [
+                "view": 3, "depthClearValue": 1.0, "depthLoadOp": "clear", "depthStoreOp": "store",
+             ]],
+            ["op": "executeBundles", "bundles": [10]],
+            ["op": "endPass"],
+        ])
+
+        XCTAssertEqual(result["ok"] as? Bool, true, harness.describeErrors(result))
+    }
+
     // MARK: - 계약
 
     func test_번들의_컬러_포맷이_패스와_다르면_거부한다() {
