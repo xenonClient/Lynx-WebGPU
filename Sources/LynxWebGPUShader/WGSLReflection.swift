@@ -102,6 +102,11 @@ enum WGSLReflectionBuilder {
     /// 함수별로 "직접 참조하는 전역 + 호출한 함수" 를 모은 뒤 고정점까지 전파한다.
     /// 헬퍼 함수가 유니폼을 읽으면 진입점이 그 유니폼을 인자로 넘겨야 하므로 (MSL에는
     /// 가변 전역이 없다) 이 집합이 MSL 파라미터 스레딩의 입력이 된다.
+    ///
+    /// 수집은 **스코프를 따진다** — 매개변수나 지역 선언(`var`/`let`/`const`)에 가려진
+    /// 이름은 전역 사용이 아니다. 기계 생성 셰이더(Three.js 노드 시스템 등)는 같은 이름을
+    /// 모듈 스코프와 함수 지역에 일상적으로 함께 쓰므로, 이를 무시하면 쓰지도 않는 전역이
+    /// 인자로 주입되어 지역 선언과 재정의 충돌을 일으킨다.
     static func transitiveGlobalUsage(_ module: WGSLModule) -> [String: Set<String>] {
         var direct: [String: Set<String>] = [:]
         var callees: [String: Set<String>] = [:]
@@ -110,9 +115,10 @@ enum WGSLReflectionBuilder {
         for function in module.functions {
             var identifiers = Set<String>()
             var calls = Set<String>()
-            for statement in function.body {
-                collect(statement, identifiers: &identifiers, calls: &calls)
-            }
+            collect(
+                function.body, locals: Set(function.parameters.map(\.name)),
+                identifiers: &identifiers, calls: &calls
+            )
             direct[function.name] = identifiers
             callees[function.name] = calls.intersection(functionNames)
         }
@@ -148,9 +154,10 @@ enum WGSLReflectionBuilder {
         for function in module.functions {
             var identifiers = Set<String>()
             var calls = Set<String>()
-            for statement in function.body {
-                collect(statement, identifiers: &identifiers, calls: &calls)
-            }
+            collect(
+                function.body, locals: Set(function.parameters.map(\.name)),
+                identifiers: &identifiers, calls: &calls
+            )
             if calls.contains(builtin) { directly.insert(function.name) }
             callees[function.name] = calls.intersection(functionNames)
         }
@@ -169,70 +176,107 @@ enum WGSLReflectionBuilder {
         return result
     }
 
-    // MARK: - 식별자 수집
+    // MARK: - 식별자 수집 (스코프 인지)
 
-    private static func collect(_ statement: WGSLStatement, identifiers: inout Set<String>, calls: inout Set<String>) {
+    /// 블록 하나를 순서대로 걷는다. 지역 선언은 **그 지점부터 블록 끝까지** 이름을 가리고
+    /// (WGSL 명세의 point-of-declaration 규칙 — 초기값은 바깥 이름을 본다), 중첩 블록은
+    /// 현재 지역 집합의 사본을 물려받는다.
+    private static func collect(
+        _ statements: [WGSLStatement],
+        locals: Set<String>,
+        identifiers: inout Set<String>,
+        calls: inout Set<String>
+    ) {
+        var locals = locals
+        for statement in statements {
+            collect(statement, locals: &locals, identifiers: &identifiers, calls: &calls)
+        }
+    }
+
+    private static func collect(
+        _ statement: WGSLStatement,
+        locals: inout Set<String>,
+        identifiers: inout Set<String>,
+        calls: inout Set<String>
+    ) {
         switch statement {
-        case .letDeclaration(_, _, let value), .constDeclaration(_, _, let value):
-            collect(value, identifiers: &identifiers, calls: &calls)
-        case .varDeclaration(_, _, let value):
-            if let value { collect(value, identifiers: &identifiers, calls: &calls) }
+        case .letDeclaration(let name, _, let value), .constDeclaration(let name, _, let value):
+            collect(value, locals: locals, identifiers: &identifiers, calls: &calls)
+            locals.insert(name)
+        case .varDeclaration(let name, _, let value):
+            if let value { collect(value, locals: locals, identifiers: &identifiers, calls: &calls) }
+            locals.insert(name)
         case .assignment(let target, _, let value):
-            collect(target, identifiers: &identifiers, calls: &calls)
-            collect(value, identifiers: &identifiers, calls: &calls)
+            collect(target, locals: locals, identifiers: &identifiers, calls: &calls)
+            collect(value, locals: locals, identifiers: &identifiers, calls: &calls)
         case .increment(let expression), .decrement(let expression), .expressionStatement(let expression):
-            collect(expression, identifiers: &identifiers, calls: &calls)
+            collect(expression, locals: locals, identifiers: &identifiers, calls: &calls)
         case .ifStatement(let condition, let then, let elseBranch):
-            collect(condition, identifiers: &identifiers, calls: &calls)
-            then.forEach { collect($0, identifiers: &identifiers, calls: &calls) }
+            collect(condition, locals: locals, identifiers: &identifiers, calls: &calls)
+            collect(then, locals: locals, identifiers: &identifiers, calls: &calls)
             switch elseBranch {
             case .block(let statements)?:
-                statements.forEach { collect($0, identifiers: &identifiers, calls: &calls) }
+                collect(statements, locals: locals, identifiers: &identifiers, calls: &calls)
             case .chained(let statement)?:
-                collect(statement, identifiers: &identifiers, calls: &calls)
+                var branchLocals = locals
+                collect(statement, locals: &branchLocals, identifiers: &identifiers, calls: &calls)
             case nil:
                 break
             }
         case .forStatement(let initializer, let condition, let update, let body):
-            if let initializer { collect(initializer, identifiers: &identifiers, calls: &calls) }
-            if let condition { collect(condition, identifiers: &identifiers, calls: &calls) }
-            if let update { collect(update, identifiers: &identifiers, calls: &calls) }
-            body.forEach { collect($0, identifiers: &identifiers, calls: &calls) }
+            // for 헤더의 선언은 조건·증감·본문까지가 스코프다.
+            var headerLocals = locals
+            if let initializer {
+                collect(initializer, locals: &headerLocals, identifiers: &identifiers, calls: &calls)
+            }
+            if let condition { collect(condition, locals: headerLocals, identifiers: &identifiers, calls: &calls) }
+            if let update {
+                var updateLocals = headerLocals
+                collect(update, locals: &updateLocals, identifiers: &identifiers, calls: &calls)
+            }
+            collect(body, locals: headerLocals, identifiers: &identifiers, calls: &calls)
         case .whileStatement(let condition, let body):
-            collect(condition, identifiers: &identifiers, calls: &calls)
-            body.forEach { collect($0, identifiers: &identifiers, calls: &calls) }
+            collect(condition, locals: locals, identifiers: &identifiers, calls: &calls)
+            collect(body, locals: locals, identifiers: &identifiers, calls: &calls)
         case .loopStatement(let body, let continuing):
-            body.forEach { collect($0, identifiers: &identifiers, calls: &calls) }
-            continuing?.forEach { collect($0, identifiers: &identifiers, calls: &calls) }
+            // continuing은 본문 선언을 볼 수 있으므로 같은 블록으로 걷는다 (방출도 그렇게 한다).
+            collect(body + (continuing ?? []), locals: locals, identifiers: &identifiers, calls: &calls)
         case .switchStatement(let subject, let cases):
-            collect(subject, identifiers: &identifiers, calls: &calls)
+            collect(subject, locals: locals, identifiers: &identifiers, calls: &calls)
             for switchCase in cases {
-                switchCase.selectors.forEach { collect($0, identifiers: &identifiers, calls: &calls) }
-                switchCase.body.forEach { collect($0, identifiers: &identifiers, calls: &calls) }
+                for selector in switchCase.selectors {
+                    collect(selector, locals: locals, identifiers: &identifiers, calls: &calls)
+                }
+                collect(switchCase.body, locals: locals, identifiers: &identifiers, calls: &calls)
             }
         case .returnStatement(let value):
-            if let value { collect(value, identifiers: &identifiers, calls: &calls) }
+            if let value { collect(value, locals: locals, identifiers: &identifiers, calls: &calls) }
         case .block(let statements):
-            statements.forEach { collect($0, identifiers: &identifiers, calls: &calls) }
+            collect(statements, locals: locals, identifiers: &identifiers, calls: &calls)
         case .breakStatement, .continueStatement, .discardStatement:
             break
         }
     }
 
-    private static func collect(_ expression: WGSLExpression, identifiers: inout Set<String>, calls: inout Set<String>) {
+    private static func collect(
+        _ expression: WGSLExpression,
+        locals: Set<String>,
+        identifiers: inout Set<String>,
+        calls: inout Set<String>
+    ) {
         switch expression {
         case .identifier(let name):
-            identifiers.insert(name)
+            if !locals.contains(name) { identifiers.insert(name) }
         case .unary(_, let operand), .paren(let operand), .addressOf(let operand), .dereference(let operand):
-            collect(operand, identifiers: &identifiers, calls: &calls)
+            collect(operand, locals: locals, identifiers: &identifiers, calls: &calls)
         case .binary(_, let left, let right), .index(let left, let right):
-            collect(left, identifiers: &identifiers, calls: &calls)
-            collect(right, identifiers: &identifiers, calls: &calls)
+            collect(left, locals: locals, identifiers: &identifiers, calls: &calls)
+            collect(right, locals: locals, identifiers: &identifiers, calls: &calls)
         case .call(let callee, _, let arguments):
             calls.insert(callee)
-            arguments.forEach { collect($0, identifiers: &identifiers, calls: &calls) }
+            arguments.forEach { collect($0, locals: locals, identifiers: &identifiers, calls: &calls) }
         case .member(let base, _):
-            collect(base, identifiers: &identifiers, calls: &calls)
+            collect(base, locals: locals, identifiers: &identifiers, calls: &calls)
         case .intLiteral, .floatLiteral, .boolLiteral:
             break
         }

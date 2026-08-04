@@ -636,4 +636,55 @@ final class RenderPipelineTests: XCTestCase {
             x: 1, y: 1, equals: SIMD4<Float>(4, 0, 0, 1), "클리어 값도 잘리지 않아야 한다"
         )
     }
+
+    // MARK: - 전역 섀도잉 (스코프 해석이 값까지 옳은지)
+
+    func test_전역을_가린_지역선언의_스코프가_런타임_값으로_옳다() throws {
+        // 선언 앞의 base는 전역(초록), 뒤의 base는 지역(빨강)이다. 스코프 해석이나
+        // 리네임 참조 치환이 틀리면 빨강이 나온다 — 컴파일 성공만으로는 못 잡는 부분이다.
+        let shader = """
+        var<private> base : vec4f;
+
+        fn shade() -> vec4f {
+            let inherited = base;
+            var base : vec4f = vec4f(1.0, 0.0, 0.0, 1.0);
+            return inherited + base * 0.0;
+        }
+
+        @vertex
+        fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f {
+            var positions = array<vec2f, 3>(
+                vec2f(-1.0, -1.0),
+                vec2f( 3.0, -1.0),
+                vec2f(-1.0,  3.0),
+            );
+            return vec4f(positions[index], 0.0, 1.0);
+        }
+
+        @fragment
+        fn fs_main() -> @location(0) vec4f {
+            base = vec4f(0.0, 1.0, 0.0, 1.0);
+            return shade();
+        }
+        """
+
+        harness.executeExpectingSuccess([
+            ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
+            ["op": "createShaderModule", "id": 1, "code": shader],
+            ["op": "createRenderPipeline", "id": 2, "layout": "auto",
+             "vertex": ["module": 1, "entryPoint": "vs_main"],
+             "fragment": ["module": 1, "entryPoint": "fs_main", "targets": [["format": "rgba8unorm"]]]],
+            ["op": "getCurrentTexture", "id": 10, "canvas": "test"],
+            ["op": "createTextureView", "id": 11, "texture": 10],
+            ["op": "beginRenderPass", "colorAttachments": [[
+                "view": 11, "loadOp": "clear", "storeOp": "store",
+                "clearValue": ["r": 0.0, "g": 0.0, "b": 0.0, "a": 1.0],
+            ]]],
+            ["op": "setPipeline", "pipeline": 2],
+            ["op": "draw", "vertexCount": 3],
+            ["op": "endPass"],
+        ])
+
+        try harness.assertPixel(x: 32, y: 32, equals: (0, 255, 0, 255), "선언 앞의 참조는 전역을 봐야 한다")
+    }
 }

@@ -27,6 +27,13 @@ struct MSLEmitter {
 
     /// 현재 함수 스코프에서 이름 → 텍스처 타입 (텍스처 내장 함수를 메서드 호출로 바꿀 때 필요).
     private var textureScope: [String: WGSLTextureType] = [:]
+    /// 현재 함수에 인자로 주입된 전역 이름들.
+    ///
+    /// WGSL은 전역을 가리는 지역 선언이 합법이지만, 주입 때문에 그 전역이 **매개변수**가 되면
+    /// C++에서는 함수 최상위 블록의 재정의라 불법이다. 그래서 겹치는 지역 선언을 리네임한다.
+    private var injectedGlobalNames: Set<String> = []
+    /// 활성 섀도잉 리네임 (원래 이름 → 방출 이름). 블록 경계에서 저장/복원된다.
+    private var localRenames: [String: String] = [:]
     private var output = ""
     private var indentLevel = 0
 
@@ -233,6 +240,13 @@ struct MSLEmitter {
         indentLevel -= 1
     }
 
+    /// 블록 스코프 경계 — 안에서 등록된 섀도잉 리네임이 블록 밖으로 새지 않게 한다.
+    private mutating func scoped(_ body: (inout MSLEmitter) throws -> Void) rethrows {
+        let saved = localRenames
+        try indented(body)
+        localRenames = saved
+    }
+
     // MARK: - 구조체 (WGSL 배치에 맞춘 패딩)
 
     private mutating func emitStruct(_ structure: WGSLStruct) throws {
@@ -336,8 +350,14 @@ struct MSLEmitter {
 
     private mutating func emitFunction(_ function: WGSLFunction) throws {
         let previousScope = textureScope
-        defer { textureScope = previousScope }
+        defer {
+            textureScope = previousScope
+            injectedGlobalNames = []
+            localRenames = [:]
+        }
         registerTextures(of: function)
+        injectedGlobalNames = Set(threadedGlobals(for: function.name).map(\.name))
+        localRenames = [:]
 
         var parameters = try function.parameters.map { parameter in
             "\(try MSLTypeMapping.type(parameter.type, module: module)) \(MSLTypeMapping.identifier(parameter.name))"
@@ -397,9 +417,14 @@ struct MSLEmitter {
         let returnType = try function.returnType.map { try MSLTypeMapping.type($0, module: module) } ?? "void"
         line("\(returnType) \(innerName)(\(innerParameters.joined(separator: ", ")))")
         line("{")
+        injectedGlobalNames = Set(resources.map(\.name))
+        localRenames = [:]
         try indented { emitter in
             try emitter.statements(function.body)
         }
+        // 래퍼 방출은 주입 스코프 밖이다 — 리네임이 새면 wgpu_out 패킹이 엉뚱한 이름을 쓴다.
+        injectedGlobalNames = []
+        localRenames = [:]
         line("}")
         line("")
 
@@ -610,7 +635,7 @@ struct MSLEmitter {
         case .block(let inner):
             guard !inner.isEmpty else { return }
             line("{")
-            try indented { emitter in try emitter.statements(inner) }
+            try scoped { emitter in try emitter.statements(inner) }
             line("}")
 
         case .letDeclaration, .constDeclaration, .varDeclaration, .assignment, .increment, .decrement:
@@ -622,46 +647,49 @@ struct MSLEmitter {
         case .ifStatement(let condition, let then, let elseBranch):
             line("if (\(try expression(condition)))")
             line("{")
-            try indented { emitter in try emitter.statements(then) }
+            try scoped { emitter in try emitter.statements(then) }
             line("}")
             switch elseBranch {
             case .block(let statements)?:
                 line("else")
                 line("{")
-                try indented { emitter in try emitter.statements(statements) }
+                try scoped { emitter in try emitter.statements(statements) }
                 line("}")
             case .chained(let nested)?:
                 // `else if` — 중첩 if를 else 뒤에 붙인다.
                 line("else")
-                try indented { emitter in try emitter.emitStatement(nested) }
+                try scoped { emitter in try emitter.emitStatement(nested) }
             case nil:
                 break
             }
 
         case .forStatement(let initializer, let condition, let update, let body):
+            // 헤더 선언의 리네임은 조건·증감·본문까지가 스코프다 — for 문이 끝나면 되돌린다.
+            let savedRenames = localRenames
             let initializerText = try initializer.map { try simpleStatement($0) } ?? ""
             let conditionText = try condition.map { try expression($0) } ?? ""
             let updateText = try update.map { try simpleStatement($0) } ?? ""
             line("for (\(initializerText); \(conditionText); \(updateText))")
             line("{")
-            try indented { emitter in try emitter.statements(body) }
+            try scoped { emitter in try emitter.statements(body) }
             line("}")
+            localRenames = savedRenames
 
         case .whileStatement(let condition, let body):
             line("while (\(try expression(condition)))")
             line("{")
-            try indented { emitter in try emitter.statements(body) }
+            try scoped { emitter in try emitter.statements(body) }
             line("}")
 
         case .loopStatement(let body, let continuing):
-            if let continuing, containsContinue(body) {
+            if continuing != nil, containsContinue(body) {
                 throw WGPUError.unsupported(
                     "WGSL: `continuing` 블록과 `continue`를 함께 쓰는 loop는 지원하지 않는다 (docs/WGSL.md §4)"
                 )
             }
             line("while (true)")
             line("{")
-            try indented { emitter in
+            try scoped { emitter in
                 try emitter.statements(body)
                 if let continuing { try emitter.statements(continuing) }
             }
@@ -679,7 +707,7 @@ struct MSLEmitter {
                         emitter.line("case \(try emitter.expression(selector)):")
                     }
                     emitter.line("{")
-                    try emitter.indented { inner in
+                    try emitter.scoped { inner in
                         try inner.statements(switchCase.body)
                         // WGSL의 case는 fallthrough 하지 않는다.
                         inner.line("break;")
@@ -706,22 +734,28 @@ struct MSLEmitter {
     }
 
     /// 세미콜론 없는 단문 (for 헤더에서도 쓴다).
+    ///
+    /// 선언은 **초기값을 먼저 방출**한다 — WGSL의 point-of-declaration 규칙상 초기값은
+    /// 바깥(가려지기 전) 이름을 보므로, 리네임 등록이 초기값보다 먼저면 `var v = v;`가 깨진다.
     private mutating func simpleStatement(_ statement: WGSLStatement) throws -> String {
         switch statement {
         case .letDeclaration(let name, let type, let value), .constDeclaration(let name, let type, let value):
             let typeText = try type.map { try MSLTypeMapping.type($0, module: module) } ?? "auto"
-            return "const \(typeText) \(MSLTypeMapping.identifier(name)) = \(try expression(value))"
+            let valueText = try expression(value)
+            return "const \(typeText) \(declaredName(name)) = \(valueText)"
 
         case .varDeclaration(let name, let type, let value):
             guard let type else {
                 guard let value else {
                     throw WGPUError.validation("WGSL: var '\(name)'에 타입도 초기값도 없다")
                 }
-                return "auto \(MSLTypeMapping.identifier(name)) = \(try expression(value))"
+                let valueText = try expression(value)
+                return "auto \(declaredName(name)) = \(valueText)"
             }
             let typeText = try MSLTypeMapping.type(type, module: module)
-            guard let value else { return "\(typeText) \(MSLTypeMapping.identifier(name)){}" }
-            return "\(typeText) \(MSLTypeMapping.identifier(name)) = \(try expression(value))"
+            guard let value else { return "\(typeText) \(declaredName(name)){}" }
+            let valueText = try expression(value)
+            return "\(typeText) \(declaredName(name)) = \(valueText)"
 
         case .assignment(let target, let op, let value):
             return "\(try expression(target)) \(op) \(try expression(value))"
@@ -735,6 +769,18 @@ struct MSLEmitter {
         default:
             throw WGPUError.validation("WGSL: 이 위치에 올 수 없는 문장")
         }
+    }
+
+    /// 지역 선언의 방출 이름.
+    ///
+    /// 주입된 전역(함수 매개변수가 된 이름)과 겹치면 대체 이름을 등록한다 — C++은 함수
+    /// 최상위 블록에서 매개변수 재정의를 허용하지 않고, 호출 시 전역을 넘기는 인자 목록도
+    /// 원래 이름을 참조해야 하기 때문이다. 이후 이 스코프의 참조는 대체 이름으로 나간다.
+    private mutating func declaredName(_ name: String) -> String {
+        guard injectedGlobalNames.contains(name) else { return MSLTypeMapping.identifier(name) }
+        let renamed = "wgpu_shadow_\(name)"
+        localRenames[name] = renamed
+        return renamed
     }
 
     private func containsContinue(_ statements: [WGSLStatement]) -> Bool {
@@ -772,6 +818,7 @@ struct MSLEmitter {
         case .boolLiteral(let value):
             return value ? "true" : "false"
         case .identifier(let name):
+            if let renamed = localRenames[name] { return renamed }
             return MSLTypeMapping.identifier(name)
         case .unary(let op, let operand):
             return "\(op)\(try self.expression(operand))"

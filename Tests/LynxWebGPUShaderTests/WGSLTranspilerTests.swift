@@ -431,6 +431,124 @@ final class WGSLTranspilerTests: XCTestCase {
         _ = try translate(source, entryPoints: ["fs_main"])
     }
 
+    // MARK: - 전역 섀도잉 (기계 생성 셰이더의 일상 패턴 — Three.js nodeVar0)
+
+    func test_지역변수에_가려진_전역은_주입되지_않는다() throws {
+        // Three.js 노드 시스템이 만드는 패턴: 같은 이름을 모듈 스코프와 함수 지역에 동시 생성한다.
+        // helper는 지역 v만 쓰므로 모듈 스코프 v를 인자로 받으면 안 된다 — 받으면
+        // `float4 v{}` 지역 선언과 재정의 충돌이 난다.
+        let source = """
+        var<private> v : vec4<f32>;
+
+        fn helper(c : vec4<f32>) -> vec4<f32> {
+            var v : vec4<f32>;
+            v = c;
+            return v;
+        }
+
+        @fragment
+        fn main() -> @location(0) vec4<f32> {
+            v = vec4<f32>(1.0);
+            return helper(v);
+        }
+        """
+        let msl = try translate(source, entryPoints: ["main"])
+        XCTAssertTrue(msl.contains("float4 helper(float4 c)"), "가려진 전역이 주입됐다:\n\(msl)")
+    }
+
+    func test_매개변수에_가려진_전역은_주입되지_않는다() throws {
+        let source = """
+        var<private> tint : vec4<f32>;
+
+        fn helper(tint : vec4<f32>) -> vec4<f32> {
+            return tint * 2.0;
+        }
+
+        @fragment
+        fn main() -> @location(0) vec4<f32> {
+            tint = vec4<f32>(0.5);
+            return helper(tint);
+        }
+        """
+        let msl = try translate(source, entryPoints: ["main"])
+        XCTAssertTrue(msl.contains("float4 helper(float4 tint)"), "매개변수에 가려진 전역이 주입됐다:\n\(msl)")
+    }
+
+    func test_전역을_쓴_뒤_같은_이름의_지역을_선언하면_지역이_리네임된다() throws {
+        // WGSL은 point-of-declaration 스코프라 선언 앞의 v는 전역, 뒤의 v는 지역이다.
+        // 전역이 인자로 주입된 상태에서 같은 이름의 지역 선언은 C++ 재정의라 리네임이 필요하다.
+        let source = """
+        var<private> v : f32;
+
+        fn helper() -> f32 {
+            let before = v;
+            var v : f32 = 3.0;
+            v = v + before;
+            return v;
+        }
+
+        @fragment
+        fn main() -> @location(0) vec4<f32> {
+            v = 1.0;
+            return vec4<f32>(helper());
+        }
+        """
+        let msl = try translate(source, entryPoints: ["main"])
+        XCTAssertTrue(msl.contains("float wgpu_shadow_v = 3.0"), "지역 선언이 리네임되지 않았다:\n\(msl)")
+        XCTAssertTrue(msl.contains("const auto before = v"), "선언 앞의 참조가 전역(주입 인자)을 봐야 한다:\n\(msl)")
+    }
+
+    func test_지역이_가린_전역도_호출_그래프를_따라_전달된다() throws {
+        // outer는 전역 v를 직접 쓰지 않지만(지역이 가린다) inner가 쓰므로,
+        // outer는 전역 v를 **전달만** 해야 한다 — 지역을 넘기면 조용히 틀린다.
+        let source = """
+        var<private> v : f32;
+
+        fn inner() -> f32 {
+            return v;
+        }
+
+        fn outer() -> f32 {
+            var v : f32 = 100.0;
+            return inner() + v * 0.0;
+        }
+
+        @fragment
+        fn main() -> @location(0) vec4<f32> {
+            v = 1.0;
+            return vec4<f32>(outer());
+        }
+        """
+        let msl = try translate(source, entryPoints: ["main"])
+        // outer 안의 지역은 리네임되고, inner 호출은 원래 이름(주입 인자 = 전역)을 넘긴다.
+        XCTAssertTrue(msl.contains("float wgpu_shadow_v = 100.0"), "전달용 주입과 겹친 지역이 리네임되지 않았다:\n\(msl)")
+        XCTAssertTrue(msl.contains("inner(v)"), "inner에는 전역(주입 인자)이 넘어가야 한다:\n\(msl)")
+    }
+
+    func test_중첩블록의_섀도잉은_블록을_벗어나면_풀린다() throws {
+        // 블록 안 지역 선언의 리네임이 블록 밖으로 새면, 밖의 v 대입이 선언된 적 없는
+        // 이름(wgpu_shadow_v)을 참조해 컴파일이 깨진다 — translate가 잡는다.
+        let source = """
+        var<private> v : f32;
+
+        fn helper() -> f32 {
+            if (v > 0.0) {
+                var v : f32 = 2.0;
+                v = v * 2.0;
+            }
+            v = 5.0;
+            return v;
+        }
+
+        @fragment
+        fn main() -> @location(0) vec4<f32> {
+            v = 1.0;
+            return vec4<f32>(helper());
+        }
+        """
+        _ = try translate(source, entryPoints: ["main"])
+    }
+
     // MARK: - 바인딩 배정
 
     func test_바인딩배정은_그룹_바인딩_순으로_결정적이다() throws {
