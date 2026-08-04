@@ -270,8 +270,20 @@ export default defineConfig({
 - Three.js가 다시 읽는 디바이스 표면(`device.features`, `device.lost`)은 shim이 명세대로
   제공한다 — `requestDevice({ requiredFeatures })`로 요청한 것만 `features`에 들어가므로,
   어댑터에서 고른 기능을 **요청에 실어 넘길 것**.
-- 프레임 루프는 `renderer.setAnimationLoop` 대신 `startFrameLoop`(§4)에서
-  `renderer.renderAsync(...)`를 직접 부른다 — `requestAnimationFrame`은 제공하지 않는다.
+- **`requestAnimationFrame`은 `installAnimationFrame()`으로 깐다.** three는 `setAnimationLoop`을
+  주더라도 내부 `Animation` 루프가 rAF를 부르므로, 없으면 `renderer.init()`이 **오류 없이 영구
+  정지**한다. shim의 헬퍼는 `startFrameLoop` 위에 얹혀 있어 프레임이 고르고, 예약이 비면
+  디스플레이 링크를 스스로 놓는다. 되돌리는 함수를 페이지 이탈 때 부를 것:
+
+  ```js
+  import { installAnimationFrame } from './webgpu.js'
+  const uninstallAnimationFrame = installAnimationFrame()   // three import 전에
+  // …
+  uninstallAnimationFrame()                                 // 정리
+  ```
+
+  직접 쓰는 코드에는 필요 없다 — `startFrameLoop`(§4)가 더 정확하고 정지 시점도 분명하다.
+  이 헬퍼는 **남의 코드가 rAF를 부를 때만** 쓴다. 이미 rAF가 있는 환경은 덮지 않는다.
 - Three.js는 파이프라인을 **지연 생성**하며 그 경로에 `popErrorScope()`가 섞여 있다.
   §5의 규칙대로 이 호출은 프레임 중간 제출을 만들지만 `present: false`로 표시되어
   프레임을 깨지 않는다 — 획득해 둔 캔버스 텍스처와 출력 패스가 그대로 살아남는다.

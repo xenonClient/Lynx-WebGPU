@@ -2,44 +2,14 @@
 // 빌드는 SWC 트랜스파일이라 영향이 없고, 이 파일의 통합 지점은 런타임 검증(체크리스트)으로 확인한다.
 import { root, useEffect, useState } from '@lynx-js/react'
 import * as THREE from 'three/webgpu'
-import gpu, { GPUBufferUsage, GPUTextureUsage, startFrameLoop } from '../webgpu.js'
+import gpu, { GPUBufferUsage, GPUTextureUsage, installAnimationFrame } from '../webgpu.js'
 import '../demo.css'
 import '../elements.d.ts'
 
-// ---------------------------------------------------------------------------
-// requestAnimationFrame 심 — three의 내부 Animation 루프용
-// ---------------------------------------------------------------------------
-// renderer.init()이 무조건 _animation.start() → self.requestAnimationFrame을 부른다.
-// define(self → globalThis)으로 컨텍스트는 잡히지만 rAF 자체는 PrimJS에 없다.
-// **멤버 접근**(this._context.requestAnimationFrame)이라 globalThis에 대입하면 보인다 —
-// bare 식별자 해석만 깨져 있는 것과 구분되는 지점이다 (docs/JS-AUTHORING.md §10).
-
-let rafCallbacks: Array<(time: number) => void> = []
-let rafStopLoop: (() => void) | null = null
-
-function pumpFrames() {
-  if (rafStopLoop) return
-  rafStopLoop = startFrameLoop(({ timestamp }) => {
-    const callbacks = rafCallbacks
-    rafCallbacks = []
-    for (const callback of callbacks) callback(timestamp)
-    // 이번 틱에서 아무도 다음 프레임을 예약하지 않았으면 디스플레이 링크를 놓아 준다.
-    if (rafCallbacks.length === 0 && rafStopLoop) {
-      rafStopLoop()
-      rafStopLoop = null
-    }
-  })
-}
-
-globalThis.requestAnimationFrame = (callback) => {
-  rafCallbacks.push(callback)
-  pumpFrames()
-  return rafCallbacks.length
-}
-globalThis.cancelAnimationFrame = () => {
-  // 이 씬에는 루프가 하나뿐이다 — 전부 비우는 것으로 충분하다.
-  rafCallbacks = []
-}
+// three의 내부 Animation 루프가 rAF를 전제한다 — PrimJS에는 없어서 깔아 줘야 한다.
+// (안 깔면 renderer.init()이 오류 없이 영구 정지한다.) import 전에 깔릴 수 있도록
+// 모듈 최상단에서 부른다 — three가 모듈 초기화에서 전역을 캡처해도 안전하다.
+const uninstallAnimationFrame = installAnimationFrame()
 
 // ---------------------------------------------------------------------------
 // 커맨드 스트림 계측 — 배치 종류(P=프레임 제출/I=내부 제출)와 오류를 센다
@@ -393,11 +363,8 @@ function ThreeScene() {
         renderer.setAnimationLoop(null)
         renderer.dispose()
       }
-      if (rafStopLoop) {
-        rafStopLoop()
-        rafStopLoop = null
-      }
-      rafCallbacks = []
+      // 남은 rAF 예약까지 끊어 디스플레이 링크를 확실히 놓는다.
+      uninstallAnimationFrame()
     }
   }, [])
 

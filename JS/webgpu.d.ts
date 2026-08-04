@@ -1040,6 +1040,32 @@ export declare function startFrameLoop(handler: (frame: {
     fps?: number;
 }): () => void;
 /**
+ * `requestAnimationFrame` / `cancelAnimationFrame`을 전역에 깐다 — **웹 라이브러리 이식용**.
+ *
+ * Three.js처럼 자체 프레임 루프를 도는 라이브러리는 rAF가 있다고 전제한다. PrimJS에는 없으므로
+ * 그대로 올리면 `renderer.init()`이 오류 없이 **영구 정지**한다 (루프가 시작되지 않는다).
+ *
+ * 직접 쓰는 코드에는 필요 없다 — `startFrameLoop`가 더 정확하고(rAF 자체가 그 위의 얇은 층이다)
+ * 정지 시점도 분명하다. 이 함수는 **남의 코드가 rAF를 부를 때만** 쓴다.
+ *
+ * 콜백이 남아 있는 동안만 디스플레이 링크가 돈다 — 아무도 다음 프레임을 예약하지 않으면
+ * 스스로 멈춘다. 그래서 라이브러리가 루프를 끝내면 배터리도 따라서 놓인다.
+ *
+ * ```js
+ * const uninstall = installAnimationFrame()   // three를 import 하기 전에
+ * // …
+ * uninstall()                                 // 페이지를 떠날 때
+ * ```
+ *
+ * 이미 rAF가 있는 환경(브라우저·일부 테스트 러너)에서는 **덮지 않는다.**
+ *
+ * @param {{fps?: number}} [options]
+ * @returns {() => void} 되돌리는 함수 (전역을 원래대로)
+ */
+export declare function installAnimationFrame(options?: {
+    fps?: number;
+}): () => void;
+/**
  * 애셋을 `ArrayBuffer`로 읽는다 — 브라우저의 `fetch()` 자리다.
  *
  * 텍스처로 올릴 픽셀처럼 JS 소스에 박기엔 큰 데이터를 가져오는 통로다. 네이티브가
