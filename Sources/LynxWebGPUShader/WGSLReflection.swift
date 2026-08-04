@@ -142,6 +142,37 @@ enum WGSLReflectionBuilder {
         return result
     }
 
+    /// 주어진 진입점들에서 **호출로 닿는** 함수 이름들 (진입점 자신 포함).
+    ///
+    /// 방출기가 이 집합만 내보낸다. 모듈의 함수를 전부 내보내면, 그 진입점이 부르지도 않는
+    /// 함수가 참조하는 리소스까지 필요해진다 — `layout: "auto"`의 바인드 그룹은 **쓰는 것만**
+    /// 담으므로 그런 함수는 없는 바인딩을 찾다 실패한다. 실제로 `common.wgsl`을 여럿이
+    /// 나눠 쓰는 셰이더(webgpu-samples의 cornell)가 이 경로로 깨졌다.
+    ///
+    /// 죽은 코드를 빼면 Metal 컴파일도 그만큼 빨라진다.
+    static func functionsReachable(from entryPoints: [String], in module: WGSLModule) -> Set<String> {
+        var callees: [String: Set<String>] = [:]
+        let functionNames = Set(module.functions.map(\.name))
+
+        for function in module.functions {
+            var identifiers = Set<String>()
+            var calls = Set<String>()
+            collect(
+                function.body, locals: Set(function.parameters.map(\.name)),
+                identifiers: &identifiers, calls: &calls
+            )
+            callees[function.name] = calls.intersection(functionNames)
+        }
+
+        var reachable = Set<String>()
+        var pending = entryPoints.filter(functionNames.contains)
+        while let name = pending.popLast() {
+            guard reachable.insert(name).inserted else { continue }
+            pending.append(contentsOf: callees[name] ?? [])
+        }
+        return reachable
+    }
+
     /// 특정 내장 함수를 (전이적으로) 호출하는 함수 이름들.
     ///
     /// `arrayLength`처럼 **추가 인자가 필요한** 내장 함수를 위해 쓴다 —

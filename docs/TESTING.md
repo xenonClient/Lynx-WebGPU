@@ -20,7 +20,7 @@ GPU 코드는 "돌려 보고 눈으로 확인"에 기대기 쉽다. 이 저장�
 ## 2. 실행
 
 ```zsh
-swift test                                      # 전체 (227개, 약 4초)
+swift test                                      # 전체 (230개, 약 4초)
 swift test --filter LynxWebGPUCoreTests         # 디스크립터/핸들
 swift test --filter LynxWebGPUShaderTests       # 트랜스파일러 (+ Metal 컴파일 검증)
 swift test --filter LynxWebGPUTests             # GPU 렌더 + 해석기
@@ -178,7 +178,7 @@ try XCTSkipUnless(harness.supports(.timestampQuery), "타임스탬프 카운터�
 - 비동기 경로(`readBuffer`)는 `XCTestExpectation`으로 검증한다.
 - 테스트 더블은 손으로 만든다 (모킹 라이브러리 없음).
 
-## 6. 커버리지 대상 (Swift 227개 + JS 74개)
+## 6. 커버리지 대상 (Swift 230개 + JS 74개)
 
 | 영역 | 파일 | 주요 케이스 |
 |---|---|---|
@@ -219,15 +219,32 @@ LYNXWEBGPU_WGSL_CORPUS=/tmp/webgpu-samples/sample swift test --filter SampleCorp
 통과율과 실패 원인을 한 화면에 출력한다. 리포트가 목적이므로 실패해도 테스트를 깨지 않는다.
 
 ```
-│ 그대로 통과: 60/67  (89%)
-│ 호스트가 constants를 줘야 하는 것: 4건 — …
-├─ 실패 3건 ───────────────────────────────
-│ ✗ cornell/rasterizer.wgsl
-│     MSL[vs_main]: error: use of undeclared identifier 'common_uniforms'
+│ 파일 68개 → 완성 모듈 66개
+│ 통과: 61/66  (92%)  — 그대로 60 + 조립 1
+├─ 같은 폴더 조각을 붙여 통과 1건 ──────────
+│ ✓ cornell/rasterizer.wgsl (+common.wgsl)
+├─ 분모에서 뺀 것 ───────────────────────────────
+│ 조각 파일(진입점 없음) 1개: cornell/common.wgsl
+│ 템플릿(호스트 치환 전) 1개: cornell/tonemapper.wgsl {OUTPUT_FORMAT}
+│ constants를 줘야 하는 것 4개: …
+├─ 실패 1건 ───────────────────────────────
+│ ✗ skinnedMesh/gltf.wgsl
+│     번역[vertexMain]: 진입점 매개변수 'input'의 타입 'VertexInput'을(를) 찾을 수 없다
 ```
 
-남은 3건은 **코퍼스 쪽 사정**이다 (다른 `.wgsl`과 이어 붙여 쓰거나, 호스트가 문자열을
-치환해 쓰는 조각 — `docs/WGSL.md` §4-1).
+**분모는 "완성된 모듈"이다.** 코퍼스의 `.wgsl`이 모두 그대로 컴파일되는 것은 아니다 —
+`rasterizerWGSL + common.wgsl`처럼 이어 붙여 쓰거나(`조립`), `{OUTPUT_FORMAT}`처럼 호스트가
+치환해 쓰는 템플릿이 섞여 있다. 그것들을 실패로 세면 **"우리가 못 한 것"과 "애초에 완성본이
+아닌 것"이 섞여** 수치가 호환성을 말하지 않게 된다. 그래서 하네스가
+
+- 자리표시자(`{대문자}`)가 든 파일은 **템플릿**으로 빼고,
+- 실패한 파일은 **같은 폴더의 조각 파일**(진입점이 없는 `.wgsl`)을 하나씩 붙여 다시 해 본다
+  — 실제 앱이 하는 조립과 같다.
+
+분모에서 뺀 것은 **전부 이름까지 찍는다**. 숫자를 좋게 만들려고 조용히 뺄 수 없게 하기 위해서다.
+
+남은 실패 1건(`skinnedMesh/gltf.wgsl`)은 호스트가 glTF 접근자를 보고 `VertexInput` 구조체를
+**런타임에 만들어 붙이는** 셰이더다 — 파일만으로는 완성될 수 없다.
 
 번역 결과를 눈으로 보려면 덤프를 켠다:
 

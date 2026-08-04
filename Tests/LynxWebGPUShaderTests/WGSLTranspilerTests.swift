@@ -431,6 +431,77 @@ final class WGSLTranspilerTests: XCTestCase {
         _ = try translate(source, entryPoints: ["fs_main"])
     }
 
+    // MARK: - 도달 가능성 (여럿이 나눠 쓰는 공용 모듈)
+
+    func test_진입점이_부르지_않는_함수는_방출되지_않는다() throws {
+        // `common.wgsl` 하나를 여러 셰이더가 나눠 쓰는 구성이 흔하다 (webgpu-samples의 cornell).
+        // 그때 이 진입점이 안 쓰는 함수까지 내보내면, `layout: "auto"`의 바인드 그룹에 없는
+        // 리소스를 그 함수가 찾다가 번역이 통째로 실패한다 — 실제로 깨졌던 경로다.
+        let source = """
+        struct Quad { color: vec4f };
+        @group(0) @binding(0) var<uniform> uniforms: vec4f;
+        @group(0) @binding(1) var<storage> quads: array<Quad>;
+
+        // 이 진입점이 쓰지 않는 헬퍼 — 다른 셰이더가 쓰는 것이다.
+        fn unused_helper() -> u32 {
+            return arrayLength(&quads);
+        }
+
+        @fragment
+        fn fs_main() -> @location(0) vec4f {
+            return uniforms;
+        }
+        """
+        let msl = try translate(source, entryPoints: ["fs_main"])
+
+        XCTAssertFalse(msl.contains("unused_helper"), "안 쓰는 함수가 방출됐다:\n\(msl)")
+        XCTAssertTrue(msl.contains("fs_main"), "진입점은 있어야 한다")
+    }
+
+    func test_전이적으로_닿는_함수는_방출된다() throws {
+        // 도달 가능성은 **전이적**이다 — 진입점 → outer → inner 를 따라가야 한다.
+        let source = """
+        fn inner(x: f32) -> f32 { return x * 2.0; }
+        fn outer(x: f32) -> f32 { return inner(x) + 1.0; }
+        fn orphan(x: f32) -> f32 { return x; }
+
+        @fragment
+        fn fs_main() -> @location(0) vec4f {
+            return vec4f(outer(0.5));
+        }
+        """
+        let msl = try translate(source, entryPoints: ["fs_main"])
+
+        XCTAssertTrue(msl.contains("float outer("), "직접 호출한 함수가 없다:\n\(msl)")
+        XCTAssertTrue(msl.contains("float inner("), "전이적으로 닿는 함수가 없다:\n\(msl)")
+        XCTAssertFalse(msl.contains("orphan"), "아무도 안 부르는 함수가 방출됐다")
+    }
+
+    func test_진입점마다_필요한_함수가_다르면_각각_그것만_방출한다() throws {
+        let source = """
+        fn only_vertex() -> f32 { return 1.0; }
+        fn only_fragment() -> f32 { return 2.0; }
+
+        @vertex
+        fn vs_main() -> @builtin(position) vec4f {
+            return vec4f(only_vertex());
+        }
+
+        @fragment
+        fn fs_main() -> @location(0) vec4f {
+            return vec4f(only_fragment());
+        }
+        """
+        let vertexOnly = try translate(source, entryPoints: ["vs_main"])
+        XCTAssertTrue(vertexOnly.contains("only_vertex"))
+        XCTAssertFalse(vertexOnly.contains("only_fragment"), "다른 진입점 전용 함수가 딸려 왔다")
+
+        // 둘 다 요청하면 둘 다 나온다.
+        let both = try translate(source, entryPoints: ["vs_main", "fs_main"])
+        XCTAssertTrue(both.contains("only_vertex"))
+        XCTAssertTrue(both.contains("only_fragment"))
+    }
+
     // MARK: - 전역 섀도잉 (기계 생성 셰이더의 일상 패턴 — Three.js nodeVar0)
 
     func test_지역변수에_가려진_전역은_주입되지_않는다() throws {

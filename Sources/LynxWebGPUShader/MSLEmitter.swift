@@ -72,7 +72,12 @@ struct MSLEmitter {
             try emitStruct(structure)
         }
 
-        for function in module.functions where function.stage == nil {
+        // 요청한 진입점에서 **호출로 닿는** 함수만 내보낸다. 모듈의 함수를 전부 내보내면,
+        // 이 진입점이 부르지도 않는 함수가 참조하는 리소스까지 바인딩 표에 있어야 한다 —
+        // `layout: "auto"`는 쓰는 것만 담으므로 그런 함수는 없는 바인딩을 찾다 실패한다
+        // (`WGSLReflectionBuilder.functionsReachable` 참고).
+        let reachable = WGSLReflectionBuilder.functionsReachable(from: requested, in: module)
+        for function in module.functions where function.stage == nil && reachable.contains(function.name) {
             try emitFunction(function)
         }
 
