@@ -312,16 +312,22 @@ computePass.dispatchWorkgroups(8, 8)                         // dispatchWorkgrou
 computePass.dispatchWorkgroupsIndirect(argsBuffer, 0)        // dispatchWorkgroupsIndirect
 computePass.end()
 
-encoder.copyBufferToBuffer(src, 0, dst, 0, size)             // copyBufferToBuffer
+encoder.copyBufferToBuffer(src, dst)                         // copyBufferToBuffer — 원본 전체
+encoder.copyBufferToBuffer(src, dst, size)                   // 앞에서 size 바이트
+encoder.copyBufferToBuffer(src, 0, dst, 0, size)             // 오프셋까지 지정 (size 생략 가능)
 encoder.copyTextureToBuffer({ texture }, { buffer, bytesPerRow }, { width, height })
 encoder.copyBufferToTexture({ buffer, bytesPerRow }, { texture }, { width, height })
 encoder.copyTextureToTexture({ texture: a }, { texture: b }, { width, height })
+encoder.clearBuffer(buffer, offset, size)                    // clearBuffer — 0으로 채운다
 
 device.queue.submit([encoder.finish()])   // ← 여기서 한 번에 네이티브로 넘어간다
 ```
 
 - `beginRenderPass`는 멀티샘플 `resolveTarget`을 지원한다 (store op이 `multisampleResolve`로 바뀐다).
 - 복사 명령은 패스 **밖에서만** 쓸 수 있다.
+- `clearBuffer`는 `writeBuffer`로 0 배열을 미는 것과 결과가 같지만 **CPU에서 그 배열을 만들어
+  브리지로 실어 보내지 않는다.** 큰 스토리지 버퍼를 프레임마다 초기화할 때 차이가 크다.
+  `offset`·`size`는 4의 배수여야 하고 버퍼는 `COPY_DST`여야 한다 (명세 규칙). `size` 생략 시 끝까지.
 - `depthStencilAttachment`의 `depthReadOnly` / `stencilReadOnly`는 "이 패스는 그쪽을 쓰지
   않는다"는 선언이다. 선언해 두면 **실제로 강제된다** — 깊이를 쓰는 파이프라인
   (`depthWriteEnabled: true`)이나 스텐실을 쓰는 파이프라인(`failOp`·`depthFailOp`·`passOp` 중

@@ -439,6 +439,7 @@ final class WGPUCommandInterpreter {
 
         // 복사
         case "copyBufferToBuffer": try copyBufferToBuffer(command)
+        case "clearBuffer": try clearBuffer(command)
         case "copyTextureToBuffer": try copyTextureToBuffer(command)
         case "copyBufferToTexture": try copyBufferToTexture(command)
         case "copyTextureToTexture": try copyTextureToTexture(command)
@@ -1459,6 +1460,42 @@ final class WGPUCommandInterpreter {
             to: destination.buffer, destinationOffset: command.int("destinationOffset", default: 0),
             size: size
         )
+    }
+
+    /// `clearBuffer` — 버퍼의 한 구간을 0으로 채운다.
+    ///
+    /// `writeBuffer`로 0을 밀어 넣는 것과 결과는 같지만 **CPU에서 0 배열을 만들어 브리지로
+    /// 실어 보내지 않는다.** 큰 스토리지 버퍼를 프레임마다 초기화하는 컴퓨트 경로에서 차이가 크다.
+    private func clearBuffer(_ command: WGPUValueReader) throws {
+        let object = try unmappedBuffer(command, field: "buffer")
+        let offset = command.int("offset", default: 0)
+        // 명세: size를 생략하면 버퍼 끝까지다.
+        let size = command.int("size", default: max(0, object.size - offset))
+
+        guard object.usage.contains(.copyDst) else {
+            throw WGPUError.validation(
+                "clearBuffer의 대상은 GPUBufferUsage.COPY_DST로 만들어야 한다",
+                path: command.fieldPath("buffer")
+            )
+        }
+        // 4의 배수 요구는 명세 규칙이다. Metal은 바이트 단위로도 채워 주므로 안 막으면
+        // 브라우저에서만 거부되는 코드가 나온다.
+        guard offset % 4 == 0, size % 4 == 0 else {
+            throw WGPUError.validation(
+                "clearBuffer의 offset·size는 4의 배수여야 한다 (받은 값 \(offset), \(size))",
+                path: command.fieldPath("offset")
+            )
+        }
+        guard offset >= 0, size >= 0, offset + size <= object.size else {
+            throw WGPUError.validation(
+                "clearBuffer 범위가 버퍼를 넘는다 — offset \(offset) + \(size)B > 크기 \(object.size)B",
+                path: command.fieldPath("size")
+            )
+        }
+        guard size > 0 else { return }
+
+        let encoder = try activeBlitEncoder()
+        encoder.fill(buffer: object.buffer, range: offset..<(offset + size), value: 0)
     }
 
     private func copyTextureToBuffer(_ command: WGPUValueReader) throws {

@@ -665,14 +665,40 @@ declare class GPUCommandEncoder {
      */
     resolveQuerySet(querySet: GPUQuerySet, firstQuery: number, queryCount: number, destination: GPUBuffer, destinationOffset: number): void;
     /**
+     * 버퍼 → 버퍼 복사. 명세대로 **두 가지 형태**를 받는다:
+     *
+     * ```js
+     * encoder.copyBufferToBuffer(src, dst)             // 전부 (크기는 src에서)
+     * encoder.copyBufferToBuffer(src, dst, size)       // 앞에서 size 바이트
+     * encoder.copyBufferToBuffer(src, 16, dst, 0, 64)  // 오프셋까지 지정
+     * ```
+     *
+     * 짧은 형태는 두 번째 인자가 `GPUBuffer`인지로 가른다 — 명세의 오버로드 해소와 같은 기준이다.
+     * `size`를 생략하면 원본의 남은 바이트 전부다.
+     *
      * @param {GPUBuffer} source
-     * @param {number} sourceOffset
-     * @param {GPUBuffer} destination
-     * @param {number} destinationOffset
-     * @param {number} size
+     * @param {GPUBuffer | number} destinationOrSourceOffset
+     * @param {GPUBuffer | number} [sizeOrDestination]
+     * @param {number} [destinationOffset]
+     * @param {number} [size]
      * @returns {void}
      */
-    copyBufferToBuffer(source: GPUBuffer, sourceOffset: number, destination: GPUBuffer, destinationOffset: number, size: number): void;
+    copyBufferToBuffer(source: GPUBuffer, destinationOrSourceOffset: GPUBuffer | number, sizeOrDestination?: GPUBuffer | number, destinationOffset?: number, size?: number): void;
+    /**
+     * 버퍼의 한 구간을 0으로 채운다.
+     *
+     * `writeBuffer`로 0 배열을 밀어 넣는 것과 결과는 같지만 **CPU에서 그 배열을 만들어 브리지로
+     * 실어 보내지 않는다** — 큰 스토리지 버퍼를 프레임마다 초기화하는 컴퓨트 경로에서 차이가 크다.
+     *
+     * `offset`·`size`는 4의 배수여야 하고, 버퍼는 `COPY_DST`로 만들어야 한다 (명세 규칙).
+     * `size`를 생략하면 버퍼 끝까지다.
+     *
+     * @param {GPUBuffer} buffer
+     * @param {number} [offset]
+     * @param {number} [size]
+     * @returns {void}
+     */
+    clearBuffer(buffer: GPUBuffer, offset?: number, size?: number): void;
     /**
      * @param {{texture: GPUTexture} & Record<string, any>} source
      * @param {{buffer: GPUBuffer} & Record<string, any>} destination

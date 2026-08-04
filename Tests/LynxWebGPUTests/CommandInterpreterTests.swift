@@ -399,6 +399,60 @@ final class CommandInterpreterTests: XCTestCase {
         )
     }
 
+    // MARK: - clearBuffer
+
+    /// `writeBuffer`로 0을 밀어 넣는 것과 결과는 같아야 한다 — 다른 것은 브리지를 안 건넌다는 점뿐이다.
+    func test_clearBuffer가_구간을_0으로_채운다() throws {
+        let filled = [Float](repeating: 7, count: 8)
+        // MAP_READ는 COPY_DST와만 조합할 수 있다 (명세 규칙 — 이 구현이 강제한다).
+        harness.executeExpectingSuccess([
+            ["op": "createBuffer", "id": 1, "size": 32,
+             "usage": TestUsage.copyDst | TestUsage.mapRead, "data": filled.base64],
+            // 앞 16바이트(=4개)만 지운다 — 뒤쪽은 그대로여야 구간이 지켜졌음을 안다.
+            ["op": "clearBuffer", "buffer": 1, "offset": 0, "size": 16],
+        ])
+
+        let values = try harness.readBufferSync(handle: 1, as: Float.self)
+        XCTAssertEqual(values, [0, 0, 0, 0, 7, 7, 7, 7])
+    }
+
+    func test_clearBuffer는_size를_생략하면_끝까지_지운다() throws {
+        harness.executeExpectingSuccess([
+            ["op": "createBuffer", "id": 1, "size": 16,
+             "usage": TestUsage.copyDst | TestUsage.mapRead,
+             "data": [Float](repeating: 3, count: 4).base64],
+            ["op": "clearBuffer", "buffer": 1, "offset": 8],
+        ])
+
+        XCTAssertEqual(try harness.readBufferSync(handle: 1, as: Float.self), [3, 3, 0, 0])
+    }
+
+    func test_clearBuffer의_정렬과_usage와_범위를_검증한다() {
+        // ① COPY_DST가 없으면 거부 — Metal은 그냥 채워 주므로 안 막으면 브라우저에서만 깨진다.
+        let noUsage = harness.execute([
+            ["op": "createBuffer", "id": 1, "size": 16, "usage": TestUsage.vertex],
+            ["op": "clearBuffer", "buffer": 1],
+        ])
+        XCTAssertTrue(
+            ((errors(noUsage).first?["message"] as? String) ?? "").contains("COPY_DST"),
+            "\(errors(noUsage))"
+        )
+
+        // ② 4의 배수가 아니면 거부 (명세 규칙).
+        let misaligned = harness.execute([
+            ["op": "createBuffer", "id": 2, "size": 16, "usage": TestUsage.copyDst],
+            ["op": "clearBuffer", "buffer": 2, "offset": 2, "size": 4],
+        ])
+        XCTAssertTrue(((errors(misaligned).first?["message"] as? String) ?? "").contains("4의 배수"))
+
+        // ③ 범위를 넘으면 거부.
+        let overflow = harness.execute([
+            ["op": "createBuffer", "id": 3, "size": 16, "usage": TestUsage.copyDst],
+            ["op": "clearBuffer", "buffer": 3, "offset": 8, "size": 16],
+        ])
+        XCTAssertTrue(((errors(overflow).first?["message"] as? String) ?? "").contains("범위"))
+    }
+
     // MARK: - 진입점 해석 (명세의 "get the entry point")
 
     /// 셰이더: 정점 하나(`mainVS`) + 프래그먼트 셋(`main_2d` …) — three.js 밉맵 셰이더와 같은 모양.
