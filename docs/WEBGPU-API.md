@@ -14,15 +14,25 @@ const context = gpu.getCanvasContext('main')        // <webgpu-canvas canvas-id=
 const format  = gpu.getPreferredCanvasFormat()      // "bgra8unorm"
 ```
 
-`adapter.limits`는 Metal 인자 테이블에서 오는 실제 한계값이다:
+`adapter.limits`는 **명세 `GPUSupportedLimits`의 전 항목**을 명세 철자 그대로 싣는다 —
+웹 라이브러리가 이 이름으로 읽고 자기 예산을 정하기 때문이다. 값은 가능한 한 Metal 디바이스에서
+실제로 읽고, 런타임 조회가 없는 것만 Metal 기능 집합 표의 보장값을 쓴다.
 
-| 키 | 뜻 |
-|---|---|
-| `maxVertexBuffers` | 8 — 정점 버퍼 슬롯 |
-| `maxBindGroupBuffers` | 22 — 바인드 그룹이 쓸 수 있는 버퍼 (정점 버퍼 8슬롯 + `arrayLength()` 크기 표 1슬롯 예약분 제외) |
-| `maxTexturesPerStage` / `maxSamplersPerStage` | 31 / 16 |
-| `maxBufferSize` | `MTLDevice.maxBufferLength` |
-| `maxThreadsPerThreadgroup` | 컴퓨트 워크그룹 상한 |
+| 키 | 값 | 근거 |
+|---|---|---|
+| `maxTextureDimension1D` / `2D` | 16384 (구형 8192) | Apple family 3+ / Mac2 |
+| `maxTextureDimension3D` / `maxTextureArrayLayers` | 2048 / 2048 | Metal 보장값 |
+| `maxVertexBuffers` | 8 | 우리 인자 테이블 배정 규칙 |
+| `maxSampledTexturesPerShaderStage` / `maxSamplersPerShaderStage` | 31 / 16 | Metal 인자 테이블 |
+| `maxStorageBuffersPerShaderStage` / `maxUniformBuffersPerShaderStage` | 22 | 정점 버퍼 8슬롯 + `arrayLength()` 크기 표 1슬롯 예약분 제외 |
+| `maxBufferSize` / `maxStorageBufferBindingSize` | `MTLDevice.maxBufferLength` | 실제 조회 |
+| `minUniformBufferOffsetAlignment` / `minStorage…` | 256 | **명세 기본값을 쓴다** — Metal 요구(32B)보다 크므로 이걸 지키면 Metal도 만족한다. 32를 보고하면 브라우저에서만 깨지는 코드가 나온다 |
+| `maxComputeWorkgroupSizeX/Y/Z` · `maxComputeWorkgroupStorageSize` | 디바이스 조회 | `maxThreadsPerThreadgroup`, `maxThreadgroupMemoryLength` |
+| `maxComputeWorkgroupsPerDimension` | 65535 | Metal에 조회가 없다 (Dawn과 같은 보수적 값) |
+
+나머지(`maxBindGroups` 4, `maxColorAttachments` 8 …)도 전부 실려 있다. 값이 명세 기본값보다
+낮지 않은지는 `CommandInterpreterTests`가 못 박는다 — 낮으면 브라우저에서 되는 코드가
+여기서만 거부되고 앱은 이유를 알 수 없다.
 
 `adapter.features`는 기기마다 갈리는 기능을 알려 준다 (웹과 같은 `has()` 인터페이스):
 

@@ -501,4 +501,58 @@ final class CommandInterpreterTests: XCTestCase {
         let limits = try? XCTUnwrap(info["limits"] as? [String: Any])
         XCTAssertNotNil(limits?["maxVertexBuffers"])
     }
+
+    /// limits의 **키는 명세 철자여야 한다.** 웹 라이브러리가 이 이름으로 읽고 예산을 정하므로,
+    /// 우리 식으로 지으면 그쪽은 `undefined`를 보고 잘못된 가정을 세운다 (값이 있는데도 없는 것처럼).
+    func test_limits는_명세_이름을_전부_싣는다() throws {
+        let limits = try XCTUnwrap(harness.context.adapterInfo()["limits"] as? [String: Any])
+
+        // 명세 `GPUSupportedLimits`의 전 항목 (webgpu-md §3.6.2).
+        let required = [
+            "maxTextureDimension1D", "maxTextureDimension2D", "maxTextureDimension3D",
+            "maxTextureArrayLayers", "maxBindGroups", "maxBindGroupsPlusVertexBuffers",
+            "maxBindingsPerBindGroup", "maxDynamicUniformBuffersPerPipelineLayout",
+            "maxDynamicStorageBuffersPerPipelineLayout", "maxSampledTexturesPerShaderStage",
+            "maxSamplersPerShaderStage", "maxStorageBuffersPerShaderStage",
+            "maxStorageTexturesPerShaderStage", "maxUniformBuffersPerShaderStage",
+            "maxUniformBufferBindingSize", "maxStorageBufferBindingSize",
+            "minUniformBufferOffsetAlignment", "minStorageBufferOffsetAlignment",
+            "maxVertexBuffers", "maxBufferSize", "maxVertexAttributes", "maxVertexBufferArrayStride",
+            "maxInterStageShaderVariables", "maxColorAttachments", "maxColorAttachmentBytesPerSample",
+            "maxComputeWorkgroupStorageSize", "maxComputeInvocationsPerWorkgroup",
+            "maxComputeWorkgroupSizeX", "maxComputeWorkgroupSizeY", "maxComputeWorkgroupSizeZ",
+            "maxComputeWorkgroupsPerDimension",
+        ]
+        for key in required {
+            XCTAssertNotNil(limits[key], "명세 limit '\(key)'이(가) 빠졌다")
+            XCTAssertGreaterThan((limits[key] as? Int) ?? 0, 0, "'\(key)'이(가) 0이다")
+        }
+    }
+
+    /// 명세는 각 limit의 **기본값(=최소 보장치)**을 정한다. 그보다 낮게 보고하면 브라우저에서
+    /// 되는 코드가 여기서만 거부되고, 앱은 이유를 알 수 없다.
+    func test_limits는_명세_기본값보다_낮지_않다() throws {
+        let limits = try XCTUnwrap(harness.context.adapterInfo()["limits"] as? [String: Any])
+
+        let minimums: [String: Int] = [
+            "maxTextureDimension1D": 8192, "maxTextureDimension2D": 8192,
+            "maxTextureDimension3D": 2048, "maxTextureArrayLayers": 256,
+            "maxBindGroups": 4, "maxBindingsPerBindGroup": 1000,
+            "maxSampledTexturesPerShaderStage": 16, "maxSamplersPerShaderStage": 16,
+            "maxUniformBufferBindingSize": 65536, "maxBufferSize": 268435456,
+            "maxVertexBuffers": 8, "maxVertexAttributes": 16, "maxVertexBufferArrayStride": 2048,
+            "maxColorAttachments": 8, "maxComputeInvocationsPerWorkgroup": 256,
+            "maxComputeWorkgroupSizeX": 256, "maxComputeWorkgroupSizeY": 256,
+            "maxComputeWorkgroupSizeZ": 64, "maxComputeWorkgroupsPerDimension": 65535,
+        ]
+        for (key, minimum) in minimums.sorted(by: { $0.key < $1.key }) {
+            let value = (limits[key] as? Int) ?? 0
+            XCTAssertGreaterThanOrEqual(value, minimum, "'\(key)' \(value) < 명세 기본값 \(minimum)")
+        }
+
+        // 정렬은 **작을수록 느슨하다** — 명세 기본값보다 크게 보고하면 브라우저에서 되는
+        // 오프셋이 여기서 거부된다. 그래서 이쪽만 상한으로 본다.
+        XCTAssertLessThanOrEqual((limits["minUniformBufferOffsetAlignment"] as? Int) ?? 0, 256)
+        XCTAssertLessThanOrEqual((limits["minStorageBufferOffsetAlignment"] as? Int) ?? 0, 256)
+    }
 }

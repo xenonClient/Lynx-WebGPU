@@ -196,16 +196,62 @@ public final class LynxWebGPUContext {
     private static let readbackQueue = DispatchQueue(label: "org.lynxwebgpu.readback")
 
     /// `navigator.gpu.requestAdapter()` 가 돌려줄 어댑터 정보와 한계값.
+    ///
+    /// 키는 **명세의 `GPUSupportedLimits` 철자 그대로**다. 웹 라이브러리가 이 이름으로 읽고
+    /// 자기 예산을 정한다 (Three.js는 `maxComputeWorkgroupsPerDimension`·
+    /// `maxUniformBufferBindingSize`를 본다). 우리 식으로 이름을 지으면 그 코드가
+    /// `undefined`를 보고 잘못된 가정을 세운다 — 값이 있는데도 없는 것처럼 동작한다.
+    ///
+    /// 값은 가능한 한 **Metal 디바이스에서 실제로 읽고**, 런타임 조회가 없는 것은
+    /// Metal 기능 집합 표의 보장값을 쓴다 (아래 주석에 근거를 남긴다).
     public func adapterInfo() -> [String: Any] {
-        var limits: [String: Any] = [
-            "maxBindGroups": WGSLMetalLimits.bufferSlotCount > 0 ? 4 : 0,
-            "maxVertexBuffers": WGSLMetalLimits.maxVertexBufferSlots,
-            "maxBindGroupBuffers": WGSLMetalLimits.maxBindGroupBuffers,
-            "maxTexturesPerStage": WGSLMetalLimits.textureSlotCount,
-            "maxSamplersPerStage": WGSLMetalLimits.samplerSlotCount,
+        let threadgroup = device.maxThreadsPerThreadgroup
+        // Apple GPU family 3 이상(A9+)과 Mac2는 2D 텍스처가 16384까지다. 그 아래는 8192.
+        // 이 프로젝트의 최소 타깃(iOS 17 = A12+)은 항상 위쪽이지만, macOS 구형까지 감안해 나눈다.
+        let maxTexture2D = device.supportsFamily(.apple3) || device.supportsFamily(.mac2) ? 16384 : 8192
+
+        let limits: [String: Any] = [
+            // 텍스처
+            "maxTextureDimension1D": maxTexture2D,
+            "maxTextureDimension2D": maxTexture2D,
+            "maxTextureDimension3D": 2048,
+            "maxTextureArrayLayers": 2048,
+            // 바인딩 — 우리 인자 테이블 배정 규칙에서 그대로 나온다 (`WGSLMetalLimits`)
+            "maxBindGroups": 4,
+            "maxBindGroupsPlusVertexBuffers": 4 + WGSLMetalLimits.maxVertexBufferSlots,
+            "maxBindingsPerBindGroup": 1000,
+            "maxSampledTexturesPerShaderStage": WGSLMetalLimits.textureSlotCount,
+            "maxSamplersPerShaderStage": WGSLMetalLimits.samplerSlotCount,
+            "maxStorageBuffersPerShaderStage": WGSLMetalLimits.maxBindGroupBuffers,
+            "maxStorageTexturesPerShaderStage": WGSLMetalLimits.textureSlotCount,
+            "maxUniformBuffersPerShaderStage": WGSLMetalLimits.maxBindGroupBuffers,
+            "maxDynamicUniformBuffersPerPipelineLayout": 8,
+            "maxDynamicStorageBuffersPerPipelineLayout": 4,
+            // 버퍼 — 오프셋 정렬은 명세 기본값(256)을 그대로 쓴다. Metal이 요구하는 값
+            // (Apple GPU 32B)보다 크므로 이걸 지키면 Metal도 만족한다. 반대로 32를 보고하면
+            // 브라우저에서만 깨지는 코드가 나온다.
             "maxBufferSize": device.maxBufferLength,
+            "maxUniformBufferBindingSize": 65536,
+            "maxStorageBufferBindingSize": device.maxBufferLength,
+            "minUniformBufferOffsetAlignment": 256,
+            "minStorageBufferOffsetAlignment": 256,
+            // 정점
+            "maxVertexBuffers": WGSLMetalLimits.maxVertexBufferSlots,
+            "maxVertexAttributes": 30,
+            "maxVertexBufferArrayStride": 2048,
+            "maxInterStageShaderVariables": 16,
+            // 어태치먼트
+            "maxColorAttachments": 8,
+            "maxColorAttachmentBytesPerSample": 32,
+            // 컴퓨트
+            "maxComputeWorkgroupStorageSize": device.maxThreadgroupMemoryLength,
+            "maxComputeInvocationsPerWorkgroup": threadgroup.width,
+            "maxComputeWorkgroupSizeX": threadgroup.width,
+            "maxComputeWorkgroupSizeY": threadgroup.height,
+            "maxComputeWorkgroupSizeZ": threadgroup.depth,
+            // Metal에는 디스패치 그리드 상한 조회가 없다. Dawn과 같은 보수적 값을 쓴다.
+            "maxComputeWorkgroupsPerDimension": 65535,
         ]
-        limits["maxThreadsPerThreadgroup"] = device.maxThreadsPerThreadgroup.width
 
         return [
             "ok": true,
