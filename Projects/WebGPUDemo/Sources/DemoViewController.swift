@@ -112,13 +112,20 @@ final class DemoViewController: UIViewController {
         }
     }
 
-    /// 자동화 하네스: `-cardTilt 0.45` 를 주면 홀로 카드가 그 각도로 고정된다.
-    /// 시뮬레이터에는 터치를 주입할 방법이 없어, **기울인 상태를 회귀 확인하려면** 이 경로가 필요하다.
+    /// 자동화 하네스 — 시뮬레이터에는 터치를 주입할 방법이 없어, **손으로 눌러야만 보이는 상태를
+    /// 회귀 확인하려면** 런치 인자로 고정하는 이 경로가 필요하다.
+    ///
     ///   xcrun simctl launch <device> org.lynxwebgpu.demo -demo interactive -cardTilt 0.45
+    ///   xcrun simctl launch <device> org.lynxwebgpu.demo -demo bundle -altMode 1
+    ///
+    /// `-altMode 1`은 토글이 있는 씬(`stencil`·`gpudriven`·`bundle`)을 **기본이 아닌 쪽**으로
+    /// 시작시킨다 — 버튼을 누른 화면을 캡처하려고 둔 것이다.
     private var initialData: LynxTemplateData? {
+        var data: [String: Any] = [:]
         let tilt = UserDefaults.standard.double(forKey: "cardTilt")
-        guard tilt != 0 else { return nil }
-        return LynxTemplateData(dictionary: ["forceTilt": tilt])
+        if tilt != 0 { data["forceTilt"] = tilt }
+        if UserDefaults.standard.bool(forKey: "altMode") { data["altMode"] = true }
+        return data.isEmpty ? nil : LynxTemplateData(dictionary: data)
     }
 
     override func viewDidLayoutSubviews() {

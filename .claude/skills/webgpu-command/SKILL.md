@@ -60,13 +60,27 @@ private func fooBar(_ command: WGPUValueReader) throws {
     let target = try registry.lookup(
         try command.requiredHandle("target"), as: WGPUFooObject.self, kind: "GPUFoo"
     )
-    try applyBindGroups()                             // draw/dispatch 계열이면 반드시
+    let buffer = try unmappedBuffer(command, field: "buffer")   // 버퍼를 쓰는 명령이면 반드시
+    try applyDrawState()                              // draw/dispatch 계열이면 반드시
     encoder.doSomething(target.metalThing)
 }
 ```
 
 지켜야 할 것:
+- **버퍼는 `unmappedBuffer(_:field:)`로 꺼낸다.** `registry.lookup(..., as: WGPUBufferObject.self, …)`을
+  직접 부르면 매핑 검사를 건너뛰어, `mapAsync` 중인 버퍼에 GPU가 쓰는 경쟁이 그 경로로 샌다.
+- **드로우·디스패치 전 상태 확인은 `applyDrawState()` 하나다.** 바인드 그룹·정점 버퍼 완전성과
+  번들 격리 계약이 전부 여기 걸려 있다 — 새 드로우 op이 이걸 빠뜨리면 계약이 조용히 뚫린다.
 - **던지기만 한다.** 오류 수집·경로 부착은 `execute`가 한다.
+- **Metal이 봐 주지 않는 명세 제약은 직접 막는다.** 판단 기준은 둘이다:
+  - *Metal이 단언(=프로세스 종료)으로 처리하는가* → 막는다. 오류로 돌려주는 것이 이 구현의 계약이다
+    (예: `indirectOffset` 4바이트 정렬, 쿼리 인덱스 범위).
+  - *Metal에 그 개념이 아예 없는가* → 막는다. 여기서는 돌고 **브라우저에서만 깨지는** 코드가 나간다
+    (예: `INDIRECT`/`QUERY_RESOLVE` usage, 렌더 번들의 `colorFormats` 일치, `resolveQuerySet`의 256 정렬).
+  - 둘 다 아니면 Metal에 맡긴다 — 검증을 두 곳에 두면 어긋난다.
+- 검증은 **부수효과보다 앞에** 둔다. 오류는 프레임을 죽이지 않고 누적되므로, 거부할 명령이
+  인코더 상태를 이미 바꿔 놓으면 뒤의 정상 명령이 엉뚱한 상태에서 돈다
+  (`applyDrawState()`보다 인자 검증이 먼저인 이유).
 - 리소스 생성 명령이면 `id`를 `requiredHandle("id")`로 받아 `registry.insert(_:at:)`.
 - blit(복사·업로드)이 필요하면 `activeBlitEncoder()` — 렌더/컴퓨트 패스 안에서는 알아서 거부된다.
 - 프레임 안에서만 유효한 핸들이면 `frameScopedHandles`에 넣는다.
@@ -106,6 +120,22 @@ XCTAssertEqual(errors(result).first?["kind"] as? String, "validation")
 
 픽셀 단언은 **안쪽 한 점 + 바깥쪽 한 점**이 최소 조합이다 (클리어 색만 나와도 통과하는 테스트를 막는다).
 
+계약이 "기존 경로와 같은 결과"인 op(간접 드로우·렌더 번들)는 점 단언으로 부족하다.
+프레임 전체를 비교하되, **기준 프레임에 픽셀 단언을 함께 건다** — 두 경로가 똑같이
+아무것도 안 그려도 동치성은 통과하기 때문이다 (`docs/TESTING.md` §4-2):
+
+```swift
+harness.executeExpectingSuccess(기존경로)
+try harness.assertPixel(x: 32, y: 32, equals: (255, 0, 0, 255), "실제로 그렸는지")
+let reference = try harness.frameBytes()
+
+harness.executeExpectingSuccess(새경로)
+try harness.assertFrameEquals(reference, "계약은 같은 결과다")
+```
+
+**구현을 임시로 되돌려 테스트가 실제로 실패하는지 확인할 것.** 통과만 보고 넘어가면
+장식용 테스트가 남는다 — 실제로 그런 경우가 있었다.
+
 ## 6. 문서
 
 - `docs/WEBGPU-API.md` — 해당 절에 사용 예를 넣고, §8 미지원 목록에서 지운다.
@@ -126,6 +156,6 @@ arch -arm64 xcodebuild -scheme LynxWebGPUBridge \
 |---|---|
 | "알 수 없는 명령 'fooBar'" | 3번(해석기 switch) 누락 |
 | JS에서 불러도 아무 일 없음 | 4번에서 `_commands` 대신 다른 배열에 push |
-| 바인딩이 안 꽂힌 채 draw | `applyBindGroups()` 호출 누락 |
+| 바인딩이 안 꽂힌 채 draw | `applyDrawState()` 호출 누락 |
 | Metal 단언으로 크래시 | label nil, 또는 검증을 1번에서 안 했다 |
 | 프레임이 갑자기 느려짐 | shim이 프레임 안에서 네이티브를 동기 호출한다 |

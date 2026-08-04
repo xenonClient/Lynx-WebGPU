@@ -25,6 +25,11 @@ interface WGPUExecuteResult {
   canvases?: Record<string, { width: number; height: number }>;
   /** 네이티브에 살아 있는 GPU 객체 수 — 프레임마다 늘면 destroy 누락이다. */
   objects?: number;
+  /**
+   * 이번 배치에서 `popErrorScope`로 닫힌 스코프들의 결과 — **pop한 순서 그대로**다.
+   * 오류가 없던 스코프는 `null`. shim이 이 순서로 Promise를 푼다.
+   */
+  errorScopes?: (WGPUErrorPayload | null)[];
 }
 
 /** `adapterInfo`의 반환. */
@@ -34,6 +39,8 @@ interface WGPUAdapterInfo {
   backend: string;
   limits?: Record<string, number>;
   hasUnifiedMemory?: boolean;
+  /** 기기마다 갈리는 기능의 명세 철자 (`'timestamp-query'` 등). */
+  features?: string[];
 }
 
 /** `canvasInfo`의 반환. */

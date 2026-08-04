@@ -109,6 +109,44 @@ export type GPUCanvasConfiguration = {
         mode: 'standard' | 'extended';
     };
 };
+export type GPUStencilFaceState = {
+    compare?: GPUCompareFunction;
+    failOp?: GPUStencilOperation;
+    depthFailOp?: GPUStencilOperation;
+    passOp?: GPUStencilOperation;
+};
+export type GPUCompareFunction = 'never' | 'less' | 'equal' | 'less-equal' | 'greater' | 'not-equal' | 'greater-equal' | 'always';
+export type GPUStencilOperation = 'keep' | 'zero' | 'replace' | 'invert' | 'increment-clamp' | 'decrement-clamp' | 'increment-wrap' | 'decrement-wrap';
+export type GPUDepthStencilState = {
+    format: string;
+    depthWriteEnabled?: boolean;
+    depthCompare?: GPUCompareFunction;
+    depthBias?: number;
+    depthBiasSlopeScale?: number;
+    depthBiasClamp?: number;
+    stencilFront?: GPUStencilFaceState;
+    stencilBack?: GPUStencilFaceState;
+    stencilReadMask?: number;
+    stencilWriteMask?: number;
+};
+export type GPUQuerySetDescriptor = {
+    type: 'occlusion' | 'timestamp';
+    count: number;
+    label?: string;
+};
+export type GPUPassTimestampWrites = {
+    querySet: GPUQuerySet;
+    beginningOfPassWriteIndex?: number;
+    endOfPassWriteIndex?: number;
+};
+export type GPURenderBundleEncoderDescriptor = {
+    colorFormats: (string | null)[];
+    depthStencilFormat?: string;
+    sampleCount?: number;
+    depthReadOnly?: boolean;
+    stencilReadOnly?: boolean;
+    label?: string;
+};
 export type GPUPipelineLayoutSource = {
     id: number;
 };
@@ -125,6 +163,15 @@ declare class Recorder {
     nextId: number;
     /** @type {((error: WGPUError, text: string) => void)[]} */
     errorHandlers: ((error: WGPUError, text: string) => void)[];
+    /**
+     * `popErrorScope()`가 돌려준 Promise의 결과 함수들 — **pop한 순서 그대로**다.
+     * 네이티브가 같은 순서로 `errorScopes` 배열을 돌려주므로 인덱스로 짝을 맞춘다.
+     * @type {{resolve: (error: WGPUError | null) => void, reject: (reason: Error) => void}[]}
+     */
+    pendingErrorScopes: {
+        resolve: (error: WGPUError | null) => void;
+        reject: (reason: Error) => void;
+    }[];
     constructor();
     /** @returns {number} 새 핸들 id */
     allocate(): number;
@@ -138,6 +185,23 @@ declare class Recorder {
      * @returns {WGPUExecuteResult}
      */
     flush(): WGPUExecuteResult;
+    /**
+     * 기다리고 있던 `popErrorScope()` Promise들을 푼다.
+     *
+     * 네이티브가 인덱스를 밀지 않는다는 계약에 기대므로(pop이 실패해도 자리를 남긴다),
+     * 여기서는 순서대로 짝지어 주기만 하면 된다. 응답에 결과가 모자라면 `null`이다 —
+     * Promise가 영원히 안 풀리는 것보다 낫다.
+     *
+     * 슬롯이 `{rejected: true}`면 `push`와 짝이 맞지 않았다는 뜻이다. 명세는 그 경우
+     * `OperationError`로 **reject**하라고 정하므로(오류를 만들지 않는다) 그대로 따른다 —
+     * 그래야 앱이 "스코프가 깨끗했다(null)"와 "짝이 안 맞았다"를 구분할 수 있다.
+     *
+     * @param {(WGPUError | {rejected: true} | null)[]} popped
+     * @returns {void}
+     */
+    settleErrorScopes(popped: (WGPUError | {
+        rejected: true;
+    } | null)[]): void;
     /** @param {WGPUError[]} errors */
     report(errors: WGPUError[]): void;
 }
@@ -160,8 +224,8 @@ declare class GPUBuffer extends GPUObjectBase {
     usage: number;
     /** @type {ArrayBuffer | null} */
     _mapped: ArrayBuffer | null;
-    /** @type {ArrayBuffer | null} */
-    _mappedRange: ArrayBuffer | null;
+    /** `mappedAtCreation`의 초기 데이터인가 (unmap이 생성 명령을 기록해야 하는가). */
+    _mappedAtCreation: boolean;
     /**
      * @param {GPUDevice} device
      * @param {number} id
@@ -170,10 +234,23 @@ declare class GPUBuffer extends GPUObjectBase {
     constructor(device: GPUDevice, id: number, descriptor: GPUBufferDescriptor);
     /** `mappedAtCreation: true`로 만든 버퍼의 초기 데이터 영역. */
     getMappedRange(): ArrayBuffer;
-    /** 매핑을 풀면서 실제 생성 명령(초기 데이터 포함)을 기록한다. @returns {void} */
+    /**
+     * 매핑을 푼다.
+     *
+     * `mappedAtCreation`이면 여기서 실제 생성 명령(초기 데이터 포함)이 기록되고,
+     * `mapAsync`로 매핑한 것이면 네이티브에 "이제 큐 작업에 써도 된다"를 알린다 —
+     * 매핑 중인 버퍼는 명세대로 큐 작업에서 거부되므로 **읽고 나면 반드시 불러야 한다.**
+     *
+     * @returns {void}
+     */
     unmap(): void;
     /**
      * 버퍼 내용을 읽는다. WebGPU의 `mapAsync` + `getMappedRange`를 하나로 합친 형태다.
+     *
+     * 읽는 동안 이 버퍼는 명세대로 **"unavailable"**이 되어 큐 작업(쓰기·복사·resolve·드로우
+     * 바인딩)에서 거부된다. 그러지 않으면 리드백이 GPU 완료를 기다리는 사이 다음 프레임의
+     * 쓰기가 같은 메모리에 겹쳐, 받은 값이 어느 프레임 것인지 보장되지 않는다.
+     * **다 읽었으면 `unmap()`을 부를 것.**
      *
      * @param {number} [_mode] 스펙 호환용 — 이 구현은 보지 않는다
      * @param {number} [offset] 바이트 오프셋
@@ -223,6 +300,34 @@ declare class GPURenderPipeline extends GPUPipelineBase {
 }
 declare class GPUComputePipeline extends GPUPipelineBase {
 }
+/**
+ * `bundleEncoder.finish()`가 돌려주는 재사용 가능한 드로우 묶음.
+ *
+ * 기록한 명령이 **래퍼보다 오래 사는** 유일한 구조라, 자기가 쓰는 리소스 래퍼를 붙잡는다
+ * (`_retained`). 그러지 않으면 초기화 함수가 번들만 반환하고 파이프라인·버퍼를 버렸을 때
+ * GC가 `destroy`를 끼워 넣어 번들이 **조용히 안 그려진다** (`docs/JS-AUTHORING.md` §8).
+ */
+declare class GPURenderBundle extends GPUObjectBase {
+    /** @type {object[]} 이 번들이 참조하는 리소스 래퍼 — 수명을 함께 묶는다. */
+    _retained: object[];
+    /**
+     * @param {GPUDevice} device
+     * @param {number} id
+     * @param {string} [label]
+     */
+    constructor(device: GPUDevice, id: number, label?: string);
+}
+/** `device.createQuerySet()`이 돌려주는 쿼리 저장소. */
+declare class GPUQuerySet extends GPUObjectBase {
+    type: "occlusion" | "timestamp";
+    count: number;
+    /**
+     * @param {GPUDevice} device
+     * @param {number} id
+     * @param {GPUQuerySetDescriptor} descriptor
+     */
+    constructor(device: GPUDevice, id: number, descriptor: GPUQuerySetDescriptor);
+}
 /** 인코더는 자기 명령을 따로 모았다가 `finish()` → `submit()`에서 스트림에 합쳐진다. */
 declare class GPUCommandBuffer {
     commands: GPUCommand[];
@@ -231,8 +336,22 @@ declare class GPUCommandBuffer {
 }
 declare class GPUPassEncoderBase {
     _commands: GPUCommand[];
+    /**
+     * 기록 중 만난 리소스 래퍼 — **번들 인코더만** 채운다.
+     *
+     * 번들은 기록한 명령이 래퍼보다 오래 사는 유일한 구조라서, 자동 해제(GC)가 붙은 엔진에서는
+     * 초기화 함수가 번들만 반환하고 파이프라인·버퍼 래퍼를 버리면 번들이 조용히 안 그려진다.
+     * 명세 모델에서 번들은 자기가 쓰는 객체를 **소유**하므로, 여기서도 같은 소유 관계를 만든다.
+     * @type {object[] | null}
+     */
+    _retained: object[] | null;
     /** @param {GPUCommand[]} commands */
     constructor(commands: GPUCommand[]);
+    /**
+     * @param {object} resource
+     * @returns {void}
+     */
+    _retain(resource: object): void;
     /**
      * @param {GPURenderPipeline | GPUComputePipeline} pipeline
      * @returns {void}
@@ -245,10 +364,15 @@ declare class GPUPassEncoderBase {
      * @returns {void}
      */
     setBindGroup(index: number, bindGroup: GPUBindGroup, dynamicOffsets?: number[]): void;
-    /** @returns {void} */
-    end(): void;
 }
-declare class GPURenderPassEncoder extends GPUPassEncoderBase {
+/**
+ * 렌더 패스와 렌더 번들이 **함께** 쓸 수 있는 명령.
+ *
+ * 이 경계는 명세가 정한 것이다 — 번들에는 뷰포트·시저·블렌드 상수·스텐실 참조·중첩 번들을
+ * 담을 수 없다. 그것들을 `GPURenderPassEncoder`에만 두면 번들 인코더에는 애초에 그 메서드가
+ * 없으므로, 잘못 쓰는 코드가 네이티브까지 가지 않는다.
+ */
+declare class GPURenderCommandsBase extends GPUPassEncoderBase {
     /**
      * @param {number} slot
      * @param {GPUBuffer} buffer
@@ -263,6 +387,57 @@ declare class GPURenderPassEncoder extends GPUPassEncoderBase {
      * @returns {void}
      */
     setIndexBuffer(buffer: GPUBuffer, format: 'uint16' | 'uint32', offset?: number): void;
+    /**
+     * @param {number} vertexCount
+     * @param {number} [instanceCount]
+     * @param {number} [firstVertex]
+     * @param {number} [firstInstance]
+     * @returns {void}
+     */
+    draw(vertexCount: number, instanceCount?: number, firstVertex?: number, firstInstance?: number): void;
+    /**
+     * @param {number} indexCount
+     * @param {number} [instanceCount]
+     * @param {number} [firstIndex]
+     * @param {number} [baseVertex]
+     * @param {number} [firstInstance]
+     * @returns {void}
+     */
+    drawIndexed(indexCount: number, instanceCount?: number, firstIndex?: number, baseVertex?: number, firstInstance?: number): void;
+    /**
+     * 드로우 인자를 GPU 버퍼에서 읽어 그린다 — 컴퓨트가 만든 수만큼 그릴 때 쓴다.
+     *
+     * 버퍼에는 `u32` 4개가 이 순서로 들어 있어야 한다:
+     * `vertexCount, instanceCount, firstVertex, firstInstance`.
+     * 버퍼는 `GPUBufferUsage.INDIRECT`로 만들고, `indirectOffset`은 4의 배수여야 한다.
+     *
+     * `firstInstance`가 0이 아니면 `indirect-first-instance` 기능이 필요하다. 이 구현은 그 기능을
+     * 항상 보고하지만, 브라우저에서는 **요청하지 않으면 드로우가 통째로 no-op**이 된다.
+     *
+     * @param {GPUBuffer} indirectBuffer
+     * @param {number} [indirectOffset]
+     * @returns {void}
+     */
+    drawIndirect(indirectBuffer: GPUBuffer, indirectOffset?: number): void;
+    /**
+     * 인덱스 드로우 인자를 GPU 버퍼에서 읽어 그린다.
+     *
+     * 버퍼에는 `u32` 5개가 이 순서로 들어 있어야 한다:
+     * `indexCount, instanceCount, firstIndex, baseVertex(부호 있는 i32), firstInstance`.
+     * `firstIndex`는 인자 버퍼 안에 있으므로 `setIndexBuffer(buffer, format, offset)`의
+     * 오프셋과 **더해지지 않고 따로** 적용된다.
+     *
+     * `firstInstance`가 0이 아니면 `indirect-first-instance` 기능이 필요하다. 이 구현은 그 기능을
+     * 항상 보고하지만, 브라우저에서는 **요청하지 않으면 드로우가 통째로 no-op**이 된다.
+     *
+     * @param {GPUBuffer} indirectBuffer
+     * @param {number} [indirectOffset]
+     * @returns {void}
+     */
+    drawIndexedIndirect(indirectBuffer: GPUBuffer, indirectOffset?: number): void;
+}
+/** 패스 전용 명령 — 아래 넷과 `executeBundles`는 번들에 담을 수 없다 (명세). */
+declare class GPURenderPassEncoder extends GPURenderCommandsBase {
     /**
      * @param {number} x
      * @param {number} y
@@ -292,22 +467,64 @@ declare class GPURenderPassEncoder extends GPUPassEncoderBase {
      */
     setStencilReference(reference: number): void;
     /**
-     * @param {number} vertexCount
-     * @param {number} [instanceCount]
-     * @param {number} [firstVertex]
-     * @param {number} [firstInstance]
+     * 이 드로우들이 통과시킨 샘플 수를 세기 시작한다.
+     *
+     * `beginRenderPass`에 `occlusionQuerySet`을 준 패스에서만 쓸 수 있고, 중첩할 수 없다.
+     * 같은 인덱스를 한 패스에서 두 번 쓸 수 없고, 패스를 닫기 전에 `endOcclusionQuery`로
+     * 반드시 닫아야 한다.
+     *
+     * @param {number} queryIndex
      * @returns {void}
      */
-    draw(vertexCount: number, instanceCount?: number, firstVertex?: number, firstInstance?: number): void;
+    beginOcclusionQuery(queryIndex: number): void;
+    /** @returns {void} */
+    endOcclusionQuery(): void;
     /**
-     * @param {number} indexCount
-     * @param {number} [instanceCount]
-     * @param {number} [firstIndex]
-     * @param {number} [baseVertex]
-     * @param {number} [firstInstance]
+     * 미리 기록해 둔 번들들을 이 패스에 되풀이한다.
+     *
+     * 번들은 패스 상태를 **물려받지 않고**, 실행이 끝나면 패스의 파이프라인·바인드 그룹·
+     * 정점/인덱스 버퍼 바인딩이 **무효화된다** (이전 값으로 복원되는 것이 아니다 — 명세 계약).
+     * 이어서 그리려면 `setPipeline`·`setBindGroup`·`setVertexBuffer`를 다시 해야 하고,
+     * 빠뜨리면 그 드로우가 거부된다. 뷰포트·시저·블렌드 상수·스텐실 참조는 그대로 남는다.
+     *
+     * @param {GPURenderBundle[]} bundles
      * @returns {void}
      */
-    drawIndexed(indexCount: number, instanceCount?: number, firstIndex?: number, baseVertex?: number, firstInstance?: number): void;
+    executeBundles(bundles: GPURenderBundle[]): void;
+    /** @returns {void} */
+    end(): void;
+}
+/**
+ * 여러 프레임에 걸쳐 다시 쓸 드로우 묶음을 기록한다 (`device.createRenderBundleEncoder`).
+ *
+ * 이 구현에서 번들의 이득은 브라우저와 다르다 — 브라우저는 드라이버 명령을 미리 만들어 두지만,
+ * 여기서는 **JS가 매 프레임 같은 명령 배열을 다시 만들지 않아도 되는 것**이 이득이다.
+ * 번들을 실행하는 명령은 핸들 하나뿐이고, 되풀이는 네이티브가 한다.
+ */
+declare class GPURenderBundleEncoder extends GPURenderCommandsBase {
+    /** @type {object[]} 기록 중 만난 래퍼 — 만든 번들이 이어받아 붙잡는다. */
+    _retained: object[];
+    _finished: boolean;
+    _device: GPUDevice;
+    _descriptor: GPURenderBundleEncoderDescriptor;
+    /**
+     * @param {GPUDevice} device
+     * @param {GPURenderBundleEncoderDescriptor} descriptor
+     */
+    constructor(device: GPUDevice, descriptor: GPURenderBundleEncoderDescriptor);
+    /**
+     * 기록을 끝내고 재사용 가능한 번들을 만든다.
+     *
+     * **한 번만 부를 수 있다.** 두 번째 호출은 명세대로 오류를 내고 **무효한 번들**을 돌려준다 —
+     * 조용히 빈 번들을 주면 `executeBundles`가 아무것도 그리지 않고 오류도 없어서 원인을
+     * 찾기 어렵다.
+     *
+     * @param {{label?: string}} [descriptor]
+     * @returns {GPURenderBundle}
+     */
+    finish(descriptor?: {
+        label?: string;
+    }): GPURenderBundle;
 }
 declare class GPUComputePassEncoder extends GPUPassEncoderBase {
     /**
@@ -317,6 +534,19 @@ declare class GPUComputePassEncoder extends GPUPassEncoderBase {
      * @returns {void}
      */
     dispatchWorkgroups(x: number, y?: number, z?: number): void;
+    /**
+     * 워크그룹 수를 GPU 버퍼에서 읽어 디스패치한다.
+     *
+     * 버퍼에는 `u32` 3개(`x, y, z`)가 들어 있어야 한다. 버퍼는 `GPUBufferUsage.INDIRECT`로
+     * 만들고, `indirectOffset`은 4의 배수여야 한다.
+     *
+     * @param {GPUBuffer} indirectBuffer
+     * @param {number} [indirectOffset]
+     * @returns {void}
+     */
+    dispatchWorkgroupsIndirect(indirectBuffer: GPUBuffer, indirectOffset?: number): void;
+    /** @returns {void} */
+    end(): void;
 }
 declare class GPUCommandEncoder {
     _device: GPUDevice;
@@ -329,8 +559,28 @@ declare class GPUCommandEncoder {
      * @returns {GPURenderPassEncoder}
      */
     beginRenderPass(descriptor: Record<string, any>): GPURenderPassEncoder;
-    /** @returns {GPUComputePassEncoder} */
-    beginComputePass(): GPUComputePassEncoder;
+    /**
+     * @param {{label?: string, timestampWrites?: GPUPassTimestampWrites}} [descriptor]
+     * @returns {GPUComputePassEncoder}
+     */
+    beginComputePass(descriptor?: {
+        label?: string;
+        timestampWrites?: GPUPassTimestampWrites;
+    }): GPUComputePassEncoder;
+    /**
+     * 쿼리 결과를 버퍼로 내린다. 결과 하나는 `u64`(8바이트)다.
+     *
+     * 목적지 버퍼는 `GPUBufferUsage.QUERY_RESOLVE`로 만들어야 하고,
+     * `destinationOffset`은 **256의 배수**여야 한다 (명세 요구).
+     *
+     * @param {GPUQuerySet} querySet
+     * @param {number} firstQuery
+     * @param {number} queryCount
+     * @param {GPUBuffer} destination
+     * @param {number} destinationOffset
+     * @returns {void}
+     */
+    resolveQuerySet(querySet: GPUQuerySet, firstQuery: number, queryCount: number, destination: GPUBuffer, destinationOffset: number): void;
     /**
      * @param {GPUBuffer} source
      * @param {number} sourceOffset
@@ -428,6 +678,32 @@ declare class GPUDevice {
      */
     onError(handler: (error: WGPUError, text: string) => void): void;
     /**
+     * 여기서부터 `popErrorScope()`까지 사이에 난 오류 중 **필터에 맞는 것**을 가로챈다.
+     *
+     * 가로챈 오류는 전역 핸들러(`onError`)로 가지 않는다 — 이미 처리하기로 한 것이기 때문이다.
+     * 스코프는 중첩할 수 있고, 오류는 **가장 안쪽의 맞는 스코프**가 가져간다.
+     *
+     * 기록만 하므로 왕복이 늘지 않는다. 프레임 안에서 마음껏 써도 된다.
+     *
+     * 알 수 없는 `filter`는 브라우저(WebIDL enum 변환)와 같은 자리에서 **동기 `TypeError`**다.
+     * 여기서 막지 않으면 네이티브 스코프 스택이 밀려 이후 `pop`이 바깥 스코프를 가져간다 —
+     * 진단하려고 연 스코프가 오히려 오진을 만든다.
+     *
+     * @param {'validation' | 'out-of-memory' | 'internal'} filter
+     * @returns {void}
+     */
+    pushErrorScope(filter: 'validation' | 'out-of-memory' | 'internal'): void;
+    /**
+     * 가장 안쪽 스코프를 닫고 **거기서 처음 잡힌 오류**를 돌려준다 (없으면 `null`).
+     *
+     * `mapAsync`처럼 **즉시 제출한다** — 그러지 않으면 다음 `submit()`이 올 때까지 Promise가
+     * 풀리지 않기 때문이다. 그래서 프레임 루프 안에서 부르면 왕복이 하나 늘어난다.
+     * 초기화나 진단 경로에서 쓰는 것을 전제로 한 API다 (`docs/JS-AUTHORING.md` §5).
+     *
+     * @returns {Promise<WGPUError | null>}
+     */
+    popErrorScope(): Promise<WGPUError | null>;
+    /**
      * @param {GPUBufferDescriptor} descriptor
      * @returns {GPUBuffer}
      */
@@ -474,6 +750,29 @@ declare class GPUDevice {
     createComputePipeline(descriptor: Record<string, any>): GPUComputePipeline;
     /** @returns {GPUCommandEncoder} */
     createCommandEncoder(): GPUCommandEncoder;
+    /**
+     * 여러 프레임에 걸쳐 다시 쓸 드로우 묶음을 기록하기 시작한다.
+     *
+     * `colorFormats`(와 있다면 `depthStencilFormat`·`sampleCount`)는 이 번들을 **실행할 패스의
+     * 모양**이다. 실제 패스와 어긋나면 `executeBundles`에서 오류가 난다.
+     *
+     * @param {GPURenderBundleEncoderDescriptor} descriptor
+     * @returns {GPURenderBundleEncoder}
+     */
+    createRenderBundleEncoder(descriptor: GPURenderBundleEncoderDescriptor): GPURenderBundleEncoder;
+    /**
+     * 쿼리 저장소를 만든다.
+     *
+     * `'occlusion'`은 드로우가 통과시킨 샘플 수를 센다 — 결정적이라 값을 믿을 수 있다.
+     * `'timestamp'`는 GPU 시계라 같은 입력에도 값이 매번 다르다. 기기에 따라 아예 만들 수
+     * 없으므로(`adapter.limits.timestampQuery`) 실패를 처리할 것.
+     *
+     * `count`는 1 이상 4096 이하다 (명세 상한).
+     *
+     * @param {GPUQuerySetDescriptor} descriptor
+     * @returns {GPUQuerySet}
+     */
+    createQuerySet(descriptor: GPUQuerySetDescriptor): GPUQuerySet;
     /** 모든 GPU 객체를 버린다 (페이지 이탈 시 호출). @returns {void} */
     destroy(): void;
 }
@@ -521,6 +820,15 @@ declare class GPUAdapter {
     backend: string;
     limits: Record<string, number>;
     hasUnifiedMemory: boolean | undefined;
+    /**
+     * 기기마다 갈리는 기능 — 웹과 같은 분기(`adapter.features.has('timestamp-query')`)가
+     * 동작하도록 `has`만 흉내 낸다 (엔진에 `Set`이 없을 수 있다).
+     */
+    features: {
+        has: (name: string) => boolean;
+        size: number;
+        values: () => string[];
+    };
     /** @param {WGPUAdapterInfo} info */
     constructor(info: WGPUAdapterInfo);
     /** @returns {Promise<GPUDevice>} */
@@ -579,5 +887,5 @@ export declare function startFrameLoop(handler: (frame: {
  * @returns {Promise<ArrayBuffer>}
  */
 export declare function loadAsset(name: string): Promise<ArrayBuffer>;
-export { GPUBuffer, GPUTexture, GPUTextureView, GPUSampler, GPUDevice, GPUCanvasContext };
+export { GPUBuffer, GPUTexture, GPUTextureView, GPUSampler, GPUDevice, GPUCanvasContext, GPURenderBundle, GPURenderBundleEncoder, GPUQuerySet, };
 export default gpu;

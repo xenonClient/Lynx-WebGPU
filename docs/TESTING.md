@@ -20,7 +20,7 @@ GPU 코드는 "돌려 보고 눈으로 확인"에 기대기 쉽다. 이 저장�
 ## 2. 실행
 
 ```zsh
-swift test                                      # 전체 (106개, 약 7초)
+swift test                                      # 전체 (217개, 약 4초)
 swift test --filter LynxWebGPUCoreTests         # 디스크립터/핸들
 swift test --filter LynxWebGPUShaderTests       # 트랜스파일러 (+ Metal 컴파일 검증)
 swift test --filter LynxWebGPUTests             # GPU 렌더 + 해석기
@@ -31,7 +31,7 @@ JS 클라이언트(shim) 테스트 — 의존성 없이 node 내장 러너로 �
 `NativeModules.WebGPU`를 목으로 바꿔 커맨드 페이로드·왕복 횟수를 단언한다:
 
 ```zsh
-cd JS && npm test            # NODE_OPTIONS=--expose-gc node --test 'tests/*.test.mjs' — 17개
+cd JS && npm test            # NODE_OPTIONS=--expose-gc node --test 'tests/*.test.mjs' — 47개
 cd JS && npm run typecheck   # JSDoc 기준 타입 검사
 ```
 
@@ -139,6 +139,36 @@ try harness.assertPixelFloat(x: 32, y: 32, equals: SIMD4<Float>(2.5, 0.5, -0.25,
 `Data`를 돌려주던 시절의 코드를 옮기는 법은
 [`docs/extra/260801-readpixel-migration-guide.md`](extra/260801-readpixel-migration-guide.md)에 있다.
 
+### 4-2. 동치성 단언 — "같은 결과를 내야 하는 두 경로"
+
+점 단언으로는 약한 기능이 있다. 간접 드로우·렌더 번들처럼 **계약 자체가 "직접 경로와 결과가
+같다"**인 것은 고른 두 점만 우연히 맞아도 통과하기 때문이다. 그럴 때는 프레임 전체를 비교한다:
+
+```swift
+harness.executeExpectingSuccess(직접경로)
+let reference = try harness.frameBytes()
+
+harness.executeExpectingSuccess(간접경로)
+try harness.assertFrameEquals(reference, "간접 드로우는 직접 드로우와 같아야 한다")
+```
+
+실패하면 **처음 어긋난 픽셀의 좌표와 두 값**이 나온다 ("N바이트 다름"만으로는 못 고친다).
+이 단언이 다름을 실제로 잡는지는 `RenderHarnessTests`가 못 박는다 — 토대가 되는 단언이라
+"항상 통과"가 되면 그 위의 모든 동치성 테스트가 조용히 무의미해진다.
+
+버퍼 리드백은 동기 헬퍼를 쓴다 (`XCTestExpectation` 보일러플레이트가 리드백 테스트마다
+반복되던 것을 없앤다):
+
+```swift
+let values = try harness.readBufferSync(handle: 3, as: Float.self, size: 32)
+```
+
+기기마다 갈리는 기능은 `supports(_:)`로 나눠 건너뛴다 — GPU 유무만 보던 조건의 확장이다:
+
+```swift
+try XCTSkipUnless(harness.supports(.timestampQuery), "타임스탬프 카운터를 지원하지 않는 기기")
+```
+
 ## 5. 컨벤션
 
 - 테스트 파일은 대상 타입/영역당 1개, 각 모듈 `Tests/` 아래.
@@ -148,7 +178,7 @@ try harness.assertPixelFloat(x: 32, y: 32, equals: SIMD4<Float>(2.5, 0.5, -0.25,
 - 비동기 경로(`readBuffer`)는 `XCTestExpectation`으로 검증한다.
 - 테스트 더블은 손으로 만든다 (모킹 라이브러리 없음).
 
-## 6. 커버리지 대상 (Swift 106개 + JS 17개)
+## 6. 커버리지 대상 (Swift 217개 + JS 47개)
 
 | 영역 | 파일 | 주요 케이스 |
 |---|---|---|
@@ -158,13 +188,20 @@ try harness.assertPixelFloat(x: 32, y: 32, equals: SIMD4<Float>(2.5, 0.5, -0.25,
 | 픽셀 되읽기 해석 | `WGPUPixelReadbackTests` | half→float(서브노멀·Inf·NaN), **1.0 초과·음수 보존**, BGRA 순서, 없는 채널 기본값, 행 패딩, 팩된/정수 포맷 거부 |
 | JS↔Swift 상수 | `JSConstantParityTests` | `JS/webgpu.js`의 사용 플래그·스테이지·컬러마스크가 Swift OptionSet과 같은 값인지 |
 | in-flight 프레임 | `SurfaceInFlightTests` | 카운터 계약(3에서 포화·완료로 해제), 컨텍스트 집계, 해석기 커밋/완료 통지(표면당 1회), CAMetalLayer 헤드리스 왕복 |
-| JS 클라이언트 | `JS/tests` (node:test) | **바이너리 경로(ArrayBuffer 타입·뷰 오프셋 반영·불필요한 복사 없음·양방향)**, 캔버스 크기 캐시(프레임당 왕복 1회·리사이즈 반영), GC 자동 해제(중복 방지·프레임 스코프 제외), objects 전달 |
+| JS 클라이언트 | `JS/tests` (node:test) | **바이너리 경로(ArrayBuffer 타입·뷰 오프셋 반영·불필요한 복사 없음·양방향)**, 캔버스 크기 캐시(프레임당 왕복 1회·리사이즈 반영), GC 자동 해제(중복 방지·프레임 스코프 제외), objects 전달, **짝 없는 pop의 `OperationError` reject**, **알 수 없는 filter의 동기 `TypeError`**, **브리지 호출 실패 시 대기 스코프 정리**, **번들 `finish()` 재호출 거부·리소스 retain** |
 | WGSL 트랜스파일 | `WGSLTranspilerTests` | 삼각형(정점속성+유니폼+헬퍼), 리소스 스레딩, 리플렉션, vec3 배치, 컴퓨트/스토리지, 텍스처/샘플러/스토리지텍스처, 제어흐름, workgroup 변수, 오류 보고, 바인딩 배정, **MSL 예약어 맹글링**, **부동소수 `%`**, **벡터 성분 추론**, **추상 정수 벡터(문맥으로 굳는 `vec3(1)`)**, **파이프라인 상수**, **확장 선언**, **`arrayLength()` 크기 표**, **외부 텍스처**, **함수 지역 `const` 배열 크기** |
 | 외부 코퍼스 | `SampleCorpusTests` | 공식 webgpu-samples 셰이더 통과율 리포트 (§7, 기본 스킵) |
 | GPU 렌더 | `RenderPipelineTests` | 삼각형, 유니폼, 인덱스 드로우, 알파 블렌딩, 컴퓨트+readback, 텍스처 샘플링, **`arrayLength()`가 바인딩된 크기를 돌려주는지**, **가장자리 클램프 샘플링**, 깊이 테스트, **rgba16float 표면이 SDR 범위 밖 값을 보존하는지** |
 | 오프스크린 되읽기 | `OffscreenReadbackTests` | 포맷별 행 간격·길이(1~16B/픽셀), **depth/stencil 거부**, configure 전 거부 |
-| 커맨드 해석기 | `CommandInterpreterTests` | 알 수 없는 명령, 없는 핸들, 오류 누적, 패스 상태, 캔버스 진단, 셰이더 실패 시 MSL 첨부, 드로어블 핸들 수명, 복사/읽기, 범위 검증, reset, 어댑터 정보, **writeTexture 큐 순서**, **배열 레이어 업로드** |
+| 커맨드 해석기 | `CommandInterpreterTests` | 알 수 없는 명령, 없는 핸들, 오류 누적, 패스 상태, 캔버스 진단, 셰이더 실패 시 MSL 첨부, 드로어블 핸들 수명, **프레임 경계가 배치가 아니라 present인지**, 복사/읽기, 범위 검증, reset, 어댑터 정보, **writeTexture 큐 순서**, **배열 레이어 업로드**, **버퍼 매핑 상태(매핑 중 큐 작업 거부·중복 매핑 거부·unmap 후 복귀)**, **`MAP_READ`/`MAP_WRITE` usage 조합** |
 | 스테이징 풀 | `StagingPoolTests` | 크기 클래스 반올림, 같은 인스턴스 재사용, 최적합 선택, 총량 상한, 프레임 반복 시 풀 크기 불변 |
+| 하네스 자신 | `RenderHarnessTests` | **동치성 단언이 다름을 실제로 잡는지**(§4-2), 동기 리드백의 실패 보고 |
+| Metal 매핑 | `MetalMappingTests` | 스텐실 연산·비교 함수 **전수**(CaseIterable), 네 연산이 제 슬롯에 들어가는지, 마스크. GPU 불필요 |
+| 스텐실 | `StencilTests` | 마스킹(안/밖) + **같은 영역의 시저와 프레임 전체 비교**, `setStencilReference`가 쓰기와 비교 양쪽에, read/writeMask, `depthFailOp`(섀도 볼륨 경로), `stencil8` 단독 포맷 회귀, **스텐실 성분 없는 포맷 + 비기본 상태 거부**, **`depthReadOnly`/`stencilReadOnly` 강제**(읽기만 하는 파이프라인은 통과), **음수 참조값이 프로세스를 죽이지 않는지** |
+| 간접 드로우 | `IndirectDrawTests` | **직접 호출과 프레임 전체 동치성**(인자 칸 순서), `firstVertex`, 인덱스 바인딩 오프셋 + `firstIndex` 이중 적용 회귀, 간접 디스패치, **컴퓨트가 인자를 쓰는 GPU-driven 경로** |
+| 오류 스코프 | `ErrorScopeTests` | 가로채기(전역으로 안 샘), 필터 매칭, 중첩에서 안쪽 우선 + 안 맞으면 바깥으로, **배치를 넘는 수명**, 처음 잡힌 하나만, **짝 없는 pop은 오류 대신 reject 상태**(인덱스도 안 민다), **필터를 못 읽어도 스택 깊이 유지**, reset |
+| 렌더 번들 | `RenderBundleTests` | **직접 인코딩과 프레임 전체 동치성**, 재사용(두 프레임 연속), 실행 순서, **상태 격리 양방향**(파이프라인·바인드 그룹·정점 버퍼 셋 다), **실행 중 오류가 나도 격리가 성립하는지**, 포맷·어태치먼트 수 불일치, **후행 `null` 무시**, **어태치먼트 최소 하나**, **깊이 전용 MSAA 패스의 `sampleCount`**, **`depthReadOnly` 패스에는 readOnly 번들만**, 번들에 금지된 명령 |
+| 쿼리셋 | `QuerySetTests` | occlusion은 **값 단언**(전체 통과 = 64×64, 완전히 잘린 드로우 = 정확히 0), 구간 resolve, 타임스탬프는 **구조만**(길이·단조·초기값 아님, 절대 시간 임계 금지), 기기 지원과 `adapter.features` 일치, 중첩·범위·usage·256 정렬 계약, **개수 상한(4096)**, **`timestampWrites` 인덱스 최소 하나·중복 금지**, **occlusion 미종료·인덱스 재사용 거부** |
 
 새 기능을 넣으면 위 표에 행을 추가하고 같은 컨벤션으로 테스트를 쓴다.
 
@@ -215,6 +252,10 @@ LYNXWEBGPU_WGSL_CORPUS=… LYNXWEBGPU_WGSL_DUMP=/tmp/msl swift test --filter Sam
 | `texture` | createTexture + writeTexture + repeat 샘플러 + textureSample |
 | `dynamic` | CPU 플라스마를 **매 프레임 writeTexture**로 — 큐 순서 업로드 + 스테이징 풀 + 업로드 처리량. HUD의 live 객체 수(`objects`)가 일정해야 정상 |
 | `blending` | 미리 곱해진 알파 합성 + discard + 유니폼 구조체 배열 |
+| `stencil` | **스텐실 마스크** — `stencil8` 단독 포맷(깊이 없음)에 같은 풀스크린 삼각형을 3번 그린다. 갈리는 이유가 스텐실뿐이라, 안 먹으면 화면이 한 색으로 덮인다. 마킹 패스는 `writeMask: 0`, 채우기 두 번은 `equal`/`not-equal`. 버튼이 `setStencilReference`로 마스크를 뒤집는다 |
+| `gpudriven` | **간접 드로우/디스패치** — 컴퓨트가 이번 프레임의 개수를 정해 인자 버퍼에 쓰고, `dispatchWorkgroupsIndirect` + `drawIndexedIndirect`가 그 버퍼를 읽는다. HUD는 인자 버퍼를 되짚어 GPU가 정한 수를 띄운다. 직접 모드는 개수를 모르니 늘 최대치를 그린다 |
+| `bundle` | **렌더 번들** — 드로우 120개를 한 번만 기록해 매 프레임 되돌린다. HUD의 커맨드 수는 `submit()` 반환의 `commandCount`라 추정이 아니다 (직접 128개 → 번들 6개) |
+| `query` | **occlusion 쿼리 · 타임스탬프 · 오류 스코프** — 막대가 원을 가릴수록 살아남은 샘플 수가 줄고 완전히 가려지면 0이 된다. 타임스탬프는 `adapter.features.has('timestamp-query')`인 기기에서만 (시뮬레이터는 미지원으로 표시). 버튼 둘이 같은 잘못된 호출을 스코프 **안/밖**에서 실행해, 노란 줄과 빨간 줄로 갈리는 것을 보여 준다 |
 | `readback` | 컴퓨트 결과를 `mapAsync`로 CPU가 읽어 화면에 표시 |
 | `constants` | 같은 셰이더 모듈 + 다른 `override` 값 → 파이프라인 3개 |
 | `msl` | `language: 'msl'` 직접 주입 + 명시적 파이프라인 레이아웃 |
@@ -241,8 +282,10 @@ xcrun simctl install <device> .derivedData-cli/Build/Products/Debug-iphonesimula
 xcrun simctl launch <device> org.lynxwebgpu.demo                # 씬 목록
 xcrun simctl launch <device> org.lynxwebgpu.demo -demo cube      # 목록을 건너뛰고 바로 진입
 
-# 시뮬레이터에는 터치를 주입할 방법이 없다. 기울인 카드를 회귀 확인하려면 각도를 고정한다:
+# 시뮬레이터에는 터치를 주입할 방법이 없다. 손으로 눌러야 보이는 상태는 런치 인자로 고정한다:
 xcrun simctl launch <device> org.lynxwebgpu.demo -demo interactive -cardTilt 0.42
+# -altMode 1 은 토글이 있는 씬(stencil·gpudriven·bundle)을 **기본이 아닌 쪽**으로 시작시킨다.
+xcrun simctl launch <device> org.lynxwebgpu.demo -demo bundle -altMode 1
 xcrun simctl io <device> screenshot .tmp/demo-cube.png
 ```
 

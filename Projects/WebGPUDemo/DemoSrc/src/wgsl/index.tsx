@@ -187,8 +187,14 @@ function setup({ device, context, format, report }: SceneContext) {
   })
   const info = device.createBuffer({
     size: 16,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.MAP_READ,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
     label: 'info',
+  })
+  // MAP_READ는 COPY_DST와만 조합할 수 있다(명세) — 리드백은 전용 스테이징 버퍼로 받는다.
+  const infoStaging = device.createBuffer({
+    size: 16,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    label: 'info.staging',
   })
 
   // 외부 텍스처 자리에는 보통 텍스처 뷰를 그대로 묶는다 (한 면짜리 비디오 프레임과 같은 모양).
@@ -279,13 +285,16 @@ function setup({ device, context, format, report }: SceneContext) {
     pass.draw(3)
     pass.end()
 
-    device.queue.submit([encoder.finish()])
-
     // 셰이더가 센 길이를 CPU가 한 번 확인한다 — 크기 표가 맞는지 눈이 아니라 숫자로 본다.
     frames += 1
-    if (!reported && frames > 10 && !reading) {
+    const wantsReadback = !reported && frames > 10 && !reading
+    if (wantsReadback) encoder.copyBufferToBuffer(info, 0, infoStaging, 0, 16)
+
+    device.queue.submit([encoder.finish()])
+
+    if (wantsReadback) {
       reading = true
-      info
+      infoStaging
         .mapAsync(GPUMapMode.READ)
         .then((buffer: ArrayBuffer) => {
           const values = new Uint32Array(buffer)
@@ -298,6 +307,7 @@ function setup({ device, context, format, report }: SceneContext) {
         })
         .catch((error: unknown) => report(`리드백 실패: ${String(error)}`))
         .finally(() => {
+          infoStaging.unmap()
           reading = false
         })
     }

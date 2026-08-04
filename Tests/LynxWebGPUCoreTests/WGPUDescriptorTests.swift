@@ -34,6 +34,60 @@ final class WGPUDescriptorTests: XCTestCase {
         XCTAssertNil(sampler.compare)
     }
 
+    func test_스텐실_상태_기본값은_아무것도_하지_않는다() throws {
+        let state = try WGPUDepthStencilState(from: WGPUValueReader(["format": "depth24plus-stencil8"]))
+
+        // 명세 기본값 — 비교는 항상 통과, 세 연산은 모두 keep. 그래서 결과에 영향이 없다.
+        XCTAssertEqual(state.stencilFront, WGPUStencilFaceState())
+        XCTAssertEqual(state.stencilFront.compare, .always)
+        XCTAssertEqual(state.stencilFront.failOp, .keep)
+        XCTAssertEqual(state.stencilFront.depthFailOp, .keep)
+        XCTAssertEqual(state.stencilFront.passOp, .keep)
+        XCTAssertEqual(state.stencilBack, WGPUStencilFaceState())
+        XCTAssertEqual(state.stencilReadMask, 0xFFFF_FFFF)
+        XCTAssertEqual(state.stencilWriteMask, 0xFFFF_FFFF)
+        XCTAssertFalse(state.usesStencil, "기본값만 있으면 스텐실 상태를 만들 이유가 없다")
+    }
+
+    func test_스텐실_앞뒤면을_따로_읽는다() throws {
+        let state = try WGPUDepthStencilState(from: WGPUValueReader([
+            "format": "stencil8",
+            "stencilFront": ["compare": "equal", "passOp": "replace"],
+            "stencilBack": ["compare": "never", "failOp": "increment-wrap"],
+            "stencilReadMask": 0x0F,
+            "stencilWriteMask": 0,
+        ]))
+
+        XCTAssertEqual(state.stencilFront.compare, .equal)
+        XCTAssertEqual(state.stencilFront.passOp, .replace)
+        XCTAssertEqual(state.stencilFront.failOp, .keep, "주지 않은 필드는 명세 기본값")
+        XCTAssertEqual(state.stencilBack.compare, .never)
+        XCTAssertEqual(state.stencilBack.failOp, .incrementWrap)
+        XCTAssertEqual(state.stencilReadMask, 0x0F)
+        XCTAssertEqual(state.stencilWriteMask, 0)
+        XCTAssertTrue(state.usesStencil)
+    }
+
+    func test_스텐실_연산_철자는_명세_그대로다() {
+        // JS가 문자열로 보내므로 철자가 곧 API다 — 바꾸면 조용히 "알 수 없는 값"이 된다.
+        XCTAssertEqual(
+            WGPUStencilOperation.allCases.map(\.rawValue),
+            ["keep", "zero", "replace", "invert",
+             "increment-clamp", "decrement-clamp", "increment-wrap", "decrement-wrap"]
+        )
+    }
+
+    func test_알수없는_스텐실_연산은_후보를_알려준다() {
+        XCTAssertThrowsError(try WGPUDepthStencilState(from: WGPUValueReader([
+            "format": "stencil8", "stencilFront": ["passOp": "incrementClamp"],
+        ]))) { error in
+            XCTAssertTrue(
+                "\(error)".contains("increment-clamp"),
+                "명세 철자를 후보로 보여 줘야 한다: \(error)"
+            )
+        }
+    }
+
     func test_바인드그룹_레이아웃은_리소스_종류를_정확히_하나_요구한다() throws {
         let buffer = try WGPUBindGroupLayoutEntry(from: WGPUValueReader([
             "binding": 0, "visibility": 0x1, "buffer": ["type": "read-only-storage"],

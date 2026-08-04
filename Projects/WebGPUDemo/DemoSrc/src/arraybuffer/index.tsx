@@ -42,9 +42,10 @@ type Outcome = { ok: boolean; detail: string }
 
 /** 바이트열을 버퍼에 올렸다가 되읽어 비교한다 — 올리기와 내리기를 한 번에 밟는다. */
 async function roundTrip(device: any, bytes: Uint8Array): Promise<Outcome> {
+  // MAP_READ는 COPY_DST와만 조합할 수 있다(명세). 왕복에는 그 둘이면 충분하다.
   const buffer = device.createBuffer({
     size: bytes.length,
-    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC | GPUBufferUsage.MAP_READ,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
     label: 'smoke.roundtrip',
   })
 

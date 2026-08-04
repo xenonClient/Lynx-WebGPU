@@ -115,6 +115,21 @@ public enum WGPUCompareFunction: String, CaseIterable, Sendable {
     case always
 }
 
+/// 스텐실 테스트/깊이 테스트 결과에 따라 스텐실 값을 어떻게 바꿀지.
+///
+/// `-clamp`는 0/255에서 멈추고 `-wrap`은 넘어가면 반대쪽으로 감긴다 — 섀도 볼륨처럼
+/// 겹침 횟수를 셀 때 둘의 차이가 결과를 가른다.
+public enum WGPUStencilOperation: String, CaseIterable, Sendable {
+    case keep
+    case zero
+    case replace
+    case invert
+    case incrementClamp = "increment-clamp"
+    case decrementClamp = "decrement-clamp"
+    case incrementWrap = "increment-wrap"
+    case decrementWrap = "decrement-wrap"
+}
+
 public enum WGPUPrimitiveTopology: String, CaseIterable, Sendable {
     case pointList = "point-list"
     case lineList = "line-list"
@@ -165,6 +180,15 @@ public enum WGPUVertexFormat: String, CaseIterable, Sendable {
         case .float32x4, .uint32x4, .sint32x4: return 16
         }
     }
+}
+
+/// `GPUQuerySet.type`.
+///
+/// 둘은 성격이 아주 다르다. `occlusion`은 "몇 개의 샘플이 살아남았나"라 **결정적**이고,
+/// `timestamp`는 GPU 시계라 같은 입력에도 값이 매번 다르다. 뒤엣것에 값 단언을 걸면 안 된다.
+public enum WGPUQueryType: String, CaseIterable, Sendable {
+    case occlusion
+    case timestamp
 }
 
 public enum WGPULoadOp: String, CaseIterable, Sendable {

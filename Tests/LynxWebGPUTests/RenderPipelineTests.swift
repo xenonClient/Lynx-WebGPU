@@ -324,7 +324,7 @@ final class RenderPipelineTests: XCTestCase {
             ["op": "createBuffer", "id": 2, "usage": TestUsage.storage | TestUsage.copyDst,
              "data": input.base64],
             ["op": "createBuffer", "id": 3, "size": 32,
-             "usage": TestUsage.storage | TestUsage.copySrc | TestUsage.mapRead],
+             "usage": TestUsage.storage | TestUsage.copySrc],
             ["op": "createComputePipeline", "id": 4, "layout": "auto",
              "compute": ["module": 1, "entryPoint": "double_values"]],
             ["op": "getBindGroupLayout", "id": 5, "pipeline": 4, "index": 0],
@@ -339,16 +339,7 @@ final class RenderPipelineTests: XCTestCase {
             ["op": "endPass"],
         ])
 
-        let expectation = expectation(description: "readBuffer")
-        var output: [Float] = []
-        harness.context.readBuffer(handle: 3, offset: 0, size: 32) { result in
-            if let data = result["data"] as? Data {
-                output = data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
-            }
-            expectation.fulfill()
-        }
-        wait(for: [expectation], timeout: 10)
-
+        let output = try harness.readBufferSync(handle: 3, as: Float.self, size: 32)
         XCTAssertEqual(output, [2, 4, 6, 8, 10, 12, 14, 16])
     }
 
@@ -382,7 +373,7 @@ final class RenderPipelineTests: XCTestCase {
             // count(4) + 패딩(12) + vec4f 2개(32) = 48바이트 → items 길이 2
             ["op": "createBuffer", "id": 4, "size": 48, "usage": TestUsage.storage],
             ["op": "createBuffer", "id": 5, "size": 16,
-             "usage": TestUsage.storage | TestUsage.copySrc | TestUsage.mapRead],
+             "usage": TestUsage.storage | TestUsage.copySrc],
             ["op": "createComputePipeline", "id": 6, "layout": "auto",
              "compute": ["module": 1, "entryPoint": "probe"]],
             ["op": "getBindGroupLayout", "id": 7, "pipeline": 6, "index": 0],
@@ -399,16 +390,7 @@ final class RenderPipelineTests: XCTestCase {
             ["op": "endPass"],
         ])
 
-        let expectation = expectation(description: "readBuffer")
-        var lengths: [UInt32] = []
-        harness.context.readBuffer(handle: 5, offset: 0, size: 16) { result in
-            if let data = result["data"] as? Data {
-                lengths = data.withUnsafeBytes { Array($0.bindMemory(to: UInt32.self)) }
-            }
-            expectation.fulfill()
-        }
-        wait(for: [expectation], timeout: 10)
-
+        let lengths = try harness.readBufferSync(handle: 5, as: UInt32.self, size: 16)
         XCTAssertEqual(Array(lengths.prefix(3)), [10, 3, 2])
     }
 

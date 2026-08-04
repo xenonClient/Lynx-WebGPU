@@ -39,6 +39,27 @@ public struct WGPUBufferDescriptor {
                 "초기 데이터(\(initialData.count)B)가 버퍼 크기(\(size)B)를 넘는다", path: reader.path
             )
         }
+        // 매핑 usage는 복사와만 조합할 수 있다. Metal은 `.storageModeShared` 하나로 전부 되지만,
+        // 여기서 안 막으면 `QUERY_RESOLVE | MAP_READ` 같은 조합이 브라우저에서만 거부된다.
+        try Self.validateMapUsage(usage, path: reader.path)
+    }
+
+    /// 명세의 매핑 usage 배타 규칙 — `MAP_READ`는 `COPY_DST`와만, `MAP_WRITE`는 `COPY_SRC`와만.
+    static func validateMapUsage(_ usage: WGPUBufferUsage, path: String?) throws {
+        let rules: [(flag: WGPUBufferUsage, name: String, allowed: WGPUBufferUsage, allowedName: String)] = [
+            (.mapRead, "MAP_READ", .copyDst, "COPY_DST"),
+            (.mapWrite, "MAP_WRITE", .copySrc, "COPY_SRC"),
+        ]
+        for rule in rules where usage.contains(rule.flag) {
+            let extra = usage.subtracting([rule.flag, rule.allowed])
+            guard extra.isEmpty else {
+                throw WGPUError.validation(
+                    "\(rule.name)는 \(rule.allowedName) 외의 usage와 함께 쓸 수 없다 "
+                        + "— 리드백은 \(rule.allowedName) 버퍼로 copyBufferToBuffer한 뒤 매핑할 것",
+                    path: path
+                )
+            }
+        }
     }
 }
 
@@ -282,11 +303,16 @@ public struct WGPUBindGroupEntry {
         binding = try reader.requiredInt("binding")
         let resourceReader = try reader.requiredObject("resource")
         if let buffer = resourceReader.optionalHandle("buffer") {
-            resource = .buffer(
-                handle: buffer,
-                offset: resourceReader.int("offset", default: 0),
-                size: resourceReader.optionalInt("size")
-            )
+            let offset = resourceReader.int("offset", default: 0)
+            let size = resourceReader.optionalInt("size")
+            // 음수가 들어오면 `arrayLength()`용 크기 표를 채울 때 UInt32 변환이 트랩한다 —
+            // 잘못된 인자로 프로세스를 죽이지 않는다는 계약을 지키려면 여기서 거른다.
+            guard offset >= 0, size.map({ $0 > 0 }) ?? true else {
+                throw WGPUError.validation(
+                    "바인딩의 offset은 0 이상, size는 1 이상이어야 한다", path: resourceReader.path
+                )
+            }
+            resource = .buffer(handle: buffer, offset: offset, size: size)
         } else if let sampler = resourceReader.optionalHandle("sampler") {
             resource = .sampler(sampler)
         } else if let view = resourceReader.optionalHandle("textureView") {
@@ -457,6 +483,51 @@ public struct WGPUPrimitiveState {
     }
 }
 
+/// 앞면/뒷면 각각의 스텐실 동작 (`GPUStencilFaceState`).
+///
+/// 명세 기본값은 "아무것도 하지 않음"이다 — 비교는 `always`(항상 통과), 세 연산은 모두 `keep`.
+/// 그래서 `stencilFront`/`stencilBack`을 주지 않으면 스텐실이 결과에 영향을 주지 않는다.
+public struct WGPUStencilFaceState: Equatable {
+    public var compare: WGPUCompareFunction
+    public var failOp: WGPUStencilOperation
+    public var depthFailOp: WGPUStencilOperation
+    public var passOp: WGPUStencilOperation
+
+    public init(
+        compare: WGPUCompareFunction = .always,
+        failOp: WGPUStencilOperation = .keep,
+        depthFailOp: WGPUStencilOperation = .keep,
+        passOp: WGPUStencilOperation = .keep
+    ) {
+        self.compare = compare
+        self.failOp = failOp
+        self.depthFailOp = depthFailOp
+        self.passOp = passOp
+    }
+
+    public init(from reader: WGPUValueReader?) throws {
+        guard let reader else {
+            self.init()
+            return
+        }
+        self.init(
+            compare: try reader.enumValue("compare", default: WGPUCompareFunction.always),
+            failOp: try reader.enumValue("failOp", default: WGPUStencilOperation.keep),
+            depthFailOp: try reader.enumValue("depthFailOp", default: WGPUStencilOperation.keep),
+            passOp: try reader.enumValue("passOp", default: WGPUStencilOperation.keep)
+        )
+    }
+
+    /// 스텐실 값을 **쓰지** 않는 상태인가 — `stencilReadOnly` 패스에서 허용되는 조건이다.
+    /// (비교만 하는 것은 읽기이므로 `compare`는 보지 않는다.)
+    public var isWriteFree: Bool {
+        failOp == .keep && depthFailOp == .keep && passOp == .keep
+    }
+
+    /// 스텐실 값을 건드리지도 읽지도 않는 상태인가 — 기본값이면 상태를 만들 필요가 없다.
+    public var isNoOp: Bool { self == WGPUStencilFaceState() }
+}
+
 public struct WGPUDepthStencilState {
     public var format: WGPUTextureFormat
     public var depthWriteEnabled: Bool
@@ -464,6 +535,10 @@ public struct WGPUDepthStencilState {
     public var depthBias: Int
     public var depthBiasSlopeScale: Double
     public var depthBiasClamp: Double
+    public var stencilFront: WGPUStencilFaceState
+    public var stencilBack: WGPUStencilFaceState
+    public var stencilReadMask: Int
+    public var stencilWriteMask: Int
 
     public init(from reader: WGPUValueReader) throws {
         format = try reader.requiredEnum("format", WGPUTextureFormat.self)
@@ -472,10 +547,27 @@ public struct WGPUDepthStencilState {
         depthBias = reader.int("depthBias", default: 0)
         depthBiasSlopeScale = reader.double("depthBiasSlopeScale", default: 0)
         depthBiasClamp = reader.double("depthBiasClamp", default: 0)
+        stencilFront = try WGPUStencilFaceState(from: reader.object("stencilFront"))
+        stencilBack = try WGPUStencilFaceState(from: reader.object("stencilBack"))
+        stencilReadMask = reader.int("stencilReadMask", default: 0xFFFF_FFFF)
+        stencilWriteMask = reader.int("stencilWriteMask", default: 0xFFFF_FFFF)
         guard format.isDepthOrStencil else {
             throw WGPUError.validation("depthStencil.format은 깊이/스텐실 포맷이어야 한다", path: reader.path)
         }
+        // 스텐실 상태를 줬는데 포맷에 스텐실 성분이 없으면 Metal은 조용히 무시한다 —
+        // 스텐실 어태치먼트 없는 파이프라인에 스텐실 테스트만 붙은 물건이 오류 없이 생성되어
+        // "스텐실 마스킹이 왜 안 먹지"를 단서 없이 디버깅하게 된다.
+        guard !usesStencil || format.hasStencil else {
+            throw WGPUError.validation(
+                "stencilFront/stencilBack을 기본값 밖으로 주려면 format에 스텐실 성분이 있어야 한다 "
+                    + "(받은 것: \(format.rawValue))",
+                path: reader.path
+            )
+        }
     }
+
+    /// 스텐실 테스트를 실제로 쓰는가 — 어느 면이든 기본값이 아니면 스텐실 상태를 만든다.
+    public var usesStencil: Bool { !stencilFront.isNoOp || !stencilBack.isNoOp }
 }
 
 public struct WGPUMultisampleState {
@@ -555,6 +647,7 @@ public struct WGPURenderPassDepthStencilAttachment {
     public var stencilClearValue: Int
     public var stencilLoadOp: WGPULoadOp?
     public var stencilStoreOp: WGPUStoreOp?
+    public var stencilReadOnly: Bool
 
     public init(from reader: WGPUValueReader) throws {
         view = try reader.requiredHandle("view")
@@ -565,12 +658,42 @@ public struct WGPURenderPassDepthStencilAttachment {
         stencilClearValue = reader.int("stencilClearValue", default: 0)
         stencilLoadOp = try reader.optionalEnum("stencilLoadOp", WGPULoadOp.self)
         stencilStoreOp = try reader.optionalEnum("stencilStoreOp", WGPUStoreOp.self)
+        stencilReadOnly = reader.bool("stencilReadOnly", default: false)
+        // 명세는 readOnly와 load/store op을 함께 주는 것을 금지한다 — 둘이 모순이기 때문이다
+        // ("쓰지 않겠다"면서 저장 방식을 정하는 셈).
+        guard !depthReadOnly || (depthLoadOp == nil && depthStoreOp == nil) else {
+            throw WGPUError.validation(
+                "depthReadOnly와 depthLoadOp/depthStoreOp는 함께 줄 수 없다", path: reader.path
+            )
+        }
+        guard !stencilReadOnly || (stencilLoadOp == nil && stencilStoreOp == nil) else {
+            throw WGPUError.validation(
+                "stencilReadOnly와 stencilLoadOp/stencilStoreOp는 함께 줄 수 없다", path: reader.path
+            )
+        }
+    }
+}
+
+/// 패스 경계에서 타임스탬프를 찍을 자리 (`GPURenderPassTimestampWrites`).
+///
+/// 두 인덱스는 각각 생략할 수 있다 — 시작만, 끝만 찍는 것도 명세상 유효하다.
+public struct WGPUPassTimestampWrites {
+    public var querySet: WGPUHandle
+    public var beginningOfPassWriteIndex: Int?
+    public var endOfPassWriteIndex: Int?
+
+    public init(from reader: WGPUValueReader) throws {
+        querySet = try reader.requiredHandle("querySet")
+        beginningOfPassWriteIndex = reader.optionalInt("beginningOfPassWriteIndex")
+        endOfPassWriteIndex = reader.optionalInt("endOfPassWriteIndex")
     }
 }
 
 public struct WGPURenderPassDescriptor {
     public var colorAttachments: [WGPURenderPassColorAttachment]
     public var depthStencilAttachment: WGPURenderPassDepthStencilAttachment?
+    public var occlusionQuerySet: WGPUHandle?
+    public var timestampWrites: WGPUPassTimestampWrites?
     public var label: String?
 
     public init(from reader: WGPUValueReader) throws {
@@ -578,7 +701,89 @@ public struct WGPURenderPassDescriptor {
             .map(WGPURenderPassColorAttachment.init(from:))
         depthStencilAttachment = try reader.object("depthStencilAttachment")
             .map(WGPURenderPassDepthStencilAttachment.init(from:))
+        occlusionQuerySet = reader.optionalHandle("occlusionQuerySet")
+        timestampWrites = try reader.object("timestampWrites").map(WGPUPassTimestampWrites.init(from:))
         label = reader.optionalString("label")
+    }
+}
+
+public struct WGPUComputePassDescriptor {
+    public var timestampWrites: WGPUPassTimestampWrites?
+    public var label: String?
+
+    public init(from reader: WGPUValueReader?) throws {
+        timestampWrites = try reader?.object("timestampWrites").map(WGPUPassTimestampWrites.init(from:))
+        label = reader?.optionalString("label")
+    }
+}
+
+// MARK: - 쿼리
+
+public struct WGPUQuerySetDescriptor {
+    /// 명세가 정한 쿼리셋 크기 상한 (`GPUQuerySetDescriptor.count` ≤ 4096).
+    public static let maxCount = 4096
+
+    public var type: WGPUQueryType
+    public var count: Int
+    public var label: String?
+
+    public init(from reader: WGPUValueReader) throws {
+        type = try reader.requiredEnum("type", WGPUQueryType.self)
+        count = try reader.requiredInt("count")
+        label = reader.optionalString("label")
+        // 상한은 명세가 정한 값이다. Metal은 훨씬 큰 쿼리셋도 받아 주지만, 여기서 막지 않으면
+        // 브라우저에서만 깨지는 코드가 나간다 (`INDIRECT`/`QUERY_RESOLVE` usage와 같은 기준).
+        guard count > 0, count <= WGPUQuerySetDescriptor.maxCount else {
+            throw WGPUError.validation(
+                "쿼리 개수는 1 이상 \(WGPUQuerySetDescriptor.maxCount) 이하여야 한다 (받은 값 \(count))",
+                path: reader.fieldPath("count")
+            )
+        }
+    }
+}
+
+// MARK: - 렌더 번들
+
+/// `GPURenderBundleEncoder`의 디스크립터.
+///
+/// 번들은 **어떤 모양의 패스에서 실행될지**를 미리 선언한다. 그 선언이 실제 패스와 어긋나면
+/// 명세상 오류다 — 이 구현은 번들을 명령 목록으로 되풀이하므로 Metal이 대신 잡아 주지 않아
+/// `executeBundles`에서 직접 확인한다.
+public struct WGPURenderBundleDescriptor {
+    /// 컬러 어태치먼트별 포맷. `null`은 "그 슬롯은 비어 있다"는 뜻이다.
+    public var colorFormats: [WGPUTextureFormat?]
+    public var depthStencilFormat: WGPUTextureFormat?
+    public var sampleCount: Int
+    /// 이 번들이 깊이/스텐실을 **쓰지 않겠다**고 선언했는가.
+    /// read-only 패스에서 실행하려면 번들도 read-only여야 한다 (명세 요구).
+    public var depthReadOnly: Bool
+    public var stencilReadOnly: Bool
+    public var label: String?
+
+    public init(from reader: WGPUValueReader) throws {
+        colorFormats = try reader.strings("colorFormats").map { raw in
+            guard let raw else { return nil }
+            guard let format = WGPUTextureFormat(rawValue: raw) else {
+                throw WGPUError.validation(
+                    "알 수 없는 컬러 포맷 \"\(raw)\"", path: reader.fieldPath("colorFormats")
+                )
+            }
+            return format
+        }
+        depthStencilFormat = try reader.optionalEnum("depthStencilFormat", WGPUTextureFormat.self)
+        sampleCount = reader.int("sampleCount", default: 1)
+        depthReadOnly = reader.bool("depthReadOnly", default: false)
+        stencilReadOnly = reader.bool("stencilReadOnly", default: false)
+        label = reader.optionalString("label")
+        // 명세는 어태치먼트가 최소 하나 있기를 요구한다. 없으면 이 구현에서도 결국
+        // `makeRenderCommandEncoder`가 실패하지만, 오류가 몇 프레임 뒤 엉뚱한 자리에서 난다.
+        guard colorFormats.contains(where: { $0 != nil }) || depthStencilFormat != nil else {
+            throw WGPUError.validation(
+                "번들에는 어태치먼트가 최소 하나 있어야 한다 "
+                    + "(colorFormats에 non-null 하나 또는 depthStencilFormat)",
+                path: reader.path
+            )
+        }
     }
 }
 
