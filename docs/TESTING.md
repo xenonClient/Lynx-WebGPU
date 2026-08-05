@@ -219,6 +219,20 @@ try XCTSkipUnless(harness.supports(.indirectArguments), "간접 인자를 지원
 
 새 기능을 넣으면 위 표에 행을 추가하고 같은 컨벤션으로 테스트를 쓴다.
 
+## 6-1. 회귀 훅 (자동)
+
+작업이 끝날 때 `.claude/hooks/regression.sh`가 돈다 (Stop 훅). 변경이 없으면 건너뛴다.
+
+| 검사 | 왜 |
+|---|---|
+| `npm run typecheck` | JSDoc 누락은 여기서만 걸린다 |
+| `webgpu.d.ts` 드리프트 | 공개 선언은 **JSDoc에서 뽑는 산출물**이다 — 실제로 반복된 드리프트 |
+| 데모 사본 드리프트 | `DemoSrc/src/webgpu.js`가 원본과 다르면 데모만 옛 동작을 한다 |
+| `npm test` · `swift test` | — |
+
+데모 앱 빌드·시뮬레이터 실행은 **일부러 뺐다** (몇 분). 브리지나 씬을 고쳤으면 §8을 직접 돌린다.
+`LYNXWEBGPU_SKIP_REGRESSION=1`로 끌 수 있다.
+
 ## 7. 외부 WGSL 코퍼스 리포트
 
 직접 쓴 테스트만으로는 "우리가 생각한 문법"만 검증하게 된다. 실제 세상의 셰이더가 얼마나 그대로
@@ -296,7 +310,7 @@ LYNXWEBGPU_WGSL_CORPUS=… LYNXWEBGPU_WGSL_DUMP=/tmp/msl swift test --filter Sam
 | `arraybuffer` | **Lynx 값 변환기 스모크** — 바이트열이 `ArrayBuffer`로 **양방향** 오가는지 본다. 올릴 때는 커맨드의 중첩 위치(`commands[i].data`), 내릴 때는 `mapAsync`. 페이로드 타입까지 단언한다. 화면이 초록이면 통과, 빨강이면 실패 |
 | `hdr` | **HDR 게인맵 재구성** — `loadAsset`으로 받은 애셋을 컴퓨트로 `rgba16float`에 되살리고, 좌우로 갈라 8비트 원본과 같은 조건으로 비교한다. 드래그로 경계 이동. 버튼 셋: 노출 ±, **클리핑**(원본 선형값이 1.0을 넘는 픽셀만 표시 — 오른쪽에만 떠야 정상), **EDR**(캔버스를 `rgba16float` + `toneMapping: extended`로 재configure). **EDR은 실기기에서만 확인된다** |
 | `scrollpass` | **스크롤 통과** — `<scroll-view>` 리스트 **위에** 캔버스 밴드가 형제로 겹친다. 밴드를 세로로 드래그: `passthrough-touches` ON이면 리스트가 스크롤되고 캔버스는 `touchcancel`을 받는다, OFF면 웹 기본처럼 스크롤이 막히고 `touchmove`가 계속 온다. HUD의 스크롤 오프셋·터치 로그로 판정한다. **터치 주입 수단이 없어 손으로 만져야 한다** |
-| `threelab` | **three.js 고난도 조합 10종** — three가 던질 수 있는 가장 무거운 것들을 한 화면에: TSL 절차적 머티리얼(노이즈→색·정점 변형) · **그림자 맵**(`textureSampleCompare`, 한 줄을 훑어 명암 차로 단언) · **GPU 컴퓨트 → 스토리지 버퍼**(TSL `Fn`이 만든 컴퓨트가 값을 채우고 되읽어 확인) · 컴퓨트 결과를 인스턴스가 읽는 되먹임 · 인스턴싱 4096개 · **bloom 포스트프로세싱**. 합성 화면은 절차적 토러스 노트 + 그림자 + 입자 4096개가 60fps로 돈다. **`copyExternalImageToTexture`의 `flipY` 누락에 이어, 드로어블 뷰 캐시 한계를 찾아낸 화면**이다 (아래 §8-1) |
+| `threelab` | **three.js 고난도 조합 10종** — three가 던질 수 있는 가장 무거운 것들을 한 화면에: TSL 절차적 머티리얼(노이즈→색·정점 변형) · **그림자 맵**(`textureSampleCompare`, 한 줄을 훑어 명암 차로 단언) · **GPU 컴퓨트 → 스토리지 버퍼**(TSL `Fn`이 만든 컴퓨트가 값을 채우고 되읽어 확인) · 컴퓨트 결과를 인스턴스가 읽는 되먹임 · 인스턴싱 4096개 · **bloom 포스트프로세싱**. 합성 화면은 절차적 토러스 노트 + 그림자 + 입자 4096개가 60fps로 돈다. **`copyExternalImageToTexture`의 `flipY` 누락과 프레임 경계 버그를 찾아낸 화면**이다 — present가 `submit()`마다 일어나 한 프레임의 여러 패스가 드로어블을 공유하지 못하던 것 (`docs/WEBGPU-API.md` §8) |
 | `contracts` | **계약 점검 10종** — 검토에서 지적된 자리들을 실기에서 확인한다. `copyBufferToBuffer`의 기본값·범위·0바이트, **정수 vec3 유니폼 배치를 셰이더가 읽은 값으로**(`packed_int3`/`packed_uint3`), 번들의 인덱스 버퍼 격리 양방향, occlusion 쿼리 차단(shim 미노출 + 네이티브 거부 두 겹), **드로어블 포맷 역방향 매핑**(일부러 어긋난 번들의 거부 메시지가 패스의 실제 포맷 이름을 실어 준다 — 네이티브 안에만 있는 표를 밖에서 보는 유일한 통로다), **디바이스 둘의 핸들이 겹치지 않는지** |
 | `images` | **이미지 경로 체크리스트 13종** — ASTC 4x4·6x5와 BC1 블록을 손으로 인코딩해 올리고 **되읽은 픽셀 색으로** 확인한다. 블록 경계·렌더 타깃 거부, `createImageBitmap`의 색·방향·`flipY`·부분 복사까지. 기기가 못 하는 압축 계열은 실패가 아니라 `–`로 표시한다 (시뮬레이터에는 BC가 없다) |
 | `spec` | **명세 표면 체크리스트 14종** — 이번에 채운 기능(디버그 마커·`getCompilationInfo`·`adapter.info`·부분 매핑·`clearBuffer`·비동기 파이프라인·`uncapturederror`·core 포맷·`unconfigure`)을 **진짜 GPU와 진짜 브리지**를 지나 값으로 확인한다. 단위 테스트가 목으로 맞춘 계약이 실기에서도 맞는지 보는 자리다 |

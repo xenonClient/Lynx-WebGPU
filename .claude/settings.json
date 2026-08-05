@@ -13,6 +13,18 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/regression.sh\"",
+            "statusMessage": "회귀 테스트 (JS 타입·선언·사본 · JS/Swift 테스트)",
+            "timeout": 600
+          }
+        ]
+      }
     ]
   }
 }

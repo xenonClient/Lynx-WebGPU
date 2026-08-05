@@ -724,34 +724,12 @@ if (error) fallBackToSimplePipeline()
 만료는 present · `configure()` · 캔버스 리사이즈에서 일어난다. 설정 전에 부르면
 `InvalidStateError`다.
 
+이 둘을 맞추고 나서 three.js의 `PostProcessing`을 **캔버스로 직접** 내보내는 경로가 열렸다
+(`threelab` 데모 씬 — 씬 패스 → bloom 밉 체인 → 출력 패스가 한 프레임에 돌고 60fps·오류 0).
+그전에는 첫 제출이 드로어블을 내보내고 뷰를 만료시켜 남은 패스가 통째로 거부됐다.
+
 > 프레임 티커는 **참조로 센다.** 한 씬이 잠깐 `startFrameLoop`을 열었다 닫아도 rAF 펌프까지
 > 같이 멈추지 않는다 — 그러면 화면이 조용히 정지한다.
-
-### 알려진 한계 — 포스트프로세싱을 **캔버스로 직접** 내보내는 경로
-
-three.js의 `PostProcessing`을 렌더 타깃이 아니라 **캔버스로** 내보내면 두 번째 프레임부터
-`beginRenderPass`가 "GPUTextureView가 존재하지 않는다"로 깨진다 (`threelab` 데모 씬의 ⑧이
-2프레임 만에 재현한다). 같은 bloom을 **렌더 타깃으로** 내보내는 경로는 멀쩡하다.
-
-프레임 경계를 틱 끝으로 옮긴 뒤(위) **한 프레임 안의 여러 패스는 해결됐다.** 남은 것은
-three가 그 뷰를 **프레임을 넘겨** 재사용하는 자리다:
-
-- three는 렌더 타깃 디스크립터에 **텍스처 뷰를 캐시**한다 (`_getRenderPassDescriptor` —
-  크기·샘플 수가 바뀌거나 "external texture"일 때만 무효화). 자기 주석에 *"External textures
-  can change every frame, so their descriptors must not be cached"*라고 적어 두었는데,
-  캔버스 드로어블에는 그 표시가 붙지 않는다 (지금은 XR 텍스처에만 붙는다).
-- 명세는 present에서 현재 텍스처를 만료시킨다. **프레임을 넘긴 뷰는 브라우저에서도 무효다** —
-  그러니 거부가 맞다. 브라우저에서 three가 무사한 것은 캔버스 렌더가
-  `_getDefaultRenderPassDescriptor()`(매번 새로 받는 경로)를 타기 때문이고, 캐시하는
-  `_getRenderPassDescriptor()` 경로로 캔버스가 들어오면 거기서도 같은 문제가 된다.
-
-**조용히 넘기지 않는 쪽을 골랐다.** 만료를 늦춰 오류를 없앨 수는 있지만, 그러면 이미
-present된 텍스처에 그리게 되어 **화면이 검은 채로 아무 말이 없다.** 지금은 원인이 그대로
-오류에 적혀 나온다.
-
-우회는 포스트프로세싱 결과를 렌더 타깃에 받아 마지막에 한 번만 캔버스로 옮기는 것이다.
-`threelab` 씬의 합성 화면이 그 구성으로 60fps로 돈다 (절차적 머티리얼 · 그림자 · 컴퓨트
-파티클 4096개 · 인스턴싱).
 
 ### 기기에 따라 갈리는 것
 

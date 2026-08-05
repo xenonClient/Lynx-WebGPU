@@ -119,6 +119,20 @@ git tag -a 0.2.0 -m "0.2.0 — 요약"
 
 태그를 문서 갱신 커밋 **뒤에** 옮기는 것을 잊지 말 것 (`git tag -f <버전> HEAD`).
 
+## 회귀 테스트 훅
+
+작업이 끝날 때 `.claude/hooks/regression.sh`가 자동으로 돈다 (`.claude/settings.json`의 Stop 훅).
+**변경이 없으면 건너뛴다.** 도는 것:
+
+1. `npm run typecheck` — JSDoc이 빠지면 여기서 걸린다
+2. `webgpu.d.ts` 드리프트 — 다시 뽑아 보고 달라지면 실패 (구현보다 뒤처졌다는 뜻)
+3. 데모 사본(`DemoSrc/src/webgpu.js`) 드리프트
+4. `npm test` · `swift test`
+
+층이 넷이라(엔진 · shim · 트랜스파일러 · 데모 번들) 한 층만 고치고 넘어가면 조용히 어긋난다.
+**데모 앱 빌드와 시뮬레이터 실행은 넣지 않았다** — 몇 분이 걸린다. 브리지나 씬을 고쳤으면
+`docs/TESTING.md` §8의 명령을 직접 돌릴 것. 건너뛰려면 `LYNXWEBGPU_SKIP_REGRESSION=1`.
+
 ## Git Conventions
 
 - Commit format: `type: Korean description` (예: `feat: 컴퓨트 파이프라인 지원`, `fix: vec3 유니폼 배치 오류 수정`)

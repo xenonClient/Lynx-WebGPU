@@ -24,9 +24,10 @@ function attachStreamCounter(device: any) {
   const recorder = device._recorder
   const originalFlush = recorder.flush.bind(recorder)
   let logged = 0
-  // 주의: flush의 인자(present)를 반드시 그대로 전달한다 — 삼키면 내부 제출이 프레임
-  // 제출로 둔갑해, 프레임 중간 present 버그를 계측이 다시 만든다.
-  recorder.flush = (present?: boolean) => {
+  // 주의: flush의 **모든 인자**를 그대로 전달한다. `present`를 삼키면 내부 제출이 프레임
+  // 제출로 둔갑하고, 두 번째 인자(`presentOnly`)를 삼키면 틱 마무리 배치가 네이티브까지
+  // 가지 못해 화면이 멈춘다 — 계측이 관찰 대상을 망가뜨리는 자리다.
+  recorder.flush = (present?: boolean, ...rest: any[]) => {
     if (recorder.pending.length > 0) {
       if (present === false) streamStats.internalBatches += 1
       else streamStats.frameBatches += 1
@@ -36,7 +37,7 @@ function attachStreamCounter(device: any) {
         logged += 1
       }
     }
-    return originalFlush(present)
+    return originalFlush(present, ...rest)
   }
 }
 

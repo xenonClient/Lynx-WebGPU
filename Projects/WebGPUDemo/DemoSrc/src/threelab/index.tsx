@@ -36,7 +36,7 @@ const CHECK_LABELS = [
   '컴퓨트 결과를 인스턴스가 읽는다',
   '인스턴싱 4096개',
   '포스트프로세싱 bloom (렌더 타깃으로)',
-  '포스트프로세싱을 캔버스로 (프레임 경계)',
+  '포스트프로세싱을 캔버스로 (합성 루프에서)',
   '전체 합성 프레임 루프',
   '커맨드 스트림 무오류',
 ]
@@ -159,9 +159,14 @@ function ThreeLabScene() {
         let batch = 0
         const created = new Map<number, number>()
         const drawables = new Set<number>()
+        const viewSource = new Map<number, number>()
+        const acquisitions: string[] = []
         const fromDrawable = new Set<number>()
         const destroyed = new Map<number, number>()
-        recorder.flush = (present?: boolean) => {
+        // **인자를 전부 넘긴다.** 두 번째 인자(`presentOnly`)를 삼키면 틱 마무리 배치가
+        // 네이티브까지 가지 못해 present도 만료도 일어나지 않는다 — 계측이 관찰 대상을
+        // 망가뜨리는 전형적인 자리다 (여기서 실제로 하루를 썼다).
+        recorder.flush = (present?: boolean, ...rest: any[]) => {
           const ops = recorder.pending.map((command: any) => {
             const id = command.id !== undefined ? `#${command.id}` : ''
             const view = command.colorAttachments ? `<${command.colorAttachments[0]?.view}` : ''
@@ -175,11 +180,13 @@ function ThreeLabScene() {
             if (command.op === 'getCurrentTexture') drawables.add(command.id)
             if (command.op === 'createTextureView') {
               created.set(command.id, batch)
+              viewSource.set(command.id, command.texture)
               if (drawables.has(command.texture)) fromDrawable.add(command.id)
             }
+            if (command.op === 'getCurrentTexture') acquisitions.push(`${command.id}@${batch}`)
             if (command.op === 'destroy') destroyed.set(command.id, batch)
           }
-          const result = originalFlush(present)
+          const result = originalFlush(present, ...rest)
           if (result && result.ok === false && dumped < 1) {
             dumped += 1
             // 문제의 핸들이 만들어진 적은 있는지, 누가 언제 destroy 했는지.
@@ -189,10 +196,10 @@ function ThreeLabScene() {
             const id = failing ? Number(failing[1]) : -1
             setErrorLines((lines) => [
               ...lines,
-              `#${id} 생성 배치 ${created.get(id) ?? '없음'}`
-                + ` · destroy ${destroyed.get(id) ?? '없음'}`
-                + ` · 지금 ${batch}`
-                + ` · 드로어블 뷰? ${fromDrawable.has(id) ? '예' : '아니오'}`,
+              `#${id} 생성 배치 ${created.get(id) ?? '없음'} · 지금 ${batch}`
+                + ` · 소스 텍스처 #${viewSource.get(id)}`
+                + ` · 드로어블? ${fromDrawable.has(id) ? '예' : '아니오'}`,
+              `획득 이력(뒤 6개): ${acquisitions.slice(-6).join(' ')}`,
               `실패(${ops.length}${present === false ? 'I' : 'P'}) ${ops.slice(0, 8).join(' ')}…`,
             ])
           }
@@ -337,12 +344,17 @@ function ThreeLabScene() {
       const stepCompute = Fn(() => {
         const position = positions.element(instanceIndex)
         const velocity = velocities.element(instanceIndex)
+        velocity.y.addAssign(float(-0.02))          // 중력
         position.addAssign(velocity.mul(0.016))
-        // 바닥에 닿으면 위로 되돌린다 — 상태가 실제로 누적되는지 눈으로 보이게 한다.
+        // 바닥에 닿으면 위로 되돌린다 — **속도도 함께 되돌려야 한다.**
+        //
+        // 위치만 되돌리면 `velocity.y`가 매 프레임 −0.02씩 무한히 쌓여, 몇 초 뒤에는
+        // 입자가 화면을 스치듯 지나간다 (실제로 그렇게 보였다). 상태가 누적되는지 보이게
+        // 하려는 씬이라 더더욱, 누적되면 안 되는 값은 분명히 끊어 준다.
         If(position.y.lessThan(0.0), () => {
           position.y.assign(4.0)
+          velocity.y.assign(float(-0.2))
         })
-        velocity.y.addAssign(float(-0.02))
       })().compute(COUNT)
 
       await check(3, async () => {
@@ -463,11 +475,9 @@ function ThreeLabScene() {
       camera.position.set(0, 3.4, 9)
       camera.lookAt(0, 2, 0)
 
-      // 합성 화면은 포스트프로세싱을 **끄고** 돈다. 프레임 경계를 틱 끝으로 옮겨 한 프레임의
-      // 여러 패스가 드로어블을 공유할 수 있게 됐지만, three가 렌더 타깃 디스크립터에 캐시한
-      // 캔버스 뷰를 **프레임을 넘겨** 재사용하는 자리(⑧)는 남아 있다 — 명세대로라면 present
-      // 시점에 만료된 뷰이므로 거부가 맞다. 나머지는 그대로 60fps로 돈다.
-      const usePost = false
+      // 포스트프로세싱까지 켜고 돈다 — 프레임 경계를 틱 끝으로 옮기고 `getCurrentTexture`를
+      // 명세대로(만료 전까지 같은 텍스처) 고친 뒤로 이 경로가 열렸다.
+      const usePost = true
       const composite = new THREE.PostProcessing(renderer)
       const scenePass = pass(scene, camera)
       composite.outputNode = scenePass.add(bloom(scenePass, 0.6, 0.35, 0.65))
@@ -507,58 +517,19 @@ function ThreeLabScene() {
         if (frames === 40) {
           const fps = Math.round(39000 / Math.max(elapsed - startTime, 1))
           mark(CHECK_COMPOSITE, 'ok', `${fps}fps · 입자 ${COUNT}개`)
+          // ⑧ 포스트프로세싱을 **캔버스로 직접** — 합성 루프가 곧 그 검증이다.
+          //
+          //   한 프레임에 패스가 여러 개 돈다 (씬 → bloom 밉 체인 → 출력). 프레임 경계가
+          //   `submit()`이었을 때는 첫 제출이 드로어블을 내보내고 뷰를 만료시켜, 남은 패스가
+          //   통째로 거부됐다. 지금은 명세대로 **틱의 끝**에 한 번만 present한다.
+          mark(CHECK_CANVAS_POST, streamStats.errors === 0 ? 'ok' : 'fail',
+            streamStats.errors === 0 ? `${frames}프레임 · 오류 0` : `오류 ${streamStats.errors}건`)
           if (streamStats.errors === 0) mark(CHECK_STREAM, 'ok', '0건')
           setStats(`합성 프레임 ${frames} · 오류 ${streamStats.errors}`)
         }
         if (frames > 40 && frames % 120 === 0) {
           const fps = Math.round(((frames - 1) * 1000) / Math.max(elapsed - (startTime || 0), 1))
           setStats(`합성 프레임 ${frames} · ${fps}fps · 오류 ${streamStats.errors}`)
-        }
-      })
-
-      // ⑧ 포스트프로세싱을 **캔버스로** 내보내면 깨진다 — 이 씬이 찾아낸 한계다.
-      //
-      //   three는 렌더 타깃 디스크립터에 **텍스처 뷰를 캐시**한다
-      //   (`_getRenderPassDescriptor`, 크기·샘플 수가 바뀔 때만 무효화). 한 **프레임 안의**
-      //   여러 패스는 프레임 경계를 틱 끝으로 옮겨 해결됐지만, 그 뷰를 **프레임을 넘겨**
-      //   재사용하는 자리는 남는다 — 명세대로면 present에서 만료된 뷰라 거부가 맞다.
-      //
-      //   렌더 타깃으로 내보내는 경로(⑦)는 멀쩡하다. 캔버스로 직접 내보낼 때만 걸린다.
-      //   **합성 루프를 띄운 뒤에 돈다** — 이 프로브가 three의 디스크립터 캐시를 오염시켜
-      //   뒤따르는 화면까지 검게 만들기 때문이다 (진단이 관찰 대상을 망가뜨리면 안 된다).
-      await check(CHECK_CANVAS_POST, async () => {
-        const probe = new THREE.Scene()
-        probe.background = new THREE.Color(0, 0, 0)
-        probe.add(new THREE.Mesh(
-          new THREE.PlaneGeometry(0.5, 0.5),
-          new THREE.MeshBasicNodeMaterial({ color: 0xffffff })
-        ))
-        const probePass = pass(probe, ortho)
-        const probePost = new THREE.PostProcessing(renderer)
-        probePost.outputNode = probePass.add(bloom(probePass, 1.0, 0.4, 0.0))
-
-        const before = streamStats.errors
-        // **프레임 루프 안에서** 두 프레임을 돌린다 — present 시점이 틱의 끝이므로,
-        // 한 프레임 안의 여러 패스가 드로어블 뷰를 공유할 수 있어야 한다.
-        // (루프 밖에서 돌리면 submit마다 present라 예전 그대로 깨진다 — 그건 브라우저의
-        //  "태스크 끝에 present"와 다른 자리이므로 재현이 아니라 오용이다.)
-        // **rAF로 돈다** — three의 애니메이션 루프와 같은 펌프를 쓴다. 여기서 별도로
-        // `startFrameLoop`을 열었다 닫으면 그 펌프와 네이티브 티커 소유권이 엇갈린다.
-        await new Promise((resolve) => {
-          let frames = 0
-          const step = () => {
-            probePost.render()
-            frames += 1
-            if (frames >= 2) resolve(undefined)
-            else requestAnimationFrame(step)
-          }
-          requestAnimationFrame(step)
-        })
-        probePost.dispose()
-        const leaked = streamStats.errors - before
-        return {
-          ok: leaked === 0,
-          detail: leaked === 0 ? '오류 0 · 두 프레임' : `오류 ${leaked}건 — 드로어블 뷰 캐시`,
         }
       })
 
