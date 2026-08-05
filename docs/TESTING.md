@@ -11,7 +11,7 @@ GPU 코드는 "돌려 보고 눈으로 확인"에 기대기 쉽다. 이 저장�
 | Shader (WGSL → MSL) | 문자열 단언 **+ 실제 Metal 컴파일러 통과** | `MetalCompilerHarness` |
 | Metal 백엔드 | 오프스크린 렌더 후 **픽셀 값 단언** | `RenderHarness` |
 | 커맨드 해석기 | 오류 누적·경로·핸들 수명 계약 | `RenderHarness` |
-| Lynx 브리지 | 컴파일 검증 + 호스트 앱 수동 확인 | `xcodebuild` |
+| Lynx 브리지 | 컴파일 검증 + 호스트 앱 수동 확인 (**데모 앱 빌드로만** — SPM 타깃이 아니다) | `xcodebuild` |
 | JS 클라이언트 | Swift 상수와의 값 일치 + 동작 검증(바이너리 경로·캐시·수명) | `JSConstantParityTests`, `JS/tests` (node:test) |
 
 브리지는 Lynx 런타임이 있어야 의미가 있으므로 단위 테스트 대상이 아니다 —
@@ -46,13 +46,23 @@ GC 수명 테스트 3개가 **조용히 스킵된다** (실패가 아니라 스�
 타입 검사는 `JS/tsconfig.json`(`checkJs`)이 JSDoc을 읽어 돌린다. 브라우저 전역을 실수로 쓰는 것을
 막으려고 **DOM lib을 켜지 않고**, 호스트가 실제로 주는 것만 `JS/lynx-env.d.ts`에 적어 둔다.
 
-Lynx 브리지 컴파일 확인 — SPM 크로스 빌드를 쓴다 (루트의 Tuist 워크스페이스가
-`xcodebuild`의 패키지 스킴 탐색을 가리므로). `--scratch-path`를 꼭 준다 —
-기본 `.build`에 iOS 산출물이 섞이면 이후 macOS `swift test`가 깨진다:
+iOS 컴파일 확인 — **엔진만** 본다. `--scratch-path`를 꼭 준다 (기본 `.build`에 iOS 산출물이
+섞이면 이후 macOS `swift test`가 깨진다):
 
 ```zsh
 swift build --scratch-path .build-ios --sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
   --triple arm64-apple-ios17.0-simulator
+```
+
+**Lynx 브리지는 이 명령에 들어오지 않는다.** 이 패키지는 Lynx를 의존성으로 갖지 않으므로
+(`docs/LYNX-INTEGRATION.md` §1) 브리지의 `#if canImport(Lynx)`가 꺼진 채 지나간다 —
+**브리지를 고쳤으면 데모 앱 빌드가 유일한 컴파일 검증**이다:
+
+```zsh
+mise exec -- tuist generate --no-open
+arch -arm64 xcodebuild -workspace LynxWebGPUDemo.xcworkspace -scheme WebGPUDemo \
+  -configuration Debug -sdk iphonesimulator \
+  -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' -derivedDataPath .derivedData-cli build
 ```
 
 ## 3. Metal 컴파일러 하네스

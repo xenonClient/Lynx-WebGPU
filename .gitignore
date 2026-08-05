@@ -3,6 +3,9 @@
 .build-ios/
 .build-ios-device/
 .swiftpm/
+# 루트 패키지는 의존성이 0이라 이 파일이 담을 정보가 없다. 그런데 데모(Tuist 워크스페이스)가
+# 자기 Lynx 핀을 여기 써 넣어, 도구를 번갈아 돌릴 때마다 트리가 더러워진다 — 추적하지 않는다.
+Package.resolved
 Package.resolved.bak
 
 # Xcode

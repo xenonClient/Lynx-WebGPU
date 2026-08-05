@@ -144,10 +144,15 @@ try harness.assertFrameEquals(reference, "계약은 같은 결과다")
 ## 7. 검증
 
 ```zsh
-swift test                                      # 전체 (약 3초)
-arch -arm64 xcodebuild -scheme LynxWebGPUBridge \
-  -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' \
-  -derivedDataPath .derivedData-cli build       # Lynx 브리지까지 컴파일되는지
+swift test                                      # 전체 (약 5초)
+cd JS && npm test && npm run typecheck && npm run types && cd ..   # shim을 고쳤다면
+
+# 브리지(NativeModule 시그니처)를 건드렸다면 — 데모 앱 빌드가 유일한 컴파일 검증이다
+# (브리지는 SPM 타깃이 아니라 데모의 Tuist 타깃이 컴파일한다)
+mise exec -- tuist generate --no-open
+arch -arm64 xcodebuild -workspace LynxWebGPUDemo.xcworkspace -scheme WebGPUDemo \
+  -configuration Debug -sdk iphonesimulator \
+  -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' -derivedDataPath .derivedData-cli build
 ```
 
 ## 흔한 실수

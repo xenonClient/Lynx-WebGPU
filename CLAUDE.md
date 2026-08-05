@@ -6,7 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Lynx-WebGPU — [Lynx](https://lynxjs.org) 렌더 엔진 위에서, Lynx 번들의 JS가 **WebGPU 모양으로 GPU에 접근**하게 해 주는 SPM 라이브러리.
 [W3C WebGPU 명세](https://www.w3.org/TR/webgpu/)의 객체 모델과 [WGSL](https://www.w3.org/TR/WGSL/)을 Metal로 옮긴다.
-Swift 6.2 / iOS 17.0+ / macOS 14.0+, Lynx는 [xenonClient/Lynx-XCFramework](https://github.com/xenonClient/Lynx-XCFramework) 4.0.0을 SPM `binaryTarget`으로 연동한다.
+Swift 6.2 / iOS 17.0+ / macOS 14.0+. **이 패키지는 외부 의존성이 0이다** — Lynx SDK의 버전·배포처는
+앱이 정한다 (`docs/LYNX-INTEGRATION.md` §1). 데모 앱은 [xenonClient/Lynx-XCFramework](https://github.com/xenonClient/Lynx-XCFramework)를 직접 물고 있다.
 
 설계: `docs/ARCHITECTURE.md` · 지원 API: `docs/WEBGPU-API.md` · WGSL 서브셋: `docs/WGSL.md` ·
 Lynx 연동: `docs/LYNX-INTEGRATION.md` · 번들(JS) 작성: `docs/JS-AUTHORING.md` ·
@@ -26,16 +27,18 @@ cd JS && npm test            # node 내장 러너, 104개
 cd JS && npm run typecheck   # JSDoc 기준 타입 검사 (tsc --noEmit)
 cd JS && npm run types       # webgpu.d.ts 를 JSDoc에서 다시 생성
 
-# iOS 컴파일 확인 — Lynx 브리지 포함 (SPM 크로스 빌드)
-# 루트에 Tuist 워크스페이스(LynxWebGPUDemo.xcworkspace)가 있으면 xcodebuild가 패키지 스킴
-# (LynxWebGPUBridge)을 못 찾는다. swift build 크로스 빌드는 워크스페이스와 무관하게 동작한다.
+# iOS 컴파일 확인 — **엔진만**이다 (브리지는 여기 안 들어온다, 아래 참고)
 # --scratch-path 필수: 기본 .build를 같이 쓰면 이후 macOS `swift test`가 깨진다.
 swift build --scratch-path .build-ios --sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
   --triple arm64-apple-ios17.0-simulator
 swift build --scratch-path .build-ios-device --sdk "$(xcrun --sdk iphoneos --show-sdk-path)" \
   --triple arm64-apple-ios17.0   # 실기기
 
-# 데모 호스트 앱 (Tuist) — 눈으로 확인할 때만 필요하다
+# **Lynx 브리지 컴파일 확인은 데모 앱 빌드가 유일하다.**
+# 브리지는 SPM 타깃이 아니라 데모의 Tuist 타깃이 컴파일한다 (거기서만 Lynx가 보인다) —
+# 브리지를 고쳤으면 반드시 아래 xcodebuild까지 돌릴 것.
+
+# 데모 호스트 앱 (Tuist) — 브리지 검증 + 눈으로 확인
 mise exec -- tuist generate --no-open
 arch -arm64 xcodebuild -workspace LynxWebGPUDemo.xcworkspace -scheme WebGPUDemo \
   -configuration Debug -sdk iphonesimulator \
@@ -62,13 +65,15 @@ LynxWebGPUShader  ← Core                      WGSL 렉서/파서/리플렉션/
 LynxWebGPU        ← Core, Shader              Metal 백엔드(디바이스·리소스·파이프라인·인코더),
                                               캔버스 표면, 커맨드 스트림 해석기.
 LynxWebGPUBridge  ← LynxWebGPU, Lynx          NativeModule(`NativeModules.WebGPU`) +
-                                              `<webgpu-canvas>` 엘리먼트. iOS 전용.
+  (SPM 타깃 아님 — 소스)                        `<webgpu-canvas>` 엘리먼트. iOS 전용.
 ```
 
 핵심 원칙:
 - **Core와 Shader는 Metal-free.** GPU 없이도 단위 테스트가 돌아야 한다. Metal 타입이 필요한 코드는 LynxWebGPU에만 둔다.
 - **Lynx 심볼(`LynxModule`, `LynxUI` 등)은 LynxWebGPUBridge 안에서만** 참조하고 반드시 `#if canImport(Lynx)` 가드 안에 둔다.
-  Lynx 의존성은 `Package.swift`에서 iOS로 조건부 제한되므로, macOS 빌드에서는 이 가드가 꺼진 채 컴파일된다.
+  **이 패키지는 Lynx를 의존성으로 가져오지 않는다** — 버전·배포처를 앱이 정하게 하기 위해서다
+  (`docs/LYNX-INTEGRATION.md` §1). 그래서 `Sources/LynxWebGPUBridge/`는 **SPM 타깃이 아니고**,
+  Lynx가 보이는 앱 쪽 타깃(데모의 Tuist 타깃 · 앱 타깃 직접)에서 컴파일된다. `swift build`로는 가드가 꺼진 채 지나가므로 **브리지 수정은 데모 앱 빌드로 확인**할 것.
 - **MSL 방출은 셰이더 모듈 생성 시점이 아니라 파이프라인 생성 시점에** 한다. `@group/@binding` → Metal 인덱스 배정이
   파이프라인 레이아웃에 달려 있기 때문이다 (Dawn이 셰이더를 레이아웃마다 다시 컴파일하는 것과 같은 이유).
 - WebGPU 열거형의 raw value는 **명세 철자 그대로**다 (`"rgba8unorm"`, `"triangle-list"`). 바꾸면 JS 코드가 깨진다.
@@ -102,7 +107,7 @@ docs/                   — ARCHITECTURE / WEBGPU-API / WGSL / LYNX-INTEGRATION 
 
 ## Release
 
-버전은 semver 태그로만 매긴다 (`0.1.0` — `v` 접두사 없이, Lynx-XCFramework와 같은 규칙).
+버전은 semver 태그로만 매긴다 (`0.1.0` — `v` 접두사 없이).
 
 ```zsh
 git tag -a 0.2.0 -m "0.2.0 — 요약"
@@ -180,7 +185,7 @@ git tag -a 0.2.0 -m "0.2.0 — 요약"
   값이 실제로 1.0을 넘는지는 같은 씬의 **클리핑 표시**로 확인한다 — 그건 화면과 무관하다.
 - **`<webgpu-canvas>`의 터치는 Lynx 표준 이벤트를 쓴다** (`bindtouchstart` 등). UIKit `touchesBegan`을
   가로채면 Lynx의 hitTest·pointer-events·버블링·제스처 아레나를 우회해 웹과 다르게 동작한다
-  (`docs/LYNX-INTEGRATION.md` §5).
+  (`docs/LYNX-INTEGRATION.md` §6).
 - **`LynxWebGPUCore`의 public 저장 프로퍼티를 바꾸면 `rm -rf .build` 후 다시 빌드한다.**
   SwiftPM 증분 빌드가 의존 모듈(Shader/LynxWebGPU)을 옛 메모리 레이아웃으로 남겨 두어,
   테스트가 **signal 11로 죽는다** — 코드 버그처럼 보이지만 아니다 (`WGPUError`에 필드를

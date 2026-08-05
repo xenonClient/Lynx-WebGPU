@@ -38,6 +38,11 @@ Browser WebGPU code and WGSL shaders port over almost verbatim.
 .package(url: "https://github.com/xenonClient/Lynx-WebGPU", from: "0.3.1")
 ```
 
+That gives you the **engine** (`LynxWebGPU`). Types that touch Lynx — such as `LynxWebGPUHost` below —
+come from the **four files in `Sources/LynxWebGPUBridge/`, which you add to a target of your own**,
+so that your app picks the Lynx SDK's version and distribution channel
+(see `docs/LYNX-INTEGRATION.md` §2; the demo app is the worked example).
+
 Wiring up the host app takes three steps:
 
 ```swift
@@ -74,7 +79,13 @@ All docs except this file are written in Korean — they translate well with any
 | `LynxWebGPUCore` | WebGPU enums · descriptors · errors · handle registry (Metal-free) |
 | `LynxWebGPUShader` | WGSL lexer/parser/reflection/MSL emitter (pure Swift) |
 | `LynxWebGPU` | Metal backend + canvas surfaces + command stream interpreter |
-| `LynxWebGPUBridge` | Lynx NativeModule + `<webgpu-canvas>` element (iOS only) |
+| `LynxWebGPUBridge` | Lynx NativeModule + `<webgpu-canvas>` element (iOS only) — **sources, not an SPM target** |
+
+**This package has zero external dependencies.** The only SPM product is the engine (`LynxWebGPU`);
+the Lynx SDK's version and distribution channel are **the app's choice** — SPM, an existing CocoaPods
+setup, or an in-house build all work. The Lynx integration layer ships as sources wrapped in
+`#if canImport(Lynx)`, so it switches on wherever Lynx is visible (a dedicated bridge target, or the
+app target itself — see `docs/LYNX-INTEGRATION.md` §2).
 
 The `LynxWebGPU` product works **without Lynx** — use it to run WebGPU command streams straight from a
 Swift app, or purely as a WGSL-to-MSL translator.
@@ -170,5 +181,8 @@ xcrun simctl launch <device> org.lynxwebgpu.demo -demo particles  # jump straigh
 ## Requirements
 
 Xcode 26.2 / Swift 6.2 · iOS 17.0+ · macOS 14.0+ (for the dev loop)
-The Lynx SDK comes from [xenonClient/Lynx-XCFramework](https://github.com/xenonClient/Lynx-XCFramework) 4.0.0
-as an SPM `binaryTarget` (device + simulator slices included).
+
+**This package does not pull in the Lynx SDK** — the app supplies it (zero external dependencies).
+The demo app links [xenonClient/Lynx-XCFramework](https://github.com/xenonClient/Lynx-XCFramework)
+directly (device + simulator slices included); that is the **demo's** choice, not a library requirement.
+Point it at a different repo or version by editing `Projects/WebGPUDemo/Project.swift`.
