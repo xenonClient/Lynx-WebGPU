@@ -102,6 +102,7 @@ Three.js `WebGPURenderer`를 실제로 올려 보며(데모 `three` 씬) 드러�
 - 렌더 타깃·스토리지·멀티샘플·3D 사용과 블록 경계를 벗어난 복사도 같은 이유로 미리 막는다.
 
 인코더는 넣지 않았다 — 이미 압축된 바이트를 올리는 통로만 제공한다.
+눈 검증은 `images` 데모 씬이 한다 (`docs/TESTING.md` §8).
 
 ---
 
@@ -119,7 +120,7 @@ Three.js `WebGPURenderer`를 실제로 올려 보며(데모 `three` 씬) 드러�
 - JS `createImageBitmap()` / `GPUImageBitmap.close()` / `queue.copyExternalImageToTexture()`.
 
 `importExternalTexture`(비디오)는 여전히 없다. 비디오 프레임 핸들이 Lynx 쪽에 생기면
-같은 자리에 붙는다.
+같은 자리에 붙는다. 눈 검증은 `images` 데모 씬이 한다 (`docs/TESTING.md` §8).
 
 ---
 

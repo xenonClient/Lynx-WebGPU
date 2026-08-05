@@ -67,7 +67,7 @@ Full instructions: [docs/LYNX-INTEGRATION.md](docs/LYNX-INTEGRATION.md).
 - [docs/JS-AUTHORING.md](docs/JS-AUTHORING.md) — bundle (JS) authoring guide, performance rules
 - [docs/LYNX-INTEGRATION.md](docs/LYNX-INTEGRATION.md) — host app integration
 - [docs/TESTING.md](docs/TESTING.md) — test strategy/harnesses/conventions
-- [docs/ROADMAP.md](docs/ROADMAP.md) — what's next (compressed textures → stencil → indirect draw)
+- [docs/ROADMAP.md](docs/ROADMAP.md) — what's next (web-library port gaps → image pipeline polish)
 - [Examples/HelloTriangle.tsx](Examples/HelloTriangle.tsx) — minimal ReactLynx example
 
 All docs except this file are written in Korean — they translate well with any LLM.
@@ -158,7 +158,7 @@ cd JS && npm test    # JS shim (zero dependencies)
 
 ## Demo app
 
-`Projects/WebGPUDemo` contains a Tuist demo host app and **19 Lynx bundles**. The app opens with a scene list,
+`Projects/WebGPUDemo` contains a Tuist demo host app and **22 Lynx bundles**. The app opens with a scene list,
 and each scene maps 1:1 to a feature the offscreen harness verifies automatically — spinning triangle, 3D cube
 (depth testing), 4096 particles (compute + instancing), texture & sampler, **dynamic texture (CPU plasma via
 `writeTexture` every frame)**, alpha blending, **stencil masking (standalone `stencil8` format)**,
