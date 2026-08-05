@@ -1506,7 +1506,9 @@ class GPUQueue {
    * 없다 — `GPUImageBitmap`이 그 자리다. 픽셀은 네이티브에 남아 있으므로 **브리지를
    * 건너는 것은 핸들 하나뿐**이다 (`writeTexture`로 올리면 이미지 전체가 오간다).
    *
-   * `flipY`·`premultiplyAlpha`는 디코딩 시점 옵션이라 `createImageBitmap` 쪽에 있다.
+   * `source.flipY`는 **복사 시점**에 위아래를 뒤집는다 (`createImageBitmap`의 `flipY`는
+   * 디코딩 시점이라 별개다 — 둘 다 켜면 두 번 뒤집혀 제자리로 돌아온다). 웹 라이브러리는
+   * 이쪽을 쓴다: three.js의 `Texture.flipY`가 기본 `true`다.
    *
    * @param {{source: GPUImageBitmap, origin?: GPUOrigin3DDict, flipY?: boolean}} source
    * @param {{texture: GPUTexture, mipLevel?: number, origin?: GPUOrigin3DDict,
@@ -1517,7 +1519,11 @@ class GPUQueue {
   copyExternalImageToTexture(source, destination, copySize) {
     this._recorder.push({
       op: 'copyExternalImageToTexture',
-      source: { source: source.source.id, origin: source.origin },
+      source: {
+        source: source.source.id,
+        origin: source.origin,
+        flipY: !!source.flipY,
+      },
       destination: {
         texture: destination.texture.id,
         mipLevel: destination.mipLevel || 0,

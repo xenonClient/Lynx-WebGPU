@@ -257,7 +257,10 @@ bitmap.close()   // 네이티브 픽셀을 놓아 준다
 
 `copyExternalImageToTexture(source, destination, copySize)`:
 
-- `source`: `{ source: bitmap, origin?: {x, y} }` — 이미지의 일부만 잘라 올릴 수 있다.
+- `source`: `{ source: bitmap, origin?: {x, y}, flipY?: boolean }` — 이미지의 일부만 잘라
+  올릴 수 있고, `flipY`는 **복사 시점**에 위아래를 뒤집는다.
+  `createImageBitmap`의 `flipY`(디코딩 시점)와는 다른 층이라 둘 다 켜면 제자리로 돌아온다.
+  **웹 라이브러리는 이쪽을 쓴다** — three.js의 `Texture.flipY`가 기본 `true`다.
 - `destination`: `{ texture, mipLevel?, origin? }`.
 - 대상은 **4바이트 컬러 포맷**이어야 한다 (`rgba8unorm` `bgra8unorm` `rgba8unorm-srgb` …).
   디코딩 결과가 RGBA8이므로, 그 밖은 조용히 어긋나느니 검증 오류로 거부한다.

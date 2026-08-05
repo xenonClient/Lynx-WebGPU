@@ -615,6 +615,11 @@ final class WGPUCommandInterpreter {
             )
         }
 
+        // 명세 `GPUCopyExternalImageSourceInfo.flipY` — **복사 시점**에 위아래를 뒤집는다.
+        // (`createImageBitmap`의 flipY는 디코딩 시점이라 별개다. 웹 라이브러리는 이쪽을 쓴다 —
+        // three.js의 `Texture.flipY`가 기본 true라, 무시하면 텍스처가 조용히 뒤집힌다.)
+        let flipY = sourceReader.bool("flipY", default: false)
+
         // 필요한 만큼만 잘라 스테이징에 싣는다. 전체 폭을 그대로 쓰면 부분 복사에서
         // bytesPerRow가 맞지 않는다.
         let rowBytes = size.width * 4
@@ -624,7 +629,9 @@ final class WGPUCommandInterpreter {
                 guard let sourceBase = source.baseAddress,
                       let destinationBase = destination.baseAddress else { return }
                 for row in 0..<size.height {
-                    let from = (sourceOrigin.y + row) * bitmap.bytesPerRow + sourceOrigin.x * 4
+                    let sourceRow = flipY ? (sourceOrigin.y + size.height - 1 - row)
+                                          : (sourceOrigin.y + row)
+                    let from = sourceRow * bitmap.bytesPerRow + sourceOrigin.x * 4
                     memcpy(destinationBase + row * rowBytes, sourceBase + from, rowBytes)
                 }
             }

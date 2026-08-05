@@ -235,6 +235,60 @@ final class ExternalImageTests: XCTestCase {
         try harness.assertPixel(x: 32, y: 32, equals: (0, 0, 255, 255), "잘라낸 영역은 전부 파랑")
     }
 
+    /// 명세 `GPUCopyExternalImageSourceInfo.flipY` — **복사 시점** 뒤집기.
+    ///
+    /// `createImageBitmap`의 flipY와는 다른 자리다. 웹 라이브러리는 이쪽을 쓴다
+    /// (three.js의 `Texture.flipY`가 기본 true라, 무시하면 텍스처가 조용히 뒤집힌다).
+    func test_복사_시점_flipY가_위아래를_뒤집는다() throws {
+        let png = try makePNG(width: 4, height: 4, top: (255, 0, 0, 255), bottom: (0, 0, 255, 255))
+        try decode(handle: 40, data: png)
+
+        drawImage(bitmap: 40, texture: (4, 4), copy: [
+            "op": "copyExternalImageToTexture",
+            "source": ["source": 40, "flipY": true],
+            "destination": ["texture": 2],
+            "copySize": ["width": 4, "height": 4],
+        ])
+
+        // 뒤집었으니 화면 위쪽이 이미지의 **마지막** 행(파랑)이다.
+        try harness.assertPixel(x: 32, y: 8, equals: (0, 0, 255, 255), "위 절반")
+        try harness.assertPixel(x: 32, y: 56, equals: (255, 0, 0, 255), "아래 절반")
+    }
+
+    /// 디코딩 시점과 복사 시점을 **둘 다** 뒤집으면 제자리로 돌아온다 — 두 옵션이
+    /// 서로 다른 층이라는 증거다.
+    func test_디코딩과_복사에서_각각_뒤집으면_제자리다() throws {
+        let png = try makePNG(width: 4, height: 4, top: (255, 0, 0, 255), bottom: (0, 0, 255, 255))
+        try decode(handle: 40, data: png, options: .init(flipY: true))
+
+        drawImage(bitmap: 40, texture: (4, 4), copy: [
+            "op": "copyExternalImageToTexture",
+            "source": ["source": 40, "flipY": true],
+            "destination": ["texture": 2],
+        ])
+
+        try harness.assertPixel(x: 32, y: 8, equals: (255, 0, 0, 255), "원본 그대로")
+        try harness.assertPixel(x: 32, y: 56, equals: (0, 0, 255, 255))
+    }
+
+    /// 부분 복사와 flipY가 함께 와도 **잘라낸 영역 안에서만** 뒤집힌다.
+    func test_부분_복사에도_flipY가_영역_안에서_적용된다() throws {
+        // 위 2행 빨강, 아래 2행 파랑. (0,1)에서 4x2를 뜨면 빨강 1행 + 파랑 1행이다.
+        let png = try makePNG(width: 4, height: 4, top: (255, 0, 0, 255), bottom: (0, 0, 255, 255))
+        try decode(handle: 40, data: png)
+
+        drawImage(bitmap: 40, texture: (4, 2), copy: [
+            "op": "copyExternalImageToTexture",
+            "source": ["source": 40, "origin": ["x": 0, "y": 1], "flipY": true],
+            "destination": ["texture": 2],
+            "copySize": ["width": 4, "height": 2],
+        ])
+
+        // 원본 1행(빨강)·2행(파랑) → 뒤집으면 파랑이 먼저다.
+        try harness.assertPixel(x: 32, y: 8, equals: (0, 0, 255, 255), "위")
+        try harness.assertPixel(x: 32, y: 56, equals: (255, 0, 0, 255), "아래")
+    }
+
     func test_copySize를_생략하면_이미지_전체다() throws {
         let png = try makePNG(width: 4, height: 4, top: (255, 0, 0, 255), bottom: (255, 0, 0, 255))
         try decode(handle: 40, data: png)
