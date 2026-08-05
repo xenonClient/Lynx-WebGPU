@@ -158,7 +158,7 @@ cd JS && npm test    # JS shim (zero dependencies)
 
 ## Demo app
 
-`Projects/WebGPUDemo` contains a Tuist demo host app and **22 Lynx bundles**. The app opens with a scene list,
+`Projects/WebGPUDemo` contains a Tuist demo host app and **23 Lynx bundles**. The app opens with a scene list,
 and each scene maps 1:1 to a feature the offscreen harness verifies automatically — spinning triangle, 3D cube
 (depth testing), 4096 particles (compute + instancing), texture & sampler, **dynamic texture (CPU plasma via
 `writeTexture` every frame)**, alpha blending, **stencil masking (standalone `stencil8` format)**,
