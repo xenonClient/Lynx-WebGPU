@@ -705,6 +705,31 @@ if (error) fallBackToSimplePipeline()
 | `dual-source-blending` · `clip-distances` · `subgroups` · `subgroup-size-control` · `primitive-index` · `texture-component-swizzle` | WGSL 확장이 함께 필요하다 (`@blend_src`, `clip_distances`, 서브그룹 내장 함수 …). 트랜스파일러 작업이 붙으므로 실사용 요구가 생길 때 본다 |
 | `rg11b10ufloat-renderable` | `rg11b10ufloat`을 렌더 타깃으로. 포맷 자체는 지원한다 |
 
+### 알려진 한계 — 포스트프로세싱을 **캔버스로 직접** 내보내는 경로
+
+three.js의 `PostProcessing`을 렌더 타깃이 아니라 **캔버스로** 내보내면 두 번째 프레임부터
+`beginRenderPass`가 "GPUTextureView가 존재하지 않는다"로 깨진다 (`threelab` 데모 씬의 ⑧이
+2프레임 만에 재현한다). 같은 bloom을 **렌더 타깃으로** 내보내는 경로는 멀쩡하다.
+
+원인은 두 쪽의 프레임 경계가 다른 데 있다:
+
+- three는 렌더 타깃 디스크립터에 **텍스처 뷰를 캐시**한다 (`_getRenderPassDescriptor` —
+  크기·샘플 수가 바뀌거나 "external texture"일 때만 무효화). 자기 주석에 *"External textures
+  can change every frame, so their descriptors must not be cached"*라고 적어 두었는데,
+  캔버스 드로어블에는 그 표시가 붙지 않는다 (지금은 XR 텍스처에만 붙는다).
+- 브라우저에서는 한 프레임 안의 여러 `queue.submit()`이 present를 일으키지 않는다 —
+  present는 태스크가 끝날 때 일어나므로 캐시된 뷰가 그 프레임 내내 유효하다.
+  **여기서는 `submit()`이 곧 present**이고, 그때 드로어블 뷰가 만료된다 (명세의
+  "Expire the current texture"). 그래서 다음 프레임에 캐시된 뷰를 다시 쓰면 없는 핸들이 된다.
+
+**조용히 넘기지 않는 쪽을 골랐다.** 만료를 늦춰 오류를 없앨 수는 있지만, 그러면 three가
+이미 present된 텍스처에 그리게 되어 **화면이 검은 채로 아무 말이 없다.** 지금은 원인이
+그대로 오류에 적혀 나온다.
+
+우회는 간단하다 — 포스트프로세싱 결과를 렌더 타깃에 받아 마지막에 한 번만 캔버스로 옮기거나,
+`PostProcessing`을 쓰지 않고 직접 합성한다. 프레임 경계를 태스크 끝으로 옮기는 것이 근본
+해결이지만 커맨드 스트림의 present 계약을 바꾸는 일이라 따로 다룬다.
+
 ### 기기에 따라 갈리는 것
 
 | 기능 | 조건 |

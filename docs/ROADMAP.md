@@ -146,6 +146,27 @@ Three.js `WebGPURenderer`를 실제로 올려 보며(데모 `three` 씬) 드러�
 
 ---
 
+## 포스트프로세싱 캔버스 출력 — 프레임 경계 계약
+
+`threelab` 데모 씬이 찾아낸 것이다 (`docs/WEBGPU-API.md` §8-1). three의 `PostProcessing`을
+캔버스로 직접 내보내면 드로어블 뷰 캐시가 우리 present 시점과 어긋난다.
+
+지금은 **오류로 드러내는 쪽**을 골랐다. 고치려면 프레임 경계를 `submit()`이 아니라
+**프레임 루프 콜백의 끝**으로 옮겨야 한다 — 브라우저가 태스크 끝에 present하는 것과 같은
+자리다. `startFrameLoop`/`installAnimationFrame`이 이미 그 경계를 알고 있으므로 통로는 있다.
+
+바꿀 때 걸리는 것:
+- `submit()`이 present하지 않게 되면 **프레임 스코프 핸들의 만료 시점**도 함께 옮겨야 한다.
+- 프레임 루프 없이 `submit()`만 부르는 코드(테스트 하네스·직접 렌더)가 present를 못 받게
+  되므로, 루프 밖에서는 지금처럼 동작하는 이중 규칙이 필요하다.
+- 데모 씬 전부와 `CommandInterpreterTests`의 "프레임 경계가 배치가 아니라 present인지"
+  계약이 이 변경의 실제 시험대다.
+
+크기가 있고 계약을 건드리므로 실사용 요구가 생길 때 한다. 그때까지 우회는 렌더 타깃에 받아
+마지막에 한 번만 캔버스로 옮기는 것이다.
+
+---
+
 ## 공통 완료 기준
 
 1. `swift test` 전부 통과 — GPU 테스트는 `MetalCompilerHarness`가 아니라 `RenderHarness`

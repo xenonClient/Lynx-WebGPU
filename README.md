@@ -35,7 +35,7 @@ startFrameLoop(() => {
 
 ```swift
 // Package.swift
-.package(url: "https://github.com/xenonClient/Lynx-WebGPU", from: "0.3.1")
+.package(url: "https://github.com/xenonClient/Lynx-WebGPU", from: "0.4.0")
 ```
 
 이것으로 **엔진**(`LynxWebGPU`)이 들어온다. 아래 `LynxWebGPUHost`처럼 Lynx와 맞물리는 타입은
@@ -154,7 +154,7 @@ cd JS && npm test    # JS shim (의존성 없음)
 
 ## 데모 앱
 
-`Projects/WebGPUDemo`에 Tuist 데모 호스트 앱과 Lynx 번들 **23종**이 들어 있다. 앱을 켜면 씬 목록이 뜨고,
+`Projects/WebGPUDemo`에 Tuist 데모 호스트 앱과 Lynx 번들 **24종**이 들어 있다. 앱을 켜면 씬 목록이 뜨고,
 각 씬은 오프스크린 하네스가 자동 검증하는 기능과 1:1로 대응한다 — 회전 삼각형, 3D 큐브(깊이 테스트),
 입자 4096개(컴퓨트 + 인스턴싱), 텍스처·샘플러, **동적 텍스처(CPU 플라스마를 매 프레임 `writeTexture`로)**,
 알파 블렌딩, **스텐실 마스크(`stencil8` 단독 포맷)**, **GPU-driven 렌더링(컴퓨트가 정한 개수로 간접 드로우)**,
