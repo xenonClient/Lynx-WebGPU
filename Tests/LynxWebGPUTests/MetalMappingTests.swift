@@ -19,6 +19,25 @@ final class MetalMappingTests: XCTestCase {
         }
     }
 
+    /// 역방향 매핑이 **모든** 포맷을 되돌리는지 — 표를 손으로 적던 시절에는 캔버스에 쓰이는
+    /// 몇 개만 있어서 `stencil8`·`rgba8snorm` 같은 것이 조용히 nil이었다.
+    func test_모든_텍스처_포맷이_역방향으로도_돌아온다() throws {
+        for format in WGPUTextureFormat.allCases {
+            let metal = try WGPUMetalMapping.pixelFormat(format)
+            XCTAssertNotNil(
+                WGPUMetalMapping.textureFormat(from: metal),
+                "'\(format.rawValue)'을(를) 되돌리지 못한다"
+            )
+        }
+    }
+
+    /// 접히는 자리(`depth24plus`도 `depth32float`도 `.depth32Float`)에서는 **정밀도를
+    /// 그대로 말해 주는 쪽**이 나와야 한다. 약하게 들리는 이름이 나오면 진단이 사람을 속인다.
+    func test_같은_Metal_포맷으로_접히는_깊이_포맷은_정밀도가_높은_이름으로_돌아온다() {
+        XCTAssertEqual(WGPUMetalMapping.textureFormat(from: .depth32Float), .depth32float)
+        XCTAssertEqual(WGPUMetalMapping.textureFormat(from: .depth32Float_stencil8), .depth32floatStencil8)
+    }
+
     /// 픽셀당 바이트 수가 Metal이 실제로 쓰는 크기와 맞는지 — 어긋나면 `writeTexture`의
     /// 기본 `bytesPerRow`가 틀려 **오류 없이** 어긋난 행을 올린다.
     func test_팩된_32비트_포맷의_픽셀_크기가_4바이트다() {

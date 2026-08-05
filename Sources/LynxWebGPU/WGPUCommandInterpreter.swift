@@ -1608,11 +1608,38 @@ final class WGPUCommandInterpreter {
     private func copyBufferToBuffer(_ command: WGPUValueReader) throws {
         let source = try unmappedBuffer(command, field: "source")
         let destination = try unmappedBuffer(command, field: "destination")
-        let size = try command.requiredInt("size")
+        let sourceOffset = command.int("sourceOffset", default: 0)
+        let destinationOffset = command.int("destinationOffset", default: 0)
+        // 명세의 짧은 형태 `copyBufferToBuffer(src, dst)`는 "원본의 남은 전부"다.
+        // JS shim이 채워 보내지만, 커맨드 스트림을 직접 만드는 쪽(네이티브 단독 사용)에도
+        // 같은 기본값을 준다 — `clearBuffer`와 규칙을 맞춘다.
+        let size = command.int("size", default: max(0, source.size - sourceOffset))
+        // 범위를 넘는 복사는 **Metal이 단언으로 죽인다.** 여기서 검증 오류로 바꾼다.
+        guard sourceOffset >= 0, destinationOffset >= 0, size >= 0 else {
+            throw WGPUError.validation(
+                "copyBufferToBuffer의 오프셋·크기는 음수일 수 없다 "
+                + "(sourceOffset \(sourceOffset), destinationOffset \(destinationOffset), size \(size))"
+            )
+        }
+        guard sourceOffset + size <= source.size else {
+            throw WGPUError.validation(
+                "copyBufferToBuffer 원본 범위가 버퍼를 넘는다 — "
+                + "\(sourceOffset) + \(size)B > 크기 \(source.size)B",
+                path: command.fieldPath("size")
+            )
+        }
+        guard destinationOffset + size <= destination.size else {
+            throw WGPUError.validation(
+                "copyBufferToBuffer 대상 범위가 버퍼를 넘는다 — "
+                + "\(destinationOffset) + \(size)B > 크기 \(destination.size)B",
+                path: command.fieldPath("size")
+            )
+        }
+        guard size > 0 else { return }   // Metal blit은 0바이트 복사를 거부한다
         let encoder = try activeBlitEncoder()
         encoder.copy(
-            from: source.buffer, sourceOffset: command.int("sourceOffset", default: 0),
-            to: destination.buffer, destinationOffset: command.int("destinationOffset", default: 0),
+            from: source.buffer, sourceOffset: sourceOffset,
+            to: destination.buffer, destinationOffset: destinationOffset,
             size: size
         )
     }

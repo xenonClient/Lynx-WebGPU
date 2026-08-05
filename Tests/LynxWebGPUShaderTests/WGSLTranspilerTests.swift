@@ -124,6 +124,31 @@ final class WGSLTranspilerTests: XCTestCase {
         XCTAssertTrue(msl.contains("float3 color;"))
     }
 
+    /// 정수 vec3도 같은 배치 보정을 받는다 — `packed_int3`/`packed_uint3`는 MSL에 있는
+    /// 타입이지만 float만 확인해 두면 정수 경로가 컴파일되는지 아무도 모른다.
+    /// (`translate`가 **실제 Metal 컴파일러**를 태우는 것이 이 테스트의 요점이다.)
+    func test_정수_vec3도_packed로_배치를_맞춘다() throws {
+        let source = """
+        struct Counts {
+            offsets: vec3<i32>,
+            total: i32,
+            sizes: vec3<u32>,
+            stride: u32,
+        };
+        @group(0) @binding(0) var<uniform> counts: Counts;
+
+        @fragment
+        fn fs_main() -> @location(0) vec4f {
+            let value = f32(counts.offsets.x + counts.total) + f32(counts.sizes.y + counts.stride);
+            return vec4f(value, 0.0, 0.0, 1.0);
+        }
+        """
+        let msl = try translate(source, entryPoints: ["fs_main"])
+
+        XCTAssertTrue(msl.contains("packed_int3 offsets;"), "정수 vec3가 패킹되지 않았다:\n\(msl)")
+        XCTAssertTrue(msl.contains("packed_uint3 sizes;"), "부호 없는 vec3가 패킹되지 않았다:\n\(msl)")
+    }
+
     func test_구조체_배치가_WGSL_오프셋과_일치한다() throws {
         let source = """
         struct S {

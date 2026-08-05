@@ -114,22 +114,26 @@ enum WGPUMetalMapping {
     /// 역방향 매핑 — 드로어블 텍스처가 실제로 어떤 포맷인지 JS에 돌려줄 때 쓴다.
     /// (캔버스 레이어 설정은 메인 스레드에 비동기로 반영되므로, 요청한 포맷이 아니라
     /// **실제 텍스처의 포맷**을 기준으로 삼아야 파이프라인 불일치를 정확히 진단할 수 있다.)
+    ///
+    /// 표는 `pixelFormat(_:)`에서 **자동으로 뒤집어** 만든다. 손으로 적어 두면 포맷을
+    /// 늘릴 때마다 한쪽만 자라 조용히 비게 된다 (실제로 캔버스에 쓰이는 몇 개만 있었다).
     static func textureFormat(from pixelFormat: MTLPixelFormat) -> WGPUTextureFormat? {
-        switch pixelFormat {
-        case .bgra8Unorm: return .bgra8unorm
-        case .bgra8Unorm_srgb: return .bgra8unormSRGB
-        case .rgba8Unorm: return .rgba8unorm
-        case .rgba8Unorm_srgb: return .rgba8unormSRGB
-        case .rgba16Float: return .rgba16float
-        case .rgb10a2Unorm: return .rgb10a2unorm
-        case .rgb10a2Uint: return .rgb10a2uint
-        case .rgb9e5Float: return .rgb9e5ufloat
-        case .depth32Float: return .depth32float
-        case .depth32Float_stencil8: return .depth32floatStencil8
-        case .depth16Unorm: return .depth16unorm
-        default: return nil
-        }
+        inverseFormatTable[pixelFormat]
     }
+
+    /// 여러 WebGPU 포맷이 같은 Metal 포맷으로 접히는 자리가 있다 (`depth24plus`도
+    /// `depth32float`도 `.depth32Float`이다). 그런 자리는 **정밀도를 그대로 말해 주는 쪽**을
+    /// 고른다 — 되돌린 이름이 실제 텍스처보다 약하게 들리면 진단이 사람을 헷갈리게 한다.
+    private static let inverseFormatTable: [MTLPixelFormat: WGPUTextureFormat] = {
+        var table: [MTLPixelFormat: WGPUTextureFormat] = [:]
+        for format in WGPUTextureFormat.allCases {
+            guard let metal = try? Self.pixelFormat(format), table[metal] == nil else { continue }
+            table[metal] = format
+        }
+        table[.depth32Float] = .depth32float
+        table[.depth32Float_stencil8] = .depth32floatStencil8
+        return table
+    }()
 
     // MARK: - 정점
 
