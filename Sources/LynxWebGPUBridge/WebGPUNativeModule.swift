@@ -21,6 +21,7 @@ public final class WebGPUNativeModule: NSObject, LynxModule {
         [
             "execute": NSStringFromSelector(#selector(execute(_:))),
             "adapterInfo": NSStringFromSelector(#selector(adapterInfo)),
+            "shaderCompilationInfo": NSStringFromSelector(#selector(shaderCompilationInfo(_:))),
             "canvasInfo": NSStringFromSelector(#selector(canvasInfo(_:))),
             "readBuffer": NSStringFromSelector(#selector(readBuffer(_:callback:))),
             "loadAsset": NSStringFromSelector(#selector(loadAsset(_:callback:))),
@@ -57,6 +58,15 @@ public final class WebGPUNativeModule: NSObject, LynxModule {
     public func adapterInfo() -> [String: Any] {
         guard let host else { return Self.unavailable }
         return host.context.adapterInfo()
+    }
+
+    /// `GPUShaderModule.getCompilationInfo()` — 그 모듈의 컴파일 진단.
+    public func shaderCompilationInfo(_ params: [String: Any]) -> [String: Any] {
+        guard let host else { return Self.unavailable }
+        guard let handle = params["module"] as? Int else {
+            return ["ok": false, "errors": [WGPUError.validation("module 핸들이 필요하다").payload]]
+        }
+        return host.context.shaderCompilationInfo(handle: handle)
     }
 
     /// 캔버스의 현재 픽셀 크기. 뷰포트·투영행렬 계산에 쓴다.

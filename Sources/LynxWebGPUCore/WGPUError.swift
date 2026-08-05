@@ -22,11 +22,17 @@ public struct WGPUError: Error, Equatable, CustomStringConvertible {
     public let message: String
     /// 커맨드 스트림 상 위치 (`commands[3].vertex.buffers[0].format`). 디버깅 단서.
     public let path: String?
+    /// 셰이더 소스의 줄 번호 (1부터). 셰이더 오류에만 붙는다.
+    ///
+    /// 메시지 문자열에도 적히지만, 편집기가 그 줄로 점프하려면 **숫자로** 있어야 한다
+    /// (`getCompilationInfo()`의 `lineNum`이 이 값을 그대로 쓴다).
+    public let line: Int?
 
-    public init(kind: Kind, message: String, path: String? = nil) {
+    public init(kind: Kind, message: String, path: String? = nil, line: Int? = nil) {
         self.kind = kind
         self.message = message
         self.path = path
+        self.line = line
     }
 
     public var description: String {
@@ -38,6 +44,7 @@ public struct WGPUError: Error, Equatable, CustomStringConvertible {
     public var payload: [String: Any] {
         var result: [String: Any] = ["kind": kind.rawValue, "message": message]
         if let path, !path.isEmpty { result["path"] = path }
+        if let line { result["line"] = line }
         return result
     }
 

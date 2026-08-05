@@ -99,7 +99,12 @@ struct WGSLParser {
     }
 
     private func error(_ message: String) -> WGPUError {
-        .validation("WGSL 파싱 실패 (line \(current.line)): \(message)")
+        // 줄 번호를 **숫자로도** 싣는다 — `getCompilationInfo()`가 편집기에 넘길 값이다.
+        WGPUError(
+            kind: .validation,
+            message: "WGSL 파싱 실패 (line \(current.line)): \(message)",
+            line: current.line
+        )
     }
 
     // MARK: - 모듈

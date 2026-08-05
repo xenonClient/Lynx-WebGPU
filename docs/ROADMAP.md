@@ -6,7 +6,9 @@ Lynx 앱 안의 **이미지 에디터·필터**지 3D 렌더러가 아니다. �
 
 | 순서 | 기능 | 규모 | 효과 |
 |---|---|---|---|
-| 1 | 이미지 처리 경로 다듬기 | 소~중 | limits 노출 · 색공간 · 큰 이미지 업로드 |
+| 1 | 웹 라이브러리 이식 갭 (§1) | 중 | **표면은 다 메웠다** — 남은 것은 상위 기능 검증(섀도맵·포스트프로세싱·TSL)과 실기기 확인 |
+| 2 | 이미지 처리 경로 다듬기 (§2) | 소~중 | limits 노출 · 색공간 · 큰 이미지 업로드 |
+| 3 | 트랜스파일러 코퍼스 (§3) | — | **숙제 없음** — 92%, 남은 1건은 호스트 생성 코드가 필요한 셰이더다 |
 | — | 압축 텍스처 (ASTC · ETC2 · BC) | 대 | **보류** — 편집 파이프라인에 끼울 수 없다 (아래) |
 
 ### 이미 된 것
@@ -24,8 +26,60 @@ Lynx 앱 안의 **이미지 에디터·필터**지 3D 렌더러가 아니다. �
 | 버퍼 매핑 상태 (`mapAsync` ~ `unmap`) | `CommandInterpreterTests`. 매핑 중 큐 작업 거부 — 리드백 경쟁을 없앤다 |
 
 공통 절차는 `.claude/skills/webgpu-command/SKILL.md`(새 op 추가)와
-`.claude/skills/wgsl-feature/SKILL.md`(셰이더 문법 — 아래 항목은 해당 없음)를 따른다.
-**트랜스파일러를 건드리지 않으므로** 외부 코퍼스 재측정(`docs/TESTING.md` §7)은 불필요하다.
+`.claude/skills/wgsl-feature/SKILL.md`(셰이더 문법 — §3만 해당)를 따른다.
+§1·§2는 **트랜스파일러를 건드리지 않으므로** 외부 코퍼스 재측정(`docs/TESTING.md` §7)이 불필요하다.
+
+---
+
+## 1. 웹 라이브러리 이식 갭
+
+Three.js `WebGPURenderer`를 실제로 올려 보며(데모 `three` 씬) 드러난 것들이다. 검증 방식은
+그 씬의 체크리스트를 따른다 — **렌더 타깃에 그리고 픽셀 값을 단언**하므로 "도는 것 같다"가
+아니라 값으로 확인된다.
+
+| 항목 | 규모 | 왜 필요한가 |
+|---|---|---|
+| 상위 기능 검증 — 남은 것 (섀도맵 · 포스트프로세싱 · TSL 컴퓨트 · glTF 로딩) | 중 | 체크리스트에 행을 늘려 가며 하나씩. 각각이 다른 경로(비교 샘플러 · 다중 패스 · 자체 컴퓨트 파이프라인 · `fetch`→`loadAsset`)를 밟는다 |
+| 선택 기능 중 쓸 것 고르기 (`bgra8unorm-storage` · `texture-formats-tier1` · `shader-f16`) | 소~중 | 전부 Metal에 대응이 있어 **매핑과 광고만** 하면 된다. 이미지 처리에서 먼저 아쉬워질 순서로 적어 두었다 (`docs/WEBGPU-API.md` §8) |
+| 실기기 확인 | — | 지금까지 전부 시뮬레이터다. `three` 체크리스트와 `hdr` EDR(시뮬레이터로는 원리적으로 불가)은 기기에서 한 번 봐야 한다 |
+
+### 이미 메운 것 (참고)
+
+| 갭 | 어떻게 |
+|---|---|
+| `device.features` / `device.lost` | 명세대로 노출. `features`는 요청한 것만, `lost`는 영원히 pending |
+| `self` · `performance` · `navigator` · `GPU*` 전역 | shim이 `lynx*` 전역을 얹고 번들러 `define`이 bare 식별자를 잇는다 (`docs/JS-AUTHORING.md` §10) |
+| 프레임 중간 제출이 드로어블을 present하던 문제 | `execute({present})` — `popErrorScope`·`mapAsync`는 내부 제출로 표시 |
+| 커맨드 인자가 기록 뒤 변이되던 문제 | `Recorder.push`가 기록 시점 값으로 고정 (three가 디스크립터를 `reset()`한다) |
+| WGSL 전역 섀도잉 오역 | 사용 분석이 스코프를 따른다 (기계 생성 셰이더의 일상 패턴) |
+| `createRenderPipelineAsync` / `createComputePipelineAsync` | 오류 스코프 두 겹으로 감싸 즉시 제출, `GPUPipelineError`로 거부 |
+| `device.onuncapturederror` | 명세 통로 + `addEventListener`. `GPUValidationError` 계열로 갈린다 |
+| `requestAnimationFrame` | shim의 `installAnimationFrame()` — `startFrameLoop` 위에 얹힌다 |
+| `entryPoint` 생략 | 명세의 "get the entry point" — 그 스테이지의 유일한 진입점을 쓴다 (three 밉맵이 이걸 밟는다) |
+| `adapter.limits` | 명세 `GPUSupportedLimits` 전 항목을 명세 철자로 |
+| 명세 읽기 전용 속성 | `GPUTexture` 7종 · `GPUBuffer.mapState` |
+| `clearBuffer` · `copyBufferToBuffer` 짧은 형태 | 명세 오버로드까지 |
+| 상위 기능 검증 (깊이 · 인스턴싱 · 밉맵 · 블렌딩 · 비동기 컴파일) | `three` 씬 체크리스트 14종이 픽셀 값으로 확인한다 |
+| 명세 표면 감사 (`.claude/docs`의 W3C 스펙 대조) | 디버그 마커 · `getCompilationInfo` · `adapter.info` · `getMappedRange` 인자 · 캔버스 `unconfigure` · core 포맷 2종을 채웠다. 남은 미지원은 전부 **이유와 함께** §8에 적혀 있다 |
+
+---
+
+## 3. 트랜스파일러 코퍼스 — 남은 1건
+
+`webgpu-samples` 완성 모듈 66개 중 **61개 통과(92%)**. 이전에 "실패 3건"으로 세던 것은
+**하나가 진짜 버그, 둘은 측정 방식 문제**였다:
+
+| 파일 | 실제 원인 | 결과 |
+|---|---|---|
+| `cornell/rasterizer.wgsl` | **버그였다** — 진입점이 부르지도 않는 함수까지 방출해, `layout: "auto"`에 없는 리소스를 그 함수가 찾다 실패했다 (`common.wgsl`을 여럿이 나눠 쓰는 구성) | 도달 가능한 함수만 방출하도록 고침 → 통과 |
+| `cornell/tonemapper.wgsl` | `{OUTPUT_FORMAT}`을 호스트가 치환해 쓰는 **템플릿**이다 — 그대로는 WGSL이 아니다 | 하네스가 템플릿으로 분류 (분모에서 제외, 이름은 찍는다) |
+| `skinnedMesh/gltf.wgsl` | 호스트가 glTF 접근자를 보고 `VertexInput`을 **런타임 생성**해 붙인다 | **남은 1건.** 파일만으로는 완성될 수 없다 — 지원 대상이 아니라고 보는 것이 맞다 |
+
+즉 **트랜스파일러 쪽 숙제는 없다.** 통과율을 더 올리려면 코퍼스를 늘리는 편이 낫다
+(Three.js 노드 시스템이 생성하는 셰이더가 좋은 후보다 — 사람이 안 쓰는 패턴을 기계가 만든다).
+
+트랜스파일러를 고친 뒤에는 `docs/TESTING.md` §7의 통과율을 **반드시 다시 잰다** (로컬만
+통과하고 코퍼스가 내려간 변경이 실제로 있었다).
 
 ---
 
@@ -117,13 +171,13 @@ ASTC를 1순위로 한다 — iOS에서 보편이고 압축률 선택 폭이 가
 
 ---
 
-## 1. 이미지 처리 경로 다듬기
+## 2. 이미지 처리 경로 다듬기
 
 3D 기준 미지원 목록에는 없지만, 이미지 에디터에서는 이쪽이 먼저 아프다.
 
 | 항목 | 지금 | 필요한 것 |
 |---|---|---|
-| `maxTextureDimension2D` | limits에 `maxBufferSize`만 실린다 (`LynxWebGPUContext`) | 카메라 원본(4032×3024)을 그대로 올릴지, 타일로 쪼갤지, 다운스케일할지 JS가 판단할 근거. 없으면 만들었다가 런타임에 터진다 |
+| ~~`maxTextureDimension2D`~~ | **끝났다** — 명세 `GPUSupportedLimits` 전 항목을 명세 철자로 싣는다 (`docs/WEBGPU-API.md` §1) | — |
 | 색공간 | `hdr` 애셋을 빌드 시점에 sRGB로 변환해 둔다 | Display P3 원본을 그대로 다루려면 파이프라인 어디서 변환할지 정해야 한다. 감마를 두 번 먹거나 색역을 잘라먹기 쉬운 지점이다 |
 | 큰 이미지 업로드 | 스테이징 풀은 있다 (`WGPUStagingPool`) | 수천만 픽셀을 올릴 때의 버퍼 재사용·분할 업로드 정책 |
 | 필터 체인 중간 텍스처 | 씬이 직접 만든다 | 패스마다 만들고 버리지 않도록 풀링. 8비트로 왕복하면 밴딩이 쌓이므로 `rgba16float`가 기본이어야 한다 |

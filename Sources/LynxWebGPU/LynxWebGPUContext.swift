@@ -95,7 +95,10 @@ public final class LynxWebGPUContext {
         } catch {
             return ["ok": false, "errors": [WGPUError.validation("\(error)").payload]]
         }
-        return interpreter.execute(commands)
+        // `present: false`는 프레임 **중간**의 내부 제출이라는 뜻이다 (shim의 popErrorScope·
+        // mapAsync). 커밋은 하되 드로어블 present와 프레임 핸들 만료를 미룬다 — 진짜 프레임
+        // 제출(queue.submit)이 뒤따라온다.
+        return interpreter.execute(commands, present: reader.bool("present", default: true))
     }
 
     /// 편의 오버로드 — 배열을 그대로 넘긴다.
@@ -192,20 +195,112 @@ public final class LynxWebGPUContext {
     /// GPU 완료를 기다리는 전용 큐 — JS 스레드를 막지 않는다.
     private static let readbackQueue = DispatchQueue(label: "org.lynxwebgpu.readback")
 
+    /// `GPUShaderModule.getCompilationInfo()` — 그 모듈의 컴파일 진단.
+    ///
+    /// 명세의 `GPUCompilationMessage` 모양(`message`·`type`·`lineNum`·`linePos`·`offset`·`length`)
+    /// 으로 돌려준다. 우리가 실제로 아는 것은 메시지와 줄 번호뿐이라 나머지는 0이다 —
+    /// **모르는 값을 지어내면 편집기가 엉뚱한 곳에 밑줄을 긋는다.**
+    public func shaderCompilationInfo(handle: Int) -> [String: Any] {
+        executionLock.lock()
+        defer { executionLock.unlock() }
+
+        guard let module = try? registry.lookup(
+            WGPUHandle(handle), as: WGPUShaderModuleObject.self, kind: "GPUShaderModule"
+        ) else {
+            return ["ok": false, "errors": [
+                WGPUError.validation("GPUShaderModule #\(handle)이(가) 없다").payload,
+            ]]
+        }
+        let messages = module.compilationMessages.map { error -> [String: Any] in
+            [
+                "message": error.message,
+                // 이 구현의 진단은 전부 오류다 — Metal 런타임 API가 경고를 따로 주지 않는다.
+                "type": "error",
+                "lineNum": error.line ?? 0,
+                "linePos": 0,
+                "offset": 0,
+                "length": 0,
+            ]
+        }
+        return ["ok": true, "messages": messages]
+    }
+
     /// `navigator.gpu.requestAdapter()` 가 돌려줄 어댑터 정보와 한계값.
+    ///
+    /// 키는 **명세의 `GPUSupportedLimits` 철자 그대로**다. 웹 라이브러리가 이 이름으로 읽고
+    /// 자기 예산을 정한다 (Three.js는 `maxComputeWorkgroupsPerDimension`·
+    /// `maxUniformBufferBindingSize`를 본다). 우리 식으로 이름을 지으면 그 코드가
+    /// `undefined`를 보고 잘못된 가정을 세운다 — 값이 있는데도 없는 것처럼 동작한다.
+    ///
+    /// 값은 가능한 한 **Metal 디바이스에서 실제로 읽고**, 런타임 조회가 없는 것은
+    /// Metal 기능 집합 표의 보장값을 쓴다 (아래 주석에 근거를 남긴다).
     public func adapterInfo() -> [String: Any] {
-        var limits: [String: Any] = [
-            "maxBindGroups": WGSLMetalLimits.bufferSlotCount > 0 ? 4 : 0,
-            "maxVertexBuffers": WGSLMetalLimits.maxVertexBufferSlots,
-            "maxBindGroupBuffers": WGSLMetalLimits.maxBindGroupBuffers,
-            "maxTexturesPerStage": WGSLMetalLimits.textureSlotCount,
-            "maxSamplersPerStage": WGSLMetalLimits.samplerSlotCount,
+        let threadgroup = device.maxThreadsPerThreadgroup
+        // Apple GPU family 3 이상(A9+)과 Mac2는 2D 텍스처가 16384까지다. 그 아래는 8192.
+        // 이 프로젝트의 최소 타깃(iOS 17 = A12+)은 항상 위쪽이지만, macOS 구형까지 감안해 나눈다.
+        let maxTexture2D = device.supportsFamily(.apple3) || device.supportsFamily(.mac2) ? 16384 : 8192
+
+        let limits: [String: Any] = [
+            // 텍스처
+            "maxTextureDimension1D": maxTexture2D,
+            "maxTextureDimension2D": maxTexture2D,
+            "maxTextureDimension3D": 2048,
+            "maxTextureArrayLayers": 2048,
+            // 바인딩 — 우리 인자 테이블 배정 규칙에서 그대로 나온다 (`WGSLMetalLimits`)
+            "maxBindGroups": 4,
+            "maxBindGroupsPlusVertexBuffers": 4 + WGSLMetalLimits.maxVertexBufferSlots,
+            "maxBindingsPerBindGroup": 1000,
+            "maxSampledTexturesPerShaderStage": WGSLMetalLimits.textureSlotCount,
+            "maxSamplersPerShaderStage": WGSLMetalLimits.samplerSlotCount,
+            "maxStorageBuffersPerShaderStage": WGSLMetalLimits.maxBindGroupBuffers,
+            "maxStorageTexturesPerShaderStage": WGSLMetalLimits.textureSlotCount,
+            "maxUniformBuffersPerShaderStage": WGSLMetalLimits.maxBindGroupBuffers,
+            "maxDynamicUniformBuffersPerPipelineLayout": 8,
+            "maxDynamicStorageBuffersPerPipelineLayout": 4,
+            // 버퍼 — 오프셋 정렬은 명세 기본값(256)을 그대로 쓴다. Metal이 요구하는 값
+            // (Apple GPU 32B)보다 크므로 이걸 지키면 Metal도 만족한다. 반대로 32를 보고하면
+            // 브라우저에서만 깨지는 코드가 나온다.
             "maxBufferSize": device.maxBufferLength,
+            "maxUniformBufferBindingSize": 65536,
+            "maxStorageBufferBindingSize": device.maxBufferLength,
+            "minUniformBufferOffsetAlignment": 256,
+            "minStorageBufferOffsetAlignment": 256,
+            // 정점
+            "maxVertexBuffers": WGSLMetalLimits.maxVertexBufferSlots,
+            "maxVertexAttributes": 30,
+            "maxVertexBufferArrayStride": 2048,
+            "maxInterStageShaderVariables": 16,
+            // 어태치먼트
+            "maxColorAttachments": 8,
+            "maxColorAttachmentBytesPerSample": 32,
+            // 컴퓨트
+            "maxComputeWorkgroupStorageSize": device.maxThreadgroupMemoryLength,
+            "maxComputeInvocationsPerWorkgroup": threadgroup.width,
+            "maxComputeWorkgroupSizeX": threadgroup.width,
+            "maxComputeWorkgroupSizeY": threadgroup.height,
+            "maxComputeWorkgroupSizeZ": threadgroup.depth,
+            // Metal에는 디스패치 그리드 상한 조회가 없다. Dawn과 같은 보수적 값을 쓴다.
+            "maxComputeWorkgroupsPerDimension": 65535,
         ]
-        limits["maxThreadsPerThreadgroup"] = device.maxThreadsPerThreadgroup.width
+
+        // 명세의 `GPUAdapterInfo` — 웹 코드가 GPU 종류로 분기할 때 읽는 표준 이름이다.
+        // 값을 모르는 자리는 **빈 문자열**로 둔다 (명세가 그렇게 정한다) — 지어내면
+        // 그 문자열로 분기하는 코드가 잘못된 우회로를 탄다.
+        let info: [String: Any] = [
+            "vendor": "apple",
+            "architecture": architectureName(),
+            // 명세의 `device`는 벤더별 식별자다 (PCI device ID 같은 것). Metal에는 없다.
+            "device": "",
+            "description": device.name,
+            "isFallbackAdapter": false,
+            // `subgroups` 기능을 광고하지 않으므로 명세대로 0이다.
+            "subgroupMinSize": 0,
+            "subgroupMaxSize": 0,
+        ]
 
         return [
             "ok": true,
+            "info": info,
             "name": device.name,
             "backend": "metal",
             "hasUnifiedMemory": device.hasUnifiedMemory,
@@ -214,6 +309,21 @@ public final class LynxWebGPUContext {
             "limits": limits,
             "features": features(),
         ]
+    }
+
+    /// `GPUAdapterInfo.architecture` — GPU 계열 이름.
+    ///
+    /// 명세는 "가족/계열 이름, 모르면 빈 문자열"이라고만 정한다. Metal에는 계열을 묻는 API가
+    /// 없고 `supportsFamily`로 **아래에서부터 확인**하는 것만 된다. 가장 높은 것부터 짚어
+    /// 알아낸 만큼만 답한다 — 모르면 빈 문자열이다.
+    private func architectureName() -> String {
+        let families: [(MTLGPUFamily, String)] = [
+            (.apple9, "apple-9"), (.apple8, "apple-8"), (.apple7, "apple-7"),
+            (.apple6, "apple-6"), (.apple5, "apple-5"), (.apple4, "apple-4"),
+            (.apple3, "apple-3"), (.apple2, "apple-2"), (.apple1, "apple-1"),
+        ]
+        for (family, name) in families where device.supportsFamily(family) { return name }
+        return device.supportsFamily(.mac2) ? "mac-2" : ""
     }
 
     /// 기기마다 갈리는 기능 (`adapter.features` — 명세 철자 그대로).
@@ -231,7 +341,11 @@ public final class LynxWebGPUContext {
         // WebGPU와 같아 `baseInstance`를 그대로 존중하므로, 여기서는 항상 "기능이 활성된
         // 어댑터"와 같은 자리에 선다. 인자 값이 GPU 버퍼 안에 있어 인코딩 시점에 검사할 수
         // 없으므로, 이 기능을 알리는 것이 앱에 상황을 전달하는 유일한 수단이다.
-        result.append("indirect-first-instance")
+        // 기기가 간접 인자 자체를 못 하면 이 기능도 광고하지 않는다 — 시뮬레이터가 그렇다.
+        // 있다고 알려 놓고 첫 호출에서 거부하면, 확인하고 쓴 앱이 오히려 배신당한다.
+        if WGPUDeviceCapability.supportsIndirectArguments(device) {
+            result.append("indirect-first-instance")
+        }
         return result
     }
 

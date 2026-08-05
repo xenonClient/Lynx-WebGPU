@@ -394,14 +394,15 @@ public struct WGPUVertexBufferLayout: Equatable {
 
 public struct WGPUVertexState {
     public var module: WGPUHandle
-    public var entryPoint: String
+    /// 생략할 수 있다 — 그때는 **그 스테이지의 유일한 진입점**을 쓴다 (명세의 "get the entry point").
+    public var entryPoint: String?
     public var buffers: [WGPUVertexBufferLayout]
     /// 파이프라인 상수 (`override`) 값.
     public var constants: [String: Double]
 
     public init(from reader: WGPUValueReader) throws {
         module = try reader.requiredHandle("module")
-        entryPoint = reader.string("entryPoint", default: "main")
+        entryPoint = reader.optionalString("entryPoint")
         buffers = try reader.objects("buffers").map(WGPUVertexBufferLayout.init(from:))
         constants = reader.numberMap("constants")
     }
@@ -449,14 +450,15 @@ public struct WGPUColorTargetState {
 
 public struct WGPUFragmentState {
     public var module: WGPUHandle
-    public var entryPoint: String
+    /// 생략할 수 있다 — `WGPUVertexState.entryPoint`와 같은 규칙.
+    public var entryPoint: String?
     public var targets: [WGPUColorTargetState]
     /// 파이프라인 상수 (`override`) 값.
     public var constants: [String: Double]
 
     public init(from reader: WGPUValueReader) throws {
         module = try reader.requiredHandle("module")
-        entryPoint = reader.string("entryPoint", default: "main")
+        entryPoint = reader.optionalString("entryPoint")
         targets = try reader.requiredObjects("targets").map(WGPUColorTargetState.init(from:))
         constants = reader.numberMap("constants")
     }
@@ -605,7 +607,8 @@ public struct WGPURenderPipelineDescriptor {
 public struct WGPUComputePipelineDescriptor {
     public var layout: WGPUPipelineLayoutRef
     public var module: WGPUHandle
-    public var entryPoint: String
+    /// 생략할 수 있다 — `WGPUVertexState.entryPoint`와 같은 규칙.
+    public var entryPoint: String?
     /// 파이프라인 상수 (`override`) 값.
     public var constants: [String: Double]
     public var label: String?
@@ -614,7 +617,7 @@ public struct WGPUComputePipelineDescriptor {
         layout = try WGPUPipelineLayoutRef(from: reader)
         let compute = try reader.requiredObject("compute")
         module = try compute.requiredHandle("module")
-        entryPoint = compute.string("entryPoint", default: "main")
+        entryPoint = compute.optionalString("entryPoint")
         constants = compute.numberMap("constants")
         label = reader.optionalString("label")
     }

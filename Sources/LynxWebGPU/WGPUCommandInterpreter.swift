@@ -24,6 +24,9 @@ final class WGPUCommandInterpreter {
     private var renderEncoder: MTLRenderCommandEncoder?
     private var computeEncoder: MTLComputeCommandEncoder?
     private var blitEncoder: MTLBlitCommandEncoder?
+    /// 현재 인코더 / 커맨드 버퍼에서 연 디버그 그룹 수 — 짝이 안 맞으면 Metal이 단언으로 죽는다.
+    private var encoderDebugDepth = 0
+    private var bufferDebugDepth = 0
     private var currentRenderPipeline: WGPURenderPipelineObject?
     private var currentComputePipeline: WGPUComputePipelineObject?
     private var boundGroups: [Int: (group: WGPUBindGroupObject, offsets: [Int])] = [:]
@@ -111,7 +114,7 @@ final class WGPUCommandInterpreter {
 
     // MARK: - 실행
 
-    func execute(_ commands: [WGPUValueReader]) -> [String: Any] {
+    func execute(_ commands: [WGPUValueReader], present: Bool = true) -> [String: Any] {
         reset()
 
         // 앞선 배치의 GPU 실행 실패를 먼저 흘려보낸다 — 오류 스코프가 열려 있으면 그쪽이 잡는다.
@@ -121,17 +124,20 @@ final class WGPUCommandInterpreter {
             do {
                 try perform(command, at: index)
             } catch let error as WGPUError {
+                // 경로만 채우고 나머지는 **그대로 옮긴다** — 여기서 필드를 빠뜨리면
+                // (줄 번호처럼) 아래 계층이 애써 붙인 단서가 조용히 사라진다.
                 record(WGPUError(
                     kind: error.kind,
                     message: error.message,
-                    path: error.path ?? "commands[\(index)].\(command.optionalString("op") ?? "?")"
+                    path: error.path ?? "commands[\(index)].\(command.optionalString("op") ?? "?")",
+                    line: error.line
                 ))
             } catch {
                 record(.backend(error.localizedDescription, path: "commands[\(index)]"))
             }
         }
 
-        finish()
+        finish(present: present)
 
         // objects: live 네이티브 객체 수 — JS가 destroy 누락(레지스트리 증식)을 감시할 수 있게.
         var result: [String: Any] = [
@@ -203,6 +209,8 @@ final class WGPUCommandInterpreter {
         renderEncoder = nil
         computeEncoder = nil
         blitEncoder = nil
+        encoderDebugDepth = 0
+        bufferDebugDepth = 0
         currentRenderPipeline = nil
         currentComputePipeline = nil
         boundGroups.removeAll()
@@ -222,11 +230,32 @@ final class WGPUCommandInterpreter {
         // 아니라 **present**이고, 한 프레임이 배치 여러 개로 쪼개질 수 있다 (아래 finish() 참고).
     }
 
-    private func finish() {
+    /// 배치 하나를 마무리한다.
+    ///
+    /// `present`가 false면 프레임 **중간**의 내부 제출이다 — shim의 `popErrorScope`·`mapAsync`가
+    /// 결과를 받으려고 미리 흘려보낸 배치. GPU 작업은 커밋하되(리드백이 완료를 기다린다),
+    /// 드로어블 present와 프레임 스코프 핸들 만료는 **뒤따라올 진짜 프레임 제출로 미룬다.**
+    /// 안 미루면: 그 배치가 `writeBuffer` 하나로라도 커맨드 버퍼를 만든 경우, 방금 획득한
+    /// 드로어블이 그리기도 전에 present되고 핸들이 만료되어, 이어지는 `beginRenderPass`가
+    /// "GPUTextureView가 존재하지 않는다"로 통째로 거부된다 — Three.js의 지연 파이프라인
+    /// 생성(pop 즉시 flush)이 정확히 이 경로를 밟았다.
+    private func finish(present: Bool) {
         endActiveEncoders()
+        // 커맨드 버퍼에 연 그룹도 커밋 전에 닫는다 (인코더와 같은 이유 — Metal이 단언으로 죽는다).
+        if let commandBuffer, bufferDebugDepth > 0 {
+            record(.validation(
+                "디버그 그룹 \(bufferDebugDepth)개가 열린 채로 제출됐다 (popDebugGroup을 빠뜨렸다)"
+            ))
+            while bufferDebugDepth > 0 {
+                commandBuffer.popDebugGroup()
+                bufferDebugDepth -= 1
+            }
+        }
         if let commandBuffer {
-            for acquired in acquiredDrawables {
-                acquired.drawable.present(with: commandBuffer)
+            if present {
+                for acquired in acquiredDrawables {
+                    acquired.drawable.present(with: commandBuffer)
+                }
             }
             // 완료 핸들러는 commit 전에만 붙일 수 있다 (Metal 단언).
             if !frameStagingBuffers.isEmpty {
@@ -235,11 +264,14 @@ final class WGPUCommandInterpreter {
                 commandBuffer.addCompletedHandler { _ in pool.recycle(buffers) }
             }
             // in-flight 회계 — 프레임 티커가 이 수를 보고 포화 시 틱을 건너뛴다.
-            let presentedSurfaces = uniquePresentedSurfaces()
-            if !presentedSurfaces.isEmpty {
-                for surface in presentedSurfaces { surface.noteFrameCommitted() }
-                commandBuffer.addCompletedHandler { _ in
-                    for surface in presentedSurfaces { surface.noteFrameCompleted() }
+            // present하지 않는 배치는 프레임이 아니므로 세지 않는다.
+            if present {
+                let presentedSurfaces = uniquePresentedSurfaces()
+                if !presentedSurfaces.isEmpty {
+                    for surface in presentedSurfaces { surface.noteFrameCommitted() }
+                    commandBuffer.addCompletedHandler { _ in
+                        for surface in presentedSurfaces { surface.noteFrameCompleted() }
+                    }
                 }
             }
             // GPU 측 실패(.outOfMemory / .timeout / .deviceRemoved 등)를 주워 담는다.
@@ -253,10 +285,9 @@ final class WGPUCommandInterpreter {
             commandBuffer.commit()
             lastCommittedBuffer = commandBuffer
             // 드로어블 텍스처와 그 뷰는 **present할 때** 무효해진다 (명세의 "Expire the current
-            // texture"가 정한 시점). 배치가 끝날 때마다 회수하면, `popErrorScope`·`mapAsync`처럼
-            // 프레임 중간에 제출하는 API가 그 프레임의 스왑체인 핸들을 지워 버려 뒤이은
-            // `beginRenderPass`가 "없는 핸들"로 깨진다.
-            if !acquiredDrawables.isEmpty {
+            // texture"가 정한 시점). 배치가 끝날 때마다 회수하면 프레임 중간 제출이 그 프레임의
+            // 스왑체인 핸들을 지워 버려 뒤이은 `beginRenderPass`가 "없는 핸들"로 깨진다.
+            if present, !acquiredDrawables.isEmpty {
                 for handle in frameScopedHandles { registry.remove(handle) }
                 frameScopedHandles.removeAll()
                 acquiredDrawables.removeAll()
@@ -329,6 +360,8 @@ final class WGPUCommandInterpreter {
             passDepthReadOnly = false
             passStencilReadOnly = false
         }
+        // 디버그 그룹이 열린 채 인코더를 닫으면 Metal이 단언으로 죽는다 — 닫아 주고 오류로 알린다.
+        if let encoder = debugScope { closeDanglingDebugGroups(on: encoder) }
         renderEncoder?.endEncoding()
         renderEncoder = nil
         computeEncoder?.endEncoding()
@@ -426,6 +459,12 @@ final class WGPUCommandInterpreter {
 
         // 복사
         case "copyBufferToBuffer": try copyBufferToBuffer(command)
+        case "clearBuffer": try clearBuffer(command)
+
+        // 디버그 마커
+        case "pushDebugGroup": try pushDebugGroup(command)
+        case "popDebugGroup": popDebugGroup()
+        case "insertDebugMarker": try insertDebugMarker(command)
         case "copyTextureToBuffer": try copyTextureToBuffer(command)
         case "copyBufferToTexture": try copyBufferToTexture(command)
         case "copyTextureToTexture": try copyTextureToTexture(command)
@@ -553,10 +592,21 @@ final class WGPUCommandInterpreter {
         registry.insert(object, at: handle)
     }
 
+    /// 명세에서 **셰이더 모듈은 컴파일에 실패해도 만들어진다** — 오류는 `getCompilationInfo()`와
+    /// 파이프라인 생성 실패로 드러난다. 그래서 파싱이 깨져도 등록하고 진단을 담아 둔다.
+    ///
+    /// 핸들이 아예 없으면 이후 명령이 전부 "존재하지 않는다"로만 깨져 **진짜 원인(파싱 실패)이
+    /// 화면에서 사라진다.** 여기서는 원인도 그 자리에서 보고한다.
     private func createShaderModule(_ command: WGPUValueReader) throws {
         let handle = try command.requiredHandle("id")
-        let object = try WGPUShaderModuleObject(descriptor: WGPUShaderModuleDescriptor(from: command))
+        let object = WGPUShaderModuleObject(descriptor: try WGPUShaderModuleDescriptor(from: command))
         registry.insert(object, at: handle)
+        if let failure = object.compilationMessages.first, !object.isValid {
+            throw WGPUError(
+                kind: failure.kind, message: failure.message,
+                path: failure.path ?? command.fieldPath("code"), line: failure.line
+            )
+        }
     }
 
     private func createBindGroupLayout(_ command: WGPUValueReader) throws {
@@ -606,7 +656,7 @@ final class WGPUCommandInterpreter {
 
     private func createRenderPipeline(_ command: WGPUValueReader) throws {
         let handle = try command.requiredHandle("id")
-        let descriptor = try WGPURenderPipelineDescriptor(from: command)
+        var descriptor = try WGPURenderPipelineDescriptor(from: command)
         let vertexModule = try registry.lookup(
             descriptor.vertex.module, as: WGPUShaderModuleObject.self, kind: "GPUShaderModule"
         )
@@ -614,13 +664,25 @@ final class WGPUCommandInterpreter {
             try registry.lookup($0.module, as: WGPUShaderModuleObject.self, kind: "GPUShaderModule")
         }
 
+        // 명세의 "get the entry point" — 이름을 생략하면 그 스테이지의 유일한 진입점을 쓴다.
+        // 여기서 한 번 확정해 두면 아래 계층은 전부 결정된 이름만 다룬다.
+        descriptor.vertex.entryPoint = try vertexModule.resolveEntryPoint(
+            descriptor.vertex.entryPoint, stage: .vertex, path: command.fieldPath("vertex.entryPoint")
+        )
+        if let fragmentModule, let fragment = descriptor.fragment {
+            descriptor.fragment?.entryPoint = try fragmentModule.resolveEntryPoint(
+                fragment.entryPoint, stage: .fragment, path: command.fieldPath("fragment.entryPoint")
+            )
+        }
+        let vertexEntry = descriptor.vertex.entryPoint!
+
         var stages: [(module: WGPUShaderModuleObject, entryPoints: [String])] = []
         if let fragmentModule, fragmentModule === vertexModule, let fragment = descriptor.fragment {
-            stages = [(vertexModule, [descriptor.vertex.entryPoint, fragment.entryPoint])]
+            stages = [(vertexModule, [vertexEntry, fragment.entryPoint!])]
         } else {
-            stages = [(vertexModule, [descriptor.vertex.entryPoint])]
+            stages = [(vertexModule, [vertexEntry])]
             if let fragmentModule, let fragment = descriptor.fragment {
-                stages.append((fragmentModule, [fragment.entryPoint]))
+                stages.append((fragmentModule, [fragment.entryPoint!]))
             }
         }
         let layout = try WGPUPipelineLayoutResolver.resolve(descriptor.layout, stages: stages, registry: registry)
@@ -633,12 +695,15 @@ final class WGPUCommandInterpreter {
 
     private func createComputePipeline(_ command: WGPUValueReader) throws {
         let handle = try command.requiredHandle("id")
-        let descriptor = try WGPUComputePipelineDescriptor(from: command)
+        var descriptor = try WGPUComputePipelineDescriptor(from: command)
         let module = try registry.lookup(
             descriptor.module, as: WGPUShaderModuleObject.self, kind: "GPUShaderModule"
         )
+        descriptor.entryPoint = try module.resolveEntryPoint(
+            descriptor.entryPoint, stage: .compute, path: command.fieldPath("compute.entryPoint")
+        )
         let layout = try WGPUPipelineLayoutResolver.resolve(
-            descriptor.layout, stages: [(module, [descriptor.entryPoint])], registry: registry
+            descriptor.layout, stages: [(module, [descriptor.entryPoint!])], registry: registry
         )
         registry.insert(
             try WGPUComputePipelineObject(device: device, descriptor: descriptor, layout: layout, module: module),
@@ -1031,6 +1096,9 @@ final class WGPUCommandInterpreter {
     /// 바인드 그룹과 정점 버퍼를 한자리에서 다루는 이유는, 둘 다 **번들 경계에서 무효화되는
     /// 상태**라 검사 시점이 같아야 하기 때문이다. 새 드로우 op을 추가할 때 이 함수 하나만
     /// 부르면 격리 계약이 자동으로 따라온다.
+    ///
+    /// 파이프라인 가드는 각 드로우 op이 자기 이름이 든 메시지로 **이 함수보다 먼저** 세운다 —
+    /// 아래의 같은 검사는 그 가드를 빠뜨린 op을 위한 안전망이라 메시지가 일반형이다.
     private func applyDrawState() throws {
         let layout: WGPUPipelineLayoutObject
         let needsSizes: Bool
@@ -1242,10 +1310,12 @@ final class WGPUCommandInterpreter {
 
     private func draw(_ command: WGPUValueReader) throws {
         let encoder = try requireRenderEncoder()
-        try applyDrawState()
+        // 파이프라인 가드는 `applyDrawState()`보다 **먼저** 둔다 — 그 안의 같은 검사가 먼저
+        // 던지면 이 op 이름이 든 메시지가 영영 나가지 못하는 죽은 코드가 된다 (아래 draw 계열 공통).
         guard let pipeline = currentRenderPipeline else {
             throw WGPUError.validation("draw 전에 setPipeline이 필요하다")
         }
+        try applyDrawState()
         encoder.drawPrimitives(
             type: pipeline.primitiveType,
             vertexStart: command.int("firstVertex", default: 0),
@@ -1257,13 +1327,13 @@ final class WGPUCommandInterpreter {
 
     private func drawIndexed(_ command: WGPUValueReader) throws {
         let encoder = try requireRenderEncoder()
-        try applyDrawState()
         guard let pipeline = currentRenderPipeline else {
             throw WGPUError.validation("drawIndexed 전에 setPipeline이 필요하다")
         }
         guard let indexBinding else {
             throw WGPUError.validation("drawIndexed 전에 setIndexBuffer가 필요하다")
         }
+        try applyDrawState()
         let firstIndex = command.int("firstIndex", default: 0)
         encoder.drawIndexedPrimitives(
             type: pipeline.primitiveType,
@@ -1291,6 +1361,16 @@ final class WGPUCommandInterpreter {
         _ command: WGPUValueReader,
         argumentSize: Int
     ) throws -> (buffer: MTLBuffer, offset: Int) {
+        // 기기가 간접 인자를 지원하지 않으면 **여기서 막는다.** 그대로 Metal에 넘기면
+        // `MTLValidateFeatureSupport ... failed assertion`으로 프로세스가 죽어, 앱은
+        // 이유를 남기지도 못한다. 세 간접 op이 모두 이 함수를 지나므로 한 자리로 충분하다.
+        guard WGPUDeviceCapability.supportsIndirectArguments(device) else {
+            throw WGPUError.unsupported(
+                "이 기기는 간접 드로우·디스패치 인자를 지원하지 않는다 (Metal이 Apple GPU family 3 "
+                    + "이상을 요구한다). **iOS 시뮬레이터가 여기 해당한다** — 실기기(A12 이상)에서는 "
+                    + "동작하므로, 직접 드로우로 대체하거나 실기기에서 확인할 것"
+            )
+        }
         let object = try unmappedBuffer(command, field: "indirectBuffer")
         let offset = command.int("indirectOffset", default: 0)
         guard offset >= 0, offset % 4 == 0 else {
@@ -1321,10 +1401,10 @@ final class WGPUCommandInterpreter {
         // 이미 바꿔 놓는 일이 없어야 한다 (오류는 프레임을 죽이지 않고 누적되므로 더 그렇다).
         // vertexCount, instanceCount, firstVertex, firstInstance — u32 4개.
         let arguments = try indirectArguments(command, argumentSize: 16)
-        try applyDrawState()
         guard let pipeline = currentRenderPipeline else {
             throw WGPUError.validation("drawIndirect 전에 setPipeline이 필요하다")
         }
+        try applyDrawState()
         encoder.drawPrimitives(
             type: pipeline.primitiveType,
             indirectBuffer: arguments.buffer,
@@ -1336,13 +1416,13 @@ final class WGPUCommandInterpreter {
         let encoder = try requireRenderEncoder()
         // indexCount, instanceCount, firstIndex, baseVertex(i32), firstInstance — 5칸.
         let arguments = try indirectArguments(command, argumentSize: 20)
-        try applyDrawState()
         guard let pipeline = currentRenderPipeline else {
             throw WGPUError.validation("drawIndexedIndirect 전에 setPipeline이 필요하다")
         }
         guard let indexBinding else {
             throw WGPUError.validation("drawIndexedIndirect 전에 setIndexBuffer가 필요하다")
         }
+        try applyDrawState()
         encoder.drawIndexedPrimitives(
             type: pipeline.primitiveType,
             indexType: indexBinding.type,
@@ -1359,10 +1439,10 @@ final class WGPUCommandInterpreter {
         let encoder = try requireComputeEncoder()
         // x, y, z — u32 3개.
         let arguments = try indirectArguments(command, argumentSize: 12)
-        try applyDrawState()
         guard let pipeline = currentComputePipeline else {
             throw WGPUError.validation("dispatchWorkgroupsIndirect 전에 setPipeline이 필요하다")
         }
+        try applyDrawState()
         encoder.dispatchThreadgroups(
             indirectBuffer: arguments.buffer,
             indirectBufferOffset: arguments.offset,
@@ -1400,10 +1480,10 @@ final class WGPUCommandInterpreter {
 
     private func dispatchWorkgroups(_ command: WGPUValueReader) throws {
         let encoder = try requireComputeEncoder()
-        try applyDrawState()
         guard let pipeline = currentComputePipeline else {
             throw WGPUError.validation("dispatchWorkgroups 전에 setPipeline이 필요하다")
         }
+        try applyDrawState()
         encoder.dispatchThreadgroups(
             MTLSize(
                 width: max(command.int("x", default: 1), 1),
@@ -1426,6 +1506,116 @@ final class WGPUCommandInterpreter {
             to: destination.buffer, destinationOffset: command.int("destinationOffset", default: 0),
             size: size
         )
+    }
+
+    // MARK: - 디버그 마커
+
+    /// 디버그 그룹·마커를 받을 대상 — **사용자 패스**가 열려 있으면 그 인코더, 아니면 커맨드 버퍼.
+    ///
+    /// 여기서 blit 인코더를 빼는 것이 핵심이다. blit은 `writeBuffer`·복사가 **속으로** 여닫는
+    /// 내부 인코더라, 사용자가 보기엔 "패스 밖"이다. 그걸 스코프로 삼으면 프레임 단위로 연 그룹이
+    /// blit 인코더에서 닫히려 하고, Metal이 요구하는 "인코더마다 짝 맞추기"가 깨진다
+    /// (실제로 `pushDebugGroup` → `writeBuffer` → `popDebugGroup` 순서가 그렇게 어긋났다).
+    ///
+    /// 그래서 스코프는 두 층이다 — 패스 안 구간(렌더/컴퓨트 인코더)과 프레임 구간(커맨드 버퍼).
+    private var debugScope: MTLCommandEncoder? {
+        renderEncoder ?? computeEncoder
+    }
+
+    private func pushDebugGroup(_ command: WGPUValueReader) throws {
+        let label = try command.requiredString("groupLabel")
+        if let encoder = debugScope {
+            encoder.pushDebugGroup(label)
+            encoderDebugDepth += 1
+        } else {
+            // 프레임 구간 — 아직 커맨드 버퍼가 없으면 만든다. 그래야 뒤따르는 pop과 짝이 맞는다.
+            try activeCommandBuffer().pushDebugGroup(label)
+            bufferDebugDepth += 1
+        }
+    }
+
+    /// 짝이 맞지 않는 `pop`은 **Metal이 단언으로 프로세스를 죽인다.** 그래서 깊이를 세어
+    /// 여기서 막는다 — 명세도 이 경우를 오류로 정하므로 동작이 같고, 앱은 살아남는다.
+    private func popDebugGroup() {
+        if let encoder = debugScope {
+            guard encoderDebugDepth > 0 else {
+                record(.validation("popDebugGroup: 짝이 맞는 pushDebugGroup이 없다 (패스 안)"))
+                return
+            }
+            encoderDebugDepth -= 1
+            encoder.popDebugGroup()
+        } else if let commandBuffer {
+            guard bufferDebugDepth > 0 else {
+                record(.validation("popDebugGroup: 짝이 맞는 pushDebugGroup이 없다"))
+                return
+            }
+            bufferDebugDepth -= 1
+            commandBuffer.popDebugGroup()
+        }
+    }
+
+    /// 인코더를 닫기 전에 열려 있는 디버그 그룹을 정리한다.
+    ///
+    /// Metal은 그룹이 열린 채 인코더가 끝나도 단언으로 죽는다. 명세는 "패스가 끝날 때
+    /// 디버그 스택이 비어 있어야 한다"고 정하므로, **오류로 알리되 닫아 주고 계속 간다** —
+    /// 여기서 프로세스가 죽으면 진단할 기회조차 없다.
+    private func closeDanglingDebugGroups(on encoder: MTLCommandEncoder) {
+        guard encoderDebugDepth > 0 else { return }
+        record(.validation(
+            "디버그 그룹 \(encoderDebugDepth)개가 열린 채로 패스가 끝났다 (popDebugGroup을 빠뜨렸다)"
+        ))
+        while encoderDebugDepth > 0 {
+            encoder.popDebugGroup()
+            encoderDebugDepth -= 1
+        }
+    }
+
+    private func insertDebugMarker(_ command: WGPUValueReader) throws {
+        let label = try command.requiredString("markerLabel")
+        // 인코더에는 signpost(점 이벤트)가 있다. 커맨드 버퍼에는 그룹밖에 없어 여닫아 흉내 낸다.
+        if let encoder = debugScope {
+            encoder.insertDebugSignpost(label)
+        } else {
+            let buffer = try activeCommandBuffer()
+            buffer.pushDebugGroup(label)
+            buffer.popDebugGroup()
+        }
+    }
+
+    /// `clearBuffer` — 버퍼의 한 구간을 0으로 채운다.
+    ///
+    /// `writeBuffer`로 0을 밀어 넣는 것과 결과는 같지만 **CPU에서 0 배열을 만들어 브리지로
+    /// 실어 보내지 않는다.** 큰 스토리지 버퍼를 프레임마다 초기화하는 컴퓨트 경로에서 차이가 크다.
+    private func clearBuffer(_ command: WGPUValueReader) throws {
+        let object = try unmappedBuffer(command, field: "buffer")
+        let offset = command.int("offset", default: 0)
+        // 명세: size를 생략하면 버퍼 끝까지다.
+        let size = command.int("size", default: max(0, object.size - offset))
+
+        guard object.usage.contains(.copyDst) else {
+            throw WGPUError.validation(
+                "clearBuffer의 대상은 GPUBufferUsage.COPY_DST로 만들어야 한다",
+                path: command.fieldPath("buffer")
+            )
+        }
+        // 4의 배수 요구는 명세 규칙이다. Metal은 바이트 단위로도 채워 주므로 안 막으면
+        // 브라우저에서만 거부되는 코드가 나온다.
+        guard offset % 4 == 0, size % 4 == 0 else {
+            throw WGPUError.validation(
+                "clearBuffer의 offset·size는 4의 배수여야 한다 (받은 값 \(offset), \(size))",
+                path: command.fieldPath("offset")
+            )
+        }
+        guard offset >= 0, size >= 0, offset + size <= object.size else {
+            throw WGPUError.validation(
+                "clearBuffer 범위가 버퍼를 넘는다 — offset \(offset) + \(size)B > 크기 \(object.size)B",
+                path: command.fieldPath("size")
+            )
+        }
+        guard size > 0 else { return }
+
+        let encoder = try activeBlitEncoder()
+        encoder.fill(buffer: object.buffer, range: offset..<(offset + size), value: 0)
     }
 
     private func copyTextureToBuffer(_ command: WGPUValueReader) throws {

@@ -102,7 +102,8 @@ public struct WGPUPixelReadback: Sendable, Equatable {
     }
 
     /// 채널이 균일한 크기로 늘어서 있는 포맷만 다룬다.
-    /// `rgb10a2unorm`·`rg11b10ufloat`처럼 비트가 채널 경계를 넘어 팩된 것과 정수 포맷은 nil —
+    /// `rgb10a2unorm`·`rgb10a2uint`·`rg11b10ufloat`·`rgb9e5ufloat`처럼 비트가 채널 경계를
+    /// 넘어 팩된 것과 정수 포맷은 nil —
     /// 정규화된 float으로 펴는 것이 오히려 값을 왜곡하므로 호출 측에 넘긴다.
     private static func channelLayout(of format: WGPUTextureFormat) -> ChannelLayout? {
         switch format {

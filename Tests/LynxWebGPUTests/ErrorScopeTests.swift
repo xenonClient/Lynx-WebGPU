@@ -140,6 +140,43 @@ final class ErrorScopeTests: XCTestCase {
         XCTAssertEqual(errors(result).count, 0)
     }
 
+    /// shim의 `createRenderPipelineAsync`가 쓰는 배치 그대로 — validation 바깥, internal 안쪽.
+    ///
+    /// 파이프라인 생성은 두 종류로 실패한다. 디스크립터 문제는 `validation`(+`unsupported`)이고
+    /// 셰이더 번역·컴파일 실패는 `backend`라 `internal` 필터로만 잡힌다. 두 겹으로 싸야
+    /// **어느 쪽이든 스코프가 가져가고**, 한 겹만 치면 나머지 절반이 전역으로 새면서
+    /// Promise는 성공으로 풀려 못 쓰는 파이프라인이 손에 남는다.
+    func test_두겹_스코프가_파이프라인의_두_실패_모두를_가져간다() {
+        // ① 셰이더 컴파일 실패 → 안쪽(internal)이 가져가고 바깥(validation)은 깨끗하다.
+        let backend = harness.execute([
+            ["op": "pushErrorScope", "filter": "validation"],
+            ["op": "pushErrorScope", "filter": "internal"],
+            ["op": "createShaderModule", "id": 1, "code": """
+             @vertex fn vs() -> @builtin(position) vec4f { return nonexistent(1.0); }
+             """],
+            ["op": "createRenderPipeline", "id": 2, "layout": "auto",
+             "vertex": ["module": 1, "entryPoint": "vs"]],
+            ["op": "popErrorScope"],
+            ["op": "popErrorScope"],
+        ])
+        XCTAssertEqual(scopes(backend).first??["kind"] as? String, "backend", "안쪽이 먼저 가져간다")
+        XCTAssertNil(scopes(backend).last ?? nil, "바깥은 비어야 한다")
+        XCTAssertEqual(errors(backend).count, 0, "전역으로 새면 안 된다")
+
+        // ② 디스크립터 오류 → 안쪽은 필터가 안 맞으니 바깥(validation)이 가져간다.
+        let validation = harness.execute([
+            ["op": "pushErrorScope", "filter": "validation"],
+            ["op": "pushErrorScope", "filter": "internal"],
+            ["op": "createRenderPipeline", "id": 3, "layout": "auto",
+             "vertex": ["module": 999, "entryPoint": "vs"]],
+            ["op": "popErrorScope"],
+            ["op": "popErrorScope"],
+        ])
+        XCTAssertNil(scopes(validation).first ?? nil, "안쪽은 비어야 한다")
+        XCTAssertEqual(scopes(validation).last??["kind"] as? String, "validation")
+        XCTAssertEqual(errors(validation).count, 0)
+    }
+
     // MARK: - 수명
 
     /// WebGPU에서 오류 스코프는 **디바이스 상태**다. `push`와 `pop` 사이에 `submit`이 몇 번이든

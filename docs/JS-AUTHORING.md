@@ -83,7 +83,7 @@ ReactLynx라면 `useEffect`의 정리 함수에서 부를 것.
 |---|---|---|
 | `buffer.mapAsync()` | GPU 완료를 기다린다 | 결과가 필요한 프레임에만 |
 | `device.popErrorScope()` | 결과를 받으려고 즉시 제출한다 | 초기화·진단에서. **여는 쪽(`pushErrorScope`)은 기록만 하므로 프레임 안에서 써도 된다** |
-| ↳ | 왕복이 느는 것뿐이고 **프레임을 깨지는 않는다** — 스왑체인 텍스처는 배치가 아니라 `present` 시점에 무효해지므로, 중간 제출 뒤에도 `getCurrentTexture()`로 얻은 뷰를 계속 쓸 수 있다 | |
+| ↳ | 왕복이 느는 것뿐이고 **프레임을 깨지는 않는다** — `popErrorScope`·`mapAsync`의 중간 제출은 `present: false`로 표시되어 스왑체인 텍스처를 present하지 않고 프레임 핸들도 만료시키지 않는다. present는 `queue.submit()`에서만 일어나므로, 중간 제출 뒤에도 `getCurrentTexture()`로 얻은 뷰를 계속 쓸 수 있다 (**중간 배치가 `writeBuffer` 등으로 GPU 작업을 만들어도** 그렇다) | |
 | `gpu.requestAdapter()` | 동기 네이티브 호출 | 초기화에서 1회 |
 | `device.createRenderPipeline()` | 셰이더 컴파일이 붙는다 | 초기화에서 1회 |
 
@@ -225,3 +225,66 @@ device.onError((error, text) => {
   WGSL이 어떻게 번역됐는지 그대로 볼 수 있다.
 - 화면이 검게만 나오면: (1) `getSize()`가 0인지, (2) `configure` 했는지,
   (3) `submit()`을 불렀는지 순서로 확인한다.
+
+## 10. 웹 라이브러리 이식 (Three.js 등) — PrimJS 전역 브리지
+
+브라우저 전역을 기대하는 라이브러리는 PrimJS에서 세 가지 벽에 부딪힌다:
+
+| 문제 | 증상 (Three.js 기준) |
+|---|---|
+| `self`가 없다 | `Animation`이 `typeof self !== 'undefined' ? self : null`로 컨텍스트를 잡아 `null` → `renderer.init()`이 오류 없이 영구 정지 |
+| `performance`가 없다 | `NodeFrame.update()`의 `performance.now()`에서 같은 정지 |
+| `globalThis.X = v` 대입이 **bare 식별자 `X`로 안 보인다** | 부트스트랩으로 `globalThis.navigator = …`를 넣어도 `navigator` → *undefined is not an object* |
+
+세 번째가 핵심이다 — 런타임 대입으로는 해결할 수 없고, **번들러가 컴파일 타임에 식별자를
+바꿔치기**해야 한다. shim(`webgpu.js`)이 로드 시점에 네임스페이스가 붙은 전역을 얹어 두므로
+(`lynxNavigator`, `lynxPerformance`, `lynxGPUBufferUsage` …), `lynx.config.ts`에서 그 이름으로
+연결하면 된다:
+
+```ts
+// lynx.config.ts
+export default defineConfig({
+  source: {
+    entry: { /* … */ },
+    define: {
+      self: 'globalThis',
+      performance: 'globalThis.lynxPerformance',
+      navigator: 'globalThis.lynxNavigator',
+      GPUBufferUsage: 'globalThis.lynxGPUBufferUsage',
+      GPUTextureUsage: 'globalThis.lynxGPUTextureUsage',
+      GPUShaderStage: 'globalThis.lynxGPUShaderStage',
+      GPUColorWrite: 'globalThis.lynxGPUColorWrite',
+      GPUMapMode: 'globalThis.lynxGPUMapMode',
+    },
+  },
+  // …
+})
+```
+
+- `define`은 **자유 식별자만** 치환한다. shim 자신의 `export const GPUBufferUsage`나
+  `import { GPUBufferUsage } from './webgpu.js'` 같은 선언된 바인딩은 건드리지 않는다 —
+  두 방식을 섞어 써도 안전하다.
+- 전역이 실제로 깔리는 시점은 `webgpu.js` 모듈 로드다. `define` 결과는 호출 시점에
+  평가되므로(`performance.now()` → `globalThis.lynxPerformance.now()`) import 순서에
+  민감하지 않지만, 라이브러리가 모듈 초기화에서 전역을 **캡처**한다면 shim을 먼저 import한다.
+- Three.js가 다시 읽는 디바이스 표면(`device.features`, `device.lost`)은 shim이 명세대로
+  제공한다 — `requestDevice({ requiredFeatures })`로 요청한 것만 `features`에 들어가므로,
+  어댑터에서 고른 기능을 **요청에 실어 넘길 것**.
+- **`requestAnimationFrame`은 `installAnimationFrame()`으로 깐다.** three는 `setAnimationLoop`을
+  주더라도 내부 `Animation` 루프가 rAF를 부르므로, 없으면 `renderer.init()`이 **오류 없이 영구
+  정지**한다. shim의 헬퍼는 `startFrameLoop` 위에 얹혀 있어 프레임이 고르고, 예약이 비면
+  디스플레이 링크를 스스로 놓는다. 되돌리는 함수를 페이지 이탈 때 부를 것:
+
+  ```js
+  import { installAnimationFrame } from './webgpu.js'
+  const uninstallAnimationFrame = installAnimationFrame()   // three import 전에
+  // …
+  uninstallAnimationFrame()                                 // 정리
+  ```
+
+  직접 쓰는 코드에는 필요 없다 — `startFrameLoop`(§4)가 더 정확하고 정지 시점도 분명하다.
+  이 헬퍼는 **남의 코드가 rAF를 부를 때만** 쓴다. 이미 rAF가 있는 환경은 덮지 않는다.
+- Three.js는 파이프라인을 **지연 생성**하며 그 경로에 `popErrorScope()`가 섞여 있다.
+  §5의 규칙대로 이 호출은 프레임 중간 제출을 만들지만 `present: false`로 표시되어
+  프레임을 깨지 않는다 — 획득해 둔 캔버스 텍스처와 출력 패스가 그대로 살아남는다.
+  (데모의 `three` 씬이 이 경로 전체를 시뮬레이터에서 재현·검증한다.)

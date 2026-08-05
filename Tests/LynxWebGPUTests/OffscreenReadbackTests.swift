@@ -42,6 +42,9 @@ final class OffscreenReadbackTests: XCTestCase {
             (.rgba16float, 8),
             (.rgba32float, 16),
             (.r8unorm, 1),
+            // 팩된 32비트 — 채널 경계가 바이트에 맞지 않아도 픽셀은 4바이트다.
+            (.rgb10a2uint, 4),
+            (.rgb9e5ufloat, 4),
         ] as [(WGPUTextureFormat, Int)] {
             let readback = try surface(format: format).readPixels(queue: queue)
             XCTAssertEqual(readback.format, format)

@@ -8,6 +8,25 @@ import LynxWebGPUCore
 /// 조합 폭발을 GPU 테스트로 감당하면 느리기만 하고 얻는 것이 없다. 값 대응은 여기서 전수로 보고,
 /// GPU 테스트는 "그 값이 실제로 렌더 결과를 바꾸는가"만 대표 조합으로 확인한다.
 final class MetalMappingTests: XCTestCase {
+    /// **모든** 텍스처 포맷이 Metal 대응을 갖는지 — 케이스를 늘리고 매핑을 빠뜨리면 여기서 걸린다.
+    ///
+    /// 빠뜨리면 그 포맷을 쓰는 순간 `unsupported`가 나는데, 열거형에 있으니 지원한다고 믿고
+    /// 쓰게 된다. 전수로 도는 것이 요점이다.
+    func test_모든_텍스처_포맷이_Metal_대응을_갖는다() throws {
+        for format in WGPUTextureFormat.allCases {
+            let metal = try WGPUMetalMapping.pixelFormat(format)
+            XCTAssertNotEqual(metal, .invalid, "'\(format.rawValue)'의 Metal 대응이 없다")
+        }
+    }
+
+    /// 픽셀당 바이트 수가 Metal이 실제로 쓰는 크기와 맞는지 — 어긋나면 `writeTexture`의
+    /// 기본 `bytesPerRow`가 틀려 **오류 없이** 어긋난 행을 올린다.
+    func test_팩된_32비트_포맷의_픽셀_크기가_4바이트다() {
+        for format: WGPUTextureFormat in [.rgb10a2unorm, .rgb10a2uint, .rg11b10ufloat, .rgb9e5ufloat] {
+            XCTAssertEqual(format.bytesPerPixel, 4, "\(format.rawValue)")
+        }
+    }
+
     func test_스텐실_연산이_Metal로_전수_매핑된다() {
         let expected: [WGPUStencilOperation: MTLStencilOperation] = [
             .keep: .keep,

@@ -14,21 +14,48 @@ const context = gpu.getCanvasContext('main')        // <webgpu-canvas canvas-id=
 const format  = gpu.getPreferredCanvasFormat()      // "bgra8unorm"
 ```
 
-`adapter.limits`는 Metal 인자 테이블에서 오는 실제 한계값이다:
+`adapter.limits`는 **명세 `GPUSupportedLimits`의 전 항목**을 명세 철자 그대로 싣는다 —
+웹 라이브러리가 이 이름으로 읽고 자기 예산을 정하기 때문이다. 값은 가능한 한 Metal 디바이스에서
+실제로 읽고, 런타임 조회가 없는 것만 Metal 기능 집합 표의 보장값을 쓴다.
 
-| 키 | 뜻 |
-|---|---|
-| `maxVertexBuffers` | 8 — 정점 버퍼 슬롯 |
-| `maxBindGroupBuffers` | 22 — 바인드 그룹이 쓸 수 있는 버퍼 (정점 버퍼 8슬롯 + `arrayLength()` 크기 표 1슬롯 예약분 제외) |
-| `maxTexturesPerStage` / `maxSamplersPerStage` | 31 / 16 |
-| `maxBufferSize` | `MTLDevice.maxBufferLength` |
-| `maxThreadsPerThreadgroup` | 컴퓨트 워크그룹 상한 |
+| 키 | 값 | 근거 |
+|---|---|---|
+| `maxTextureDimension1D` / `2D` | 16384 (구형 8192) | Apple family 3+ / Mac2 |
+| `maxTextureDimension3D` / `maxTextureArrayLayers` | 2048 / 2048 | Metal 보장값 |
+| `maxVertexBuffers` | 8 | 우리 인자 테이블 배정 규칙 |
+| `maxSampledTexturesPerShaderStage` / `maxSamplersPerShaderStage` | 31 / 16 | Metal 인자 테이블 |
+| `maxStorageBuffersPerShaderStage` / `maxUniformBuffersPerShaderStage` | 22 | 정점 버퍼 8슬롯 + `arrayLength()` 크기 표 1슬롯 예약분 제외 |
+| `maxBufferSize` / `maxStorageBufferBindingSize` | `MTLDevice.maxBufferLength` | 실제 조회 |
+| `minUniformBufferOffsetAlignment` / `minStorage…` | 256 | **명세 기본값을 쓴다** — Metal 요구(32B)보다 크므로 이걸 지키면 Metal도 만족한다. 32를 보고하면 브라우저에서만 깨지는 코드가 나온다 |
+| `maxComputeWorkgroupSizeX/Y/Z` · `maxComputeWorkgroupStorageSize` | 디바이스 조회 | `maxThreadsPerThreadgroup`, `maxThreadgroupMemoryLength` |
+| `maxComputeWorkgroupsPerDimension` | 65535 | Metal에 조회가 없다 (Dawn과 같은 보수적 값) |
+
+나머지(`maxBindGroups` 4, `maxColorAttachments` 8 …)도 전부 실려 있다. 값이 명세 기본값보다
+낮지 않은지는 `CommandInterpreterTests`가 못 박는다 — 낮으면 브라우저에서 되는 코드가
+여기서만 거부되고 앱은 이유를 알 수 없다.
 
 `adapter.features`는 기기마다 갈리는 기능을 알려 준다 (웹과 같은 `has()` 인터페이스):
 
 ```js
 if (adapter.features.has('timestamp-query')) { /* 타임스탬프 쿼리셋을 만들 수 있다 */ }
 ```
+
+`adapter.info`(= `device.adapterInfo`)는 명세 `GPUAdapterInfo`다 — GPU 종류로 분기하는 코드가
+읽는 표준 이름이다:
+
+```js
+adapter.info.vendor          // 'apple'
+adapter.info.architecture    // 'apple-8' 등 — Metal의 supportsFamily로 알아낸 만큼
+adapter.info.description     // MTLDevice.name ("Apple M3")
+adapter.info.device          // '' — Metal에 벤더 식별자 개념이 없다
+```
+
+**모르는 자리는 빈 문자열이다** (명세 규칙). 지어내면 그 값으로 분기하는 코드가 잘못된
+우회로를 탄다. 이 구현만의 `adapter.name`·`backend`·`hasUnifiedMemory`도 그대로 남아 있다.
+
+`device.features`에는 명세대로 **`requestDevice({ requiredFeatures })`로 요청한 것만** 들어간다 —
+어댑터가 지원해도 요청하지 않았으면 `has()`는 false다. 지원하지 않는 기능을 요구하면
+`requestDevice`가 거부한다. `device.lost`는 존재하되 영원히 pending이다 (§8).
 
 ## 2. 캔버스 (`GPUCanvasContext`)
 
@@ -37,12 +64,19 @@ context.configure({ device, format, alphaMode: 'opaque' })   // configureCanvas
 const texture = context.getCurrentTexture()                  // getCurrentTexture
 const view = texture.createView()                            // createTextureView
 const { width, height } = context.getSize()                  // 캐시 (execute 응답으로 갱신)
+
+context.getConfiguration()   // 마지막 설정 (없으면 null)
+context.unconfigure()        // 다시 configure하기 전까지 그릴 수 없다
 ```
 
 - `configure`는 `CAMetalLayer` 설정을 메인 스레드에 **비동기**로 반영한다. `getPreferredCanvasFormat()`
   (= `bgra8unorm`)을 쓰면 엘리먼트 기본값과 같아 첫 프레임부터 일치한다.
 - `getSize()`는 **제출 응답의 `canvases`로 갱신되는 캐시**를 읽는다. 동기 네이티브 조회는
   캐시가 빌 때(= `configure` 직후) 한 번뿐이므로 프레임 안에서 불러도 왕복이 없다.
+- `unconfigure()`는 포맷을 바꿔 재구성하는 코드(HDR 토글 등)가 밟는 자리다. 이후
+  `getCurrentTexture()`는 거부된다. **이미 화면에 나간 프레임을 지우지는 않는다** — 브라우저는
+  캔버스를 투명 검정으로 비우지만, 여기서 그러려면 표면을 클리어해 present해야 하고
+  설정을 푸는 호출이 프레임을 하나 소비하는 편이 더 놀랍다고 봤다.
 - `getCurrentTexture()`가 돌려준 텍스처와 그 뷰는 **그 프레임 안에서만** 유효하다.
 - present는 자동이다 — 배치가 끝날 때 획득한 드로어블이 화면에 올라간다.
 
@@ -87,16 +121,38 @@ device.queue.writeBuffer(buffer, 0, float32Array)      // writeBuffer
 
 // (3) 읽기 — GPU 완료를 기다리므로 비동기. 다 읽었으면 unmap()
 const bytes = await staging.mapAsync(GPUMapMode.READ)  // readBuffer (콜백형 네이티브 호출)
+const part  = staging.getMappedRange(8, 16)            // 부분만 (offset 8의 배수, size 4의 배수)
 staging.unmap()
 ```
 
 `usage` 플래그: `MAP_READ` `MAP_WRITE` `COPY_SRC` `COPY_DST` `INDEX` `VERTEX` `UNIFORM` `STORAGE`
 `INDIRECT` `QUERY_RESOLVE`.
 
+버퍼·텍스처는 명세의 **읽기 전용 속성**을 그대로 갖는다 — 객체를 받아 스스로 판단하는
+코드(라이브러리)가 이 이름으로 읽는다:
+
+```js
+buffer.size · buffer.usage · buffer.mapState        // 'unmapped' | 'pending' | 'mapped'
+texture.width · height · depthOrArrayLayers · mipLevelCount · sampleCount
+texture.dimension · format · usage · textureBindingViewDimension
+```
+
+`textureBindingViewDimension`은 생략하면 `dimension`과 레이어 수에서 정해진다
+(2d + 레이어 2 이상 → `'2d-array'`).
+
 - **`MAP_READ`는 `COPY_DST`와만, `MAP_WRITE`는 `COPY_SRC`와만** 조합할 수 있다 (명세 요구).
   Metal은 `.storageModeShared` 하나로 전부 되지만, 안 막으면 브라우저에서만 깨진다.
 - 그래서 계산 결과를 읽는 정석은 **2단**이다 — 결과 버퍼(`STORAGE|COPY_SRC`)를
   `copyBufferToBuffer`로 스테이징 버퍼(`COPY_DST|MAP_READ`)에 옮기고 그쪽을 매핑한다.
+
+> **`getMappedRange`가 돌려주는 것은 사본이다.** JS에서는 `ArrayBuffer`가 다른 `ArrayBuffer`의
+> 일부를 가리킬 수 없어, 구간을 복사해 주고 `unmap()`에서 되돌려 쓴다 — 쓴 내용은 사라지지
+> 않지만 **반환된 버퍼는 `unmap()` 전까지만** 의미가 있다 (브라우저에서 detach되는 시점과 같다).
+> 전체 구간을 처음 요청하면 복사 없이 매핑 자체를 준다. 구간끼리 **겹칠 수 없고**, `offset`은
+> 8의 배수·`size`는 4의 배수여야 한다 (명세 규칙, `OperationError`).
+>
+> 정렬 요구는 **명시한 값에만** 적용한다 — 매핑 크기가 곧 네이티브 버퍼 크기라 3바이트짜리도
+> 정상인데, 생략한 `size`까지 4의 배수를 요구하면 그런 버퍼를 아예 못 읽는다.
 
 > **매핑 중인 버퍼는 큐 작업에 쓸 수 없다.** `mapAsync`는 명세대로 버퍼를 "unavailable"로
 > 만들고, `unmap()`을 부를 때까지 쓰기·복사·resolve·드로우 바인딩을 전부 거부한다.
@@ -125,9 +181,14 @@ const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' 
 > 앞선 렌더 패스가 그린 내용과의 순서도 스트림 그대로 보존된다. 배열 텍스처는
 > `depthOrArrayLayers`만큼 슬라이스별로 복사된다.
 
-지원 포맷: 8/16/32비트 컬러 전 계열(`r8unorm` … `rgba32float`), `bgra8unorm(-srgb)`, `rgb10a2unorm`,
-`rg11b10ufloat`, 깊이/스텐실(`depth16unorm` `depth24plus` `depth32float` `stencil8` + `-stencil8` 조합).
-**블록 압축(BC/ETC/ASTC)은 미지원.**
+지원 포맷: 8/16/32비트 컬러 전 계열(`r8unorm` … `rgba32float`), `bgra8unorm(-srgb)`,
+팩된 32비트(`rgb10a2unorm` `rgb10a2uint` `rg11b10ufloat` `rgb9e5ufloat`),
+깊이/스텐실(`depth16unorm` `depth24plus` `depth32float` `stencil8` + `-stencil8` 조합).
+**블록 압축(BC/ETC/ASTC)은 미지원**이고, 16비트 unorm/snorm 6종은 명세에서도 선택 기능이다 (§8).
+
+> `rgb9e5ufloat`는 채널마다 가수 9비트 + 공통 지수 5비트를 쓰는 공유 지수 HDR 포맷이다 —
+> `rgba16float`의 **절반 크기로 같은 동적 범위**를 담으므로 읽기 전용 HDR 소스(환경맵 등)에 맞다.
+> 팩된 포맷은 `readPixels`가 채널로 펴 주지 않는다 (`data`를 직접 해석할 것 — `docs/TESTING.md` §4-1).
 
 > `depth24plus`는 Apple GPU에 24비트 깊이 포맷이 없어 `depth32Float`으로 올려 준다 (명세가 "24비트 이상"을 요구하므로 적법).
 
@@ -143,6 +204,19 @@ const raw    = device.createShaderModule({ code: MSL_SOURCE, language: 'msl' }) 
 
 `language: 'msl'`은 WGSL 트랜스파일러를 건너뛴다. 이때 바인딩 인덱스를 MSL에 직접 써야 하고
 `layout: 'auto'`를 쓸 수 없다 (`GPUPipelineLayout`을 명시할 것).
+
+```js
+const { messages } = await module.getCompilationInfo()   // shaderCompilationInfo
+// messages[] = { message, type: 'error', lineNum, linePos, offset, length }
+```
+
+- **셰이더 모듈은 컴파일에 실패해도 만들어진다** (명세 모델). 실패는 이 목록과 파이프라인 생성
+  실패로 드러나므로, `createShaderModule()`이 돌아온 뒤에도 확인할 값이 있다.
+  핸들이 아예 없으면 이후 명령이 전부 "존재하지 않는다"로만 깨져 **진짜 원인이 사라진다.**
+- `lineNum`은 WGSL 소스의 줄 번호(1부터)다. `linePos`·`offset`·`length`는 이 구현이 알지 못해
+  **0으로 둔다** — 모르는 값을 지어내면 편집기가 엉뚱한 곳에 밑줄을 긋는다.
+- Metal 런타임 API는 경고를 따로 주지 않으므로 `type`은 항상 `'error'`다.
+- 왕복이 하나 붙는다. 진단 경로에서만 쓸 것.
 
 ## 4. 바인딩
 
@@ -209,10 +283,30 @@ const compute = device.createComputePipeline({                // createComputePi
 })
 ```
 
+- **`entryPoint`는 생략할 수 있다.** 그러면 그 스테이지의 **유일한** 진입점을 쓴다 (명세의
+  "get the entry point"). 후보가 없거나 둘 이상이면 이름을 알려 주는 validation 오류다.
 - `vertex` / `fragment` / `compute` 각각 `constants: { name: value }` 로 셰이더의 `override` 값을 준다
   (`docs/WGSL.md` §2-2). 같은 셰이더라도 상수가 다르면 별도로 컴파일·캐시된다.
 - 정점 버퍼 슬롯은 **최대 8개**, `arrayStride: 0`은 미지원.
 - 컴퓨트 워크그룹 크기는 WGSL의 `@workgroup_size`에서 리플렉션으로 가져온다 (MSL 모듈은 (1,1,1)).
+
+### 비동기 생성 — 실패를 그 자리에서 안다
+
+```js
+try {
+  const pipeline = await device.createRenderPipelineAsync(descriptor)   // createComputePipelineAsync 도 같다
+} catch (error) {
+  // error.name === 'GPUPipelineError', error.reason === 'validation' | 'internal'
+  console.error(error.message)     // 경로 + 사유 (셰이더 실패면 생성된 MSL까지)
+}
+```
+
+동기 판은 명령만 기록하므로 실패가 **다음 `submit()`의 오류 배열로 늦게** 온다. 비동기 판은
+생성을 오류 스코프로 감싸 즉시 제출하고 결과로 Promise를 푼다 — 명세대로 **오류를 디바이스로
+보내지 않고**(전역 `onError`에 안 뜬다) `GPUPipelineError`로 거부한다. `reason`은 셰이더
+번역·컴파일 실패면 `'internal'`, 그 밖은 `'validation'`이다.
+
+대가는 왕복 하나다. 프레임 루프가 아니라 **초기화 경로에서** 쓸 것 (§5의 `popErrorScope`와 같은 이유).
 
 ### 스텐실 상태
 
@@ -266,16 +360,33 @@ computePass.dispatchWorkgroups(8, 8)                         // dispatchWorkgrou
 computePass.dispatchWorkgroupsIndirect(argsBuffer, 0)        // dispatchWorkgroupsIndirect
 computePass.end()
 
-encoder.copyBufferToBuffer(src, 0, dst, 0, size)             // copyBufferToBuffer
+encoder.copyBufferToBuffer(src, dst)                         // copyBufferToBuffer — 원본 전체
+encoder.copyBufferToBuffer(src, dst, size)                   // 앞에서 size 바이트
+encoder.copyBufferToBuffer(src, 0, dst, 0, size)             // 오프셋까지 지정 (size 생략 가능)
 encoder.copyTextureToBuffer({ texture }, { buffer, bytesPerRow }, { width, height })
 encoder.copyBufferToTexture({ buffer, bytesPerRow }, { texture }, { width, height })
 encoder.copyTextureToTexture({ texture: a }, { texture: b }, { width, height })
+encoder.clearBuffer(buffer, offset, size)                    // clearBuffer — 0으로 채운다
+
+// 디버그 마커 — 커맨드 인코더와 패스·번들 인코더 모두에 있다
+encoder.pushDebugGroup('프레임')                              // pushDebugGroup
+pass.insertDebugMarker('그림자 직전')                          // insertDebugMarker
+encoder.popDebugGroup()                                      // popDebugGroup
 
 device.queue.submit([encoder.finish()])   // ← 여기서 한 번에 네이티브로 넘어간다
 ```
 
 - `beginRenderPass`는 멀티샘플 `resolveTarget`을 지원한다 (store op이 `multisampleResolve`로 바뀐다).
 - 복사 명령은 패스 **밖에서만** 쓸 수 있다.
+- **디버그 마커는 Xcode GPU 캡처에 구간 이름으로 뜬다** (Metal `pushDebugGroup`/`insertDebugSignpost`).
+  없으면 캡처가 이름 없는 드로우 나열이라 어느 패스가 무엇인지 알 수 없다. 스코프는 두 층이다 —
+  **패스 안**에서 열면 그 패스 구간, **패스 밖**에서 열면 프레임 구간이다 (`writeBuffer`·복사가
+  속으로 여는 blit 인코더는 스코프가 아니다 — 그것까지 세면 프레임 구간이 거기서 닫히려 한다).
+  `push`와 `pop`의 짝이 맞지 않거나 연 채로 패스가 끝나면 **Metal이 단언으로 프로세스를 죽이므로**,
+  네이티브가 깊이를 세어 막고 validation 오류로 알린다 (닫아 주고 계속 간다).
+- `clearBuffer`는 `writeBuffer`로 0 배열을 미는 것과 결과가 같지만 **CPU에서 그 배열을 만들어
+  브리지로 실어 보내지 않는다.** 큰 스토리지 버퍼를 프레임마다 초기화할 때 차이가 크다.
+  `offset`·`size`는 4의 배수여야 하고 버퍼는 `COPY_DST`여야 한다 (명세 규칙). `size` 생략 시 끝까지.
 - `depthStencilAttachment`의 `depthReadOnly` / `stencilReadOnly`는 "이 패스는 그쪽을 쓰지
   않는다"는 선언이다. 선언해 두면 **실제로 강제된다** — 깊이를 쓰는 파이프라인
   (`depthWriteEnabled: true`)이나 스텐실을 쓰는 파이프라인(`failOp`·`depthFailOp`·`passOp` 중
@@ -429,7 +540,20 @@ device.onError((error, text) => console.error(text))
 //           message: '…', path: 'commands[3].vertex.buffers[0].format' }
 ```
 
-핸들러를 등록하지 않으면 `console.error`로 나간다.
+명세의 통로도 그대로 쓸 수 있다 — 웹 코드를 옮길 때 이름을 안 바꿔도 된다:
+
+```js
+device.onuncapturederror = (event) => console.error(event.error.message)
+device.addEventListener('uncapturederror', (event) => { /* … */ })   // 같은 이벤트
+```
+
+- `event.error`는 `GPUValidationError` · `GPUOutOfMemoryError` · `GPUInternalError` 중 하나다
+  (`instanceof`로 갈린다). `unsupported`는 `GPUValidationError`로 접힌다 — 스코프 필터와 같은 규칙.
+- 명세에 없는 `kind`·`path`도 함께 실린다. 커맨드 스트림은 "몇 번째 명령의 어느 필드"까지
+  알고 있고, 그걸 버리면 진단이 크게 나빠진다.
+- **두 통로는 함께 동작한다.** 둘 다 등록하면 둘 다 받고, **아무도 안 듣고 있을 때만**
+  `console.error`로 떨어진다 (조용히 사라지는 오류도, 두 번 찍히는 로그도 없게).
+- 리스너가 던져도 나머지 리스너와 다음 오류는 계속 간다.
 
 | kind | 뜻 |
 |---|---|
@@ -479,14 +603,37 @@ if (error) fallBackToSimplePipeline()
 | 블록 압축 텍스처 (BC/ETC/ASTC) | **보류** — 렌더 타깃도 스토리지 텍스처도 될 수 없어 편집 파이프라인에 끼울 수 없다. 읽기 전용 에셋이 많아지면 다시 본다 (`docs/ROADMAP.md`) |
 | `GPUExternalTexture` (`importExternalTexture`) | Lynx에 비디오 엘리먼트 핸들이 없다. 다만 WGSL `texture_external` + `textureSampleBaseClampToEdge`는 **지원**하므로, 프레임을 텍스처로 올려 그 자리에 `GPUTextureView`를 묶으면 된다 |
 | `writeTimestamp` | Metal은 패스 경계에서만 카운터를 샘플링한다 — `timestampWrites`(§6)를 쓸 것 |
-| `device.lost` | iOS/macOS에는 디바이스 손실에 해당하는 사건이 사실상 없다. 테스트 전용 주입 경로만 남는 API라 넣지 않았다. **GPU 실행 자체의 실패**(`.outOfMemory`·`.timeout` 등)는 다음 `submit()` 응답에 `backend` 오류로 실려 나온다 |
+| `device.lost`의 **유실 통지** | iOS/macOS에는 디바이스 손실에 해당하는 사건이 사실상 없다. **속성 자체는 있다** — 웹 코드(`Three.js WebGPUBackend.init()` 등)가 `device.lost.then(...)`을 걸어도 TypeError가 나지 않도록 영원히 pending인 Promise를 준다. **GPU 실행 자체의 실패**(`.outOfMemory`·`.timeout` 등)는 다음 `submit()` 응답에 `backend` 오류로 실려 나온다 |
+| `queue.copyExternalImageToTexture` | `importExternalTexture`와 같은 이유 — Lynx에는 `ImageBitmap`·`HTMLCanvasElement` 같은 DOM 이미지 핸들이 없다. 픽셀을 `ArrayBuffer`로 얻어 `writeTexture`로 올릴 것 (`loadAsset`이 그 통로다) |
+| `setBindGroup`의 `Uint32Array` 오버로드 | 동적 오프셋을 `(data, start, length)`로 넘기는 형태. 배열 형태(`setBindGroup(i, group, [o1, o2])`)와 결과가 같고, 브리지를 건널 때 어차피 배열로 펴진다 — 두 경로를 두면 검증만 두 배가 된다 |
+| `GPURenderPassColorAttachment.depthSlice` | 3D 텍스처의 한 슬라이스를 렌더 타깃으로 삼는 값. 지금은 **읽지 않으므로 항상 0번 슬라이스**에 그린다. 3D 렌더 타깃을 쓰게 되면 그때 넣는다 (2D 배열은 `baseArrayLayer`로 이미 된다) |
+| `GPURenderPassDescriptor.maxDrawCount` | 드라이버에 주는 검증 힌트다. 무시해도 그림은 같고, 넘겼을 때의 거부는 명세상 선택이다 |
+| `GPUCanvasContext.canvas` | 명세는 `HTMLCanvasElement`를 돌려준다 — Lynx에는 대응하는 엘리먼트 객체가 없다. `context.canvasId`(문자열)가 그 자리다 |
+| `setImmediates` (immediate data) | 명세에 최근 들어온 기능이고 `maxImmediateSize` 한계도 따라온다. 유니폼 버퍼로 대체할 수 있어 미룬다 |
+
+### 선택 기능 (`adapter.features`에 광고하지 않는다)
+
+명세가 **선택**으로 둔 것들이라 없어도 적합하다. 쓰려면 `adapter.features.has(...)`로 확인하는
+웹 코드가 알아서 다른 길로 간다 — 문제는 "왜 없는지"가 안 적혀 있는 것이라 여기 남긴다.
+
+| 기능 | 상태 |
+|---|---|
+| `texture-formats-tier1` / `tier2` | 16비트 unorm/snorm 6종(`r16unorm` `rgba16snorm` …)과 추가 스토리지 텍스처 조합이 여기 묶여 있다. Metal에는 포맷이 있으므로 **필요해지면 매핑만 추가하면 된다** — 지금은 쓰는 곳이 없어 광고하지 않는다 |
+| `depth-clip-control` (`unclippedDepth`) | Metal의 `depthClipMode`로 대응할 수 있다. 그림자 볼륨처럼 깊이 클리핑을 끄는 기법을 쓰게 되면 넣는다 |
+| `shader-f16` | WGSL `f16`. 트랜스파일러는 `f16`→`half`를 이미 옮기지만(`enable f16` 포함), 명세가 요구하는 기능 선언·한계값 검증을 하지 않아 광고하지 않는다 |
+| `float32-filterable` / `float32-blendable` | `r32float` 계열의 필터링·블렌딩. Apple GPU는 지원하지만 광고 전에 확인 경로를 만들어야 한다 |
+| `bgra8unorm-storage` | `bgra8unorm`에 `STORAGE_BINDING`. 이미지 처리에서 쓸 만해 우선순위가 있는 편이다 |
+| `dual-source-blending` · `clip-distances` · `subgroups` · `subgroup-size-control` · `primitive-index` · `texture-component-swizzle` | WGSL 확장이 함께 필요하다 (`@blend_src`, `clip_distances`, 서브그룹 내장 함수 …). 트랜스파일러 작업이 붙으므로 실사용 요구가 생길 때 본다 |
+| `rg11b10ufloat-renderable` | `rg11b10ufloat`을 렌더 타깃으로. 포맷 자체는 지원한다 |
+| `texture-compression-*` | 위 블록 압축 항목과 같다 |
 
 ### 기기에 따라 갈리는 것
 
 | 기능 | 조건 |
 |---|---|
 | 타임스탬프 쿼리 | `adapter.features.has('timestamp-query')`. **컴퓨트 패스 쪽 값은 신뢰할 수 없다** (§6) |
-| 간접 드로우의 `firstInstance ≠ 0` | 여기서는 항상 되고 `adapter.features`에도 `indirect-first-instance`로 보고된다. **브라우저에서는 기능을 요청해야** 한다 (§6) |
+| **간접 드로우·디스패치 자체** | Metal이 **Apple GPU family 3 이상**을 요구한다. 실기기는 iOS 17 최소 사양(A12 = family 5)이라 **항상 지원**하지만, **iOS 시뮬레이터는 family 2로 보고해 빠진다.** 지원하지 않으면 `unsupported` 오류로 거부하고 `adapter.features`의 `indirect-first-instance`도 감춘다 — 그대로 Metal에 넘기면 `MTLValidateFeatureSupport … failed assertion`으로 **프로세스가 죽는다** |
+| 간접 드로우의 `firstInstance ≠ 0` | 지원 기기에서는 항상 되고 `adapter.features`에도 `indirect-first-instance`로 보고된다. **브라우저에서는 기능을 요청해야** 한다 (§6) |
 | 캔버스 EDR 출력 (`toneMapping: 'extended'`) | 실기기 디스플레이 기능 — 시뮬레이터에서는 확인되지 않는다 (§2) |
 
 새 명령을 추가하는 절차는 `.claude/skills/webgpu-command/SKILL.md` 참고.

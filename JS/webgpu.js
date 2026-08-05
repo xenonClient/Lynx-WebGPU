@@ -100,6 +100,15 @@ export const GPUMapMode = { READ: 0x1, WRITE: 0x2 };
 
 /** @typedef {{type: 'occlusion' | 'timestamp', count: number, label?: string}} GPUQuerySetDescriptor */
 
+/** 명세 `GPUAdapterInfo`. */
+/** @typedef {{vendor: string, architecture: string, device: string, description: string, isFallbackAdapter: boolean, subgroupMinSize: number, subgroupMaxSize: number}} GPUAdapterInfoView */
+
+/** 셰이더 컴파일 진단 하나 (명세 `GPUCompilationMessage`). */
+/** @typedef {{message: string, type: 'error' | 'warning' | 'info', lineNum: number, linePos: number, offset: number, length: number}} GPUCompilationMessage */
+
+/** `device.lost`가 (유실을 보고하는 구현에서) 풀리는 값 — 이 구현은 영원히 pending이다. */
+/** @typedef {{reason: 'unknown' | 'destroyed', message: string}} GPUDeviceLostInfo */
+
 /**
  * 패스 경계에서 타임스탬프를 찍을 자리. 두 인덱스는 각각 생략할 수 있다.
  */
@@ -117,7 +126,7 @@ export const GPUMapMode = { READ: 0x1, WRITE: 0x2 };
 /** @typedef {{id: number}} GPUPipelineLayoutSource */
 
 /** `GPUTexture` 생성자 내부용 — 스왑체인 텍스처는 usage/format이 없을 수 있다. */
-/** @typedef {{size?: GPUExtent3D, format?: string, usage?: number, label?: string, frameScoped?: boolean}} GPUTextureInit */
+/** @typedef {{size?: GPUExtent3D, format?: string, usage?: number, dimension?: string, mipLevelCount?: number, sampleCount?: number, textureBindingViewDimension?: string, label?: string, frameScoped?: boolean}} GPUTextureInit */
 
 // ---------------------------------------------------------------------------
 // 바이너리 유틸
@@ -187,12 +196,118 @@ function nativeModule() {
  */
 const canvasSizeCache = new Map();
 
+/**
+ * canvasId → `GPUCanvasContext`.
+ *
+ * 브라우저의 `canvas.getContext('webgpu')`가 늘 같은 객체를 주는 것과 맞춘다 — 매번 새로
+ * 만들면 설정 상태(`configure`/`unconfigure`)가 핸들마다 갈라진다.
+ * @type {Map<string, GPUCanvasContext>}
+ */
+const canvasContexts = new Map();
+
 /** `pushErrorScope`가 받는 필터 (명세 `GPUErrorFilter` 철자 그대로). */
 const ERROR_FILTERS = ['validation', 'out-of-memory', 'internal'];
+
+/**
+ * 명세의 `GPUError` 계층 — `uncapturederror` 이벤트가 실어 나르는 객체.
+ *
+ * 명세는 `message` 하나만 요구하지만 `kind`·`path`를 함께 둔다. 커맨드 스트림에서 온 오류는
+ * "몇 번째 명령의 어느 필드"까지 알고 있고, 그걸 버리면 진단이 크게 나빠지기 때문이다.
+ * 웹 코드가 종류를 볼 때는 `instanceof`(또는 `constructor.name`)를 쓴다 — 그래서 하위 클래스로 나눈다.
+ */
+class GPUError {
+  /** @param {WGPUError} payload */
+  constructor(payload) {
+    this.message = payload.message;
+    /** 이 구현이 붙이는 추가 정보 — 명세에는 없다. */
+    this.kind = payload.kind;
+    this.path = payload.path;
+  }
+}
+class GPUValidationError extends GPUError {}
+class GPUOutOfMemoryError extends GPUError {}
+class GPUInternalError extends GPUError {}
+
+/**
+ * 커맨드 오류의 네 종류를 명세의 세 `GPUError` 하위 클래스로 접는다.
+ *
+ * `unsupported`가 `GPUValidationError`인 것은 `pushErrorScope('validation')`이 그것을 잡는 것과
+ * 같은 이유다 — 브라우저에서 같은 코드는 validation으로 나거나 성공하므로, 앱의 분기가 맞아떨어진다.
+ *
+ * @param {WGPUError} payload
+ * @returns {GPUError}
+ */
+function makeGPUError(payload) {
+  switch (payload.kind) {
+    case 'out-of-memory': return new GPUOutOfMemoryError(payload);
+    case 'backend': return new GPUInternalError(payload);
+    default: return new GPUValidationError(payload);
+  }
+}
+
+/**
+ * `createRenderPipelineAsync` 계열이 거부할 때 쓰는 오류 (명세 `GPUPipelineError`).
+ *
+ * 명세의 `reason`은 `'validation' | 'internal'` 둘뿐이라, 커맨드 오류의 네 종류를 그리로
+ * 접는다 — 셰이더 번역·컴파일 실패(`backend`)가 `internal`이고 나머지는 `validation`이다.
+ * `pushErrorScope` 필터의 대응 관계와 같은 규칙이다.
+ *
+ * @param {WGPUError} error
+ * @returns {Error & {reason: string}}
+ */
+/**
+ * 명세가 `OperationError`로 던지라고 정한 자리 (`getMappedRange`의 인자 검증 등).
+ *
+ * 이름을 맞추는 것이 요점이다 — 웹 코드가 `error.name`으로 갈라 잡는다.
+ */
+class OperationError extends Error {
+  /** @param {string} message */
+  constructor(message) {
+    super(message);
+    this.name = 'OperationError';
+  }
+}
+
+function makePipelineError(/** @type {WGPUError} */ error) {
+  const failure = /** @type {Error & {reason: string}} */ (
+    new Error(`${error.path ? error.path + ' — ' : ''}${error.message}`)
+  );
+  failure.name = 'GPUPipelineError';
+  failure.reason = error.kind === 'backend' ? 'internal' : 'validation';
+  return failure;
+}
 
 // ---------------------------------------------------------------------------
 // 커맨드 레코더
 // ---------------------------------------------------------------------------
+
+/**
+ * 커맨드에 실을 값의 **기록 시점 스냅샷**.
+ *
+ * 브라우저 WebGPU는 호출 시점에 인자를 직렬화한다 — 호출 뒤에 디스크립터 객체를 재사용하거나
+ * 리셋해도 이미 기록된 명령은 변하지 않는다. 이 shim은 flush까지 명령을 들고 있으므로, 참조를
+ * 그대로 실으면 그 사이의 변이가 스트림에 새어 든다. three.js가 싱글턴 디스크립터를 인코딩 직후
+ * `reset()`하는 패턴이 정확히 이 경우다 — `copySize`가 flush 전에 0이 되어 **폭 0짜리 복사가
+ * 오류 없이** 나가고, 텍스처 업로드도 같은 식으로 조용히 사라진다.
+ *
+ * `ArrayBuffer`(전송 페이로드 — shim이 이미 복사해 만든다)와 TypedArray는 그대로 둔다.
+ *
+ * @param {any} value
+ * @returns {any}
+ */
+function snapshotValue(value) {
+  if (!value || typeof value !== 'object' || value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
+    return value;
+  }
+  if (Array.isArray(value)) return value.map(snapshotValue);
+  /** @type {Record<string, any>} */
+  const out = {};
+  for (const key in value) {
+    const entry = /** @type {Record<string, any>} */ (value)[key];
+    if (typeof entry !== 'function') out[key] = snapshotValue(entry);
+  }
+  return out;
+}
 
 class Recorder {
   constructor() {
@@ -201,6 +316,12 @@ class Recorder {
     this.nextId = 1;
     /** @type {((error: WGPUError, text: string) => void)[]} */
     this.errorHandlers = [];
+    /**
+     * 스코프에 안 잡힌 오류를 명세의 `uncapturederror` 경로로도 흘려보내는 훅.
+     * 디바이스가 자기 자신을 꽂는다. 하나라도 받아 갔으면 `true`를 돌려준다.
+     * @type {((error: WGPUError) => boolean) | null}
+     */
+    this.uncapturedDispatch = null;
     /**
      * `popErrorScope()`가 돌려준 Promise의 결과 함수들 — **pop한 순서 그대로**다.
      * 네이티브가 같은 순서로 `errorScopes` 배열을 돌려주므로 인덱스로 짝을 맞춘다.
@@ -215,19 +336,29 @@ class Recorder {
   }
 
   /**
+   * 명령을 **기록 시점 값으로 고정해** 쌓는다 (`snapshotValue` 참고) — 디바이스/큐 op은
+   * 여기가 곧 호출 시점이라, 호출 뒤 디스크립터 재사용이 스트림을 오염시키지 못한다.
    * @param {GPUCommand} command
    * @returns {GPUCommand}
    */
   push(command) {
-    this.pending.push(command);
-    return command;
+    const frozen = snapshotValue(command);
+    this.pending.push(frozen);
+    return frozen;
   }
 
   /**
    * 모아 둔 명령을 네이티브로 넘긴다. 실행할 것이 없으면 아무것도 하지 않는다.
+   *
+   * `present: false`는 **프레임 중간의 내부 제출**이라는 표시다 (`popErrorScope`·`mapAsync`가
+   * 결과를 받으려고 미리 흘려보내는 배치). 네이티브는 이 배치를 커밋하되 드로어블 present와
+   * 스왑체인 핸들 만료를 진짜 프레임 제출(`queue.submit`)까지 미룬다 — 안 그러면 획득해 둔
+   * 캔버스 텍스처가 그리기도 전에 present되어 남은 패스가 통째로 거부된다.
+   *
+   * @param {boolean} [present] 이 배치가 프레임 제출인가 (기본 true)
    * @returns {WGPUExecuteResult}
    */
-  flush() {
+  flush(present = true) {
     if (this.pending.length === 0) {
       this.settleErrorScopes([]);
       return { ok: true, commandCount: 0 };
@@ -237,7 +368,7 @@ class Recorder {
     /** @type {WGPUExecuteResult} */
     let result;
     try {
-      result = /** @type {WGPUExecuteResult} */ (nativeModule().execute({ commands }) || {});
+      result = /** @type {WGPUExecuteResult} */ (nativeModule().execute({ commands, present }) || {});
     } catch (error) {
       // 브리지 호출 자체가 실패해도 기다리던 Promise는 반드시 풀어 준다. 안 그러면 영원히
       // pending으로 남아 초기화 진단이 매달리고, 다음 pop이 stale resolver를 가져가
@@ -257,6 +388,23 @@ class Recorder {
     }
     if (result.ok === false) this.report(result.errors || []);
     return result;
+  }
+
+  /**
+   * `popErrorScope` 명령을 쌓고 결과 Promise를 돌려준다 — **flush하지 않는다.**
+   *
+   * 스코프 여러 개를 한 배치에 닫을 때 쓴다 (비동기 파이프라인 생성이 그렇다).
+   * 네이티브가 pop 순서 그대로 결과를 돌려주므로, 부른 순서가 곧 짝짓는 순서다.
+   *
+   * @returns {Promise<WGPUError | null>}
+   */
+  recordPop() {
+    this.push({ op: 'popErrorScope' });
+    return /** @type {Promise<WGPUError | null>} */ (
+      new Promise((resolve, reject) => {
+        this.pendingErrorScopes.push({ resolve, reject });
+      })
+    );
   }
 
   /**
@@ -289,12 +437,25 @@ class Recorder {
     });
   }
 
-  /** @param {WGPUError[]} errors */
+  /**
+   * 스코프에 안 잡힌 오류를 등록된 모든 통로로 보낸다.
+   *
+   * 통로는 둘이고 **함께** 받는다 — 이 구현의 `onError`(경로가 붙은 텍스트까지 준다)와
+   * 명세의 `uncapturederror`(웹 코드가 아는 이름). 아무도 안 듣고 있을 때만 콘솔로 떨어뜨린다:
+   * 조용히 사라지는 오류가 없어야 하고, 듣고 있는데 콘솔에도 찍히면 로그가 두 번 남는다.
+   *
+   * @param {WGPUError[]} errors
+   */
   report(errors) {
     for (const error of errors) {
       const text = `[WebGPU:${error.kind}] ${error.path ? error.path + ' — ' : ''}${error.message}`;
-      if (this.errorHandlers.length === 0) console.error(text);
-      else for (const handler of this.errorHandlers) handler(error, text);
+      let delivered = false;
+      for (const handler of this.errorHandlers) {
+        handler(error, text);
+        delivered = true;
+      }
+      if (this.uncapturedDispatch && this.uncapturedDispatch(error)) delivered = true;
+      if (!delivered) console.error(text);
     }
   }
 }
@@ -361,14 +522,94 @@ class GPUBuffer extends GPUObjectBase {
     this._mapped = null;
     /** `mappedAtCreation`의 초기 데이터인가 (unmap이 생성 명령을 기록해야 하는가). */
     this._mappedAtCreation = false;
+    /** `mapAsync`가 아직 결과를 기다리는 중인가 (명세의 `"pending"` 상태). */
+    this._mapPending = false;
+    /**
+     * `getMappedRange()`로 내준 구간들 — 겹침 검사와 `unmap()`의 되돌려 쓰기에 쓴다.
+     * @type {{offset: number, length: number, view: ArrayBuffer | null}[]}
+     */
+    this._mappedRanges = [];
+  }
+
+  /**
+   * 명세의 `GPUBufferMapState` — `'unmapped'` · `'pending'` · `'mapped'`.
+   *
+   * 매핑 중인 버퍼는 큐 작업에서 거부되므로, 재사용하려는 코드가 **묻지 않고도** 상태를
+   * 알 수 있어야 한다. 없으면 `undefined`를 보고 "매핑 안 됐다"로 오해한다.
+   *
+   * @returns {'unmapped' | 'pending' | 'mapped'}
+   */
+  get mapState() {
+    if (this._mapped) return 'mapped';
+    return this._mapPending ? 'pending' : 'unmapped';
   }
 
   /** `mappedAtCreation: true`로 만든 버퍼의 초기 데이터 영역. */
-  getMappedRange() {
+  /**
+   * 매핑된 구간을 `ArrayBuffer`로 얻는다 (`mappedAtCreation` 또는 `mapAsync` 이후).
+   *
+   * **JS에서는 `ArrayBuffer`가 다른 `ArrayBuffer`의 일부를 가리킬 수 없다.** 브라우저는
+   * 매핑 메모리를 그대로 가리키는 뷰를 주지만, 여기서는 그럴 수 없어 구간을 복사해 주고
+   * `unmap()`에서 **되돌려 쓴다.** 그래서 쓴 내용이 사라지지 않는다 — 단, 반환된 버퍼는
+   * `unmap()` **전까지만** 의미가 있다 (브라우저에서 detach되는 것과 같은 시점이다).
+   *
+   * 전체 구간을 처음 요청하면 복사 없이 매핑 자체를 돌려준다 — `mappedAtCreation`으로
+   * 큰 정점 버퍼를 채우는 흔한 경로에서 복사를 한 번 아낀다.
+   *
+   * 명세 규칙: `offset`은 8의 배수, `size`는 4의 배수, 구간끼리 **겹칠 수 없다**.
+   *
+   * @param {number} [offset] 바이트 오프셋 (8의 배수)
+   * @param {number} [size] 바이트 수 (4의 배수). 생략하면 끝까지
+   * @returns {ArrayBuffer}
+   */
+  getMappedRange(offset, size) {
     if (!this._mapped) {
       throw new Error('getMappedRange는 mappedAtCreation 또는 mapAsync 이후에만 쓸 수 있다');
     }
-    return this._mapped;
+    const total = this._mapped.byteLength;
+    const start = offset || 0;
+    const length = size === undefined ? Math.max(0, total - start) : size;
+
+    if (start % 8 !== 0) {
+      throw new OperationError(`getMappedRange: offset은 8의 배수여야 한다 (받은 값 ${start})`);
+    }
+    // 정렬 검사는 **명시한 값에만** 적용한다. 브라우저의 매핑은 항상 4의 배수지만
+    // 여기서는 매핑 크기가 곧 네이티브 버퍼 크기라 3바이트짜리도 정상이다 —
+    // 생략했을 때(=매핑 전체)까지 4의 배수를 요구하면 그런 버퍼를 아예 못 읽는다.
+    if (size !== undefined && length % 4 !== 0) {
+      throw new OperationError(`getMappedRange: size는 4의 배수여야 한다 (받은 값 ${length})`);
+    }
+    if (start < 0 || start + length > total) {
+      throw new OperationError(
+        `getMappedRange 범위가 매핑을 넘는다 — offset ${start} + ${length}B > ${total}B`
+      );
+    }
+    for (const range of this._mappedRanges) {
+      if (start < range.offset + range.length && range.offset < start + length) {
+        throw new OperationError(
+          `getMappedRange 구간이 앞서 얻은 구간과 겹친다 (${range.offset}~${range.offset + range.length})`
+        );
+      }
+    }
+
+    // 전체를 처음 요청하면 매핑 자체를 준다 — 되돌려 쓸 것이 없다.
+    if (start === 0 && length === total && this._mappedRanges.length === 0) {
+      this._mappedRanges.push({ offset: 0, length, view: null });
+      return this._mapped;
+    }
+    const view = this._mapped.slice(start, start + length);
+    this._mappedRanges.push({ offset: start, length, view });
+    return view;
+  }
+
+  /** 구간 사본에 쓴 내용을 매핑으로 되돌린다 (`unmap` 직전). */
+  _flushMappedRanges() {
+    if (!this._mapped) return;
+    for (const range of this._mappedRanges) {
+      if (!range.view) continue;
+      new Uint8Array(this._mapped).set(new Uint8Array(range.view), range.offset);
+    }
+    this._mappedRanges = [];
   }
 
   /**
@@ -382,6 +623,8 @@ class GPUBuffer extends GPUObjectBase {
    */
   unmap() {
     if (!this._mapped) return;
+    // 구간 사본에 쓴 내용을 매핑으로 되돌린 뒤에 보낸다 — 안 하면 조용히 사라진다.
+    this._flushMappedRanges();
     if (this._mappedAtCreation) {
       this._recorder.push({
         op: 'createBuffer',
@@ -412,12 +655,14 @@ class GPUBuffer extends GPUObjectBase {
    * @returns {Promise<ArrayBuffer>}
    */
   async mapAsync(_mode, offset, size) {
-    this._recorder.flush();
+    this._recorder.flush(false);
+    this._mapPending = true;
     const result = await /** @type {Promise<WGPUReadBufferResult | undefined>} */ (
       new Promise((resolve) => {
         nativeModule().readBuffer({ buffer: this.id, offset: offset || 0, size }, resolve);
       })
     );
+    this._mapPending = false;
     if (!result || result.ok === false) {
       this._recorder.report((result && result.errors) || []);
       throw new Error('버퍼 읽기 실패');
@@ -426,6 +671,8 @@ class GPUBuffer extends GPUObjectBase {
     const mapped = result.data;
     this._mapped = mapped;
     this._mappedAtCreation = false;
+    // 새 매핑이므로 앞선 매핑의 구간 기록은 버린다 (겹침 검사가 헛돌지 않게).
+    this._mappedRanges = [];
     return mapped;
   }
 }
@@ -444,7 +691,21 @@ class GPUTexture extends GPUObjectBase {
     const size = descriptor && descriptor.size;
     this.width = size ? size.width || size[0] : 0;
     this.height = size ? size.height || size[1] || 1 : 0;
+    // 명세의 읽기 전용 속성들 — 웹 코드가 텍스처를 받아 스스로 판단할 때 읽는다
+    // (three.js는 밉맵 경로에서 `textureBindingViewDimension`을 본다).
+    this.depthOrArrayLayers = size ? size.depthOrArrayLayers || size[2] || 1 : 1;
+    this.mipLevelCount = (descriptor && descriptor.mipLevelCount) || 1;
+    this.sampleCount = (descriptor && descriptor.sampleCount) || 1;
+    this.dimension = (descriptor && descriptor.dimension) || '2d';
     this.format = descriptor && descriptor.format;
+    this.usage = (descriptor && descriptor.usage) || 0;
+    /**
+     * 이 텍스처를 바인딩할 때의 기본 뷰 차원. 명세는 생략을 허용하고, 그때는 `dimension`과
+     * 레이어 수에서 정해진다 (2d + 레이어 2 이상이면 `2d-array`).
+     * @type {string}
+     */
+    this.textureBindingViewDimension = (descriptor && descriptor.textureBindingViewDimension)
+      || (this.dimension === '2d' && this.depthOrArrayLayers > 1 ? '2d-array' : this.dimension);
   }
 
   /**
@@ -461,7 +722,31 @@ class GPUTexture extends GPUObjectBase {
 
 class GPUTextureView extends GPUObjectBase {}
 class GPUSampler extends GPUObjectBase {}
-class GPUShaderModule extends GPUObjectBase {}
+class GPUShaderModule extends GPUObjectBase {
+  /**
+   * 이 모듈의 컴파일 진단 (명세 `GPUCompilationInfo`).
+   *
+   * 셰이더 모듈은 **컴파일에 실패해도 만들어진다** (명세 모델) — 실패는 여기와 파이프라인
+   * 생성 실패로 드러난다. 그래서 `createShaderModule()`이 성공한 뒤에도 확인할 값이 있다.
+   *
+   * `messages[].lineNum`은 WGSL 소스의 줄 번호(1부터)다. `linePos`·`offset`·`length`는
+   * 이 구현이 알지 못해 **0으로 둔다** — 모르는 값을 지어내면 편집기가 엉뚱한 곳에 밑줄을 긋는다.
+   *
+   * 왕복이 하나 붙으므로 진단 경로에서만 쓸 것.
+   *
+   * @returns {Promise<{messages: GPUCompilationMessage[]}>}
+   */
+  async getCompilationInfo() {
+    // 아직 안 보낸 명령이 있으면 이 모듈이 네이티브에 없다 — 먼저 흘려보낸다 (프레임 중간 제출).
+    this._recorder.flush(false);
+    const result = nativeModule().shaderCompilationInfo({ module: this.id });
+    if (!result || result.ok === false) {
+      this._recorder.report((result && result.errors) || []);
+      return { messages: [] };
+    }
+    return { messages: result.messages || [] };
+  }
+}
 class GPUBindGroupLayout extends GPUObjectBase {}
 class GPUPipelineLayout extends GPUObjectBase {}
 class GPUBindGroup extends GPUObjectBase {}
@@ -549,6 +834,36 @@ class GPUPassEncoderBase {
    */
   _retain(resource) {
     if (this._retained) this._retained.push(resource);
+  }
+
+  /**
+   * 디버그 그룹을 연다 — **Xcode GPU 캡처에 구간 이름이 그대로 뜬다** (Metal `pushDebugGroup`).
+   *
+   * 없으면 캡처가 이름 없는 드로우 나열이 되어 어느 패스가 무엇인지 알 수 없다. 성능을 볼 때
+   * 가장 먼저 아쉬워지는 부분이라, 프레임 구조를 잡을 때 미리 넣어 두는 편이 낫다.
+   *
+   * `popDebugGroup()`과 **반드시 짝을 맞출 것.** 짝이 안 맞으면 네이티브가 validation 오류로
+   * 알려 준다 (Metal은 그 상황에서 단언으로 프로세스를 죽이므로 거기서 막는다).
+   *
+   * @param {string} groupLabel
+   * @returns {void}
+   */
+  pushDebugGroup(groupLabel) {
+    this._commands.push({ op: 'pushDebugGroup', groupLabel: String(groupLabel) });
+  }
+
+  /** @returns {void} */
+  popDebugGroup() {
+    this._commands.push({ op: 'popDebugGroup' });
+  }
+
+  /**
+   * 한 지점에 표식을 남긴다 (Metal `insertDebugSignpost`) — 구간이 아니라 점 이벤트다.
+   * @param {string} markerLabel
+   * @returns {void}
+   */
+  insertDebugMarker(markerLabel) {
+    this._commands.push({ op: 'insertDebugMarker', markerLabel: String(markerLabel) });
   }
 
   /**
@@ -794,7 +1109,11 @@ class GPURenderBundleEncoder extends GPURenderCommandsBase {
     this._retained = [];
     this._finished = false;
     this._device = device;
-    this._descriptor = descriptor || { colorFormats: [] };
+    // **기록 시점 값으로 고정한다.** 이 디스크립터는 `finish()`까지 들고 있는데, 호출자가
+    // 싱글턴을 넘기고 곧바로 `reset()`하는 패턴이 흔하다 (three.js의 `createBundleEncoder`가
+    // 정확히 그렇다). 참조를 그대로 쥐면 `colorFormats`가 빈 채로 번들이 만들어져
+    // "어태치먼트가 없다"로 거부된다 — 원인이 한참 뒤 `executeBundles`에서 드러난다.
+    this._descriptor = snapshotValue(descriptor) || { colorFormats: [] };
   }
 
   /**
@@ -894,7 +1213,8 @@ class GPUCommandEncoder {
         resolveTarget: attachment.resolveTarget ? attachment.resolveTarget.id : undefined,
         loadOp: attachment.loadOp || 'clear',
         storeOp: attachment.storeOp || 'store',
-        clearValue: attachment.clearValue,
+        // 호출자가 clearValue 객체를 프레임마다 재사용해도(three.js 패턴) 기록이 안 변하게.
+        clearValue: snapshotValue(attachment.clearValue),
       })
     );
     /** @type {GPUCommand} */
@@ -951,18 +1271,69 @@ class GPUCommandEncoder {
   }
 
   /**
+   * 버퍼 → 버퍼 복사. 명세대로 **두 가지 형태**를 받는다:
+   *
+   * ```js
+   * encoder.copyBufferToBuffer(src, dst)             // 전부 (크기는 src에서)
+   * encoder.copyBufferToBuffer(src, dst, size)       // 앞에서 size 바이트
+   * encoder.copyBufferToBuffer(src, 16, dst, 0, 64)  // 오프셋까지 지정
+   * ```
+   *
+   * 짧은 형태는 두 번째 인자가 `GPUBuffer`인지로 가른다 — 명세의 오버로드 해소와 같은 기준이다.
+   * `size`를 생략하면 원본의 남은 바이트 전부다.
+   *
    * @param {GPUBuffer} source
-   * @param {number} sourceOffset
-   * @param {GPUBuffer} destination
-   * @param {number} destinationOffset
-   * @param {number} size
+   * @param {GPUBuffer | number} destinationOrSourceOffset
+   * @param {GPUBuffer | number} [sizeOrDestination]
+   * @param {number} [destinationOffset]
+   * @param {number} [size]
    * @returns {void}
    */
-  copyBufferToBuffer(source, sourceOffset, destination, destinationOffset, size) {
+  copyBufferToBuffer(source, destinationOrSourceOffset, sizeOrDestination, destinationOffset, size) {
+    let sourceOffset = 0;
+    /** @type {GPUBuffer} */
+    let destination;
+    /** @type {number | undefined} */
+    let byteLength;
+
+    if (destinationOrSourceOffset && /** @type {GPUBuffer} */ (destinationOrSourceOffset).id !== undefined) {
+      // 짧은 형태 — (source, destination, size?)
+      destination = /** @type {GPUBuffer} */ (destinationOrSourceOffset);
+      byteLength = /** @type {number | undefined} */ (sizeOrDestination);
+    } else {
+      sourceOffset = /** @type {number} */ (destinationOrSourceOffset) || 0;
+      destination = /** @type {GPUBuffer} */ (sizeOrDestination);
+      byteLength = size;
+    }
+    if (byteLength === undefined) byteLength = Math.max(0, source.size - sourceOffset);
+
     this._commands.push({
       op: 'copyBufferToBuffer',
-      source: source.id, sourceOffset, destination: destination.id, destinationOffset, size,
+      source: source.id, sourceOffset,
+      destination: destination.id, destinationOffset: destinationOffset || 0,
+      size: byteLength,
     });
+  }
+
+  /**
+   * 버퍼의 한 구간을 0으로 채운다.
+   *
+   * `writeBuffer`로 0 배열을 밀어 넣는 것과 결과는 같지만 **CPU에서 그 배열을 만들어 브리지로
+   * 실어 보내지 않는다** — 큰 스토리지 버퍼를 프레임마다 초기화하는 컴퓨트 경로에서 차이가 크다.
+   *
+   * `offset`·`size`는 4의 배수여야 하고, 버퍼는 `COPY_DST`로 만들어야 한다 (명세 규칙).
+   * `size`를 생략하면 버퍼 끝까지다.
+   *
+   * @param {GPUBuffer} buffer
+   * @param {number} [offset]
+   * @param {number} [size]
+   * @returns {void}
+   */
+  clearBuffer(buffer, offset, size) {
+    /** @type {GPUCommand} */
+    const command = { op: 'clearBuffer', buffer: buffer.id, offset: offset || 0 };
+    if (size !== undefined) command.size = size;
+    this._commands.push(command);
   }
 
   /**
@@ -972,11 +1343,13 @@ class GPUCommandEncoder {
    * @returns {void}
    */
   copyTextureToBuffer(source, destination, copySize) {
+    // 인코더 명령은 submit까지 대기한다 — 그 사이 호출자가 디스크립터를 재사용/리셋해도
+    // 기록이 변하지 않도록 여기서 값으로 고정한다 (snapshotValue 참고, 아래 복사 계열 공통).
     this._commands.push({
       op: 'copyTextureToBuffer',
-      source: { ...source, texture: source.texture.id },
-      destination: { ...destination, buffer: destination.buffer.id },
-      copySize,
+      source: snapshotValue({ ...source, texture: source.texture.id }),
+      destination: snapshotValue({ ...destination, buffer: destination.buffer.id }),
+      copySize: snapshotValue(copySize),
     });
   }
 
@@ -989,9 +1362,9 @@ class GPUCommandEncoder {
   copyBufferToTexture(source, destination, copySize) {
     this._commands.push({
       op: 'copyBufferToTexture',
-      source: { ...source, buffer: source.buffer.id },
-      destination: { ...destination, texture: destination.texture.id },
-      copySize,
+      source: snapshotValue({ ...source, buffer: source.buffer.id }),
+      destination: snapshotValue({ ...destination, texture: destination.texture.id }),
+      copySize: snapshotValue(copySize),
     });
   }
 
@@ -1004,10 +1377,40 @@ class GPUCommandEncoder {
   copyTextureToTexture(source, destination, copySize) {
     this._commands.push({
       op: 'copyTextureToTexture',
-      source: { ...source, texture: source.texture.id },
-      destination: { ...destination, texture: destination.texture.id },
-      copySize,
+      source: snapshotValue({ ...source, texture: source.texture.id }),
+      destination: snapshotValue({ ...destination, texture: destination.texture.id }),
+      copySize: snapshotValue(copySize),
     });
+  }
+
+  /**
+   * 디버그 그룹을 연다 — **Xcode GPU 캡처에 구간 이름이 그대로 뜬다** (Metal `pushDebugGroup`).
+   *
+   * 없으면 캡처가 이름 없는 드로우 나열이 되어 어느 패스가 무엇인지 알 수 없다. 성능을 볼 때
+   * 가장 먼저 아쉬워지는 부분이라, 프레임 구조를 잡을 때 미리 넣어 두는 편이 낫다.
+   *
+   * `popDebugGroup()`과 **반드시 짝을 맞출 것.** 짝이 안 맞으면 네이티브가 validation 오류로
+   * 알려 준다 (Metal은 그 상황에서 단언으로 프로세스를 죽이므로 거기서 막는다).
+   *
+   * @param {string} groupLabel
+   * @returns {void}
+   */
+  pushDebugGroup(groupLabel) {
+    this._commands.push({ op: 'pushDebugGroup', groupLabel: String(groupLabel) });
+  }
+
+  /** @returns {void} */
+  popDebugGroup() {
+    this._commands.push({ op: 'popDebugGroup' });
+  }
+
+  /**
+   * 한 지점에 표식을 남긴다 (Metal `insertDebugSignpost`) — 구간이 아니라 점 이벤트다.
+   * @param {string} markerLabel
+   * @returns {void}
+   */
+  insertDebugMarker(markerLabel) {
+    this._commands.push({ op: 'insertDebugMarker', markerLabel: String(markerLabel) });
   }
 
   /** @returns {GPUCommandBuffer} */
@@ -1086,21 +1489,100 @@ class GPUQueue {
 }
 
 class GPUDevice {
-  /** @param {GPUAdapter} adapter */
-  constructor(adapter) {
+  /**
+   * @param {GPUAdapter} adapter
+   * @param {string[]} [requiredFeatures] `requestDevice()`에서 검증을 마친 기능 이름들
+   */
+  constructor(adapter, requiredFeatures) {
     this.adapter = adapter;
     this.limits = adapter.limits;
+    /** 명세 `GPUDevice.adapterInfo` — 어댑터의 것을 그대로 본다. */
+    this.adapterInfo = adapter.info;
+    /**
+     * 이 디바이스에 활성화된 기능 — 명세대로 **요청한 것만** 들어 있다 (어댑터가 지원해도
+     * `requiredFeatures`로 요청하지 않았으면 `has()`는 false다). Three.js 등 웹 코드가
+     * 어댑터에서 고른 기능을 그대로 요청하고 여기서 다시 확인하는 패턴을 쓴다.
+     */
+    this.features = makeFeatureSet(requiredFeatures || []);
+    /**
+     * 디바이스 유실 통지 (`device.lost.then(...)` 대응).
+     *
+     * 이 구현은 유실을 보고하지 않으므로 **영원히 pending**이다 — Metal 디바이스가 사라지는
+     * 시나리오(eGPU 분리 등)가 iOS에는 없고, 프로세스가 죽는 경우는 JS도 함께 죽는다.
+     * 속성 자체는 있어야 `WebGPUBackend.init()`류의 부트스트랩이 TypeError 없이 지나간다.
+     * @type {Promise<GPUDeviceLostInfo>}
+     */
+    this.lost = new Promise(() => {});
+    /**
+     * 스코프에 안 잡힌 오류 (명세 `GPUDevice.onuncapturederror`).
+     *
+     * 웹 코드가 아는 이름이라 그대로 둔다 — Three.js가 여기에 대입해 `renderer.onError`로
+     * 넘긴다. 받는 값은 `{type, error}`이고 `error`는 `GPUValidationError` 계열이다.
+     * @type {((event: {type: string, error: GPUError}) => void) | null}
+     */
+    this.onuncapturederror = null;
+    /** @type {((event: {type: string, error: GPUError}) => void)[]} */
+    this._uncapturedListeners = [];
     this._recorder = new Recorder();
+    this._recorder.uncapturedDispatch = (error) => this._dispatchUncaptured(error);
     this.queue = new GPUQueue(this);
   }
 
   /**
    * 커맨드 실행 오류 핸들러 (`{kind, message, path}`). 등록하지 않으면 console.error로 나간다.
+   *
+   * 명세의 `onuncapturederror`와 **함께** 동작한다 — 둘 다 등록하면 둘 다 받는다.
+   * 이쪽은 경로가 붙은 완성된 텍스트까지 주므로 진단에는 더 편하다.
+   *
    * @param {(error: WGPUError, text: string) => void} handler
    * @returns {void}
    */
   onError(handler) {
     this._recorder.errorHandlers.push(handler);
+  }
+
+  /**
+   * `uncapturederror` 리스너 등록 (명세의 `EventTarget` 자리 — 이 이벤트만 받는다).
+   * @param {string} type
+   * @param {(event: {type: string, error: GPUError}) => void} listener
+   * @returns {void}
+   */
+  addEventListener(type, listener) {
+    if (type === 'uncapturederror') this._uncapturedListeners.push(listener);
+  }
+
+  /**
+   * @param {string} type
+   * @param {(event: {type: string, error: GPUError}) => void} listener
+   * @returns {void}
+   */
+  removeEventListener(type, listener) {
+    if (type !== 'uncapturederror') return;
+    const index = this._uncapturedListeners.indexOf(listener);
+    if (index >= 0) this._uncapturedListeners.splice(index, 1);
+  }
+
+  /**
+   * 오류 하나를 `uncapturederror` 통로로 흘린다. 받아 간 곳이 하나라도 있으면 `true`.
+   *
+   * 리스너가 던져도 **나머지 리스너와 다음 오류는 계속 간다** — 하나의 실수가 전체 보고를
+   * 삼키면, 정작 원인인 오류가 사라져 진단이 불가능해진다.
+   *
+   * @param {WGPUError} payload
+   * @returns {boolean}
+   */
+  _dispatchUncaptured(payload) {
+    const event = { type: 'uncapturederror', error: makeGPUError(payload) };
+    const listeners = this._uncapturedListeners.slice();
+    if (typeof this.onuncapturederror === 'function') listeners.push(this.onuncapturederror);
+    for (const listener of listeners) {
+      try {
+        listener(event);
+      } catch (error) {
+        console.error(`uncapturederror 리스너가 던졌다: ${(error && /** @type {Error} */ (error).message) || error}`);
+      }
+    }
+    return listeners.length > 0;
   }
 
   /**
@@ -1137,13 +1619,9 @@ class GPUDevice {
    * @returns {Promise<WGPUError | null>}
    */
   popErrorScope() {
-    this._recorder.push({ op: 'popErrorScope' });
-    const promise = /** @type {Promise<WGPUError | null>} */ (
-      new Promise((resolve, reject) => {
-        this._recorder.pendingErrorScopes.push({ resolve, reject });
-      })
-    );
-    this._recorder.flush();
+    const promise = this._recorder.recordPop();
+    // 프레임 중간 제출 표시 — 획득해 둔 캔버스 텍스처를 present하지 않는다 (flush 참고).
+    this._recorder.flush(false);
     return promise;
   }
 
@@ -1280,6 +1758,64 @@ class GPUDevice {
     return new GPUComputePipeline(this, id, descriptor.label);
   }
 
+  /**
+   * `createRenderPipeline`의 비동기 판 — 실패를 **예외가 아니라 거부로** 알린다.
+   *
+   * 동기 판은 명령만 기록하므로 실패가 다음 `submit()`의 오류 배열로 늦게 온다. 이쪽은
+   * 생성 명령을 오류 스코프로 감싸 즉시 제출하고, 결과를 보고 Promise를 푼다. 그래서
+   * **"이 파이프라인이 쓸 수 있는가"를 그 자리에서 알 수 있다** (셰이더 번역 실패 포함).
+   *
+   * 대가는 왕복 하나다 — 초기화 경로에서 쓰는 것을 전제로 한 API다 (`docs/JS-AUTHORING.md` §5).
+   *
+   * @param {Record<string, any>} descriptor
+   * @returns {Promise<GPURenderPipeline>}
+   */
+  createRenderPipelineAsync(descriptor) {
+    return this._createPipelineAsync(() => this.createRenderPipeline(descriptor));
+  }
+
+  /**
+   * `createComputePipeline`의 비동기 판 (`createRenderPipelineAsync`와 같은 계약).
+   * @param {Record<string, any>} descriptor
+   * @returns {Promise<GPUComputePipeline>}
+   */
+  createComputePipelineAsync(descriptor) {
+    return this._createPipelineAsync(() => this.createComputePipeline(descriptor));
+  }
+
+  /**
+   * 파이프라인 생성을 오류 스코프로 감싸 즉시 제출하고 결과로 Promise를 푼다.
+   *
+   * 스코프가 **두 겹**인 이유: 파이프라인 생성은 두 종류로 실패한다. 디스크립터 문제는
+   * `validation`(+`unsupported`)이고, WGSL→MSL 번역·Metal 컴파일 실패는 `backend`라
+   * `internal` 필터로만 잡힌다. 한 겹만 치면 나머지 절반이 스코프를 빠져나가 전역
+   * 핸들러로 새고, Promise는 성공으로 풀려 **못 쓰는 파이프라인을 손에 쥔다.**
+   *
+   * 두 pop을 한 배치에 실어 왕복은 하나로 유지한다.
+   *
+   * @template {GPURenderPipeline | GPUComputePipeline} T
+   * @param {() => T} record 생성 명령을 기록하고 핸들을 돌려주는 함수
+   * @returns {Promise<T>}
+   */
+  async _createPipelineAsync(record) {
+    this.pushErrorScope('validation');
+    this.pushErrorScope('internal');
+    const pipeline = record();
+    // 안쪽(internal)부터 닫는다 — 네이티브가 pop 순서 그대로 결과를 돌려준다.
+    const internalPromise = this._recorder.recordPop();
+    const validationPromise = this._recorder.recordPop();
+    this._recorder.flush(false);
+
+    const [internalError, validationError] = await Promise.all([internalPromise, validationPromise]);
+    const failure = internalError || validationError;
+    if (failure) {
+      // 쓸 수 없는 핸들을 남기지 않는다 — 네이티브에는 애초에 객체가 없다.
+      pipeline.destroy();
+      throw makePipelineError(failure);
+    }
+    return pipeline;
+  }
+
   /** @returns {GPUCommandEncoder} */
   createCommandEncoder() {
     return new GPUCommandEncoder(this);
@@ -1303,7 +1839,7 @@ class GPUDevice {
    *
    * `'occlusion'`은 드로우가 통과시킨 샘플 수를 센다 — 결정적이라 값을 믿을 수 있다.
    * `'timestamp'`는 GPU 시계라 같은 입력에도 값이 매번 다르다. 기기에 따라 아예 만들 수
-   * 없으므로(`adapter.limits.timestampQuery`) 실패를 처리할 것.
+   * 없으므로(`adapter.features.has('timestamp-query')`) 실패를 처리할 것.
    *
    * `count`는 1 이상 4096 이하다 (명세 상한).
    *
@@ -1366,6 +1902,11 @@ class GPUCanvasContext {
     /** @type {GPUDevice | null} */
     this._device = null;
     this.format = 'bgra8unorm';
+    /**
+     * `getConfiguration()`이 돌려줄 마지막 설정 — 아직 없으면 `null` (명세와 같다).
+     * @type {GPUCanvasConfiguration | null}
+     */
+    this._configuration = null;
   }
 
   /**
@@ -1375,6 +1916,7 @@ class GPUCanvasContext {
   configure(configuration) {
     this._device = configuration.device;
     this.format = configuration.format || 'bgra8unorm';
+    this._configuration = { ...configuration, format: this.format };
     this._device._recorder.push({
       op: 'configureCanvas',
       canvas: this.canvasId,
@@ -1386,6 +1928,33 @@ class GPUCanvasContext {
     });
     // 크기를 미리 캐시한다 — 이후에는 제출 응답이 갱신하므로 동기 조회는 사실상 이 1회뿐이다.
     this._fetchSize();
+  }
+
+  /**
+   * 설정을 푼다 — 다시 `configure()`하기 전까지 이 컨텍스트로는 그릴 수 없다.
+   *
+   * 포맷을 바꿔 재구성하는 코드(HDR 토글 등)가 밟는 자리다. 이후 `getCurrentTexture()`는
+   * "configure()를 먼저"로 거부한다.
+   *
+   * **이미 화면에 나간 프레임을 지우지는 않는다.** 브라우저는 캔버스를 투명 검정으로
+   * 비우지만, 여기서 그러려면 표면을 한 번 클리어해 present해야 한다 — 설정을 푸는 호출이
+   * 프레임을 하나 소비하는 편이 더 놀랍다고 보고 하지 않는다 (`docs/WEBGPU-API.md` §2).
+   *
+   * @returns {void}
+   */
+  unconfigure() {
+    this._device = null;
+    this._configuration = null;
+    // 크기 캐시도 버린다 — 다음 configure가 새 크기를 다시 읽게 한다.
+    canvasSizeCache.delete(this.canvasId);
+  }
+
+  /**
+   * 마지막으로 준 설정 (아직 없거나 `unconfigure()` 뒤면 `null`).
+   * @returns {GPUCanvasConfiguration | null}
+   */
+  getConfiguration() {
+    return this._configuration;
   }
 
   /**
@@ -1452,9 +2021,36 @@ function makeFeatureSet(names) {
   };
 }
 
+/**
+ * 명세의 `GPUAdapterInfo` — 웹 코드가 GPU 종류로 분기할 때 읽는 표준 이름들.
+ *
+ * 값을 모르는 자리는 **빈 문자열**이다 (명세 규칙). 지어내면 그 문자열로 분기하는 코드가
+ * 잘못된 우회로를 탄다.
+ *
+ * @param {Record<string, any> | undefined} raw
+ * @returns {GPUAdapterInfoView}
+ */
+function makeAdapterInfo(raw) {
+  const source = raw || {};
+  return {
+    vendor: source.vendor || '',
+    architecture: source.architecture || '',
+    device: source.device || '',
+    description: source.description || '',
+    isFallbackAdapter: !!source.isFallbackAdapter,
+    subgroupMinSize: source.subgroupMinSize || 0,
+    subgroupMaxSize: source.subgroupMaxSize || 0,
+  };
+}
+
 class GPUAdapter {
   /** @param {WGPUAdapterInfo} info */
   constructor(info) {
+    /**
+     * 명세 `GPUAdapterInfo`. 아래 `name`·`backend`·`hasUnifiedMemory`는 **이 구현의 추가**로,
+     * 명세 이름이 없던 시절부터 있던 것이라 그대로 둔다 (기존 코드가 쓴다).
+     */
+    this.info = makeAdapterInfo(info.info);
     this.name = info.name;
     this.backend = info.backend;
     this.limits = info.limits || {};
@@ -1466,9 +2062,23 @@ class GPUAdapter {
     this.features = makeFeatureSet(info.features || []);
   }
 
-  /** @returns {Promise<GPUDevice>} */
-  async requestDevice() {
-    return new GPUDevice(this);
+  /**
+   * 어댑터가 지원하지 않는 기능을 요구하면 명세대로 **거부**한다 — 조용히 빼고 만들면
+   * 이후 `createQuerySet` 같은 호출이 훨씬 먼 곳에서 터진다.
+   * @param {{label?: string, requiredFeatures?: string[], requiredLimits?: Record<string, number>}} [descriptor]
+   * @returns {Promise<GPUDevice>}
+   */
+  async requestDevice(descriptor) {
+    const required = (descriptor && descriptor.requiredFeatures) || [];
+    for (const name of required) {
+      if (!this.features.has(name)) {
+        throw new Error(
+          `requestDevice: 이 어댑터는 '${name}' 기능을 지원하지 않는다 ` +
+            `(지원 목록: ${this.features.values().join(', ') || '없음'})`
+        );
+      }
+    }
+    return new GPUDevice(this, required);
   }
 }
 
@@ -1493,11 +2103,21 @@ export const gpu = {
 
   /**
    * `<webgpu-canvas canvas-id="…">` 의 표면에 붙는다 (`canvas.getContext('webgpu')` 대응).
+   *
+   * 같은 `canvasId`에는 **같은 객체**를 돌려준다 — 브라우저의 `getContext('webgpu')`와 같다.
+   * 새로 만들어 주면 한 핸들로 `configure()`하고 다른 핸들로 `unconfigure()`했을 때 설정
+   * 상태가 갈라져, 그린다고 생각한 컨텍스트가 실은 설정되지 않은 쪽이 된다.
+   *
    * @param {string} canvasId
    * @returns {GPUCanvasContext}
    */
   getCanvasContext(canvasId) {
-    return new GPUCanvasContext(canvasId);
+    let context = canvasContexts.get(canvasId);
+    if (!context) {
+      context = new GPUCanvasContext(canvasId);
+      canvasContexts.set(canvasId, context);
+    }
+    return context;
   },
 };
 
@@ -1547,6 +2167,75 @@ export function startFrameLoop(handler, options) {
 }
 
 /**
+ * `requestAnimationFrame` / `cancelAnimationFrame`을 전역에 깐다 — **웹 라이브러리 이식용**.
+ *
+ * Three.js처럼 자체 프레임 루프를 도는 라이브러리는 rAF가 있다고 전제한다. PrimJS에는 없으므로
+ * 그대로 올리면 `renderer.init()`이 오류 없이 **영구 정지**한다 (루프가 시작되지 않는다).
+ *
+ * 직접 쓰는 코드에는 필요 없다 — `startFrameLoop`가 더 정확하고(rAF 자체가 그 위의 얇은 층이다)
+ * 정지 시점도 분명하다. 이 함수는 **남의 코드가 rAF를 부를 때만** 쓴다.
+ *
+ * 콜백이 남아 있는 동안만 디스플레이 링크가 돈다 — 아무도 다음 프레임을 예약하지 않으면
+ * 스스로 멈춘다. 그래서 라이브러리가 루프를 끝내면 배터리도 따라서 놓인다.
+ *
+ * ```js
+ * const uninstall = installAnimationFrame()   // three를 import 하기 전에
+ * // …
+ * uninstall()                                 // 페이지를 떠날 때
+ * ```
+ *
+ * 이미 rAF가 있는 환경(브라우저·일부 테스트 러너)에서는 **덮지 않는다.**
+ *
+ * @param {{fps?: number}} [options]
+ * @returns {() => void} 되돌리는 함수 (전역을 원래대로)
+ */
+export function installAnimationFrame(options) {
+  const globals = /** @type {Record<string, any>} */ (globalThis);
+  if (typeof globals.requestAnimationFrame === 'function') return () => {};
+
+  /** @type {{id: number, callback: (time: number) => void}[]} */
+  let scheduled = [];
+  /** @type {(() => void) | null} */
+  let stopLoop = null;
+  let nextId = 1;
+
+  function pump() {
+    if (stopLoop) return;
+    stopLoop = startFrameLoop(({ timestamp }) => {
+      // 이번 틱의 콜백만 실행한다 — 콜백 안에서 예약한 것은 다음 틱이다 (브라우저와 같다).
+      const due = scheduled;
+      scheduled = [];
+      for (const entry of due) entry.callback(timestamp);
+      // 아무도 다음 프레임을 예약하지 않았으면 디스플레이 링크를 놓아 준다.
+      if (scheduled.length === 0 && stopLoop) {
+        stopLoop();
+        stopLoop = null;
+      }
+    }, options);
+  }
+
+  globals.requestAnimationFrame = (/** @type {(time: number) => void} */ callback) => {
+    const id = nextId++;
+    scheduled.push({ id, callback });
+    pump();
+    return id;
+  };
+  globals.cancelAnimationFrame = (/** @type {number} */ id) => {
+    scheduled = scheduled.filter((entry) => entry.id !== id);
+  };
+
+  return () => {
+    if (stopLoop) {
+      stopLoop();
+      stopLoop = null;
+    }
+    scheduled = [];
+    delete globals.requestAnimationFrame;
+    delete globals.cancelAnimationFrame;
+  };
+}
+
+/**
  * 애셋을 `ArrayBuffer`로 읽는다 — 브라우저의 `fetch()` 자리다.
  *
  * 텍스처로 올릴 픽셀처럼 JS 소스에 박기엔 큰 데이터를 가져오는 통로다. 네이티브가
@@ -1582,5 +2271,27 @@ export async function loadAsset(name) {
 export {
   GPUBuffer, GPUTexture, GPUTextureView, GPUSampler, GPUDevice, GPUCanvasContext,
   GPURenderBundle, GPURenderBundleEncoder, GPUQuerySet,
+  // `uncapturederror`가 실어 나르는 오류 — `instanceof`로 종류를 가를 때 쓴다.
+  GPUError, GPUValidationError, GPUOutOfMemoryError, GPUInternalError,
 };
 export default gpu;
+
+// ---------------------------------------------------------------------------
+// PrimJS 전역 브리지 — 웹 라이브러리(Three.js 등) 이식용
+// ---------------------------------------------------------------------------
+// 웹 전역(`navigator.gpu`, `performance`, `GPUBufferUsage` …)을 기대하는 라이브러리를 위해
+// **네임스페이스가 붙은** 전역을 얹는다. PrimJS + rspeedy 번들에서는 `globalThis.navigator = …`
+// 같은 전역 대입이 bare 식별자(`navigator`) 해석에 반영되지 않으므로, 대입만으로는 이식이
+// 안 된다 — 번들 설정(`lynx.config.ts`)의 `source.define`이 bare 식별자를 아래 이름으로
+// 바꿔치기해야 완성된다. 전체 조리법은 docs/JS-AUTHORING.md §10.
+//
+// 이름을 lynx*로 좁힌 것은 진짜 전역이 있는 런타임(node 테스트 등)을 덮어쓰지 않기 위해서다.
+
+globalThis.lynxNavigator = { gpu };
+globalThis.lynxPerformance =
+  typeof performance !== 'undefined' && performance ? performance : { now: () => Date.now() };
+globalThis.lynxGPUBufferUsage = GPUBufferUsage;
+globalThis.lynxGPUTextureUsage = GPUTextureUsage;
+globalThis.lynxGPUShaderStage = GPUShaderStage;
+globalThis.lynxGPUColorWrite = GPUColorWrite;
+globalThis.lynxGPUMapMode = GPUMapMode;

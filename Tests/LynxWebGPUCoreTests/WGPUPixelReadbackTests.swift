@@ -113,7 +113,9 @@ final class WGPUPixelReadbackTests: XCTestCase {
 
     func test_채널로_풀_수_없는_포맷은_조용히_넘어가지_않는다() {
         // 팩된 포맷·정수 포맷은 정규화 float으로 펴면 값이 왜곡된다 → data를 직접 읽으라고 던진다.
-        for format: WGPUTextureFormat in [.rgb10a2unorm, .rg11b10ufloat, .rgba8uint, .rgba16uint] {
+        for format: WGPUTextureFormat in [
+            .rgb10a2unorm, .rgb10a2uint, .rg11b10ufloat, .rgb9e5ufloat, .rgba8uint, .rgba16uint,
+        ] {
             let readback = WGPUPixelReadback(
                 data: Data(count: format.bytesPerPixel),
                 format: format, width: 1, height: 1, bytesPerRow: format.bytesPerPixel

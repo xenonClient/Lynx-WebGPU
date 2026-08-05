@@ -32,6 +32,20 @@ interface WGPUExecuteResult {
   errorScopes?: (WGPUErrorPayload | null)[];
 }
 
+/** `shaderCompilationInfo`의 반환. */
+interface WGPUShaderCompilationInfo {
+  ok?: boolean;
+  messages?: {
+    message: string;
+    type: 'error' | 'warning' | 'info';
+    lineNum: number;
+    linePos: number;
+    offset: number;
+    length: number;
+  }[];
+  errors?: WGPUErrorPayload[];
+}
+
 /** `adapterInfo`의 반환. */
 interface WGPUAdapterInfo {
   ok?: boolean;
@@ -39,6 +53,8 @@ interface WGPUAdapterInfo {
   backend: string;
   limits?: Record<string, number>;
   hasUnifiedMemory?: boolean;
+  /** 명세 `GPUAdapterInfo` (vendor/architecture/device/description …). */
+  info?: Record<string, any>;
   /** 기기마다 갈리는 기능의 명세 철자 (`'timestamp-query'` 등). */
   features?: string[];
 }
@@ -79,8 +95,10 @@ interface WGPULoadAssetResult {
 
 /** `NativeModules.WebGPU` — 커맨드 스트림 입구. */
 interface WebGPUNativeModule {
-  execute(payload: { commands: Record<string, any>[] }): WGPUExecuteResult | undefined;
+  /** `present: false` = 프레임 중간의 내부 제출 — 드로어블 present·핸들 만료를 미룬다. */
+  execute(payload: { commands: Record<string, any>[]; present?: boolean }): WGPUExecuteResult | undefined;
   adapterInfo(): WGPUAdapterInfo | undefined;
+  shaderCompilationInfo(params: { module: number }): WGPUShaderCompilationInfo | undefined;
   canvasInfo(params: { canvas: string }): WGPUCanvasInfo | undefined;
   readBuffer(
     params: { buffer: number; offset: number; size?: number },
@@ -130,3 +148,18 @@ declare function setInterval(handler: () => void, timeout?: number): number;
 declare function clearInterval(handle: number): void;
 declare function setTimeout(handler: () => void, timeout?: number): number;
 declare function clearTimeout(handle: number): void;
+
+// --- PrimJS 전역 브리지 --------------------------------------------------
+// shim이 모듈 로드 시점에 얹는 lynx* 전역 (docs/JS-AUTHORING.md §10).
+// 번들 쪽 `source.define`이 웹 전역의 bare 식별자를 이 이름들로 바꿔치기한다.
+
+/** 브라우저/Node에는 있고 PrimJS에는 없다 — shim이 폴백을 고를 때만 확인한다. */
+declare const performance: { now(): number } | undefined;
+
+declare var lynxNavigator: unknown;
+declare var lynxPerformance: unknown;
+declare var lynxGPUBufferUsage: unknown;
+declare var lynxGPUTextureUsage: unknown;
+declare var lynxGPUShaderStage: unknown;
+declare var lynxGPUColorWrite: unknown;
+declare var lynxGPUMapMode: unknown;

@@ -72,6 +72,11 @@ queue.submit([cb])          ────── execute({commands}) ────�
 - **경로 진단** — 오류에 `commands[3].vertex.buffers[0].format` 같은 위치가 붙는다.
 - **결정적 재현** — 커맨드 배열은 순수 데이터라 로그로 남기고 그대로 재생할 수 있다.
 
+명령에 실리는 인자는 **기록 시점에 값으로 고정된다** (`snapshotValue`). 브라우저가 호출 시점에
+직렬화하는 것과 같은 계약이다 — 호출 뒤 디스크립터 객체를 재사용·리셋하는 코드(three.js의
+싱글턴 디스크립터 패턴)가 flush를 기다리는 명령을 오염시키지 못한다. 이 고정이 없으면
+`copySize`가 flush 전에 0으로 리셋되어 **폭 0짜리 복사가 오류 없이** 나가는 식으로 조용히 깨진다.
+
 ### 스레딩
 
 Lynx는 NativeModule 메서드를 **JS 백그라운드 스레드**에서 부른다. 커맨드 해석과 Metal 인코딩은
@@ -113,7 +118,10 @@ WGSL은 `@group(g) @binding(b)`라는 2차원 좌표를 쓰고, Metal은 스테�
 
 **(1) 리소스 스레딩** — MSL에는 가변 전역이 없다. WGSL의 모듈 스코프 변수(유니폼/스토리지/텍스처/
 샘플러/`var<workgroup>`/`var<private>`)를 진입점 인자로 받아 **호출 그래프를 따라 함수 인자로 내려보낸다.**
-어느 함수가 무엇을 쓰는지는 호출 그래프 고정점 계산으로 구한다.
+어느 함수가 무엇을 쓰는지는 호출 그래프 고정점 계산으로 구하되, 수집이 **스코프를 따진다** —
+매개변수·지역 선언에 가려진 이름은 전역 사용이 아니다 (Three.js처럼 같은 이름을 모듈과 지역에
+기계 생성하는 코드가 흔하다). 전역이 정당하게 주입된 함수 안에서 같은 이름의 지역 선언이 나오면
+(WGSL은 합법, C++에서는 매개변수 재정의) 방출기가 지역을 `wgpu_shadow_*`로 리네임한다.
 
 ```wgsl
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -154,9 +162,16 @@ struct Light { direction: vec3f, intensity: f32 }   // WGSL: 16바이트
 JS는 문자열 id(`canvas-id` prop)로 표면을 지목한다. 엘리먼트가 화면에 붙을 때 컨텍스트에 등록하고,
 사라질 때 해제한다.
 
-`present`는 명시적 명령이 아니다. WebGPU와 마찬가지로, 한 배치 안에서 `getCurrentTexture()`로 얻은
-드로어블은 **배치가 끝날 때 자동으로 present** 된다. 드로어블 텍스처와 그 뷰의 핸들은 프레임이 끝나면
+`present`는 명시적 명령이 아니다. WebGPU와 마찬가지로, `getCurrentTexture()`로 얻은 드로어블은
+**프레임 제출 배치가 끝날 때 자동으로 present** 되고, 드로어블 텍스처와 그 뷰의 핸들도 그때
 회수된다 (브라우저와 같은 규칙 — 프레임 밖에서는 유효하지 않다).
+
+어느 배치가 프레임 제출인지는 shim이 정한다 — `execute({commands, present})`의 `present`가
+false면 `popErrorScope`·`mapAsync`가 결과를 받으려고 흘려보낸 **프레임 중간의 내부 제출**이라,
+커밋만 하고 present와 핸들 회수를 뒤따라올 `queue.submit()` 배치로 미룬다. 이 구분이 없으면
+내부 배치가 `writeBuffer` 하나로라도 커맨드 버퍼를 만든 순간, 획득해 둔 드로어블이 그리기도
+전에 present되어 그 프레임의 남은 패스가 통째로 거부된다 (Three.js의 지연 파이프라인 생성이
+정확히 이 모양이었다 — `WGPUCommandInterpreter.finish(present:)` 참고).
 
 ## 6. 프레임 루프
 

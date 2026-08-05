@@ -153,6 +153,49 @@ final class RenderBundleTests: XCTestCase {
         try harness.assertPixel(x: 32, y: 32, equals: red, "순서를 뒤집으면 결과도 뒤집힌다")
     }
 
+    /// 호환성 검증은 실행보다 먼저, **전체 목록에 대해** 끝나야 한다 — 하나만 비호환이어도
+    /// 앞의 호환 번들까지 실행되지 않는다. 절반만 그려진 프레임을 남기지 않기 위한 계약인데,
+    /// 검증 루프와 실행 루프를 합치면 조용히 깨지므로 픽셀로 못 박는다.
+    func test_비호환_번들이_섞이면_앞의_호환_번들도_실행되지_않는다() throws {
+        let setUp = setUpResources() + [
+            createBundle(id: 10, commands: fullScreenDraw(bindGroup: 6)),   // 호환 (빨강)
+            ["op": "createRenderBundle", "id": 12, "colorFormats": ["bgra8unorm"],
+             "commands": fullScreenDraw(bindGroup: 7)],                     // 패스와 포맷 불일치
+        ]
+        let result = harness.execute(setUp + acquireDrawable + [
+            beginPass,
+            ["op": "executeBundles", "bundles": [10, 12]],
+            ["op": "endPass"],
+        ])
+
+        XCTAssertEqual(errors(result).first?["kind"] as? String, "validation")
+        // 호환인 10번(빨강)도 그려지지 않아야 한다 — 중앙이 클리어색 그대로여야 한다.
+        try harness.assertPixel(x: 32, y: 32, equals: (0, 0, 255, 255), "앞의 호환 번들이 실행됐다")
+    }
+
+    /// 명세의 `GPURenderBundleEncoder`는 `GPUDebugCommandsMixin`을 포함한다 — 마커를 담을 수 있다.
+    ///
+    /// 허용 목록에서 빠뜨리면 **마커 하나 때문에 번들 전체가 거부되고**, 사용자는 마커가
+    /// 원인이라고 생각하기 어렵다 (드로우를 의심하며 엉뚱한 곳을 고친다).
+    func test_번들에_디버그_마커를_담을_수_있다() throws {
+        harness.executeExpectingSuccess(setUpResources() + [
+            createBundle(id: 10, commands:
+                [["op": "pushDebugGroup", "groupLabel": "번들 구간"]]
+                + fullScreenDraw(bindGroup: 6)
+                + [["op": "insertDebugMarker", "markerLabel": "드로우 뒤"],
+                   ["op": "popDebugGroup"]]
+            ),
+        ])
+
+        harness.executeExpectingSuccess(acquireDrawable + [
+            beginPass,
+            ["op": "executeBundles", "bundles": [10]],
+            ["op": "endPass"],
+        ])
+        // 마커가 그림을 바꾸지 않는다 — 번들은 평소대로 그려야 한다.
+        try harness.assertPixel(x: 32, y: 32, equals: red, "마커가 섞여도 그려져야 한다")
+    }
+
     // MARK: - 상태 격리
 
     /// 명세는 번들 실행이 패스 상태를 **복원**하는 것이 아니라 **무효화**한다고 정한다.

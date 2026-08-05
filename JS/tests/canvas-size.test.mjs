@@ -107,3 +107,43 @@ test('device.destroy가 캐시를 비운다', async () => {
   context.getSize();
   assert.equal(state.canvasInfoCalls, 2, '캐시가 비워졌으므로 다시 동기 조회한다');
 });
+
+test('unconfigure 뒤에는 그릴 수 없고 getConfiguration이 null이다', async () => {
+  installNativeMock();
+  const device = await makeDevice();
+  const context = gpu.getCanvasContext('main');
+
+  assert.equal(context.getConfiguration(), null, '설정 전에는 null이다');
+
+  context.configure({ device, format: 'rgba8unorm' });
+  const configuration = context.getConfiguration();
+  assert.equal(configuration.format, 'rgba8unorm');
+  assert.equal(configuration.device, device);
+
+  context.unconfigure();
+  assert.equal(context.getConfiguration(), null);
+  assert.throws(() => context.getCurrentTexture(), /configure/, '설정을 푼 뒤에는 그릴 수 없다');
+
+  // 다시 설정하면 살아난다 — 포맷을 바꿔 재구성하는 경로가 이것이다.
+  context.configure({ device, format: 'rgba16float' });
+  assert.equal(context.getConfiguration().format, 'rgba16float');
+  assert.doesNotThrow(() => context.getCurrentTexture());
+});
+
+test('같은 canvasId에는 같은 컨텍스트를 준다', async () => {
+  installNativeMock();
+  const device = await makeDevice();
+
+  const first = gpu.getCanvasContext('shared');
+  const second = gpu.getCanvasContext('shared');
+  assert.equal(first, second, '브라우저의 getContext와 같다');
+
+  // 매번 새로 만들면 여기서 갈라진다 — 한 핸들로 설정하고 다른 핸들로 그리면
+  // "configure()를 먼저"가 나거나, 반대로 해제가 안 먹는다.
+  first.configure({ device, format: 'rgba8unorm' });
+  assert.equal(second.getConfiguration().format, 'rgba8unorm');
+  second.unconfigure();
+  assert.equal(first.getConfiguration(), null);
+
+  assert.notEqual(gpu.getCanvasContext('other'), first, '다른 캔버스는 다른 객체다');
+});

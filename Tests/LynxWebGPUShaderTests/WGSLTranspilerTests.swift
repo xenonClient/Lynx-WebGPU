@@ -431,6 +431,195 @@ final class WGSLTranspilerTests: XCTestCase {
         _ = try translate(source, entryPoints: ["fs_main"])
     }
 
+    // MARK: - 도달 가능성 (여럿이 나눠 쓰는 공용 모듈)
+
+    func test_진입점이_부르지_않는_함수는_방출되지_않는다() throws {
+        // `common.wgsl` 하나를 여러 셰이더가 나눠 쓰는 구성이 흔하다 (webgpu-samples의 cornell).
+        // 그때 이 진입점이 안 쓰는 함수까지 내보내면, `layout: "auto"`의 바인드 그룹에 없는
+        // 리소스를 그 함수가 찾다가 번역이 통째로 실패한다 — 실제로 깨졌던 경로다.
+        let source = """
+        struct Quad { color: vec4f };
+        @group(0) @binding(0) var<uniform> uniforms: vec4f;
+        @group(0) @binding(1) var<storage> quads: array<Quad>;
+
+        // 이 진입점이 쓰지 않는 헬퍼 — 다른 셰이더가 쓰는 것이다.
+        fn unused_helper() -> u32 {
+            return arrayLength(&quads);
+        }
+
+        @fragment
+        fn fs_main() -> @location(0) vec4f {
+            return uniforms;
+        }
+        """
+        let msl = try translate(source, entryPoints: ["fs_main"])
+
+        XCTAssertFalse(msl.contains("unused_helper"), "안 쓰는 함수가 방출됐다:\n\(msl)")
+        XCTAssertTrue(msl.contains("fs_main"), "진입점은 있어야 한다")
+    }
+
+    func test_전이적으로_닿는_함수는_방출된다() throws {
+        // 도달 가능성은 **전이적**이다 — 진입점 → outer → inner 를 따라가야 한다.
+        let source = """
+        fn inner(x: f32) -> f32 { return x * 2.0; }
+        fn outer(x: f32) -> f32 { return inner(x) + 1.0; }
+        fn orphan(x: f32) -> f32 { return x; }
+
+        @fragment
+        fn fs_main() -> @location(0) vec4f {
+            return vec4f(outer(0.5));
+        }
+        """
+        let msl = try translate(source, entryPoints: ["fs_main"])
+
+        XCTAssertTrue(msl.contains("float outer("), "직접 호출한 함수가 없다:\n\(msl)")
+        XCTAssertTrue(msl.contains("float inner("), "전이적으로 닿는 함수가 없다:\n\(msl)")
+        XCTAssertFalse(msl.contains("orphan"), "아무도 안 부르는 함수가 방출됐다")
+    }
+
+    func test_진입점마다_필요한_함수가_다르면_각각_그것만_방출한다() throws {
+        let source = """
+        fn only_vertex() -> f32 { return 1.0; }
+        fn only_fragment() -> f32 { return 2.0; }
+
+        @vertex
+        fn vs_main() -> @builtin(position) vec4f {
+            return vec4f(only_vertex());
+        }
+
+        @fragment
+        fn fs_main() -> @location(0) vec4f {
+            return vec4f(only_fragment());
+        }
+        """
+        let vertexOnly = try translate(source, entryPoints: ["vs_main"])
+        XCTAssertTrue(vertexOnly.contains("only_vertex"))
+        XCTAssertFalse(vertexOnly.contains("only_fragment"), "다른 진입점 전용 함수가 딸려 왔다")
+
+        // 둘 다 요청하면 둘 다 나온다.
+        let both = try translate(source, entryPoints: ["vs_main", "fs_main"])
+        XCTAssertTrue(both.contains("only_vertex"))
+        XCTAssertTrue(both.contains("only_fragment"))
+    }
+
+    // MARK: - 전역 섀도잉 (기계 생성 셰이더의 일상 패턴 — Three.js nodeVar0)
+
+    func test_지역변수에_가려진_전역은_주입되지_않는다() throws {
+        // Three.js 노드 시스템이 만드는 패턴: 같은 이름을 모듈 스코프와 함수 지역에 동시 생성한다.
+        // helper는 지역 v만 쓰므로 모듈 스코프 v를 인자로 받으면 안 된다 — 받으면
+        // `float4 v{}` 지역 선언과 재정의 충돌이 난다.
+        let source = """
+        var<private> v : vec4<f32>;
+
+        fn helper(c : vec4<f32>) -> vec4<f32> {
+            var v : vec4<f32>;
+            v = c;
+            return v;
+        }
+
+        @fragment
+        fn main() -> @location(0) vec4<f32> {
+            v = vec4<f32>(1.0);
+            return helper(v);
+        }
+        """
+        let msl = try translate(source, entryPoints: ["main"])
+        XCTAssertTrue(msl.contains("float4 helper(float4 c)"), "가려진 전역이 주입됐다:\n\(msl)")
+    }
+
+    func test_매개변수에_가려진_전역은_주입되지_않는다() throws {
+        let source = """
+        var<private> tint : vec4<f32>;
+
+        fn helper(tint : vec4<f32>) -> vec4<f32> {
+            return tint * 2.0;
+        }
+
+        @fragment
+        fn main() -> @location(0) vec4<f32> {
+            tint = vec4<f32>(0.5);
+            return helper(tint);
+        }
+        """
+        let msl = try translate(source, entryPoints: ["main"])
+        XCTAssertTrue(msl.contains("float4 helper(float4 tint)"), "매개변수에 가려진 전역이 주입됐다:\n\(msl)")
+    }
+
+    func test_전역을_쓴_뒤_같은_이름의_지역을_선언하면_지역이_리네임된다() throws {
+        // WGSL은 point-of-declaration 스코프라 선언 앞의 v는 전역, 뒤의 v는 지역이다.
+        // 전역이 인자로 주입된 상태에서 같은 이름의 지역 선언은 C++ 재정의라 리네임이 필요하다.
+        let source = """
+        var<private> v : f32;
+
+        fn helper() -> f32 {
+            let before = v;
+            var v : f32 = 3.0;
+            v = v + before;
+            return v;
+        }
+
+        @fragment
+        fn main() -> @location(0) vec4<f32> {
+            v = 1.0;
+            return vec4<f32>(helper());
+        }
+        """
+        let msl = try translate(source, entryPoints: ["main"])
+        XCTAssertTrue(msl.contains("float wgpu_shadow_v = 3.0"), "지역 선언이 리네임되지 않았다:\n\(msl)")
+        XCTAssertTrue(msl.contains("const auto before = v"), "선언 앞의 참조가 전역(주입 인자)을 봐야 한다:\n\(msl)")
+    }
+
+    func test_지역이_가린_전역도_호출_그래프를_따라_전달된다() throws {
+        // outer는 전역 v를 직접 쓰지 않지만(지역이 가린다) inner가 쓰므로,
+        // outer는 전역 v를 **전달만** 해야 한다 — 지역을 넘기면 조용히 틀린다.
+        let source = """
+        var<private> v : f32;
+
+        fn inner() -> f32 {
+            return v;
+        }
+
+        fn outer() -> f32 {
+            var v : f32 = 100.0;
+            return inner() + v * 0.0;
+        }
+
+        @fragment
+        fn main() -> @location(0) vec4<f32> {
+            v = 1.0;
+            return vec4<f32>(outer());
+        }
+        """
+        let msl = try translate(source, entryPoints: ["main"])
+        // outer 안의 지역은 리네임되고, inner 호출은 원래 이름(주입 인자 = 전역)을 넘긴다.
+        XCTAssertTrue(msl.contains("float wgpu_shadow_v = 100.0"), "전달용 주입과 겹친 지역이 리네임되지 않았다:\n\(msl)")
+        XCTAssertTrue(msl.contains("inner(v)"), "inner에는 전역(주입 인자)이 넘어가야 한다:\n\(msl)")
+    }
+
+    func test_중첩블록의_섀도잉은_블록을_벗어나면_풀린다() throws {
+        // 블록 안 지역 선언의 리네임이 블록 밖으로 새면, 밖의 v 대입이 선언된 적 없는
+        // 이름(wgpu_shadow_v)을 참조해 컴파일이 깨진다 — translate가 잡는다.
+        let source = """
+        var<private> v : f32;
+
+        fn helper() -> f32 {
+            if (v > 0.0) {
+                var v : f32 = 2.0;
+                v = v * 2.0;
+            }
+            v = 5.0;
+            return v;
+        }
+
+        @fragment
+        fn main() -> @location(0) vec4<f32> {
+            v = 1.0;
+            return vec4<f32>(helper());
+        }
+        """
+        _ = try translate(source, entryPoints: ["main"])
+    }
+
     // MARK: - 바인딩 배정
 
     func test_바인딩배정은_그룹_바인딩_순으로_결정적이다() throws {

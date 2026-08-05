@@ -114,12 +114,20 @@ public final class WGPURenderPipelineObject {
         self.depthBias = Float(descriptor.depthStencil?.depthBias ?? 0)
         self.depthBiasSlopeScale = Float(descriptor.depthStencil?.depthBiasSlopeScale ?? 0)
         self.depthBiasClamp = Float(descriptor.depthStencil?.depthBiasClamp ?? 0)
+        // 진입점 이름은 여기서 확정한다 — 명세상 생략할 수 있고, 그때는 그 스테이지의
+        // 유일한 진입점을 쓴다 (`resolveEntryPoint`). 해석기가 이미 확정해 넘기지만
+        // 같은 결과라 멱등이고, 이 타입만 봐도 계약이 닫힌다.
+        let vertexEntry = try vertexModule.resolveEntryPoint(descriptor.vertex.entryPoint, stage: .vertex)
+        let fragmentEntry = try descriptor.fragment.flatMap { fragment -> String? in
+            try fragmentModule?.resolveEntryPoint(fragment.entryPoint, stage: .fragment)
+        }
+
         var wantsBufferSizes = vertexModule.wgsl?.usesArrayLength(
-            entryPoints: [descriptor.vertex.entryPoint]
+            entryPoints: [vertexEntry]
         ) ?? false
-        if let fragment = descriptor.fragment, let fragmentModule {
+        if let fragmentEntry, let fragmentModule {
             wantsBufferSizes = wantsBufferSizes || (fragmentModule.wgsl?.usesArrayLength(
-                entryPoints: [fragment.entryPoint]
+                entryPoints: [fragmentEntry]
             ) ?? false)
         }
         self.needsBufferSizes = wantsBufferSizes
@@ -137,9 +145,9 @@ public final class WGPURenderPipelineObject {
 
         // 정점/프래그먼트가 같은 모듈이면 MSL 하나에 두 진입점을 담아 한 번만 컴파일한다.
         let sharesModule = fragmentModule === vertexModule
-        let vertexEntryPoints = sharesModule && descriptor.fragment != nil
-            ? [descriptor.vertex.entryPoint, descriptor.fragment!.entryPoint]
-            : [descriptor.vertex.entryPoint]
+        let vertexEntryPoints = sharesModule && fragmentEntry != nil
+            ? [vertexEntry, fragmentEntry!]
+            : [vertexEntry]
 
         // 정점/프래그먼트가 같은 모듈이면 상수도 합쳐서 한 번에 방출한다.
         let sharedConstants = descriptor.vertex.constants.merging(
@@ -151,24 +159,24 @@ public final class WGPURenderPipelineObject {
             constants: sharesModule ? sharedConstants : descriptor.vertex.constants,
             device: device
         )
-        let vertexName = vertexModule.metalFunctionName(for: descriptor.vertex.entryPoint)
+        let vertexName = vertexModule.metalFunctionName(for: vertexEntry)
         guard let vertexFunction = vertexLibrary.makeFunction(name: vertexName) else {
-            throw WGPUError.validation("정점 셰이더 진입점 '\(descriptor.vertex.entryPoint)'을(를) 찾을 수 없다")
+            throw WGPUError.validation("정점 셰이더 진입점 '\(vertexEntry)'을(를) 찾을 수 없다")
         }
         metalDescriptor.vertexFunction = vertexFunction
 
-        if let fragment = descriptor.fragment, let fragmentModule {
+        if let fragment = descriptor.fragment, let fragmentModule, let fragmentEntry {
             let fragmentLibrary = sharesModule
                 ? vertexLibrary
                 : try fragmentModule.library(
-                    entryPoints: [fragment.entryPoint],
+                    entryPoints: [fragmentEntry],
                     bindings: layout.assignment,
                     constants: fragment.constants,
                     device: device
                 )
-            let fragmentName = fragmentModule.metalFunctionName(for: fragment.entryPoint)
+            let fragmentName = fragmentModule.metalFunctionName(for: fragmentEntry)
             guard let fragmentFunction = fragmentLibrary.makeFunction(name: fragmentName) else {
-                throw WGPUError.validation("프래그먼트 셰이더 진입점 '\(fragment.entryPoint)'을(를) 찾을 수 없다")
+                throw WGPUError.validation("프래그먼트 셰이더 진입점 '\(fragmentEntry)'을(를) 찾을 수 없다")
             }
             metalDescriptor.fragmentFunction = fragmentFunction
 
@@ -269,17 +277,19 @@ public final class WGPUComputePipelineObject {
         module: WGPUShaderModuleObject
     ) throws {
         self.layout = layout
-        self.needsBufferSizes = module.wgsl?.usesArrayLength(entryPoints: [descriptor.entryPoint]) ?? false
+        // 렌더 쪽과 같다 — 이름을 생략하면 유일한 compute 진입점을 쓴다 (멱등).
+        let entry = try module.resolveEntryPoint(descriptor.entryPoint, stage: .compute)
+        self.needsBufferSizes = module.wgsl?.usesArrayLength(entryPoints: [entry]) ?? false
 
         let library = try module.library(
-            entryPoints: [descriptor.entryPoint],
+            entryPoints: [entry],
             bindings: layout.assignment,
             constants: descriptor.constants,
             device: device
         )
-        let name = module.metalFunctionName(for: descriptor.entryPoint)
+        let name = module.metalFunctionName(for: entry)
         guard let function = library.makeFunction(name: name) else {
-            throw WGPUError.validation("컴퓨트 진입점 '\(descriptor.entryPoint)'을(를) 찾을 수 없다")
+            throw WGPUError.validation("컴퓨트 진입점 '\(entry)'을(를) 찾을 수 없다")
         }
         do {
             state = try device.makeComputePipelineState(function: function)
@@ -289,7 +299,7 @@ public final class WGPUComputePipelineObject {
 
         // MSL에는 workgroup 크기 선언이 없다. WGSL의 `@workgroup_size`를 리플렉션에서 가져와
         // dispatch 시 threadsPerThreadgroup으로 쓴다.
-        let size = module.wgsl?.workgroupSize(of: descriptor.entryPoint) ?? (x: 1, y: 1, z: 1)
+        let size = module.wgsl?.workgroupSize(of: entry) ?? (x: 1, y: 1, z: 1)
         threadsPerThreadgroup = MTLSize(width: size.x, height: size.y, depth: size.z)
     }
 }
@@ -303,9 +313,14 @@ public final class WGPUComputePipelineObject {
 public final class WGPURenderBundleObject {
     /// 번들 안에서 쓸 수 있는 명령. 명세가 정한 목록 그대로다 — 뷰포트·시저·블렌드 상수·
     /// 스텐실 참조·복사·중첩 번들은 번들에 담을 수 없다.
+    ///
+    /// 디버그 마커는 **담을 수 있다** — 명세의 `GPURenderBundleEncoder`가
+    /// `GPUDebugCommandsMixin`을 포함한다. 빠뜨리면 마커를 하나 넣은 것만으로 번들 전체가
+    /// 거부되고, 사용자는 마커가 원인이라고 생각하기 어렵다.
     static let allowedOps: Set<String> = [
         "setPipeline", "setBindGroup", "setVertexBuffer", "setIndexBuffer",
         "draw", "drawIndexed", "drawIndirect", "drawIndexedIndirect",
+        "pushDebugGroup", "popDebugGroup", "insertDebugMarker",
     ]
 
     let commands: [WGPUValueReader]
