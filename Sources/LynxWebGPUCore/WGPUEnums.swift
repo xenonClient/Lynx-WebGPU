@@ -37,6 +37,72 @@ public enum WGPUTextureFormat: String, CaseIterable, Sendable {
     case depth32float
     case depth32floatStencil8 = "depth32float-stencil8"
 
+    // --- 블록 압축 (BC / ETC2 / ASTC) ---------------------------------------
+    //
+    // 픽셀이 아니라 **블록** 단위로 저장된다. 크기 계산은 `blockWidth`/`blockHeight`/
+    // `bytesPerBlock`을 쓸 것 — `bytesPerPixel`은 이들 포맷에서 뜻이 없다.
+    //
+    // 셋 다 명세에서 **선택 기능**이다 (`texture-compression-bc` / `-etc2` / `-astc`).
+    // 기기 지원은 `adapter.features`로 확인한다.
+
+    // BC (Desktop) — 4x4 블록
+    case bc1RGBAUnorm = "bc1-rgba-unorm"
+    case bc1RGBAUnormSRGB = "bc1-rgba-unorm-srgb"
+    case bc2RGBAUnorm = "bc2-rgba-unorm"
+    case bc2RGBAUnormSRGB = "bc2-rgba-unorm-srgb"
+    case bc3RGBAUnorm = "bc3-rgba-unorm"
+    case bc3RGBAUnormSRGB = "bc3-rgba-unorm-srgb"
+    case bc4RUnorm = "bc4-r-unorm"
+    case bc4RSnorm = "bc4-r-snorm"
+    case bc5RGUnorm = "bc5-rg-unorm"
+    case bc5RGSnorm = "bc5-rg-snorm"
+    case bc6hRGBUfloat = "bc6h-rgb-ufloat"
+    case bc6hRGBFloat = "bc6h-rgb-float"
+    case bc7RGBAUnorm = "bc7-rgba-unorm"
+    case bc7RGBAUnormSRGB = "bc7-rgba-unorm-srgb"
+
+    // ETC2 / EAC — 4x4 블록
+    case etc2RGB8Unorm = "etc2-rgb8unorm"
+    case etc2RGB8UnormSRGB = "etc2-rgb8unorm-srgb"
+    case etc2RGB8A1Unorm = "etc2-rgb8a1unorm"
+    case etc2RGB8A1UnormSRGB = "etc2-rgb8a1unorm-srgb"
+    case etc2RGBA8Unorm = "etc2-rgba8unorm"
+    case etc2RGBA8UnormSRGB = "etc2-rgba8unorm-srgb"
+    case eacR11Unorm = "eac-r11unorm"
+    case eacR11Snorm = "eac-r11snorm"
+    case eacRG11Unorm = "eac-rg11unorm"
+    case eacRG11Snorm = "eac-rg11snorm"
+
+    // ASTC — 블록 크기가 포맷 이름에 들어 있다 (4x4 ~ 12x12), 전부 16바이트/블록
+    case astc4x4Unorm = "astc-4x4-unorm"
+    case astc4x4UnormSRGB = "astc-4x4-unorm-srgb"
+    case astc5x4Unorm = "astc-5x4-unorm"
+    case astc5x4UnormSRGB = "astc-5x4-unorm-srgb"
+    case astc5x5Unorm = "astc-5x5-unorm"
+    case astc5x5UnormSRGB = "astc-5x5-unorm-srgb"
+    case astc6x5Unorm = "astc-6x5-unorm"
+    case astc6x5UnormSRGB = "astc-6x5-unorm-srgb"
+    case astc6x6Unorm = "astc-6x6-unorm"
+    case astc6x6UnormSRGB = "astc-6x6-unorm-srgb"
+    case astc8x5Unorm = "astc-8x5-unorm"
+    case astc8x5UnormSRGB = "astc-8x5-unorm-srgb"
+    case astc8x6Unorm = "astc-8x6-unorm"
+    case astc8x6UnormSRGB = "astc-8x6-unorm-srgb"
+    case astc8x8Unorm = "astc-8x8-unorm"
+    case astc8x8UnormSRGB = "astc-8x8-unorm-srgb"
+    case astc10x5Unorm = "astc-10x5-unorm"
+    case astc10x5UnormSRGB = "astc-10x5-unorm-srgb"
+    case astc10x6Unorm = "astc-10x6-unorm"
+    case astc10x6UnormSRGB = "astc-10x6-unorm-srgb"
+    case astc10x8Unorm = "astc-10x8-unorm"
+    case astc10x8UnormSRGB = "astc-10x8-unorm-srgb"
+    case astc10x10Unorm = "astc-10x10-unorm"
+    case astc10x10UnormSRGB = "astc-10x10-unorm-srgb"
+    case astc12x10Unorm = "astc-12x10-unorm"
+    case astc12x10UnormSRGB = "astc-12x10-unorm-srgb"
+    case astc12x12Unorm = "astc-12x12-unorm"
+    case astc12x12UnormSRGB = "astc-12x12-unorm-srgb"
+
     /// 깊이/스텐실 어태치먼트로만 쓸 수 있는 포맷인가.
     public var isDepthOrStencil: Bool {
         switch self {
@@ -61,8 +127,42 @@ public enum WGPUTextureFormat: String, CaseIterable, Sendable {
         }
     }
 
-    /// 픽셀 1개의 바이트 수. 블록 압축 포맷은 지원하지 않으므로 모두 고정 크기다.
-    public var bytesPerPixel: Int {
+    /// 블록 압축 포맷인가 — 픽셀이 아니라 **블록** 단위로 저장된다.
+    public var isCompressed: Bool { blockWidth > 1 || blockHeight > 1 }
+
+    /// 텍셀 블록 하나가 덮는 크기. 비압축은 (1, 1)이다.
+    ///
+    /// ASTC는 블록 크기가 포맷 이름에 들어 있고(`astc-8x6-unorm` → 8×6), BC·ETC2는 전부 4×4다.
+    public var blockSize: (width: Int, height: Int) {
+        guard rawValue.hasPrefix("astc-") else {
+            switch self {
+            case .bc1RGBAUnorm, .bc1RGBAUnormSRGB, .bc2RGBAUnorm, .bc2RGBAUnormSRGB,
+                 .bc3RGBAUnorm, .bc3RGBAUnormSRGB, .bc4RUnorm, .bc4RSnorm,
+                 .bc5RGUnorm, .bc5RGSnorm, .bc6hRGBUfloat, .bc6hRGBFloat,
+                 .bc7RGBAUnorm, .bc7RGBAUnormSRGB,
+                 .etc2RGB8Unorm, .etc2RGB8UnormSRGB, .etc2RGB8A1Unorm, .etc2RGB8A1UnormSRGB,
+                 .etc2RGBA8Unorm, .etc2RGBA8UnormSRGB,
+                 .eacR11Unorm, .eacR11Snorm, .eacRG11Unorm, .eacRG11Snorm:
+                return (4, 4)
+            default:
+                return (1, 1)
+            }
+        }
+        // "astc-<W>x<H>-unorm[-srgb]" — 이름이 곧 블록 크기다.
+        let dimensions = rawValue.dropFirst("astc-".count).prefix { $0 != "-" }.split(separator: "x")
+        guard dimensions.count == 2, let width = Int(dimensions[0]), let height = Int(dimensions[1]) else {
+            return (1, 1)
+        }
+        return (width, height)
+    }
+
+    public var blockWidth: Int { blockSize.width }
+    public var blockHeight: Int { blockSize.height }
+
+    /// 블록 하나의 바이트 수. **비압축 포맷에서는 픽셀 1개의 바이트 수와 같다.**
+    ///
+    /// 크기 계산은 전부 이 값을 쓴다 — 압축 포맷에 `bytesPerPixel`을 쓰면 조용히 틀린다.
+    public var bytesPerBlock: Int {
         switch self {
         case .r8unorm, .r8snorm, .r8uint, .r8sint, .stencil8: return 1
         case .r16uint, .r16sint, .r16float, .rg8unorm, .rg8snorm, .rg8uint, .rg8sint, .depth16unorm: return 2
@@ -73,7 +173,28 @@ public enum WGPUTextureFormat: String, CaseIterable, Sendable {
         case .rg32uint, .rg32sint, .rg32float, .rgba16uint, .rgba16sint, .rgba16float,
              .depth24plusStencil8, .depth32floatStencil8: return 8
         case .rgba32uint, .rgba32sint, .rgba32float: return 16
+        // BC1·BC4와 ETC2 RGB8 계열은 블록당 8바이트, 나머지 압축 포맷은 16바이트다.
+        case .bc1RGBAUnorm, .bc1RGBAUnormSRGB, .bc4RUnorm, .bc4RSnorm,
+             .etc2RGB8Unorm, .etc2RGB8UnormSRGB, .etc2RGB8A1Unorm, .etc2RGB8A1UnormSRGB,
+             .eacR11Unorm, .eacR11Snorm:
+            return 8
+        default:
+            // BC2·BC3·BC5·BC6H·BC7 · ETC2 RGBA8 · EAC RG11 · ASTC 전 종류.
+            return 16
         }
+    }
+
+    /// 픽셀 1개의 바이트 수. **비압축 포맷에서만 뜻이 있다** (압축은 `bytesPerBlock`을 쓸 것).
+    public var bytesPerPixel: Int { bytesPerBlock }
+
+    /// `width` 픽셀을 담는 데 필요한 한 행의 바이트 수 (블록 단위로 올림).
+    public func bytesPerRow(width: Int) -> Int {
+        (width + blockWidth - 1) / blockWidth * bytesPerBlock
+    }
+
+    /// `height` 픽셀에 해당하는 **블록 행** 수.
+    public func blockRows(height: Int) -> Int {
+        (height + blockHeight - 1) / blockHeight
     }
 }
 

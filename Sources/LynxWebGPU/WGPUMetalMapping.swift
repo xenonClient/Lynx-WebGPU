@@ -39,6 +39,60 @@ enum WGPUMetalMapping {
         case .rgb10a2uint: return .rgb10a2Uint
         case .rg11b10ufloat: return .rg11b10Float
         case .rgb9e5ufloat: return .rgb9e5Float
+
+        // --- 블록 압축 -------------------------------------------------------
+        case .bc1RGBAUnorm: return .bc1_rgba
+        case .bc1RGBAUnormSRGB: return .bc1_rgba_srgb
+        case .bc2RGBAUnorm: return .bc2_rgba
+        case .bc2RGBAUnormSRGB: return .bc2_rgba_srgb
+        case .bc3RGBAUnorm: return .bc3_rgba
+        case .bc3RGBAUnormSRGB: return .bc3_rgba_srgb
+        case .bc4RUnorm: return .bc4_rUnorm
+        case .bc4RSnorm: return .bc4_rSnorm
+        case .bc5RGUnorm: return .bc5_rgUnorm
+        case .bc5RGSnorm: return .bc5_rgSnorm
+        case .bc6hRGBUfloat: return .bc6H_rgbuFloat
+        case .bc6hRGBFloat: return .bc6H_rgbFloat
+        case .bc7RGBAUnorm: return .bc7_rgbaUnorm
+        case .bc7RGBAUnormSRGB: return .bc7_rgbaUnorm_srgb
+        case .etc2RGB8Unorm: return .etc2_rgb8
+        case .etc2RGB8UnormSRGB: return .etc2_rgb8_srgb
+        case .etc2RGB8A1Unorm: return .etc2_rgb8a1
+        case .etc2RGB8A1UnormSRGB: return .etc2_rgb8a1_srgb
+        case .etc2RGBA8Unorm: return .eac_rgba8
+        case .etc2RGBA8UnormSRGB: return .eac_rgba8_srgb
+        case .eacR11Unorm: return .eac_r11Unorm
+        case .eacR11Snorm: return .eac_r11Snorm
+        case .eacRG11Unorm: return .eac_rg11Unorm
+        case .eacRG11Snorm: return .eac_rg11Snorm
+        case .astc4x4Unorm: return .astc_4x4_ldr
+        case .astc4x4UnormSRGB: return .astc_4x4_srgb
+        case .astc5x4Unorm: return .astc_5x4_ldr
+        case .astc5x4UnormSRGB: return .astc_5x4_srgb
+        case .astc5x5Unorm: return .astc_5x5_ldr
+        case .astc5x5UnormSRGB: return .astc_5x5_srgb
+        case .astc6x5Unorm: return .astc_6x5_ldr
+        case .astc6x5UnormSRGB: return .astc_6x5_srgb
+        case .astc6x6Unorm: return .astc_6x6_ldr
+        case .astc6x6UnormSRGB: return .astc_6x6_srgb
+        case .astc8x5Unorm: return .astc_8x5_ldr
+        case .astc8x5UnormSRGB: return .astc_8x5_srgb
+        case .astc8x6Unorm: return .astc_8x6_ldr
+        case .astc8x6UnormSRGB: return .astc_8x6_srgb
+        case .astc8x8Unorm: return .astc_8x8_ldr
+        case .astc8x8UnormSRGB: return .astc_8x8_srgb
+        case .astc10x5Unorm: return .astc_10x5_ldr
+        case .astc10x5UnormSRGB: return .astc_10x5_srgb
+        case .astc10x6Unorm: return .astc_10x6_ldr
+        case .astc10x6UnormSRGB: return .astc_10x6_srgb
+        case .astc10x8Unorm: return .astc_10x8_ldr
+        case .astc10x8UnormSRGB: return .astc_10x8_srgb
+        case .astc10x10Unorm: return .astc_10x10_ldr
+        case .astc10x10UnormSRGB: return .astc_10x10_srgb
+        case .astc12x10Unorm: return .astc_12x10_ldr
+        case .astc12x10UnormSRGB: return .astc_12x10_srgb
+        case .astc12x12Unorm: return .astc_12x12_ldr
+        case .astc12x12UnormSRGB: return .astc_12x12_srgb
         case .rg32uint: return .rg32Uint
         case .rg32sint: return .rg32Sint
         case .rg32float: return .rg32Float
@@ -300,5 +354,47 @@ public enum WGPUDeviceCapability {
     /// `MTLValidateFeatureSupport ... failed assertion`으로 프로세스가 죽는다.
     public static func supportsIndirectArguments(_ device: MTLDevice) -> Bool {
         device.supportsFamily(.apple3) || device.supportsFamily(.mac2)
+    }
+
+    /// 포맷이 속한 압축 계열 — 명세의 선택 기능 이름과 1:1로 대응한다.
+    public enum CompressionFamily {
+        case none, bc, etc2, astc
+
+        /// `adapter.features`에 싣는 이름 (명세 철자 그대로).
+        public var featureName: String? {
+            switch self {
+            case .none: return nil
+            case .bc: return "texture-compression-bc"
+            case .etc2: return "texture-compression-etc2"
+            case .astc: return "texture-compression-astc"
+            }
+        }
+    }
+
+    /// ETC2와 EAC는 명세에서 **같은 기능 비트**다 (`texture-compression-etc2`).
+    public static func compressionFamily(_ format: WGPUTextureFormat) -> CompressionFamily {
+        guard format.isCompressed else { return .none }
+        if format.rawValue.hasPrefix("bc") { return .bc }
+        if format.rawValue.hasPrefix("astc-") { return .astc }
+        return .etc2
+    }
+
+    /// 블록 압축 포맷을 이 기기가 지원하는가.
+    ///
+    /// Metal은 **지원하지 않는 압축 포맷으로 텍스처를 만들면 단언으로 죽는다.** 그래서
+    /// `adapter.features`로 미리 알려 주고, 없는 계열은 생성 시점에 오류로 한 번 더 막는다.
+    ///
+    /// - ETC2/EAC · ASTC: 모든 Apple GPU가 한다 (iOS 전 기종, Apple Silicon Mac).
+    ///   Intel/AMD Mac(`mac2`)에는 없다.
+    /// - BC(DXT/BPTC): Apple7(A14/M1) 이상, 또는 Intel/AMD Mac.
+    public static func supportsCompression(_ format: WGPUTextureFormat, on device: MTLDevice) -> Bool {
+        switch compressionFamily(format) {
+        case .none: return true
+        case .bc:
+            if #available(iOS 16.4, macOS 11.0, *) { return device.supportsBCTextureCompression }
+            return device.supportsFamily(.apple7) || device.supportsFamily(.mac2)
+        case .etc2, .astc:
+            return device.supportsFamily(.apple2)
+        }
     }
 }

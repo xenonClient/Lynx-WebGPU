@@ -346,6 +346,12 @@ public final class LynxWebGPUContext {
         if WGPUDeviceCapability.supportsIndirectArguments(device) {
             result.append("indirect-first-instance")
         }
+        // 블록 압축 계열. 없는 계열로 텍스처를 만들면 Metal이 단언으로 죽으므로,
+        // 앱이 미리 갈라설 수 있게 여기서 알린다 (생성 시점에도 오류로 한 번 더 막는다).
+        for probe: WGPUTextureFormat in [.bc1RGBAUnorm, .etc2RGB8Unorm, .astc4x4Unorm] {
+            guard let name = WGPUDeviceCapability.compressionFamily(probe).featureName else { continue }
+            if WGPUDeviceCapability.supportsCompression(probe, on: device) { result.append(name) }
+        }
         return result
     }
 

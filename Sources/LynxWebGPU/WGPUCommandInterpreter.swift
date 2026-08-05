@@ -541,12 +541,18 @@ final class WGPUCommandInterpreter {
         )
         let data = try command.requiredData("data")
         let size = try command.requiredExtent("size")
-        let bytesPerRow = command.int("bytesPerRow", default: size.width * target.format.bytesPerPixel)
-        let rowsPerImage = command.int("rowsPerImage", default: size.height)
+        let format = target.format
+        let bytesPerRow = command.int("bytesPerRow", default: format.bytesPerRow(width: size.width))
+        // 압축 포맷에서 행은 픽셀이 아니라 **블록** 단위로 센다 (명세 GPUTexelCopyBufferLayout).
+        let blockRows = format.blockRows(height: size.height)
+        let rowsPerImage = command.int("rowsPerImage", default: blockRows)
         guard size.width > 0, size.height > 0, size.depthOrArrayLayers > 0 else { return }   // no-op
-        let bytesPerImage = bytesPerRow * max(rowsPerImage, size.height)
+        try validateBlockAlignment(format: format, origin: try command.origin("origin"), size: size,
+                                   texture: target, mipLevel: command.int("mipLevel", default: 0),
+                                   label: "writeTexture")
+        let bytesPerImage = bytesPerRow * max(rowsPerImage, blockRows)
         let layers = max(size.depthOrArrayLayers, 1)
-        let required = bytesPerImage * (layers - 1) + bytesPerRow * size.height
+        let required = bytesPerImage * (layers - 1) + bytesPerRow * blockRows
         guard data.count >= required else {
             throw WGPUError.validation("writeTexture 데이터가 부족하다 (\(data.count)B, 최소 \(required)B 필요)")
         }
@@ -563,6 +569,38 @@ final class WGPUCommandInterpreter {
             rowsPerImage: rowsPerImage,
             blit: try activeBlitEncoder()
         )
+    }
+
+    /// 압축 텍스처 복사의 블록 정렬 (명세 "validating texel copy range").
+    ///
+    /// origin은 블록 경계에 있어야 하고, 크기는 블록 배수이거나 **밉 레벨의 끝에 닿아야** 한다
+    /// (가장자리 블록은 잘려 있으므로 예외다). 어기면 Metal이 단언으로 죽어서 여기서 먼저 막는다.
+    /// 비압축 포맷은 블록이 1×1이라 이 검사가 항상 통과한다.
+    private func validateBlockAlignment(
+        format: WGPUTextureFormat,
+        origin: WGPUOrigin3D,
+        size: WGPUExtent3D,
+        texture: WGPUTextureObject,
+        mipLevel: Int,
+        label: String
+    ) throws {
+        guard format.isCompressed else { return }
+        let (blockWidth, blockHeight) = format.blockSize
+        guard origin.x % blockWidth == 0, origin.y % blockHeight == 0 else {
+            throw WGPUError.validation(
+                "\(label): 압축 텍스처의 origin은 블록 경계여야 한다 "
+                + "(\(origin.x), \(origin.y)) / 블록 \(blockWidth)x\(blockHeight)"
+            )
+        }
+        let levelWidth = max(texture.size.width >> mipLevel, 1)
+        let levelHeight = max(texture.size.height >> mipLevel, 1)
+        guard size.width % blockWidth == 0 || origin.x + size.width == levelWidth,
+              size.height % blockHeight == 0 || origin.y + size.height == levelHeight else {
+            throw WGPUError.validation(
+                "\(label): 압축 텍스처의 복사 크기는 블록 배수이거나 밉 레벨 끝에 닿아야 한다 "
+                + "(\(size.width)x\(size.height) @ 레벨 \(mipLevel) 크기 \(levelWidth)x\(levelHeight))"
+            )
+        }
     }
 
     /// 풀에서 스테이징 버퍼를 받아 데이터를 채우고, 프레임 완료 시 회수 목록에 올린다.
@@ -1626,20 +1664,24 @@ final class WGPUCommandInterpreter {
         )
         let buffer = try unmappedBuffer(destinationReader, field: "buffer")
         let size = try command.requiredExtent("copySize")
-        let bytesPerRow = destinationReader.int("bytesPerRow", default: size.width * texture.format.bytesPerPixel)
+        let format = texture.format
+        let bytesPerRow = destinationReader.int("bytesPerRow", default: format.bytesPerRow(width: size.width))
         let origin = try sourceReader.origin("origin")
+        let mipLevel = sourceReader.int("mipLevel", default: 0)
+        try validateBlockAlignment(format: format, origin: origin, size: size,
+                                   texture: texture, mipLevel: mipLevel, label: "copyTextureToBuffer")
 
         let encoder = try activeBlitEncoder()
         encoder.copy(
             from: texture.texture,
             sourceSlice: origin.z,
-            sourceLevel: sourceReader.int("mipLevel", default: 0),
+            sourceLevel: mipLevel,
             sourceOrigin: MTLOrigin(x: origin.x, y: origin.y, z: 0),
             sourceSize: MTLSize(width: size.width, height: size.height, depth: 1),
             to: buffer.buffer,
             destinationOffset: destinationReader.int("offset", default: 0),
             destinationBytesPerRow: bytesPerRow,
-            destinationBytesPerImage: bytesPerRow * size.height
+            destinationBytesPerImage: bytesPerRow * format.blockRows(height: size.height)
         )
     }
 
@@ -1651,19 +1693,23 @@ final class WGPUCommandInterpreter {
             try destinationReader.requiredHandle("texture"), as: WGPUTextureObject.self, kind: "GPUTexture"
         )
         let size = try command.requiredExtent("copySize")
-        let bytesPerRow = sourceReader.int("bytesPerRow", default: size.width * texture.format.bytesPerPixel)
+        let format = texture.format
+        let bytesPerRow = sourceReader.int("bytesPerRow", default: format.bytesPerRow(width: size.width))
         let origin = try destinationReader.origin("origin")
+        let mipLevel = destinationReader.int("mipLevel", default: 0)
+        try validateBlockAlignment(format: format, origin: origin, size: size,
+                                   texture: texture, mipLevel: mipLevel, label: "copyBufferToTexture")
 
         let encoder = try activeBlitEncoder()
         encoder.copy(
             from: buffer.buffer,
             sourceOffset: sourceReader.int("offset", default: 0),
             sourceBytesPerRow: bytesPerRow,
-            sourceBytesPerImage: bytesPerRow * size.height,
+            sourceBytesPerImage: bytesPerRow * format.blockRows(height: size.height),
             sourceSize: MTLSize(width: size.width, height: size.height, depth: 1),
             to: texture.texture,
             destinationSlice: origin.z,
-            destinationLevel: destinationReader.int("mipLevel", default: 0),
+            destinationLevel: mipLevel,
             destinationOrigin: MTLOrigin(x: origin.x, y: origin.y, z: 0)
         )
     }
