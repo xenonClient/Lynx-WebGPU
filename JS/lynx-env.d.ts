@@ -93,6 +93,14 @@ interface WGPULoadAssetResult {
   errors?: WGPUErrorPayload[];
 }
 
+/** `createImageBitmap` 콜백이 받는 값 — 픽셀은 네이티브에 남고 크기만 온다. */
+interface WGPUDecodeImageResult {
+  ok?: boolean;
+  width: number;
+  height: number;
+  errors?: WGPUErrorPayload[];
+}
+
 /** `NativeModules.WebGPU` — 커맨드 스트림 입구. */
 interface WebGPUNativeModule {
   /** `present: false` = 프레임 중간의 내부 제출 — 드로어블 present·핸들 만료를 미룬다. */
@@ -107,6 +115,18 @@ interface WebGPUNativeModule {
   loadAsset(
     params: { name: string },
     callback: (result: WGPULoadAssetResult | undefined) => void
+  ): void;
+  decodeImage(
+    params: {
+      id: number;
+      data?: ArrayBuffer;
+      name?: string;
+      flipY?: boolean;
+      premultiplyAlpha?: boolean;
+      resizeWidth?: number;
+      resizeHeight?: number;
+    },
+    callback: (result: WGPUDecodeImageResult | undefined) => void
   ): void;
   startFrameLoop(params: { fps: number }): unknown;
   stopFrameLoop(): unknown;

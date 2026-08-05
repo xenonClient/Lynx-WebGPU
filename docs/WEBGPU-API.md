@@ -183,8 +183,86 @@ const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' 
 
 지원 포맷: 8/16/32비트 컬러 전 계열(`r8unorm` … `rgba32float`), `bgra8unorm(-srgb)`,
 팩된 32비트(`rgb10a2unorm` `rgb10a2uint` `rg11b10ufloat` `rgb9e5ufloat`),
-깊이/스텐실(`depth16unorm` `depth24plus` `depth32float` `stencil8` + `-stencil8` 조합).
-**블록 압축(BC/ETC/ASTC)은 미지원**이고, 16비트 unorm/snorm 6종은 명세에서도 선택 기능이다 (§8).
+깊이/스텐실(`depth16unorm` `depth24plus` `depth32float` `stencil8` + `-stencil8` 조합),
+**블록 압축 52종**(아래). 16비트 unorm/snorm 6종은 명세에서도 선택 기능이라 없다 (§8).
+
+#### 블록 압축 (BC · ETC2 · ASTC)
+
+셋 다 명세의 **선택 기능**이라 쓰기 전에 `adapter.features`를 확인한다. 기기가 못 하는 계열로
+텍스처를 만들면 검증 오류로 거부된다 — 그냥 넘기면 Metal이 프로세스를 죽이기 때문이다.
+
+| feature | 포맷 | Apple GPU |
+|---|---|---|
+| `texture-compression-astc` | `astc-4x4-unorm` … `astc-12x12-unorm-srgb` (28종) | 전 iOS 기기 + Apple Silicon Mac |
+| `texture-compression-etc2` | `etc2-rgb8unorm` … `eac-rg11snorm` (10종) | 전 iOS 기기 + Apple Silicon Mac |
+| `texture-compression-bc` | `bc1-rgba-unorm` … `bc7-rgba-unorm-srgb` (14종) | A14/M1 이상 (그리고 Intel·AMD Mac) |
+
+```js
+if (adapter.features.has('texture-compression-astc')) {
+  const texture = device.createTexture({
+    size: { width: 256, height: 256 }, format: 'astc-8x8-unorm',
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+  })
+  // bytesPerRow는 **블록** 단위다 — 256px / 8 = 32블록 × 16B. 생략하면 이 값이 기본이다.
+  device.queue.writeTexture({ texture }, blocks, { bytesPerRow: 32 * 16 }, { width: 256, height: 256 })
+}
+```
+
+지켜야 할 것 (전부 검증 오류로 돌려준다):
+
+- **행은 픽셀이 아니라 블록으로 센다.** `bytesPerRow` = `ceil(width / 블록너비) × 블록바이트`,
+  `rowsPerImage`도 **블록 행** 수다. 생략하면 이 식이 기본값이 된다.
+- **렌더 타깃·스토리지 텍스처가 될 수 없다** — GPU에 디코더는 있어도 인코더가 없다.
+  멀티샘플·3D도 안 된다.
+- 복사의 `origin`은 **블록 경계**여야 하고, 크기는 블록 배수이거나 **밉 레벨의 끝에 닿아야**
+  한다 (가장자리 블록은 잘려 있으므로 예외다).
+- 인코딩은 이 라이브러리가 하지 않는다. 이미 압축된 바이트를 올리는 통로다
+  (`loadAsset`으로 `.ktx2`/`.astc` 파일을 읽어 헤더를 벗기고 넘기면 된다).
+
+#### 이미지 파일에서 텍스처로 (`createImageBitmap`)
+
+PNG·JPEG·HEIC를 풀어 텍스처로 올린다. 웹의 `createImageBitmap()` +
+`queue.copyExternalImageToTexture()`와 같은 모양이고, 디코딩은 네이티브(ImageIO)가 한다.
+
+```js
+import { createImageBitmap, loadAsset } from './webgpu.js'
+
+const bitmap = await createImageBitmap(await loadAsset('photo.jpg'))
+// 애셋 이름을 바로 줘도 된다 — 바이트가 JS를 거치지 않는다.
+// const bitmap = await createImageBitmap('photo.jpg')
+
+const texture = device.createTexture({
+  size: [bitmap.width, bitmap.height], format: 'rgba8unorm',
+  usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+})
+device.queue.copyExternalImageToTexture({ source: bitmap }, { texture },
+  [bitmap.width, bitmap.height])
+bitmap.close()   // 네이티브 픽셀을 놓아 준다
+```
+
+> **픽셀은 네이티브에 남는다.** 브리지를 건너는 것은 핸들과 크기뿐이라, 4K 사진도
+> `ArrayBuffer`로 실어 나르지 않는다. JS에서 PNG를 손으로 푸는 것보다 훨씬 빠르고
+> HEIC처럼 JS 디코더가 없는 형식도 열린다.
+
+`createImageBitmap(source, options)`:
+
+| 옵션 | 뜻 |
+|---|---|
+| `flipY` | 위아래를 뒤집는다. 기본은 웹과 같은 좌상단 기준이다 |
+| `premultiplyAlpha` | `'premultiply'`면 색에 알파를 곱해 둔다. 기본(`'none'`)은 곱하지 않은 값 — 다만 디코딩 자체가 곱해진 값을 거치므로 **반투명 영역은 완전히 복원되지 않는다** |
+| `resizeWidth` / `resizeHeight` | 둘 다 주면 그 크기로 그린다 |
+
+소스는 `ArrayBuffer`/`TypedArray`(이미지 파일 바이트) 또는 **애셋 이름 문자열**이다.
+문자열을 주면 `loadAsset`과 같은 규칙으로 호스트가 해석한다 (`WGPUAssetProvider`).
+
+`copyExternalImageToTexture(source, destination, copySize)`:
+
+- `source`: `{ source: bitmap, origin?: {x, y} }` — 이미지의 일부만 잘라 올릴 수 있다.
+- `destination`: `{ texture, mipLevel?, origin? }`.
+- 대상은 **4바이트 컬러 포맷**이어야 한다 (`rgba8unorm` `bgra8unorm` `rgba8unorm-srgb` …).
+  디코딩 결과가 RGBA8이므로, 그 밖은 조용히 어긋나느니 검증 오류로 거부한다.
+  압축 텍스처도 같은 이유로 안 된다 — GPU에는 블록 인코더가 없다.
+- `copySize`를 생략하면 `origin`부터 이미지 끝까지다.
 
 > `rgb9e5ufloat`는 채널마다 가수 9비트 + 공통 지수 5비트를 쓰는 공유 지수 HDR 포맷이다 —
 > `rgba16float`의 **절반 크기로 같은 동적 범위**를 담으므로 읽기 전용 HDR 소스(환경맵 등)에 맞다.
@@ -600,11 +678,9 @@ if (error) fallBackToSimplePipeline()
 
 | 기능 | 왜 없나 |
 |---|---|
-| 블록 압축 텍스처 (BC/ETC/ASTC) | **보류** — 렌더 타깃도 스토리지 텍스처도 될 수 없어 편집 파이프라인에 끼울 수 없다. 읽기 전용 에셋이 많아지면 다시 본다 (`docs/ROADMAP.md`) |
-| `GPUExternalTexture` (`importExternalTexture`) | Lynx에 비디오 엘리먼트 핸들이 없다. 다만 WGSL `texture_external` + `textureSampleBaseClampToEdge`는 **지원**하므로, 프레임을 텍스처로 올려 그 자리에 `GPUTextureView`를 묶으면 된다 |
+| `GPUExternalTexture` (`importExternalTexture`) | Lynx에 **비디오** 엘리먼트 핸들이 없다. 다만 WGSL `texture_external` + `textureSampleBaseClampToEdge`는 **지원**하므로, 프레임을 텍스처로 올려 그 자리에 `GPUTextureView`를 묶으면 된다. 정지 이미지는 `createImageBitmap()`이 그 길이다 (§3) |
 | `writeTimestamp` | Metal은 패스 경계에서만 카운터를 샘플링한다 — `timestampWrites`(§6)를 쓸 것 |
 | `device.lost`의 **유실 통지** | iOS/macOS에는 디바이스 손실에 해당하는 사건이 사실상 없다. **속성 자체는 있다** — 웹 코드(`Three.js WebGPUBackend.init()` 등)가 `device.lost.then(...)`을 걸어도 TypeError가 나지 않도록 영원히 pending인 Promise를 준다. **GPU 실행 자체의 실패**(`.outOfMemory`·`.timeout` 등)는 다음 `submit()` 응답에 `backend` 오류로 실려 나온다 |
-| `queue.copyExternalImageToTexture` | `importExternalTexture`와 같은 이유 — Lynx에는 `ImageBitmap`·`HTMLCanvasElement` 같은 DOM 이미지 핸들이 없다. 픽셀을 `ArrayBuffer`로 얻어 `writeTexture`로 올릴 것 (`loadAsset`이 그 통로다) |
 | `setBindGroup`의 `Uint32Array` 오버로드 | 동적 오프셋을 `(data, start, length)`로 넘기는 형태. 배열 형태(`setBindGroup(i, group, [o1, o2])`)와 결과가 같고, 브리지를 건널 때 어차피 배열로 펴진다 — 두 경로를 두면 검증만 두 배가 된다 |
 | `GPURenderPassColorAttachment.depthSlice` | 3D 텍스처의 한 슬라이스를 렌더 타깃으로 삼는 값. 지금은 **읽지 않으므로 항상 0번 슬라이스**에 그린다. 3D 렌더 타깃을 쓰게 되면 그때 넣는다 (2D 배열은 `baseArrayLayer`로 이미 된다) |
 | `GPURenderPassDescriptor.maxDrawCount` | 드라이버에 주는 검증 힌트다. 무시해도 그림은 같고, 넘겼을 때의 거부는 명세상 선택이다 |
@@ -625,7 +701,6 @@ if (error) fallBackToSimplePipeline()
 | `bgra8unorm-storage` | `bgra8unorm`에 `STORAGE_BINDING`. 이미지 처리에서 쓸 만해 우선순위가 있는 편이다 |
 | `dual-source-blending` · `clip-distances` · `subgroups` · `subgroup-size-control` · `primitive-index` · `texture-component-swizzle` | WGSL 확장이 함께 필요하다 (`@blend_src`, `clip_distances`, 서브그룹 내장 함수 …). 트랜스파일러 작업이 붙으므로 실사용 요구가 생길 때 본다 |
 | `rg11b10ufloat-renderable` | `rg11b10ufloat`을 렌더 타깃으로. 포맷 자체는 지원한다 |
-| `texture-compression-*` | 위 블록 압축 항목과 같다 |
 
 ### 기기에 따라 갈리는 것
 
@@ -635,5 +710,6 @@ if (error) fallBackToSimplePipeline()
 | **간접 드로우·디스패치 자체** | Metal이 **Apple GPU family 3 이상**을 요구한다. 실기기는 iOS 17 최소 사양(A12 = family 5)이라 **항상 지원**하지만, **iOS 시뮬레이터는 family 2로 보고해 빠진다.** 지원하지 않으면 `unsupported` 오류로 거부하고 `adapter.features`의 `indirect-first-instance`도 감춘다 — 그대로 Metal에 넘기면 `MTLValidateFeatureSupport … failed assertion`으로 **프로세스가 죽는다** |
 | 간접 드로우의 `firstInstance ≠ 0` | 지원 기기에서는 항상 되고 `adapter.features`에도 `indirect-first-instance`로 보고된다. **브라우저에서는 기능을 요청해야** 한다 (§6) |
 | 캔버스 EDR 출력 (`toneMapping: 'extended'`) | 실기기 디스플레이 기능 — 시뮬레이터에서는 확인되지 않는다 (§2) |
+| 블록 압축 텍스처 | `texture-compression-astc` / `-etc2` / `-bc`. iOS 기기는 ASTC·ETC2를 항상 하고 BC는 A14부터, Intel Mac은 그 반대다 (§3) |
 
 새 명령을 추가하는 절차는 `.claude/skills/webgpu-command/SKILL.md` 참고.

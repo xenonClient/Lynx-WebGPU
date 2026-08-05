@@ -194,6 +194,14 @@ function nativeModule() {
  * 동기 네이티브 왕복이 생기지 않는다. 동기 조회(`canvasInfo`)는 캐시가 비어 있을 때
  * (= `configure` 직후 첫 조회) 한 번만 일어난다.
  */
+/**
+ * 마지막으로 만든 디바이스의 레코더 — 전역 함수인 `createImageBitmap()`이 핸들을 발급받고
+ * `close()`를 기록하는 곳이다. 핸들 공간은 네이티브 레지스트리 하나를 공유하므로
+ * **디바이스의 레코더와 같은 것을 써야** 번호가 겹치지 않는다.
+ * @type {Recorder | null}
+ */
+let activeRecorder = null;
+
 const canvasSizeCache = new Map();
 
 /**
@@ -1470,6 +1478,34 @@ class GPUQueue {
   }
 
   /**
+   * 디코딩해 둔 이미지(`createImageBitmap`)를 텍스처로 올린다.
+   *
+   * 웹에서는 `<img>`·`<canvas>`·`VideoFrame`도 소스가 되지만 Lynx에는 그런 엘리먼트가
+   * 없다 — `GPUImageBitmap`이 그 자리다. 픽셀은 네이티브에 남아 있으므로 **브리지를
+   * 건너는 것은 핸들 하나뿐**이다 (`writeTexture`로 올리면 이미지 전체가 오간다).
+   *
+   * `flipY`·`premultiplyAlpha`는 디코딩 시점 옵션이라 `createImageBitmap` 쪽에 있다.
+   *
+   * @param {{source: GPUImageBitmap, origin?: GPUOrigin3DDict, flipY?: boolean}} source
+   * @param {{texture: GPUTexture, mipLevel?: number, origin?: GPUOrigin3DDict,
+   *          premultipliedAlpha?: boolean, colorSpace?: string}} destination
+   * @param {GPUExtent3D} [copySize] 생략하면 이미지 전체
+   * @returns {void}
+   */
+  copyExternalImageToTexture(source, destination, copySize) {
+    this._recorder.push({
+      op: 'copyExternalImageToTexture',
+      source: { source: source.source.id, origin: source.origin },
+      destination: {
+        texture: destination.texture.id,
+        mipLevel: destination.mipLevel || 0,
+        origin: destination.origin,
+      },
+      copySize,
+    });
+  }
+
+  /**
    * 인코더가 모은 명령을 스트림에 합쳐 **한 번에** 네이티브로 보낸다.
    * @param {GPUCommandBuffer[]} commandBuffers
    * @returns {WGPUExecuteResult}
@@ -1524,6 +1560,8 @@ class GPUDevice {
     /** @type {((event: {type: string, error: GPUError}) => void)[]} */
     this._uncapturedListeners = [];
     this._recorder = new Recorder();
+    // 전역 `createImageBitmap()`이 쓸 레코더. 디바이스 없이는 핸들을 발급할 수 없다.
+    activeRecorder = this._recorder;
     this._recorder.uncapturedDispatch = (error) => this._dispatchUncaptured(error);
     this.queue = new GPUQueue(this);
   }
@@ -2268,7 +2306,91 @@ export async function loadAsset(name) {
   return result.data;
 }
 
+/**
+ * 디코딩이 끝난 이미지 — 명세 `ImageBitmap`의 자리다.
+ *
+ * 픽셀은 **네이티브에 남는다.** JS가 아는 것은 핸들과 크기뿐이라, 큰 이미지를 다뤄도
+ * 브리지를 건너는 데이터가 없다.
+ */
+class GPUImageBitmap {
+  /**
+   * @param {number} id
+   * @param {number} width
+   * @param {number} height
+   * @param {Recorder | null} recorder
+   */
+  constructor(id, width, height, recorder) {
+    this.id = id;
+    this.width = width;
+    this.height = height;
+    this._recorder = recorder;
+    this._closed = false;
+  }
+
+  /** 네이티브 픽셀을 버린다 (명세 `ImageBitmap.close()`). */
+  close() {
+    if (this._closed) return;
+    this._closed = true;
+    if (this._recorder) this._recorder.push({ op: 'destroy', id: this.id });
+  }
+}
+
+/**
+ * 인코딩된 이미지(PNG·JPEG·HEIC …)를 풀어 텍스처로 올릴 준비를 한다 — 웹의
+ * `createImageBitmap()` 자리다.
+ *
+ * 디코딩은 네이티브(ImageIO)가 한다. JS에서 PNG를 손으로 푸는 것보다 훨씬 빠르고,
+ * HEIC처럼 JS 디코더가 없는 형식도 열린다.
+ *
+ * ```js
+ * const bitmap = await createImageBitmap(await loadAsset('photo.jpg'))
+ * const texture = device.createTexture({
+ *   size: [bitmap.width, bitmap.height], format: 'rgba8unorm',
+ *   usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+ * })
+ * device.queue.copyExternalImageToTexture({ source: bitmap }, { texture },
+ *   [bitmap.width, bitmap.height])
+ * bitmap.close()
+ * ```
+ *
+ * @param {ArrayBuffer | ArrayBufferView | string} source 이미지 바이트, 또는 애셋 이름
+ * @param {{flipY?: boolean, premultiplyAlpha?: 'none' | 'premultiply' | 'default',
+ *          resizeWidth?: number, resizeHeight?: number}} [options]
+ * @returns {Promise<GPUImageBitmap>}
+ */
+export async function createImageBitmap(source, options) {
+  const settings = options || {};
+  if (!activeRecorder) {
+    throw new Error('createImageBitmap은 디바이스가 만들어진 뒤에만 쓸 수 있다 (requestDevice를 먼저 부를 것)');
+  }
+  const recorder = activeRecorder;
+  const id = recorder.allocate();
+  /** @type {{id: number, data?: ArrayBuffer, name?: string, flipY: boolean,
+   *   premultiplyAlpha: boolean, resizeWidth?: number, resizeHeight?: number}} */
+  const params = {
+    id,
+    flipY: !!settings.flipY,
+    premultiplyAlpha: settings.premultiplyAlpha === 'premultiply',
+    resizeWidth: settings.resizeWidth,
+    resizeHeight: settings.resizeHeight,
+  };
+  if (typeof source === 'string') params.name = source;
+  else params.data = toArrayBuffer(source);
+
+  const result = await /** @type {Promise<WGPUDecodeImageResult | undefined>} */ (
+    new Promise((resolve) => {
+      nativeModule().decodeImage(params, resolve);
+    })
+  );
+  if (!result || result.ok === false) {
+    const errors = (result && result.errors) || [];
+    throw new Error(errors.length ? errors[0].message : '이미지를 디코딩하지 못했다');
+  }
+  return new GPUImageBitmap(id, result.width, result.height, recorder);
+}
+
 export {
+  GPUImageBitmap,
   GPUBuffer, GPUTexture, GPUTextureView, GPUSampler, GPUDevice, GPUCanvasContext,
   GPURenderBundle, GPURenderBundleEncoder, GPUQuerySet,
   // `uncapturederror`가 실어 나르는 오류 — `instanceof`로 종류를 가를 때 쓴다.

@@ -110,6 +110,56 @@ public final class LynxWebGPUContext {
     /// 버퍼 내용을 읽는다 (`GPUBuffer.mapAsync` + `getMappedRange`에 해당).
     ///
     /// 직전에 제출한 GPU 작업이 끝난 뒤에 읽어야 하므로 비동기다.
+    /// 인코딩된 이미지를 풀어 `ImageBitmap` 자리의 객체로 등록한다 (JS `createImageBitmap`).
+    ///
+    /// **핸들은 JS가 발급한다** — 커맨드 스트림과 같은 규칙이다. 디코딩은 느리므로
+    /// 백그라운드 큐에서 하고, 등록만 실행 락 안에서 한다.
+    ///
+    /// - Parameter data: 이미지 바이트. nil이면 `name`을 애셋 공급자로 해석한다.
+    /// - Parameter callback: `{"ok": true, "width": Int, "height": Int}` 또는 오류 페이로드.
+    public func decodeImage(
+        handle: Int,
+        data: Data?,
+        name: String?,
+        options: WGPUImageDecoder.Options,
+        provider: WGPUAssetProvider?,
+        completion: @escaping ([String: Any]) -> Void
+    ) {
+        let fail = { (error: WGPUError) in completion(["ok": false, "errors": [error.payload]]) }
+        let finish = { [weak self] (bytes: Data) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let bitmap = try WGPUImageDecoder.decode(bytes, options: options)
+                    guard let self else { return }
+                    self.executionLock.lock()
+                    self.registry.insert(bitmap, at: WGPUHandle(handle))
+                    self.executionLock.unlock()
+                    completion(["ok": true, "width": bitmap.width, "height": bitmap.height])
+                } catch let error as WGPUError {
+                    fail(error)
+                } catch {
+                    fail(WGPUError.backend("\(error)"))
+                }
+            }
+        }
+
+        if let data {
+            finish(data)
+        } else if let name {
+            guard let provider else {
+                return fail(WGPUError.validation("애셋 공급자가 없다 — 이미지 바이트를 직접 넘길 것"))
+            }
+            provider.loadAsset(named: name) { result in
+                switch result {
+                case .success(let bytes): finish(bytes)
+                case .failure(let error): fail(error)
+                }
+            }
+        } else {
+            fail(WGPUError.validation("createImageBitmap에는 이미지 바이트나 애셋 이름이 필요하다"))
+        }
+    }
+
     public func readBuffer(
         handle: Int,
         offset: Int = 0,

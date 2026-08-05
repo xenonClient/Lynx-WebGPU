@@ -12,8 +12,13 @@ final class CompressedTextureTests: XCTestCase {
     var harness: RenderHarness!
 
     override func setUpWithError() throws {
-        try XCTSkipIf(RenderHarness.make() == nil, "Metal을 쓸 수 없는 환경")
-        harness = RenderHarness.make()
+        try XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, "Metal 디바이스 없음")
+        harness = try XCTUnwrap(RenderHarness.make())
+    }
+
+    override func tearDown() {
+        harness = nil
+        super.tearDown()
     }
 
     /// 상수 색 블록을 그대로 화면에 펼치는 최소 셰이더.

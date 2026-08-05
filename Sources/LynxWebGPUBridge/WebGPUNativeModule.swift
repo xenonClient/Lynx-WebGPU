@@ -25,6 +25,7 @@ public final class WebGPUNativeModule: NSObject, LynxModule {
             "canvasInfo": NSStringFromSelector(#selector(canvasInfo(_:))),
             "readBuffer": NSStringFromSelector(#selector(readBuffer(_:callback:))),
             "loadAsset": NSStringFromSelector(#selector(loadAsset(_:callback:))),
+            "decodeImage": NSStringFromSelector(#selector(decodeImage(_:callback:))),
             "startFrameLoop": NSStringFromSelector(#selector(startFrameLoop(_:))),
             "stopFrameLoop": NSStringFromSelector(#selector(stopFrameLoop)),
             "reset": NSStringFromSelector(#selector(reset)),
@@ -126,6 +127,43 @@ public final class WebGPUNativeModule: NSObject, LynxModule {
             return
         }
         WGPUAssetLoading.load(params, provider: host.assetProvider, callback: callback)
+    }
+
+    /// 인코딩된 이미지를 풀어 `ImageBitmap` 자리의 객체로 등록한다 (JS `createImageBitmap`).
+    ///
+    /// 브라우저의 `createImageBitmap()`이 하던 일이다. Lynx에는 `<img>`도 `ImageBitmap`도
+    /// 없으므로 ImageIO로 대신한다 — PNG·JPEG·HEIC를 JS에서 손으로 푸는 것보다 훨씬 빠르고,
+    /// 픽셀이 네이티브에 남아 **브리지를 한 번도 건너지 않는다.**
+    ///
+    /// - Parameter params: `{"id": Int, "data"?: ArrayBuffer, "name"?: String,
+    ///   "flipY"?: Bool, "premultiplyAlpha"?: Bool, "resizeWidth"?: Int, "resizeHeight"?: Int}`
+    /// - Returns: 콜백으로 `{"ok": true, "width": Int, "height": Int}`.
+    public func decodeImage(_ params: [String: Any], callback: @escaping LynxCallbackBlock) {
+        guard let host else {
+            callback(Self.unavailable)
+            return
+        }
+        guard let handle = (params["id"] as? NSNumber)?.intValue else {
+            callback(["ok": false, "errors": [WGPUError.validation("createImageBitmap에는 id가 필요하다").payload]])
+            return
+        }
+        var resize: (width: Int, height: Int)?
+        if let width = (params["resizeWidth"] as? NSNumber)?.intValue,
+           let height = (params["resizeHeight"] as? NSNumber)?.intValue {
+            resize = (width, height)
+        }
+        host.context.decodeImage(
+            handle: handle,
+            data: WGPUValueReader(params).data("data"),
+            name: params["name"] as? String,
+            options: WGPUImageDecoder.Options(
+                flipY: (params["flipY"] as? NSNumber)?.boolValue ?? false,
+                premultiplyAlpha: (params["premultiplyAlpha"] as? NSNumber)?.boolValue ?? false,
+                resize: resize
+            ),
+            provider: host.assetProvider,
+            completion: callback
+        )
     }
 
     // MARK: - 프레임 루프

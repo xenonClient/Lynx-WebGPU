@@ -407,6 +407,7 @@ final class WGPUCommandInterpreter {
         case "unmapBuffer": try unmapBuffer(command)
         case "createTexture": try createTexture(command)
         case "writeTexture": try writeTexture(command)
+        case "copyExternalImageToTexture": try copyExternalImageToTexture(command)
         case "createTextureView": try createTextureView(command)
         case "createSampler": try createSampler(command)
         case "createShaderModule": try createShaderModule(command)
@@ -567,6 +568,76 @@ final class WGPUCommandInterpreter {
             mipLevel: command.int("mipLevel", default: 0),
             bytesPerRow: bytesPerRow,
             rowsPerImage: rowsPerImage,
+            blit: try activeBlitEncoder()
+        )
+    }
+
+    /// 디코딩해 둔 이미지(`ImageBitmap`)를 텍스처로 올린다 — 명세
+    /// `queue.copyExternalImageToTexture()`.
+    ///
+    /// 웹에서는 브라우저가 `<img>`·`<canvas>`·`VideoFrame`을 소스로 받는다. Lynx에는 그런
+    /// 엘리먼트가 없으므로 **`createImageBitmap()`이 만든 네이티브 이미지**가 그 자리다.
+    /// 픽셀은 이미 RGBA8이라 여기서는 잘라내고 스테이징에 실어 blit하는 일만 한다.
+    private func copyExternalImageToTexture(_ command: WGPUValueReader) throws {
+        let sourceReader = try command.requiredObject("source")
+        let destinationReader = try command.requiredObject("destination")
+        let bitmap = try registry.lookup(
+            try sourceReader.requiredHandle("source"), as: WGPUImageBitmapObject.self, kind: "ImageBitmap"
+        )
+        let target = try registry.lookup(
+            try destinationReader.requiredHandle("texture"), as: WGPUTextureObject.self, kind: "GPUTexture"
+        )
+        guard !target.format.isCompressed else {
+            throw WGPUError.validation(
+                "copyExternalImageToTexture는 압축 텍스처에 쓸 수 없다 (\(target.format.rawValue)) "
+                + "— GPU에는 블록 인코더가 없다"
+            )
+        }
+        // 명세는 소스와 대상의 바이트 폭이 같기를 요구한다. 디코딩 결과가 RGBA8이므로
+        // 4바이트 포맷만 받는다 — 그 밖은 화면이 조용히 어긋나느니 여기서 막는 편이 낫다.
+        guard target.format.bytesPerBlock == 4, !target.format.rawValue.hasPrefix("depth"),
+              !target.format.rawValue.hasPrefix("stencil") else {
+            throw WGPUError.validation(
+                "copyExternalImageToTexture의 대상은 4바이트 컬러 포맷이어야 한다 "
+                + "(\(target.format.rawValue)) — 그 밖은 writeTexture로 직접 올릴 것"
+            )
+        }
+
+        let sourceOrigin = try sourceReader.origin("origin")
+        let size = command.extent("copySize")
+            ?? WGPUExtent3D(width: bitmap.width - sourceOrigin.x, height: bitmap.height - sourceOrigin.y)
+        guard size.width > 0, size.height > 0 else { return }   // no-op
+        guard sourceOrigin.x + size.width <= bitmap.width,
+              sourceOrigin.y + size.height <= bitmap.height else {
+            throw WGPUError.validation(
+                "복사 영역이 이미지를 넘는다 — (\(sourceOrigin.x), \(sourceOrigin.y)) + "
+                + "\(size.width)x\(size.height) > \(bitmap.width)x\(bitmap.height)"
+            )
+        }
+
+        // 필요한 만큼만 잘라 스테이징에 싣는다. 전체 폭을 그대로 쓰면 부분 복사에서
+        // bytesPerRow가 맞지 않는다.
+        let rowBytes = size.width * 4
+        var slice = Data(count: rowBytes * size.height)
+        bitmap.pixels.withUnsafeBytes { source in
+            slice.withUnsafeMutableBytes { destination in
+                guard let sourceBase = source.baseAddress,
+                      let destinationBase = destination.baseAddress else { return }
+                for row in 0..<size.height {
+                    let from = (sourceOrigin.y + row) * bitmap.bytesPerRow + sourceOrigin.x * 4
+                    memcpy(destinationBase + row * rowBytes, sourceBase + from, rowBytes)
+                }
+            }
+        }
+
+        let staging = try makeStagingBuffer(slice)
+        target.encodeWrite(
+            from: staging,
+            origin: try destinationReader.origin("origin"),
+            size: WGPUExtent3D(width: size.width, height: size.height),
+            mipLevel: destinationReader.int("mipLevel", default: 0),
+            bytesPerRow: rowBytes,
+            rowsPerImage: size.height,
             blit: try activeBlitEncoder()
         )
     }

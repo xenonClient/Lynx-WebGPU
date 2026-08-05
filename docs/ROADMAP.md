@@ -9,7 +9,6 @@ Lynx 앱 안의 **이미지 에디터·필터**지 3D 렌더러가 아니다. �
 | 1 | 웹 라이브러리 이식 갭 (§1) | 중 | **표면은 다 메웠다** — 남은 것은 상위 기능 검증(섀도맵·포스트프로세싱·TSL)과 실기기 확인 |
 | 2 | 이미지 처리 경로 다듬기 (§2) | 소~중 | limits 노출 · 색공간 · 큰 이미지 업로드 |
 | 3 | 트랜스파일러 코퍼스 (§3) | — | **숙제 없음** — 92%, 남은 1건은 호스트 생성 코드가 필요한 셰이더다 |
-| — | 압축 텍스처 (ASTC · ETC2 · BC) | 대 | **보류** — 편집 파이프라인에 끼울 수 없다 (아래) |
 
 ### 이미 된 것
 
@@ -24,6 +23,7 @@ Lynx 앱 안의 **이미지 에디터·필터**지 3D 렌더러가 아니다. �
 | 쿼리셋 (occlusion · 타임스탬프 · `resolveQuerySet`) | `QuerySetTests`. 타임스탬프는 `adapter.features`로 기기 확인 |
 | read-only 깊이/스텐실 어태치먼트 | `StencilTests`. 선언만 받는 것이 아니라 **강제**한다 |
 | 버퍼 매핑 상태 (`mapAsync` ~ `unmap`) | `CommandInterpreterTests`. 매핑 중 큐 작업 거부 — 리드백 경쟁을 없앤다 |
+| 블록 압축 텍스처 (BC · ETC2 · ASTC 52종) | `CompressedTextureTests` + `WGPUCompressedFormatTests`. 손으로 인코딩한 블록으로 픽셀 단언까지 |
 
 공통 절차는 `.claude/skills/webgpu-command/SKILL.md`(새 op 추가)와
 `.claude/skills/wgsl-feature/SKILL.md`(셰이더 문법 — §3만 해당)를 따른다.
@@ -83,91 +83,43 @@ Three.js `WebGPURenderer`를 실제로 올려 보며(데모 `three` 씬) 드러�
 
 ---
 
-## (보류) 압축 텍스처 (ASTC · ETC2 · BC)
+## (완료) 블록 압축 텍스처 (BC · ETC2 · ASTC)
 
-> **왜 보류인가.** 블록 압축은 손실 압축인 데다 **렌더 타깃도 스토리지 텍스처도 될 수 없다** —
-> GPU에 디코더는 있어도 인코더가 없기 때문이다. 이미지 에디터의 핵심 루프는 "텍스처를 읽어
-> 필터를 걸고 다시 텍스처에 쓰기"인데 그 출력이 압축 포맷일 수 없고, 편집을 왕복할 때마다
-> 세대 손실이 쌓인다. 품질이 훨씬 나은 BC7·ASTC라도 이 제약은 같으므로 **화질 문제가 아니라
-> 구조 문제**다.
->
-> 읽기 전용 에셋(스티커·브러시 소재)이 수백 장 들어가게 되면 그때 다시 본다. 그건 에셋 로딩
-> 문제지 편집 파이프라인 문제가 아니다. 아래 설계는 그때를 위해 남겨 둔다.
+> 처음에는 보류였다. **렌더 타깃도 스토리지 텍스처도 될 수 없어** 이미지 에디터의 편집 루프
+> ("텍스처를 읽어 필터를 걸고 다시 텍스처에 쓰기")에 끼울 수 없기 때문이다. 지금도 그 판단은
+> 같다 — 압축 텍스처는 **읽기 전용 에셋의 통로**지 편집 대상이 아니다. 스티커·브러시 소재처럼
+> 안 바뀌는 이미지가 늘면 메모리에서 4~8배가 갈리므로 그쪽 용도로 열었다.
 
-### 목표
+구현된 것 (`docs/WEBGPU-API.md` §3):
 
-`createTexture` + `queue.writeTexture` + `copyBufferToTexture`로 블록 압축 텍스처를 만들고
-채우고 샘플링할 수 있다. WebGPU 명세의 세 feature에 대응한다:
+- 포맷 52종 (BC 14 · ETC2/EAC 10 · ASTC 28). raw value는 명세 철자 그대로다.
+- `WGPUTextureFormat`의 블록 메타데이터 — `blockSize` · `bytesPerBlock` ·
+  `bytesPerRow(width:)` · `blockRows(height:)`. 비압축은 (1,1)/`bytesPerPixel`이라
+  기존 경로가 그대로 통과한다.
+- `writeTexture` / `copyBufferToTexture` / `copyTextureToBuffer`의 기본값과 검증이 블록 단위.
+- `adapter.features`에 세 계열을 실제 디바이스 능력으로 광고하고, 없는 계열은
+  `createTexture`에서 검증 오류로 막는다 (그냥 넘기면 Metal이 프로세스를 죽인다).
+- 렌더 타깃·스토리지·멀티샘플·3D 사용과 블록 경계를 벗어난 복사도 같은 이유로 미리 막는다.
 
-| WebGPU feature | 포맷 수 | Apple GPU 지원 |
-|---|---|---|
-| `texture-compression-astc` | 28 (`astc-4x4-unorm` … `astc-12x12-unorm-srgb`) | 전 iOS 기기 + Apple Silicon Mac |
-| `texture-compression-etc2` | 10 (`etc2-rgb8unorm` … `eac-rg11snorm`) | 전 iOS 기기 + Apple Silicon Mac |
-| `texture-compression-bc` | 14 (`bc1-rgba-unorm` … `bc7-rgba-unorm-srgb`) | `device.supportsBCTextureCompression`인 기기만 |
+인코더는 넣지 않았다 — 이미 압축된 바이트를 올리는 통로만 제공한다.
 
-ASTC를 1순위로 한다 — iOS에서 보편이고 압축률 선택 폭이 가장 넓다. ETC2는 매핑만 추가하면
-같은 경로를 타므로 동반 구현하고, BC는 지원 기기에서만 켠다 (Intel Mac 개발 루프는 BC만 가능).
+---
 
-### 바꿀 곳 (계층 순)
+## (완료) 외부 이미지 → 텍스처 (`createImageBitmap`)
 
-**LynxWebGPUCore — 포맷 메타데이터가 핵심 작업이다**
+미지원 목록에 "Lynx에는 `ImageBitmap`·`HTMLCanvasElement` 같은 DOM 이미지 핸들이 없다"고
+적혀 있던 자리다. 핸들이 없다는 것은 맞지만, **디코딩을 네이티브가 하면 웹과 같은 모양이
+그대로 선다** — 오히려 픽셀이 브리지를 건너지 않아 웹보다 낫다.
 
-- `WGPUEnums.swift`의 `WGPUTextureFormat`에 케이스 52종 추가. **raw value는 명세 철자 그대로**
-  (`"astc-4x4-unorm"` 등 — 바꾸면 JS가 깨진다).
-- `bytesPerPixel`(주석부터 "블록 압축 포맷은 지원하지 않으므로"라고 못 박고 있다)을
-  **블록 메타데이터로 일반화**한다:
-  ```swift
-  var blockSize: (width: Int, height: Int)   // 비압축은 (1, 1)
-  var bytesPerBlock: Int                     // 비압축은 bytesPerPixel과 같다
-  ```
-  `bytesPerPixel`을 그대로 두고 압축 포맷에서 호출하면 잘못된 값이 조용히 퍼지므로,
-  **비압축 전제인 호출처를 전수 수정**한다. 현재 호출처는 세 곳:
-  `WGPUCommandInterpreter.writeTexture` / `copyTextureToBuffer` / `copyBufferToTexture`의
-  기본 `bytesPerRow` 계산.
+- `WGPUImageDecoder` — ImageIO로 PNG·JPEG·HEIC를 RGBA8로 푼다.
+  `flipY` · `premultiplyAlpha` · `resizeWidth/Height`.
+- `NativeModules.WebGPU.decodeImage` — JS가 발급한 핸들에 등록하고 크기만 돌려준다.
+  디코딩은 백그라운드 큐에서 한다.
+- `copyExternalImageToTexture` op — 부분 복사(`origin`·`copySize`)와 밉 레벨 지정까지.
+- JS `createImageBitmap()` / `GPUImageBitmap.close()` / `queue.copyExternalImageToTexture()`.
 
-**LynxWebGPU**
-
-- `WGPUMetalMapping.pixelFormat` — `MTLPixelFormat.astc_4x4_ldr`/`_srgb`, `.etc2_rgb8`,
-  `.eac_r11Unorm`, `.bc1_rgba` … 매핑 추가. sRGB 변형 주의.
-- `WGPUCommandInterpreter.writeTexture` — 기본/검증 로직을 블록 단위로:
-  - 기본 `bytesPerRow` = `ceil(width / blockWidth) × bytesPerBlock`
-  - `rowsPerImage`·데이터 부족 검증도 **블록 행** 기준 (`ceil(height / blockHeight)`)
-  - `WGPUTextureObject.encodeWrite`는 바이트 단위 파라미터를 그대로 받으므로 수정 불필요 —
-    Metal blit의 `sourceBytesPerRow`는 원래 블록 행의 바이트 수다.
-- `copyBufferToTexture` / `copyTextureToBuffer` — 같은 블록 단위 계산.
-- 압축 포맷 + `RENDER_ATTACHMENT`/`STORAGE_BINDING` usage는 Metal이 거부한다 —
-  프로젝트 방침(검증은 Metal에 맡긴다)대로 두되, `createTexture`에서 디바이스가 포맷을
-  지원하지 않으면 **명확한 `unsupported` 오류**를 낸다 (BC 미지원 기기, Intel Mac의 ASTC).
-- `LynxWebGPUContext.adapterInfo()` — `features: ["texture-compression-astc", …]` 배열을
-  실제 디바이스 지원(`supportsFamily(.apple2)`, `supportsBCTextureCompression`)으로 채운다.
-
-**JS shim**
-
-- `GPUAdapter`에 `features`(Set 흉내 — `has(name)` 메서드면 충분)를 추가해 웹과 같은
-  분기(`adapter.features.has('texture-compression-astc')`)가 동작하게 한다.
-- 포맷은 문자열 그대로 지나가므로 그 외 변경 없음. `webgpu.d.ts`에 feature 타입 추가.
-
-### 테스트 (필수)
-
-- **ASTC void-extent 블록을 손으로 만들어 픽셀로 단언한다.** void-extent는 16바이트로
-  단색을 인코딩하는 ASTC 블록이라 외부 인코더 없이 결정적 테스트가 된다:
-  `writeTexture(astc-4x4-unorm, 단색 블록)` → 풀스크린 샘플 → `assertPixel`.
-- 포맷 메타데이터 표 단위 테스트 — 블록 크기·bytesPerBlock을 명세 표와 대조 (Core, GPU 불필요).
-- `copyBufferToTexture`의 블록 정렬 `bytesPerRow` 기본값 테스트.
-- 8×8 ASTC(2×2 블록) 업로드로 **여러 블록 행**의 stride 계산 검증.
-- 지원 없는 디바이스에서는 `XCTSkipIf` — `RenderHarness`에 `supportsASTC` 헬퍼를 추가한다.
-- `JSConstantParityTests` 성격의 스펙 철자 검증: 추가한 raw value 전수를 명세 문자열과 대조.
-
-### 데모 씬 (필수 — 눈 검증)
-
-`compressed` 씬: 같은 이미지를 `rgba8unorm` vs `astc-8x8-unorm`으로 나란히 그리고 HUD에
-메모리 크기를 표기한다 (예: 256×256 기준 256KB vs 16KB). 에셋은 사전 인코딩한 base64를
-번들에 넣는다 (`xcrun` 계열 인코더 또는 오프라인 생성 — 빌드 파이프라인에 넣지 않는다).
-
-### 완료 기준
-
-`swift test` 전부 통과(비지원 환경 skip 포함) · 데모 씬 60fps · `WEBGPU-API.md` §3 포맷 표와
-§8 미지원 목록 갱신 · `adapter.features` 문서화 (`JS-AUTHORING.md` §3 표).
+`importExternalTexture`(비디오)는 여전히 없다. 비디오 프레임 핸들이 Lynx 쪽에 생기면
+같은 자리에 붙는다.
 
 ---
 
