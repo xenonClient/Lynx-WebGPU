@@ -189,6 +189,63 @@ final class CommandInterpreterTests: XCTestCase {
         XCTAssertEqual(try harness.readBufferSync(handle: 2, as: Float.self), source)
     }
 
+    /// `size`를 생략하면 **원본의 남은 전부**다 (명세의 `copyBufferToBuffer(src, dst)`).
+    ///
+    /// JS shim은 `size`를 채워 보내지만, 커맨드 스트림을 직접 만드는 쪽(Lynx 없이 쓰는 경우)이
+    /// 문서대로 생략했을 때도 같아야 한다.
+    func test_copyBufferToBuffer의_size를_생략하면_남은_전부다() throws {
+        let source: [Float] = [1, 2, 3, 4]
+        harness.executeExpectingSuccess([
+            ["op": "createBuffer", "id": 1, "size": 16, "usage": TestUsage.copySrc | TestUsage.copyDst],
+            ["op": "createBuffer", "id": 2, "size": 16, "usage": TestUsage.copyDst | TestUsage.mapRead],
+            ["op": "writeBuffer", "buffer": 1, "data": source.base64],
+            ["op": "copyBufferToBuffer", "source": 1, "destination": 2],
+        ])
+        XCTAssertEqual(try harness.readBufferSync(handle: 2, as: Float.self), source)
+    }
+
+    func test_copyBufferToBuffer의_size는_sourceOffset_뒤의_남은_전부다() throws {
+        harness.executeExpectingSuccess([
+            ["op": "createBuffer", "id": 1, "size": 16, "usage": TestUsage.copySrc | TestUsage.copyDst],
+            ["op": "createBuffer", "id": 2, "size": 16, "usage": TestUsage.copyDst | TestUsage.mapRead],
+            ["op": "writeBuffer", "buffer": 1, "data": [Float]([1, 2, 3, 4]).base64],
+            // 8바이트를 건너뛰었으니 남은 8바이트만 간다.
+            ["op": "copyBufferToBuffer", "source": 1, "sourceOffset": 8, "destination": 2],
+        ])
+        XCTAssertEqual(try harness.readBufferSync(handle: 2, as: Float.self), [3, 4, 0, 0])
+    }
+
+    /// 범위를 넘는 복사는 **Metal이 단언으로 프로세스를 죽인다** — 검증 오류로 잡아야 한다.
+    func test_범위를_넘는_copyBufferToBuffer를_거부한다() throws {
+        harness.executeExpectingSuccess([
+            ["op": "createBuffer", "id": 1, "size": 16, "usage": TestUsage.copySrc],
+            ["op": "createBuffer", "id": 2, "size": 8, "usage": TestUsage.copyDst],
+        ])
+
+        for (command, expected) in [
+            (["op": "copyBufferToBuffer", "source": 1, "destination": 2, "size": 16], "대상 범위"),
+            (["op": "copyBufferToBuffer", "source": 1, "sourceOffset": 12, "destination": 2, "size": 8], "원본 범위"),
+            (["op": "copyBufferToBuffer", "source": 1, "destination": 2,
+              "destinationOffset": 4, "size": 8], "대상 범위"),
+            (["op": "copyBufferToBuffer", "source": 1, "destination": 2, "size": -4], "음수"),
+        ] as [([String: Any], String)] {
+            let result = harness.execute([command])
+            XCTAssertTrue(
+                ((errors(result).first?["message"] as? String) ?? "").contains(expected),
+                "\(command)이(가) 통과했다: \(harness.describeErrors(result))"
+            )
+        }
+    }
+
+    /// 0바이트 복사는 no-op이다 — Metal blit이 거부하므로 그냥 넘기면 오류가 된다.
+    func test_크기가_0인_copyBufferToBuffer는_no_op다() throws {
+        harness.executeExpectingSuccess([
+            ["op": "createBuffer", "id": 1, "size": 16, "usage": TestUsage.copySrc],
+            ["op": "createBuffer", "id": 2, "size": 16, "usage": TestUsage.copyDst],
+            ["op": "copyBufferToBuffer", "source": 1, "destination": 2, "size": 0],
+        ])
+    }
+
     // MARK: - 버퍼 매핑 상태
 
     /// 명세는 `mapAsync`가 버퍼를 "unavailable"로 만들어 큐 작업에 못 쓰게 해 경쟁 자체를 없앤다.

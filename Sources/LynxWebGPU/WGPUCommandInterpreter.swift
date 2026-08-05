@@ -407,6 +407,7 @@ final class WGPUCommandInterpreter {
         case "unmapBuffer": try unmapBuffer(command)
         case "createTexture": try createTexture(command)
         case "writeTexture": try writeTexture(command)
+        case "copyExternalImageToTexture": try copyExternalImageToTexture(command)
         case "createTextureView": try createTextureView(command)
         case "createSampler": try createSampler(command)
         case "createShaderModule": try createShaderModule(command)
@@ -541,12 +542,18 @@ final class WGPUCommandInterpreter {
         )
         let data = try command.requiredData("data")
         let size = try command.requiredExtent("size")
-        let bytesPerRow = command.int("bytesPerRow", default: size.width * target.format.bytesPerPixel)
-        let rowsPerImage = command.int("rowsPerImage", default: size.height)
+        let format = target.format
+        let bytesPerRow = command.int("bytesPerRow", default: format.bytesPerRow(width: size.width))
+        // 압축 포맷에서 행은 픽셀이 아니라 **블록** 단위로 센다 (명세 GPUTexelCopyBufferLayout).
+        let blockRows = format.blockRows(height: size.height)
+        let rowsPerImage = command.int("rowsPerImage", default: blockRows)
         guard size.width > 0, size.height > 0, size.depthOrArrayLayers > 0 else { return }   // no-op
-        let bytesPerImage = bytesPerRow * max(rowsPerImage, size.height)
+        try validateBlockAlignment(format: format, origin: try command.origin("origin"), size: size,
+                                   texture: target, mipLevel: command.int("mipLevel", default: 0),
+                                   label: "writeTexture")
+        let bytesPerImage = bytesPerRow * max(rowsPerImage, blockRows)
         let layers = max(size.depthOrArrayLayers, 1)
-        let required = bytesPerImage * (layers - 1) + bytesPerRow * size.height
+        let required = bytesPerImage * (layers - 1) + bytesPerRow * blockRows
         guard data.count >= required else {
             throw WGPUError.validation("writeTexture 데이터가 부족하다 (\(data.count)B, 최소 \(required)B 필요)")
         }
@@ -563,6 +570,108 @@ final class WGPUCommandInterpreter {
             rowsPerImage: rowsPerImage,
             blit: try activeBlitEncoder()
         )
+    }
+
+    /// 디코딩해 둔 이미지(`ImageBitmap`)를 텍스처로 올린다 — 명세
+    /// `queue.copyExternalImageToTexture()`.
+    ///
+    /// 웹에서는 브라우저가 `<img>`·`<canvas>`·`VideoFrame`을 소스로 받는다. Lynx에는 그런
+    /// 엘리먼트가 없으므로 **`createImageBitmap()`이 만든 네이티브 이미지**가 그 자리다.
+    /// 픽셀은 이미 RGBA8이라 여기서는 잘라내고 스테이징에 실어 blit하는 일만 한다.
+    private func copyExternalImageToTexture(_ command: WGPUValueReader) throws {
+        let sourceReader = try command.requiredObject("source")
+        let destinationReader = try command.requiredObject("destination")
+        let bitmap = try registry.lookup(
+            try sourceReader.requiredHandle("source"), as: WGPUImageBitmapObject.self, kind: "ImageBitmap"
+        )
+        let target = try registry.lookup(
+            try destinationReader.requiredHandle("texture"), as: WGPUTextureObject.self, kind: "GPUTexture"
+        )
+        guard !target.format.isCompressed else {
+            throw WGPUError.validation(
+                "copyExternalImageToTexture는 압축 텍스처에 쓸 수 없다 (\(target.format.rawValue)) "
+                + "— GPU에는 블록 인코더가 없다"
+            )
+        }
+        // 명세는 소스와 대상의 바이트 폭이 같기를 요구한다. 디코딩 결과가 RGBA8이므로
+        // 4바이트 포맷만 받는다 — 그 밖은 화면이 조용히 어긋나느니 여기서 막는 편이 낫다.
+        guard target.format.bytesPerBlock == 4, !target.format.rawValue.hasPrefix("depth"),
+              !target.format.rawValue.hasPrefix("stencil") else {
+            throw WGPUError.validation(
+                "copyExternalImageToTexture의 대상은 4바이트 컬러 포맷이어야 한다 "
+                + "(\(target.format.rawValue)) — 그 밖은 writeTexture로 직접 올릴 것"
+            )
+        }
+
+        let sourceOrigin = try sourceReader.origin("origin")
+        let size = command.extent("copySize")
+            ?? WGPUExtent3D(width: bitmap.width - sourceOrigin.x, height: bitmap.height - sourceOrigin.y)
+        guard size.width > 0, size.height > 0 else { return }   // no-op
+        guard sourceOrigin.x + size.width <= bitmap.width,
+              sourceOrigin.y + size.height <= bitmap.height else {
+            throw WGPUError.validation(
+                "복사 영역이 이미지를 넘는다 — (\(sourceOrigin.x), \(sourceOrigin.y)) + "
+                + "\(size.width)x\(size.height) > \(bitmap.width)x\(bitmap.height)"
+            )
+        }
+
+        // 필요한 만큼만 잘라 스테이징에 싣는다. 전체 폭을 그대로 쓰면 부분 복사에서
+        // bytesPerRow가 맞지 않는다.
+        let rowBytes = size.width * 4
+        var slice = Data(count: rowBytes * size.height)
+        bitmap.pixels.withUnsafeBytes { source in
+            slice.withUnsafeMutableBytes { destination in
+                guard let sourceBase = source.baseAddress,
+                      let destinationBase = destination.baseAddress else { return }
+                for row in 0..<size.height {
+                    let from = (sourceOrigin.y + row) * bitmap.bytesPerRow + sourceOrigin.x * 4
+                    memcpy(destinationBase + row * rowBytes, sourceBase + from, rowBytes)
+                }
+            }
+        }
+
+        let staging = try makeStagingBuffer(slice)
+        target.encodeWrite(
+            from: staging,
+            origin: try destinationReader.origin("origin"),
+            size: WGPUExtent3D(width: size.width, height: size.height),
+            mipLevel: destinationReader.int("mipLevel", default: 0),
+            bytesPerRow: rowBytes,
+            rowsPerImage: size.height,
+            blit: try activeBlitEncoder()
+        )
+    }
+
+    /// 압축 텍스처 복사의 블록 정렬 (명세 "validating texel copy range").
+    ///
+    /// origin은 블록 경계에 있어야 하고, 크기는 블록 배수이거나 **밉 레벨의 끝에 닿아야** 한다
+    /// (가장자리 블록은 잘려 있으므로 예외다). 어기면 Metal이 단언으로 죽어서 여기서 먼저 막는다.
+    /// 비압축 포맷은 블록이 1×1이라 이 검사가 항상 통과한다.
+    private func validateBlockAlignment(
+        format: WGPUTextureFormat,
+        origin: WGPUOrigin3D,
+        size: WGPUExtent3D,
+        texture: WGPUTextureObject,
+        mipLevel: Int,
+        label: String
+    ) throws {
+        guard format.isCompressed else { return }
+        let (blockWidth, blockHeight) = format.blockSize
+        guard origin.x % blockWidth == 0, origin.y % blockHeight == 0 else {
+            throw WGPUError.validation(
+                "\(label): 압축 텍스처의 origin은 블록 경계여야 한다 "
+                + "(\(origin.x), \(origin.y)) / 블록 \(blockWidth)x\(blockHeight)"
+            )
+        }
+        let levelWidth = max(texture.size.width >> mipLevel, 1)
+        let levelHeight = max(texture.size.height >> mipLevel, 1)
+        guard size.width % blockWidth == 0 || origin.x + size.width == levelWidth,
+              size.height % blockHeight == 0 || origin.y + size.height == levelHeight else {
+            throw WGPUError.validation(
+                "\(label): 압축 텍스처의 복사 크기는 블록 배수이거나 밉 레벨 끝에 닿아야 한다 "
+                + "(\(size.width)x\(size.height) @ 레벨 \(mipLevel) 크기 \(levelWidth)x\(levelHeight))"
+            )
+        }
     }
 
     /// 풀에서 스테이징 버퍼를 받아 데이터를 채우고, 프레임 완료 시 회수 목록에 올린다.
@@ -1499,11 +1608,38 @@ final class WGPUCommandInterpreter {
     private func copyBufferToBuffer(_ command: WGPUValueReader) throws {
         let source = try unmappedBuffer(command, field: "source")
         let destination = try unmappedBuffer(command, field: "destination")
-        let size = try command.requiredInt("size")
+        let sourceOffset = command.int("sourceOffset", default: 0)
+        let destinationOffset = command.int("destinationOffset", default: 0)
+        // 명세의 짧은 형태 `copyBufferToBuffer(src, dst)`는 "원본의 남은 전부"다.
+        // JS shim이 채워 보내지만, 커맨드 스트림을 직접 만드는 쪽(네이티브 단독 사용)에도
+        // 같은 기본값을 준다 — `clearBuffer`와 규칙을 맞춘다.
+        let size = command.int("size", default: max(0, source.size - sourceOffset))
+        // 범위를 넘는 복사는 **Metal이 단언으로 죽인다.** 여기서 검증 오류로 바꾼다.
+        guard sourceOffset >= 0, destinationOffset >= 0, size >= 0 else {
+            throw WGPUError.validation(
+                "copyBufferToBuffer의 오프셋·크기는 음수일 수 없다 "
+                + "(sourceOffset \(sourceOffset), destinationOffset \(destinationOffset), size \(size))"
+            )
+        }
+        guard sourceOffset + size <= source.size else {
+            throw WGPUError.validation(
+                "copyBufferToBuffer 원본 범위가 버퍼를 넘는다 — "
+                + "\(sourceOffset) + \(size)B > 크기 \(source.size)B",
+                path: command.fieldPath("size")
+            )
+        }
+        guard destinationOffset + size <= destination.size else {
+            throw WGPUError.validation(
+                "copyBufferToBuffer 대상 범위가 버퍼를 넘는다 — "
+                + "\(destinationOffset) + \(size)B > 크기 \(destination.size)B",
+                path: command.fieldPath("size")
+            )
+        }
+        guard size > 0 else { return }   // Metal blit은 0바이트 복사를 거부한다
         let encoder = try activeBlitEncoder()
         encoder.copy(
-            from: source.buffer, sourceOffset: command.int("sourceOffset", default: 0),
-            to: destination.buffer, destinationOffset: command.int("destinationOffset", default: 0),
+            from: source.buffer, sourceOffset: sourceOffset,
+            to: destination.buffer, destinationOffset: destinationOffset,
             size: size
         )
     }
@@ -1626,20 +1762,24 @@ final class WGPUCommandInterpreter {
         )
         let buffer = try unmappedBuffer(destinationReader, field: "buffer")
         let size = try command.requiredExtent("copySize")
-        let bytesPerRow = destinationReader.int("bytesPerRow", default: size.width * texture.format.bytesPerPixel)
+        let format = texture.format
+        let bytesPerRow = destinationReader.int("bytesPerRow", default: format.bytesPerRow(width: size.width))
         let origin = try sourceReader.origin("origin")
+        let mipLevel = sourceReader.int("mipLevel", default: 0)
+        try validateBlockAlignment(format: format, origin: origin, size: size,
+                                   texture: texture, mipLevel: mipLevel, label: "copyTextureToBuffer")
 
         let encoder = try activeBlitEncoder()
         encoder.copy(
             from: texture.texture,
             sourceSlice: origin.z,
-            sourceLevel: sourceReader.int("mipLevel", default: 0),
+            sourceLevel: mipLevel,
             sourceOrigin: MTLOrigin(x: origin.x, y: origin.y, z: 0),
             sourceSize: MTLSize(width: size.width, height: size.height, depth: 1),
             to: buffer.buffer,
             destinationOffset: destinationReader.int("offset", default: 0),
             destinationBytesPerRow: bytesPerRow,
-            destinationBytesPerImage: bytesPerRow * size.height
+            destinationBytesPerImage: bytesPerRow * format.blockRows(height: size.height)
         )
     }
 
@@ -1651,19 +1791,23 @@ final class WGPUCommandInterpreter {
             try destinationReader.requiredHandle("texture"), as: WGPUTextureObject.self, kind: "GPUTexture"
         )
         let size = try command.requiredExtent("copySize")
-        let bytesPerRow = sourceReader.int("bytesPerRow", default: size.width * texture.format.bytesPerPixel)
+        let format = texture.format
+        let bytesPerRow = sourceReader.int("bytesPerRow", default: format.bytesPerRow(width: size.width))
         let origin = try destinationReader.origin("origin")
+        let mipLevel = destinationReader.int("mipLevel", default: 0)
+        try validateBlockAlignment(format: format, origin: origin, size: size,
+                                   texture: texture, mipLevel: mipLevel, label: "copyBufferToTexture")
 
         let encoder = try activeBlitEncoder()
         encoder.copy(
             from: buffer.buffer,
             sourceOffset: sourceReader.int("offset", default: 0),
             sourceBytesPerRow: bytesPerRow,
-            sourceBytesPerImage: bytesPerRow * size.height,
+            sourceBytesPerImage: bytesPerRow * format.blockRows(height: size.height),
             sourceSize: MTLSize(width: size.width, height: size.height, depth: 1),
             to: texture.texture,
             destinationSlice: origin.z,
-            destinationLevel: destinationReader.int("mipLevel", default: 0),
+            destinationLevel: mipLevel,
             destinationOrigin: MTLOrigin(x: origin.x, y: origin.y, z: 0)
         )
     }

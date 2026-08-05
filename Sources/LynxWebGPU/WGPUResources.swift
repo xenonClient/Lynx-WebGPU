@@ -142,6 +142,7 @@ public final class WGPUTextureObject {
     let isDrawable: Bool
 
     init(device: MTLDevice, descriptor: WGPUTextureDescriptor) throws {
+        try WGPUTextureObject.validateCompressed(descriptor, on: device)
         let metalDescriptor = MTLTextureDescriptor()
         metalDescriptor.pixelFormat = try WGPUMetalMapping.pixelFormat(descriptor.format)
         metalDescriptor.width = descriptor.size.width
@@ -176,6 +177,32 @@ public final class WGPUTextureObject {
         self.isDrawable = false
     }
 
+    /// 블록 압축 텍스처의 제약. **Metal은 이것들을 단언으로 처리해 프로세스를 죽인다** —
+    /// 여기서 미리 잡아 명세대로 검증 오류로 돌려준다.
+    private static func validateCompressed(_ descriptor: WGPUTextureDescriptor, on device: MTLDevice) throws {
+        let format = descriptor.format
+        guard format.isCompressed else { return }
+        guard WGPUDeviceCapability.supportsCompression(format, on: device) else {
+            let feature = WGPUDeviceCapability.compressionFamily(format).featureName ?? "?"
+            throw WGPUError.validation(
+                "이 기기는 \(format.rawValue)를 지원하지 않는다 — adapter.features의 '\(feature)'를 먼저 확인할 것"
+            )
+        }
+        // 압축 포맷은 샘플링·복사만 된다 (명세: RENDER_ATTACHMENT·STORAGE_BINDING 금지).
+        let forbidden: WGPUTextureUsage = [.renderAttachment, .storageBinding]
+        guard descriptor.usage.isDisjoint(with: forbidden) else {
+            throw WGPUError.validation(
+                "압축 텍스처(\(format.rawValue))는 렌더 타깃이나 스토리지로 쓸 수 없다 (usage \(descriptor.usage))"
+            )
+        }
+        guard descriptor.dimension == .twoD else {
+            throw WGPUError.validation("압축 텍스처는 2d만 된다 (\(descriptor.dimension.rawValue) 요청)")
+        }
+        guard descriptor.sampleCount == 1 else {
+            throw WGPUError.validation("압축 텍스처는 멀티샘플이 될 수 없다 (sampleCount \(descriptor.sampleCount))")
+        }
+    }
+
     /// 캔버스 드로어블 텍스처를 감싼다.
     init(drawableTexture: MTLTexture, format: WGPUTextureFormat) {
         self.texture = drawableTexture
@@ -199,7 +226,8 @@ public final class WGPUTextureObject {
         rowsPerImage: Int,
         blit: MTLBlitCommandEncoder
     ) {
-        let bytesPerImage = bytesPerRow * max(rowsPerImage, size.height)
+        // rowsPerImage는 **블록 행** 단위다 (명세 GPUTexelCopyBufferLayout). 비압축은 픽셀 행과 같다.
+        let bytesPerImage = bytesPerRow * max(rowsPerImage, format.blockRows(height: size.height))
         if texture.textureType == .type3D {
             blit.copy(
                 from: staging,

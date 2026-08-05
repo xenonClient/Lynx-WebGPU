@@ -233,6 +233,12 @@ public struct WGPUValueReader {
         throw mismatch(key, expected: "ArrayBuffer · base64 문자열 · 바이트 배열")
     }
 
+    /// `requiredData`와 같지만 없거나 읽을 수 없으면 nil.
+    public func data(_ key: String) -> Data? {
+        guard value(key) != nil else { return nil }
+        return try? requiredData(key)
+    }
+
     public func optionalData(_ key: String) throws -> Data? {
         guard has(key) else { return nil }
         return try requiredData(key)
@@ -290,6 +296,12 @@ public struct WGPUValueReader {
             )
         }
         throw mismatch(key, expected: "크기 ({width,height,…} 또는 [w,h,d])")
+    }
+
+    /// `requiredExtent`와 같지만 없으면 nil — 호출 측이 소스 크기로 기본값을 정할 때 쓴다.
+    public func extent(_ key: String) -> WGPUExtent3D? {
+        guard value(key) != nil else { return nil }
+        return try? requiredExtent(key)
     }
 
     /// `{x,y,z}` 또는 `[x,y,z]` (WebGPU `GPUOrigin3D`). 없으면 원점.

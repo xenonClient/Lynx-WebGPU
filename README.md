@@ -35,8 +35,12 @@ startFrameLoop(() => {
 
 ```swift
 // Package.swift
-.package(url: "https://github.com/xenonClient/Lynx-WebGPU", from: "0.3.1")
+.package(url: "https://github.com/xenonClient/Lynx-WebGPU", from: "0.4.0")
 ```
+
+이것으로 **엔진**(`LynxWebGPU`)이 들어온다. 아래 `LynxWebGPUHost`처럼 Lynx와 맞물리는 타입은
+`Sources/LynxWebGPUBridge/`의 **네 파일을 앱 쪽 타깃에 넣어** 쓴다 — Lynx SDK의 버전·배포처를
+앱이 정할 수 있게 하기 위해서다 (`docs/LYNX-INTEGRATION.md` §2, 데모가 그 본보기다).
 
 호스트 앱 연동은 세 단계다:
 
@@ -62,7 +66,7 @@ host.attach(to: lynxView)
 - [docs/JS-AUTHORING.md](docs/JS-AUTHORING.md) — 번들(JS) 작성 가이드, 성능 규칙
 - [docs/LYNX-INTEGRATION.md](docs/LYNX-INTEGRATION.md) — 호스트 앱 연동
 - [docs/TESTING.md](docs/TESTING.md) — 테스트 전략/하네스/컨벤션
-- [docs/ROADMAP.md](docs/ROADMAP.md) — 다음 기능 계획 (압축 텍스처 → 스텐실 → 간접 드로우)
+- [docs/ROADMAP.md](docs/ROADMAP.md) — 다음 기능 계획 (웹 라이브러리 이식 갭 → 이미지 처리 경로)
 - [Examples/HelloTriangle.tsx](Examples/HelloTriangle.tsx) — ReactLynx 최소 예제
 
 ## 모듈
@@ -72,7 +76,12 @@ host.attach(to: lynxView)
 | `LynxWebGPUCore` | WebGPU 열거형·디스크립터·오류·핸들 레지스트리 (Metal-free) |
 | `LynxWebGPUShader` | WGSL 렉서/파서/리플렉션/MSL 방출기 (순수 Swift) |
 | `LynxWebGPU` | Metal 백엔드 + 캔버스 표면 + 커맨드 스트림 해석기 |
-| `LynxWebGPUBridge` | Lynx NativeModule + `<webgpu-canvas>` 엘리먼트 (iOS 전용) |
+| `LynxWebGPUBridge` | Lynx NativeModule + `<webgpu-canvas>` 엘리먼트 (iOS 전용) — **SPM 타깃이 아니라 소스**다 |
+
+**이 패키지는 외부 의존성이 0이다.** SPM product는 엔진(`LynxWebGPU`) 하나뿐이고, Lynx SDK의
+버전·배포처는 **앱이 정한다** — SPM으로 받든, CocoaPods로 이미 쓰고 있든, 사내 배포본을 물리든
+그대로 붙는다. Lynx 연동 레이어는 `#if canImport(Lynx)`로 감싼 소스로 제공되어, Lynx가 보이는
+타깃에서 컴파일하면 켜진다 (별도 브리지 타깃 · 앱 타깃 직접 — `docs/LYNX-INTEGRATION.md` §2).
 
 `LynxWebGPU` product는 **Lynx 없이도** 쓸 수 있다 — Swift 앱에서 WebGPU 커맨드 스트림을 직접 실행하거나,
 WGSL을 MSL로 번역하는 용도로만 가져다 써도 된다.
@@ -145,7 +154,7 @@ cd JS && npm test    # JS shim (의존성 없음)
 
 ## 데모 앱
 
-`Projects/WebGPUDemo`에 Tuist 데모 호스트 앱과 Lynx 번들 **19종**이 들어 있다. 앱을 켜면 씬 목록이 뜨고,
+`Projects/WebGPUDemo`에 Tuist 데모 호스트 앱과 Lynx 번들 **23종**이 들어 있다. 앱을 켜면 씬 목록이 뜨고,
 각 씬은 오프스크린 하네스가 자동 검증하는 기능과 1:1로 대응한다 — 회전 삼각형, 3D 큐브(깊이 테스트),
 입자 4096개(컴퓨트 + 인스턴싱), 텍스처·샘플러, **동적 텍스처(CPU 플라스마를 매 프레임 `writeTexture`로)**,
 알파 블렌딩, **스텐실 마스크(`stencil8` 단독 포맷)**, **GPU-driven 렌더링(컴퓨트가 정한 개수로 간접 드로우)**,
@@ -166,5 +175,8 @@ xcrun simctl launch <device> org.lynxwebgpu.demo -demo particles  # 바로 진�
 ## 요구 사항
 
 Xcode 26.2 / Swift 6.2 · iOS 17.0+ · macOS 14.0+ (개발 루프용)
-Lynx SDK는 [xenonClient/Lynx-XCFramework](https://github.com/xenonClient/Lynx-XCFramework) 4.0.0을
-SPM `binaryTarget`으로 가져온다 (device + simulator 슬라이스 포함).
+
+**Lynx SDK는 이 패키지가 가져오지 않는다** — 앱이 고른 것을 쓴다 (외부 의존성 0).
+데모 앱은 [xenonClient/Lynx-XCFramework](https://github.com/xenonClient/Lynx-XCFramework)를
+직접 물고 있다 (device + simulator 슬라이스 포함) — 이는 **데모의 선택**이지 라이브러리의
+요구사항이 아니다. 다른 저장소·버전으로 바꾸려면 `Projects/WebGPUDemo/Project.swift`만 고치면 된다.

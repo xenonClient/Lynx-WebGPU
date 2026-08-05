@@ -2,42 +2,83 @@
 
 호스트 앱에 이 라이브러리를 붙이는 절차.
 
-## 1. 패키지 추가
+## 1. 이 패키지는 Lynx를 가져오지 않는다
 
-```swift
-// Package.swift
-dependencies: [
-    .package(url: "https://github.com/xenonClient/Lynx-WebGPU", from: "0.3.1"),
-],
-targets: [
-    .target(name: "MyApp", dependencies: [
-        .product(name: "LynxWebGPUBridge", package: "Lynx-WebGPU"),
-    ]),
-]
-```
+`Lynx-WebGPU`는 **외부 의존성이 0이다.** Lynx SDK의 버전과 배포처는 **앱이 정한다** —
+SPM으로 받든, CocoaPods로 이미 쓰고 있든, 사내 배포본을 물리든, 다른 버전이 필요하든 그대로 붙는다.
 
-Xcode에서는 File ▸ Add Package Dependencies로 저장소 URL을 넣는다.
-
-두 개의 product가 있다:
+그래서 패키지가 주는 SPM product는 **엔진 하나**다:
 
 | product | 내용 | 언제 |
 |---|---|---|
-| `LynxWebGPUBridge` | 엔진 + Lynx NativeModule + `<webgpu-canvas>` | Lynx 번들의 JS가 GPU를 쓸 때 |
-| `LynxWebGPU` | 엔진만 (Metal 백엔드 + WGSL 트랜스파일러) | Lynx 없이 Swift에서 WebGPU 커맨드를 실행할 때 |
+| `LynxWebGPU` | Metal 백엔드 + WGSL 트랜스파일러 (Lynx 무관) | 항상 |
 
-Lynx SDK는 [xenonClient/Lynx-XCFramework](https://github.com/xenonClient/Lynx-XCFramework) 4.0.0을
-transitive 의존성으로 끌어온다 — 8개 xcframework(Lynx/LynxBase/LynxService/LynxServiceAPI/PrimJS/
-SDWebImage/SDWebImageWebPCoder/libwebp)가 `Lynx` 제품 하나로 묶여 있고, device(arm64) + simulator
-슬라이스를 모두 포함하므로 **실기기 빌드도 된다**.
+Lynx 연동 레이어(`LynxWebGPUHost` · `WebGPUNativeModule` · `WebGPUCanvasUI` · `WebGPUFrameTicker`)는
+`Sources/LynxWebGPUBridge/`에 **소스로** 들어 있고, 네 파일 전부가 `#if canImport(Lynx)` 안에 있다.
+**Lynx가 보이는 타깃에서 컴파일하면 켜지고, 아니면 조용히 비어 있다.**
 
-> 호스트 앱이 이미 Lynx를 다른 방식(CocoaPods 등)으로 링크하고 있다면 심볼이 중복된다.
-> 그 경우 `LynxWebGPU` product만 쓰고, `Sources/LynxWebGPUBridge/`의 네 파일
-> (`LynxWebGPUHost` / `WebGPUNativeModule` / `WebGPUCanvasUI` / `WebGPUFrameTicker`)을
-> 앱 타깃으로 복사해 기존 Lynx에 대고 컴파일할 것.
+> **왜 SPM 타깃이 아닌가.** SPM 타깃의 `canImport(Lynx)`는 **매니페스트가 선언한 의존성만**
+> 본다. 앱이 Lynx를 다른 경로(CocoaPods 등)로 링크해도 우리 타깃의 컴파일에는 보이지 않으므로,
+> 브리지를 SPM 타깃으로 두면 그런 앱에서는 **영원히 빈 모듈**이 된다 — "product를 추가했는데
+> API가 없다"가 되는 것보다, 소스를 앱 쪽에서 컴파일하게 하는 편이 정직하다.
+> 반대로 여기서 Lynx를 선언해 버리면 버전이 패키지에 박혀 위 목적이 깨진다.
+
+## 2. 연동 경로
+
+어느 쪽이든 **엔진은 SPM으로, 브리지는 소스로** 가져간다는 모양은 같다.
+
+### 2-1. 별도 브리지 타깃 (Tuist / Xcode 프로젝트)
+
+앱 쪽에 브리지 타깃을 하나 만들고 거기서 소스를 컴파일한다. **데모 앱이 이 모양 그대로다**
+(`Projects/WebGPUDemo/Project.swift` — 복사해 쓰면 된다):
+
+```swift
+packages: [
+    .remote(url: "https://github.com/xenonClient/Lynx-WebGPU", requirement: .upToNextMajor(from: "0.4.0")),
+    // Lynx는 **앱이 고른다.** 아래는 데모가 쓰는 배포본일 뿐이고, 다른 저장소·다른 버전으로
+    // 바꿔도 브리지 소스는 그대로 컴파일된다.
+    .remote(url: "https://github.com/xenonClient/Lynx-XCFramework", requirement: .exact("4.0.0")),
+],
+targets: [
+    .target(
+        name: "LynxWebGPUBridge",
+        product: .staticFramework,
+        sources: ["<체크아웃 경로>/Sources/LynxWebGPUBridge/**"],
+        dependencies: [
+            .package(product: "LynxWebGPU"),
+            .package(product: "Lynx"),        // ← 여기서 Lynx 버전을 고른다
+        ]
+    ),
+    .target(name: "MyApp", dependencies: [.target(name: "LynxWebGPUBridge")]),
+]
+```
+
+Xcode 프로젝트라면 같은 일을 GUI로 한다 — 프레임워크 타깃을 만들고, 브리지 네 파일을
+Compile Sources에 넣고, `LynxWebGPU`와 Lynx를 그 타깃의 의존성에 넣는다.
+
+### 2-2. 앱 타깃에 바로 넣기 (가장 간단)
+
+별도 모듈이 필요 없으면 브리지 네 파일을 **앱 타깃에 그대로** 추가한다. 이때는
+`import LynxWebGPUBridge`가 필요 없다 (타입이 앱 모듈에 들어온다).
+
+**Lynx를 CocoaPods로 쓰는 앱도 이 경로다** — 앱 타깃에서 Lynx가 보이므로 가드가 켜진다.
+
+```
+Sources/LynxWebGPUBridge/
+├── LynxWebGPUHost.swift        — MTLDevice·큐·레지스트리 소유
+├── WebGPUNativeModule.swift    — NativeModules.WebGPU
+├── WebGPUCanvasUI.swift        — <webgpu-canvas> 엘리먼트
+└── WebGPUFrameTicker.swift     — CADisplayLink 프레임 틱
+```
+
+### 공통
 
 Xcode 빌드 설정 **User Script Sandboxing = NO** (Lynx 공식 가이드 요구사항).
 
-## 2. 호스트 코드
+> **심볼 중복이 사라진다.** 예전에는 이 패키지가 Lynx를 transitive로 끌어와, 앱이 이미 Lynx를
+> 링크하고 있으면 충돌했다. 이제 Lynx를 가져오는 곳은 앱 하나뿐이다.
+
+## 3. 호스트 코드
 
 ```swift
 import Lynx
@@ -79,7 +120,7 @@ final class GPUPageViewController: UIViewController {
 
 페이지를 떠날 때 `host.detach()`를 부르지 않으면 `CADisplayLink`가 계속 돌고 GPU 객체가 남는다.
 
-## 3. Lynx 번들(JS) 쪽
+## 4. Lynx 번들(JS) 쪽
 
 `JS/webgpu.js`, `JS/webgpu.d.ts`, `JS/elements.d.ts`를 rspeedy 프로젝트의 `src/` 아래로 복사한다.
 사용법은 `docs/JS-AUTHORING.md`, 최소 예제는 `Examples/HelloTriangle.tsx` 참고.
@@ -131,7 +172,7 @@ final class HandleOnlyProvider: WGPUAssetProvider { … }
 - 파일 읽기는 백그라운드 큐에서 하고 콜백으로 돌려준다 — 수 MB짜리를 JS 스레드에서
   동기로 읽으면 프레임이 밀린다. 공급자를 직접 구현할 때도 같은 규칙을 지킬 것.
 
-## 4. `<webgpu-canvas>`
+## 5. `<webgpu-canvas>`
 
 ```tsx
 <webgpu-canvas
@@ -146,7 +187,7 @@ final class HandleOnlyProvider: WGPUAssetProvider { … }
 |---|---|
 | `canvas-id` (필수) | JS가 `gpu.getCanvasContext(id)`로 지목할 이름. 페이지 안에서 유일해야 한다 |
 | `pixel-ratio` | CSS px → 드로어블 픽셀 배율. 생략하면 화면 배율. 부하가 크면 1로 낮춘다 |
-| `passthrough-touches` | UIKit 터치 통과 (기본 꺼짐). 캔버스 **뒤** 네이티브 제스처가 필요할 때 켠다 — §5 참고 |
+| `passthrough-touches` | UIKit 터치 통과 (기본 꺼짐). 캔버스 **뒤** 네이티브 제스처가 필요할 때 켠다 — §6 참고 |
 
 | 이벤트 | detail |
 |---|---|
@@ -156,7 +197,7 @@ UI 메서드 `getInfo()` → `{ canvasId, width, height, pixelRatio }` (resize �
 
 내부적으로 뷰의 백킹 레이어 자체가 `CAMetalLayer`다 (`layerClass` 교체) — 서브레이어가 없어 합성 단계가 하나 줄어든다.
 
-## 5. 터치·제스처 — 웹과 같은 규칙
+## 6. 터치·제스처 — 웹과 같은 규칙
 
 `<webgpu-canvas>`는 **터치 이벤트를 따로 만들지 않는다.** Lynx 표준 이벤트를 그대로 쓴다:
 
@@ -216,7 +257,7 @@ CSS 크기는 `bindcanvasresize`의 `width / pixelRatio`로 얻는다 (detail의
   LynxView 밖 네이티브까지 뚫으려면 `event-through`. 이 둘은 Lynx 기본 제공이라
   이 패키지와 무관하게 모든 엘리먼트에서 동작한다.
 
-## 6. 스레딩 계약
+## 7. 스레딩 계약
 
 | 일 | 스레드 |
 |---|---|
@@ -227,7 +268,7 @@ CSS 크기는 `bindcanvasresize`의 `width / pixelRatio`로 얻는다 (detail의
 
 호스트 코드에서 `LynxWebGPUHost`의 메서드는 어느 스레드에서 불러도 안전하다.
 
-## 7. 확인
+## 8. 확인
 
 시뮬레이터에서 번들을 띄우고 다음을 본다:
 

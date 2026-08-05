@@ -868,6 +868,32 @@ declare class GPUQueue {
         rowsPerImage?: number;
     }, size: GPUExtent3D): void;
     /**
+     * 디코딩해 둔 이미지(`createImageBitmap`)를 텍스처로 올린다.
+     *
+     * 웹에서는 `<img>`·`<canvas>`·`VideoFrame`도 소스가 되지만 Lynx에는 그런 엘리먼트가
+     * 없다 — `GPUImageBitmap`이 그 자리다. 픽셀은 네이티브에 남아 있으므로 **브리지를
+     * 건너는 것은 핸들 하나뿐**이다 (`writeTexture`로 올리면 이미지 전체가 오간다).
+     *
+     * `flipY`·`premultiplyAlpha`는 디코딩 시점 옵션이라 `createImageBitmap` 쪽에 있다.
+     *
+     * @param {{source: GPUImageBitmap, origin?: GPUOrigin3DDict, flipY?: boolean}} source
+     * @param {{texture: GPUTexture, mipLevel?: number, origin?: GPUOrigin3DDict,
+     *          premultipliedAlpha?: boolean, colorSpace?: string}} destination
+     * @param {GPUExtent3D} [copySize] 생략하면 이미지 전체
+     * @returns {void}
+     */
+    copyExternalImageToTexture(source: {
+        source: GPUImageBitmap;
+        origin?: GPUOrigin3DDict;
+        flipY?: boolean;
+    }, destination: {
+        texture: GPUTexture;
+        mipLevel?: number;
+        origin?: GPUOrigin3DDict;
+        premultipliedAlpha?: boolean;
+        colorSpace?: string;
+    }, copySize?: GPUExtent3D): void;
+    /**
      * 인코더가 모은 명령을 스트림에 합쳐 **한 번에** 네이티브로 보낸다.
      * @param {GPUCommandBuffer[]} commandBuffers
      * @returns {WGPUExecuteResult}
@@ -1274,5 +1300,56 @@ export declare function installAnimationFrame(options?: {
  * @returns {Promise<ArrayBuffer>}
  */
 export declare function loadAsset(name: string): Promise<ArrayBuffer>;
-export { GPUBuffer, GPUTexture, GPUTextureView, GPUSampler, GPUDevice, GPUCanvasContext, GPURenderBundle, GPURenderBundleEncoder, GPUQuerySet, GPUError, GPUValidationError, GPUOutOfMemoryError, GPUInternalError, };
+/**
+ * 디코딩이 끝난 이미지 — 명세 `ImageBitmap`의 자리다.
+ *
+ * 픽셀은 **네이티브에 남는다.** JS가 아는 것은 핸들과 크기뿐이라, 큰 이미지를 다뤄도
+ * 브리지를 건너는 데이터가 없다.
+ */
+declare class GPUImageBitmap {
+    id: number;
+    width: number;
+    height: number;
+    _recorder: Recorder | null;
+    _closed: boolean;
+    /**
+     * @param {number} id
+     * @param {number} width
+     * @param {number} height
+     * @param {Recorder | null} recorder
+     */
+    constructor(id: number, width: number, height: number, recorder: Recorder | null);
+    /** 네이티브 픽셀을 버린다 (명세 `ImageBitmap.close()`). */
+    close(): void;
+}
+/**
+ * 인코딩된 이미지(PNG·JPEG·HEIC …)를 풀어 텍스처로 올릴 준비를 한다 — 웹의
+ * `createImageBitmap()` 자리다.
+ *
+ * 디코딩은 네이티브(ImageIO)가 한다. JS에서 PNG를 손으로 푸는 것보다 훨씬 빠르고,
+ * HEIC처럼 JS 디코더가 없는 형식도 열린다.
+ *
+ * ```js
+ * const bitmap = await createImageBitmap(await loadAsset('photo.jpg'))
+ * const texture = device.createTexture({
+ *   size: [bitmap.width, bitmap.height], format: 'rgba8unorm',
+ *   usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+ * })
+ * device.queue.copyExternalImageToTexture({ source: bitmap }, { texture },
+ *   [bitmap.width, bitmap.height])
+ * bitmap.close()
+ * ```
+ *
+ * @param {ArrayBuffer | ArrayBufferView | string} source 이미지 바이트, 또는 애셋 이름
+ * @param {{flipY?: boolean, premultiplyAlpha?: 'none' | 'premultiply' | 'default',
+ *          resizeWidth?: number, resizeHeight?: number}} [options]
+ * @returns {Promise<GPUImageBitmap>}
+ */
+export declare function createImageBitmap(source: ArrayBuffer | ArrayBufferView | string, options?: {
+    flipY?: boolean;
+    premultiplyAlpha?: 'none' | 'premultiply' | 'default';
+    resizeWidth?: number;
+    resizeHeight?: number;
+}): Promise<GPUImageBitmap>;
+export { GPUImageBitmap, GPUBuffer, GPUTexture, GPUTextureView, GPUSampler, GPUDevice, GPUCanvasContext, GPURenderBundle, GPURenderBundleEncoder, GPUQuerySet, GPUError, GPUValidationError, GPUOutOfMemoryError, GPUInternalError, };
 export default gpu;

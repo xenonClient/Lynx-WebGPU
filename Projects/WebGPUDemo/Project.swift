@@ -13,8 +13,16 @@ let project = Project(
     name: "WebGPUDemo",
     organizationName: "LynxWebGPU",
     // 저장소 루트의 SPM 패키지를 로컬 의존성으로 그대로 쓴다 — 데모가 항상 현재 소스를 링크한다.
+    //
+    // **Lynx는 이 데모가 직접 고른다.** 라이브러리 패키지에는 Lynx 의존성이 없다 —
+    // 버전과 배포처를 앱이 정할 수 있게 하기 위해서다 (`docs/LYNX-INTEGRATION.md` §2).
+    // 다른 버전을 시험하려면 아래 `requirement`만 바꾸면 된다.
     packages: [
         .local(path: "../.."),
+        .remote(
+            url: "https://github.com/xenonClient/Lynx-XCFramework",
+            requirement: .exact("4.0.0")
+        ),
     ],
     settings: .settings(
         // Lynx 공식 가이드 요구사항 (docs/LYNX-INTEGRATION.md §1)
@@ -22,6 +30,23 @@ let project = Project(
         configurations: [.debug(name: "Debug"), .release(name: "Release")]
     ),
     targets: [
+        // Lynx 연동 레이어 — **저장소의 브리지 소스를 여기서 컴파일한다.**
+        //
+        // 이 타깃이 Lynx를 의존성으로 들고 있으므로 브리지 안의 `#if canImport(Lynx)`가 켜진다.
+        // SPM 패키지 쪽에 두면 매니페스트가 Lynx 버전을 박아 버리므로 일부러 앱 쪽에 둔 것이다.
+        // 실제 앱도 이 모양을 그대로 따라 하면 된다 (`docs/LYNX-INTEGRATION.md` §2-2).
+        .target(
+            name: "LynxWebGPUBridge",
+            destinations: .iOS,
+            product: .staticFramework,
+            bundleId: "org.lynxwebgpu.bridge",
+            deploymentTargets: .iOS("17.0"),
+            sources: ["../../Sources/LynxWebGPUBridge/**"],
+            dependencies: [
+                .package(product: "LynxWebGPU"),
+                .package(product: "Lynx"),
+            ]
+        ),
         .target(
             name: "WebGPUDemo",
             destinations: .iOS,
@@ -46,7 +71,9 @@ let project = Project(
             // .lynx.bundle 산출물 (DemoSrc의 rspeedy 빌드 결과를 복사한 것)
             resources: ["Resources/**"],
             dependencies: [
-                .package(product: "LynxWebGPUBridge"),
+                .target(name: "LynxWebGPUBridge"),
+                // 앱 코드도 Lynx를 직접 쓴다 (LynxView 호스팅 — AppDelegate/DemoViewController).
+                .package(product: "Lynx"),
             ]
         ),
     ],

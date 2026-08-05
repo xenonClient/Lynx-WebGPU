@@ -376,6 +376,57 @@ final class RenderBundleTests: XCTestCase {
         )
     }
 
+    /// 인덱스 버퍼도 번들 경계에서 무효화된다 — 문서가 "파이프라인·바인드 그룹·정점 버퍼·
+    /// **인덱스 버퍼** 네 가지"라고 적어 둔 자리다. 남아 있으면 이어지는 `drawIndexed`가
+    /// 번들이 남긴 인덱스로 **실제로 그려져** 브라우저와 다르게 동작한다.
+    func test_번들_실행_뒤에는_인덱스_버퍼도_다시_지정해야_한다() {
+        let result = harness.execute(setUpVertexPulling() + [
+            ["op": "createBuffer", "id": 44, "size": 6, "usage": TestUsage.index,
+             "data": Data([0, 0, 1, 0, 2, 0]).base64EncodedString()],
+            vertexBundle(id: 43, commands: [
+                ["op": "setPipeline", "pipeline": 41],
+                ["op": "setVertexBuffer", "slot": 0, "buffer": 42],
+                ["op": "setIndexBuffer", "buffer": 44, "format": "uint16"],
+                ["op": "drawIndexed", "indexCount": 3],
+            ]),
+        ] + acquireDrawable + [
+            beginPass,
+            ["op": "executeBundles", "bundles": [43]],
+            ["op": "setPipeline", "pipeline": 41],
+            ["op": "setVertexBuffer", "slot": 0, "buffer": 42],
+            ["op": "drawIndexed", "indexCount": 3],   // setIndexBuffer 없이
+            ["op": "endPass"],
+        ])
+
+        XCTAssertTrue(
+            ((errors(result).first?["message"] as? String) ?? "").contains("setIndexBuffer가 필요하다"),
+            harness.describeErrors(result)
+        )
+    }
+
+    /// 반대 방향 — 패스에서 묶은 인덱스 버퍼를 번들이 물려받지 않는다.
+    func test_번들은_패스의_인덱스_버퍼를_물려받지_않는다() {
+        let result = harness.execute(setUpVertexPulling() + [
+            ["op": "createBuffer", "id": 44, "size": 6, "usage": TestUsage.index,
+             "data": Data([0, 0, 1, 0, 2, 0]).base64EncodedString()],
+            vertexBundle(id: 43, commands: [
+                ["op": "setPipeline", "pipeline": 41],
+                ["op": "setVertexBuffer", "slot": 0, "buffer": 42],
+                ["op": "drawIndexed", "indexCount": 3],   // 번들 안에서는 묶은 적이 없다
+            ]),
+        ] + acquireDrawable + [
+            beginPass,
+            ["op": "setIndexBuffer", "buffer": 44, "format": "uint16"],
+            ["op": "executeBundles", "bundles": [43]],
+            ["op": "endPass"],
+        ])
+
+        XCTAssertTrue(
+            ((errors(result).first?["message"] as? String) ?? "").contains("setIndexBuffer가 필요하다"),
+            harness.describeErrors(result)
+        )
+    }
+
     /// 회귀 — 번들 명령 하나가 실패해도 패스 바인딩 초기화는 건너뛰면 안 된다.
     ///
     /// 해석기의 계약은 "오류가 프레임을 죽이지 않고 누적된다"이므로 실행은 다음 명령부터 계속된다.
@@ -522,6 +573,13 @@ final class RenderBundleTests: XCTestCase {
             ["op": "endPass"],
             ["op": "executeBundles", "bundles": [99]],
             ["op": "copyBufferToBuffer", "source": 1, "destination": 2, "size": 4],
+            // occlusion 쿼리는 렌더 **패스**의 것이다 — 명세의 번들 인코더에는 아예 없다.
+            ["op": "beginOcclusionQuery", "queryIndex": 0],
+            ["op": "endOcclusionQuery"],
+            // 컴퓨트·쓰기 계열도 마찬가지다.
+            ["op": "dispatchWorkgroups", "x": 1],
+            ["op": "writeBuffer", "buffer": 1, "data": [0, 0, 0, 0]],
+            ["op": "clearBuffer", "buffer": 1],
         ] as [[String: Any]] {
             let result = harness.execute([createBundle(id: 10, commands: [forbidden])])
             XCTAssertEqual(

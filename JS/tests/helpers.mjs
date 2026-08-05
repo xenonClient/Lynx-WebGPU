@@ -20,6 +20,8 @@ export function installNativeMock(overrides = {}) {
     // 네이티브는 `Data`를 싣고 Lynx가 ArrayBuffer로 바꿔 준다 — 목도 ArrayBuffer를 준다.
     readBufferResult: overrides.readBufferResult ?? { ok: true, data: new ArrayBuffer(0) },
     loadAssetResult: overrides.loadAssetResult ?? { ok: true, data: new ArrayBuffer(0) },
+    decodeImageCalls: [],
+    decodeImageResult: overrides.decodeImageResult ?? { ok: true, width: 4, height: 4 },
   };
 
   const resolve = (value, argument) => (typeof value === 'function' ? value(argument) : value);
@@ -44,6 +46,10 @@ export function installNativeMock(overrides = {}) {
       loadAsset(params, callback) {
         state.loadAssetCalls.push(params);
         callback(resolve(state.loadAssetResult, params));
+      },
+      decodeImage(params, callback) {
+        state.decodeImageCalls.push(params);
+        callback(resolve(state.decodeImageResult, params));
       },
       startFrameLoop() {
         return { ok: true };

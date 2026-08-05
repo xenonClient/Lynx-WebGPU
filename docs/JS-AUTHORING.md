@@ -51,6 +51,7 @@ context.configure({ device, format })
 | 오류 | `pushErrorScope` / `uncapturederror` | `device.onError()` + `submit()` 반환의 `errors` |
 | 캔버스 크기 | `canvas.width/height` | `context.getSize()` (제출 응답으로 캐시 갱신) 또는 `bindcanvasresize` |
 | 애셋 가져오기 | `fetch()` / `<img>` | `await loadAsset(name)` → `ArrayBuffer` (등록 이름·파일 경로·번들 상대 경로 — 해석은 호스트의 `assetProvider`가 정한다) |
+| 이미지 → 텍스처 | `createImageBitmap(blob)` + `copyExternalImageToTexture` | **같은 모양이다.** 소스는 이미지 바이트나 애셋 이름이고, 디코딩은 네이티브가 한다 (`docs/WEBGPU-API.md` §3) |
 | HDR 출력 | `toneMapping: { mode }` | 같음 — `configure`에 넘긴다 (`docs/WEBGPU-API.md` §2) |
 | 미지원 기능 | — | `docs/WEBGPU-API.md` §8 |
 

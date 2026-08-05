@@ -26,6 +26,8 @@ enum DemoScene: String, CaseIterable {
     case scrollpass
     case three
     case spec
+    case images
+    case contracts
 
     /// 화면 전체를 덮어 띄울 씬 — 네비게이션 컨트롤러가 아니라 **모달로 표시**한다.
     ///
@@ -57,6 +59,8 @@ enum DemoScene: String, CaseIterable {
         case .scrollpass: return "스크롤 통과"
         case .three: return "three.js 렌더러"
         case .spec: return "명세 표면 점검"
+        case .images: return "이미지 · 압축 텍스처"
+        case .contracts: return "계약 점검"
         }
     }
 
@@ -84,6 +88,8 @@ enum DemoScene: String, CaseIterable {
         case .scrollpass: return "<scroll-view> 위 캔버스 — passthrough-touches 히트 테스트 검증"
         case .three: return "부트스트랩→셰이더→텍스처→조명을 픽셀 값으로 검증하는 체크리스트 + 회전 큐브"
         case .spec: return "디버그 마커·진단·부분 매핑 등 명세 표면 14종을 값으로 확인"
+        case .images: return "ASTC·BC 블록과 PNG 디코딩을 되읽은 픽셀 색으로 확인"
+        case .contracts: return "버퍼 복사 기본값·범위, 정수 vec3 배치, 번들 격리, 포맷 역방향"
         }
     }
 }

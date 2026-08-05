@@ -31,5 +31,6 @@ for file in $targets; do
     fi
 done
 
+
 [ -n "$changed" ] || exit 0
 printf '{"systemMessage":"SPM 버전 표기를 %s 로 갱신했다 — %s"}\n' "$version" "$changed"
