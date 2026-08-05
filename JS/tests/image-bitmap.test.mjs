@@ -93,6 +93,22 @@ test('copyExternalImageToTexture는 핸들만 싣는다', async () => {
   assert.equal(copy.data, undefined, '픽셀이 브리지를 건너면 안 된다');
 });
 
+test('복사 시점 flipY가 실린다 — three.js가 쓰는 자리다', async () => {
+  // `Texture.flipY`가 기본 true라, 안 실어 보내면 웹 라이브러리의 텍스처가 조용히 뒤집힌다.
+  const state = installNativeMock({ decodeImageResult: { ok: true, width: 8, height: 8 } });
+  const device = await makeDevice();
+  const bitmap = await createImageBitmap('a.png');
+  const texture = device.createTexture({ size: [8, 8], format: 'rgba8unorm', usage: 0x06 });
+
+  device.queue.copyExternalImageToTexture({ source: bitmap, flipY: true }, { texture });
+  device.queue.copyExternalImageToTexture({ source: bitmap }, { texture });
+  device.queue.submit([]);
+
+  const copies = commandsOf(state).filter((c) => c.op === 'copyExternalImageToTexture');
+  assert.equal(copies[0].source.flipY, true);
+  assert.equal(copies[1].source.flipY, false, '생략하면 뒤집지 않는다');
+});
+
 test('부분 복사의 origin과 mipLevel이 실린다', async () => {
   const state = installNativeMock({ decodeImageResult: { ok: true, width: 16, height: 16 } });
   const device = await makeDevice();

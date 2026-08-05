@@ -100,7 +100,8 @@ class GPURenderPassEncoder extends GPUPassEncoderBase {
 - 패스 명령은 `this._commands`(인코더 로컬), 리소스 생성/큐 작업은 `this._recorder.push`.
 - **네이티브를 동기로 부르지 않는다** — 프레임당 왕복 1회 계약이 깨진다.
   `mapAsync`/`canvasInfo`처럼 원래 왕복이 필요한 것만 예외다.
-- 핸들은 `this._recorder.allocate()`로 JS가 발급한다.
+- 핸들은 `this._recorder.allocate()`로 JS가 발급한다 (**모듈 공용 카운터**를 쓴다 —
+  레코더마다 세면 디바이스가 둘일 때 번호가 겹친다).
 - `.d.ts`에 시그니처를 더한다.
 
 ## 5. 테스트 (`Tests/LynxWebGPUTests/`)

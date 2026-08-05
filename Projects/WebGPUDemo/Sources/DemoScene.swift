@@ -86,7 +86,7 @@ enum DemoScene: String, CaseIterable {
         case .bench: return "base64 문자열 vs ArrayBuffer — 인코딩·제출 비용 비교"
         case .hdr: return "loadAsset + 게인맵 컴퓨트 → rgba16float 중간 텍스처 → 톤매핑"
         case .scrollpass: return "<scroll-view> 위 캔버스 — passthrough-touches 히트 테스트 검증"
-        case .three: return "부트스트랩→셰이더→텍스처→조명을 픽셀 값으로 검증하는 체크리스트 + 회전 큐브"
+        case .three: return "체크리스트 16종 + ASTC 압축 텍스처를 입은 회전 큐브·디코딩한 PNG 배경"
         case .spec: return "디버그 마커·진단·부분 매핑 등 명세 표면 14종을 값으로 확인"
         case .images: return "ASTC·BC 블록과 PNG 디코딩을 되읽은 픽셀 색으로 확인"
         case .contracts: return "버퍼 복사 기본값·범위, 정수 vec3 배치, 번들 격리, 포맷 역방향"

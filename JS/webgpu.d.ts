@@ -206,7 +206,6 @@ declare class GPUInternalError extends GPUError {
 declare class Recorder {
     /** @type {GPUCommand[]} */
     pending: GPUCommand[];
-    nextId: number;
     /** @type {((error: WGPUError, text: string) => void)[]} */
     errorHandlers: ((error: WGPUError, text: string) => void)[];
     /**
@@ -225,7 +224,11 @@ declare class Recorder {
         reject: (reason: Error) => void;
     }[];
     constructor();
-    /** @returns {number} 새 핸들 id */
+    /**
+     * 새 핸들 id. **모듈 공용 카운터**에서 낸다 — 레코더마다 세면 디바이스가 둘일 때
+     * 겹친다 (`allocateHandle` 주석 참고).
+     * @returns {number}
+     */
     allocate(): number;
     /**
      * 명령을 **기록 시점 값으로 고정해** 쌓는다 (`snapshotValue` 참고) — 디바이스/큐 op은

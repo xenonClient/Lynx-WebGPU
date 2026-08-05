@@ -195,9 +195,28 @@ function nativeModule() {
  * (= `configure` 직후 첫 조회) 한 번만 일어난다.
  */
 /**
- * 마지막으로 만든 디바이스의 레코더 — 전역 함수인 `createImageBitmap()`이 핸들을 발급받고
- * `close()`를 기록하는 곳이다. 핸들 공간은 네이티브 레지스트리 하나를 공유하므로
- * **디바이스의 레코더와 같은 것을 써야** 번호가 겹치지 않는다.
+ * GPU 객체 핸들 발급기 — **모듈 전체가 하나를 쓴다.**
+ *
+ * 네이티브 레지스트리는 `LynxWebGPUContext`당 하나이고 **핸들 정수만으로** 객체를 찾는다
+ * (디바이스별 칸이 없다). 그래서 카운터를 디바이스마다 두면 두 번째 디바이스가 1번부터 다시
+ * 발급해 첫 디바이스의 객체를 **조용히 덮어쓴다** — 오류 없이 남의 버퍼에 그리게 된다.
+ *
+ * 번호는 되돌리지 않는다. `device.destroy()`가 레지스트리를 비워도 재사용하지 않는 편이,
+ * 그 번호를 아직 들고 있는 JS 객체가 나중에 **남의 자리**를 가리키는 일을 막는다.
+ */
+let nextHandle = 1;
+
+/** @returns {number} 아무도 쓰지 않은 새 핸들 */
+function allocateHandle() {
+  return nextHandle++;
+}
+
+/**
+ * 마지막으로 만든 디바이스의 레코더 — 전역 함수인 `createImageBitmap()`이 `close()`의
+ * `destroy` 명령을 **어느 스트림에 실을지** 정하는 데만 쓴다. 핸들 번호와는 무관하다
+ * (그건 위의 `allocateHandle()`이 낸다).
+ *
+ * 이미지는 디바이스가 아니라 컨텍스트의 것이라 어느 스트림에 실려도 같은 곳에 닿는다.
  * @type {Recorder | null}
  */
 let activeRecorder = null;
@@ -321,7 +340,6 @@ class Recorder {
   constructor() {
     /** @type {GPUCommand[]} */
     this.pending = [];
-    this.nextId = 1;
     /** @type {((error: WGPUError, text: string) => void)[]} */
     this.errorHandlers = [];
     /**
@@ -338,9 +356,13 @@ class Recorder {
     this.pendingErrorScopes = [];
   }
 
-  /** @returns {number} 새 핸들 id */
+  /**
+   * 새 핸들 id. **모듈 공용 카운터**에서 낸다 — 레코더마다 세면 디바이스가 둘일 때
+   * 겹친다 (`allocateHandle` 주석 참고).
+   * @returns {number}
+   */
   allocate() {
-    return this.nextId++;
+    return allocateHandle();
   }
 
   /**
@@ -1484,7 +1506,9 @@ class GPUQueue {
    * 없다 — `GPUImageBitmap`이 그 자리다. 픽셀은 네이티브에 남아 있으므로 **브리지를
    * 건너는 것은 핸들 하나뿐**이다 (`writeTexture`로 올리면 이미지 전체가 오간다).
    *
-   * `flipY`·`premultiplyAlpha`는 디코딩 시점 옵션이라 `createImageBitmap` 쪽에 있다.
+   * `source.flipY`는 **복사 시점**에 위아래를 뒤집는다 (`createImageBitmap`의 `flipY`는
+   * 디코딩 시점이라 별개다 — 둘 다 켜면 두 번 뒤집혀 제자리로 돌아온다). 웹 라이브러리는
+   * 이쪽을 쓴다: three.js의 `Texture.flipY`가 기본 `true`다.
    *
    * @param {{source: GPUImageBitmap, origin?: GPUOrigin3DDict, flipY?: boolean}} source
    * @param {{texture: GPUTexture, mipLevel?: number, origin?: GPUOrigin3DDict,
@@ -1495,7 +1519,11 @@ class GPUQueue {
   copyExternalImageToTexture(source, destination, copySize) {
     this._recorder.push({
       op: 'copyExternalImageToTexture',
-      source: { source: source.source.id, origin: source.origin },
+      source: {
+        source: source.source.id,
+        origin: source.origin,
+        flipY: !!source.flipY,
+      },
       destination: {
         texture: destination.texture.id,
         mipLevel: destination.mipLevel || 0,
@@ -2363,8 +2391,10 @@ export async function createImageBitmap(source, options) {
   if (!activeRecorder) {
     throw new Error('createImageBitmap은 디바이스가 만들어진 뒤에만 쓸 수 있다 (requestDevice를 먼저 부를 것)');
   }
+  // 핸들은 모듈 공용 카운터에서 낸다 — 어느 디바이스가 활성이든 겹치지 않는다.
+  // 레코더는 나중에 `close()`가 destroy를 실어 보낼 스트림으로만 기억한다.
   const recorder = activeRecorder;
-  const id = recorder.allocate();
+  const id = allocateHandle();
   /** @type {{id: number, data?: ArrayBuffer, name?: string, flipY: boolean,
    *   premultiplyAlpha: boolean, resizeWidth?: number, resizeHeight?: number}} */
   const params = {

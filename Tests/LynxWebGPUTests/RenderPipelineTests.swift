@@ -134,6 +134,70 @@ final class RenderPipelineTests: XCTestCase {
         try harness.assertPixel(x: 5, y: 60, equals: (0, 255, 0, 255), "전체 화면을 덮어야 한다")
     }
 
+    /// 정수 `vec3` 유니폼의 배치를 **GPU가 읽은 값으로** 확인한다.
+    ///
+    /// WGSL `vec3<i32>`는 12바이트, MSL `int3`는 16바이트다. 방출기가 `packed_int3`를 쓰지
+    /// 않으면 뒤 필드가 4바이트씩 밀려 **오류 없이 다른 값**이 읽힌다 — 트랜스파일러 테스트는
+    /// "문자열이 맞고 컴파일된다"까지만 보므로, 실제로 같은 자리를 가리키는지는 여기서 본다.
+    ///
+    /// (`packed_int3`/`packed_uint3`는 MSL에 있는 타입이고 12바이트다. 이름만 맞고 크기가
+    /// 16이면 이 테스트가 깨진다.)
+    func test_정수_vec3_유니폼이_WGSL_오프셋대로_읽힌다() throws {
+        let shader = """
+        struct Counts {
+            offsets: vec3<i32>,   // offset 0  (12B)
+            total: i32,           // offset 12
+            sizes: vec3<u32>,     // offset 16 (12B)
+            stride: u32,          // offset 28
+        };
+        @group(0) @binding(0) var<uniform> counts: Counts;
+
+        @vertex
+        fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f {
+            var positions = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
+            return vec4f(positions[index], 0.0, 1.0);
+        }
+
+        @fragment
+        fn fs_main() -> @location(0) vec4f {
+            let a = counts.offsets.x + counts.offsets.y + counts.offsets.z + counts.total;
+            let b = counts.sizes.x + counts.sizes.y + counts.sizes.z + counts.stride;
+            let c = counts.offsets.z * 10 + i32(counts.sizes.y);
+            return vec4f(f32(a) / 255.0, f32(b) / 255.0, f32(c) / 255.0, 1.0);
+        }
+        """
+        // offsets(1,2,3) total 4 · sizes(5,6,7) stride 8 — WGSL 오프셋 그대로 채운다.
+        let values: [Int32] = [1, 2, 3, 4, 5, 6, 7, 8]
+        let data = values.withUnsafeBufferPointer { Data(buffer: $0).base64EncodedString() }
+
+        harness.executeExpectingSuccess([
+            ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
+            ["op": "createShaderModule", "id": 1, "code": shader],
+            ["op": "createBuffer", "id": 2, "size": 32,
+             "usage": TestUsage.uniform | TestUsage.copyDst, "data": data],
+            ["op": "createRenderPipeline", "id": 3, "layout": "auto",
+             "vertex": ["module": 1, "entryPoint": "vs_main"],
+             "fragment": ["module": 1, "entryPoint": "fs_main", "targets": [["format": "rgba8unorm"]]]],
+            ["op": "getBindGroupLayout", "id": 4, "pipeline": 3, "index": 0],
+            ["op": "createBindGroup", "id": 5, "layout": 4,
+             "entries": [["binding": 0, "resource": ["buffer": 2]]]],
+            ["op": "getCurrentTexture", "id": 10, "canvas": "test"],
+            ["op": "createTextureView", "id": 11, "texture": 10],
+            ["op": "beginRenderPass", "colorAttachments": [[
+                "view": 11, "loadOp": "clear", "storeOp": "store",
+                "clearValue": ["r": 0, "g": 0, "b": 0, "a": 1],
+            ]]],
+            ["op": "setPipeline", "pipeline": 3],
+            ["op": "setBindGroup", "index": 0, "bindGroup": 5],
+            ["op": "draw", "vertexCount": 3],
+            ["op": "endPass"],
+        ])
+
+        // r = 1+2+3+4 = 10 · g = 5+6+7+8 = 26 · b = 3*10 + 6 = 36.
+        // 배치가 밀리면 이 셋이 **전부** 달라진다.
+        try harness.assertPixel(x: 32, y: 32, equals: (10, 26, 36, 255), "정수 vec3 배치")
+    }
+
     func test_인덱스드로우가_사각형을_채운다() throws {
         let vertices: [Float] = [
             -1, -1, 1, 1, 0,

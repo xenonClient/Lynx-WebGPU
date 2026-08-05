@@ -2,7 +2,9 @@
 // 빌드는 SWC 트랜스파일이라 영향이 없고, 이 파일의 통합 지점은 런타임 검증(체크리스트)으로 확인한다.
 import { root, useEffect, useState } from '@lynx-js/react'
 import * as THREE from 'three/webgpu'
-import gpu, { GPUBufferUsage, GPUTextureUsage, installAnimationFrame } from '../webgpu.js'
+import gpu, {
+  GPUBufferUsage, GPUTextureUsage, createImageBitmap, installAnimationFrame,
+} from '../webgpu.js'
 import '../demo.css'
 import '../elements.d.ts'
 
@@ -38,6 +40,85 @@ function attachStreamCounter(device: any) {
 }
 
 // ---------------------------------------------------------------------------
+// 이 브랜치가 새로 연 경로 — 블록 압축 텍스처와 외부 이미지
+// ---------------------------------------------------------------------------
+
+/**
+ * ASTC "void extent" 블록 (16B) — 블록 전체가 한 색이라고 선언하는 형태다.
+ *
+ * 인코더 없이 결정적인 압축 데이터를 만들 수 있는 유일한 길이라, 번들에 인코딩된 애셋을
+ * 넣지 않고도 **진짜 ASTC 경로**를 밟을 수 있다. 앞 9비트가 서명(`0b111111100`)이고
+ * 뒤 8바이트가 UNORM16 RGBA다.
+ * @param {number[]} rgb UNORM16 세 채널
+ */
+function astcVoidExtent(rgb: number[]): Uint8Array {
+  const block = new Uint8Array(16)
+  block.set([0xfc, 0xfd, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff])
+  const channels = [rgb[0], rgb[1], rgb[2], 0xffff]
+  channels.forEach((value, index) => {
+    block[8 + index * 2] = value & 0xff
+    block[9 + index * 2] = value >> 8
+  })
+  return block
+}
+
+/** 4×4 PNG — 위 절반 빨강, 아래 절반 파랑. 방향을 보려면 비대칭이어야 한다. */
+const PNG_BASE64
+  = 'iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAFUlEQVR42mP4z8DwHxkzYAig8TEFACxQH+FE11LuAAAAAElFTkSuQmCC'
+
+/** base64 → ArrayBuffer. 번들에 이미지를 박아 두는 통로다 (`loadAsset`이 없어도 된다). */
+function decodeBase64(text: string): ArrayBuffer {
+  const table = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+  const clean = text.replace(/=+$/, '')
+  const bytes = new Uint8Array((clean.length * 3) >> 2)
+  let accumulator = 0
+  let bits = 0
+  let out = 0
+  for (const character of clean) {
+    accumulator = (accumulator << 6) | table.indexOf(character)
+    bits += 6
+    if (bits >= 8) {
+      bits -= 8
+      bytes[out++] = (accumulator >> bits) & 0xff
+    }
+  }
+  return bytes.buffer
+}
+
+/**
+ * 16×16 ASTC 4×4 텍스처 — 4×4 블록 16개가 각각 단색이라 **색 격자**로 보인다.
+ *
+ * 화면에 도는 큐브가 이걸 쓴다. "만들어졌다"가 아니라 **압축 데이터가 실제로 디코딩되어
+ * 화면에 나오는** 것을 눈으로 보는 자리다 (256B — 비압축 rgba8unorm의 1/4).
+ */
+function makeCompressedGrid(): { texture: any, bytes: number, raw: number } {
+  const blocksPerSide = 4
+  const data = new Uint8Array(blocksPerSide * blocksPerSide * 16)
+  for (let y = 0; y < blocksPerSide; y++) {
+    for (let x = 0; x < blocksPerSide; x++) {
+      // 대각선을 따라 도는 색상환 — 큐브가 돌 때 면이 구별된다.
+      const hue = ((x + y * blocksPerSide) / (blocksPerSide * blocksPerSide))
+      const color = new THREE.Color().setHSL(hue, 0.75, 0.55)
+      data.set(
+        astcVoidExtent([
+          Math.round(color.r * 0xffff), Math.round(color.g * 0xffff), Math.round(color.b * 0xffff),
+        ]),
+        (y * blocksPerSide + x) * 16
+      )
+    }
+  }
+  const side = blocksPerSide * 4
+  const texture = new THREE.CompressedTexture(
+    [{ data, width: side, height: side }], side, side,
+    THREE.RGBA_ASTC_4x4_Format, THREE.UnsignedByteType
+  )
+  texture.minFilter = THREE.NearestFilter
+  texture.magFilter = THREE.NearestFilter
+  texture.needsUpdate = true
+  return { texture, bytes: data.length, raw: side * side * 4 }
+}
+
+// ---------------------------------------------------------------------------
 // 기능 체크 — 렌더 타깃에 그리고 픽셀 값을 읽어 기대색과 비교한다
 // ---------------------------------------------------------------------------
 
@@ -54,6 +135,8 @@ const CHECK_LABELS = [
   '클리어 색 리드백',
   '셰이더 파이프라인 (단색 쿼드)',
   '텍스처 업로드·샘플링',
+  '압축 텍스처 (CompressedTexture · ASTC)',
+  '외부 이미지 (createImageBitmap → PNG 디코딩)',
   '조명 (Standard + Directional)',
   '깊이 테스트 (앞뒤 가림)',
   '인스턴싱 (InstancedMesh)',
@@ -63,8 +146,8 @@ const CHECK_LABELS = [
   '애니메이션 루프',
   '커맨드 스트림 무오류',
 ]
-const CHECK_ANIMATION = 12
-const CHECK_STREAM = 13
+const CHECK_ANIMATION = 14
+const CHECK_STREAM = 15
 
 /**
  * three를 거치지 않는 shim 직접 왕복 — three 검증이 실패할 때 어느 층인지 가른다.
@@ -202,8 +285,91 @@ async function runPixelChecks(
     }
   })
 
-  // ④ 조명 — 흰 StandardMaterial 플레인에 정면 직사광. 라이팅이 죽었으면 검게 나온다.
+  // ③-1 압축 텍스처 — **three가 스스로 밟는 경로**다.
+  //
+  //  `CompressedTexture`를 보면 three는 `_copyCompressedBufferToTexture()`로 가서
+  //  `bytesPerRow = ceil(width/블록너비) × 블록바이트`, `rowsPerImage = ceil(height/블록높이)`로
+  //  `writeTexture`를 부른다 — 이 브랜치가 넣은 블록 산수와 정확히 같은 계약이다.
+  //  전에는 `adapter.features`에 압축 계열이 없어 three가 이 길을 아예 몰랐다.
   await check(6, async () => {
+    const device = renderer.backend.device
+    if (!device.features.has('texture-compression-astc')) {
+      return { ok: false, detail: 'three가 astc 기능을 못 받았다' }
+    }
+    // 8×8 = 4×4 블록 네 개. 각 블록이 단색이라 결과가 2×2 색 격자다.
+    const blocks = new Uint8Array(4 * 16)
+    const colors = [
+      [0xffff, 0x2000, 0x2000],   // 빨강
+      [0x2000, 0xffff, 0x2000],   // 초록
+      [0x2000, 0x2000, 0xffff],   // 파랑
+      [0xffff, 0xffff, 0x2000],   // 노랑
+    ]
+    colors.forEach((color, index) => blocks.set(astcVoidExtent(color), index * 16))
+
+    const texture = new THREE.CompressedTexture(
+      [{ data: blocks, width: 8, height: 8 }], 8, 8,
+      THREE.RGBA_ASTC_4x4_Format, THREE.UnsignedByteType
+    )
+    texture.minFilter = THREE.NearestFilter
+    texture.magFilter = THREE.NearestFilter
+    texture.needsUpdate = true
+
+    const scene = new THREE.Scene()
+    scene.add(new THREE.Mesh(
+      new THREE.PlaneGeometry(2, 2),
+      new THREE.MeshBasicMaterial({ map: texture })
+    ))
+    // 블록 네 개가 **서로 다른 색으로** 나오는지 본다. 블록 하나만 보면 산수가 틀려
+    // 같은 블록을 네 번 읽어도 통과해 버린다.
+    //
+    // 텍스처 v축의 원점은 아래다 (`CompressedTexture`는 flipY가 false다) — 화면 아래가
+    // 첫 블록 행(빨강·초록), 위가 둘째 행(파랑·노랑)이다.
+    const bottomLeft = await renderAndRead(scene, 2, 6)
+    const bottomRight = await renderAndRead(scene, 6, 6)
+    const topLeft = await renderAndRead(scene, 2, 2)
+    const ok = bottomLeft[0] > 150 && bottomLeft[1] < 120        // 빨강
+      && bottomRight[1] > 150 && bottomRight[0] < 120            // 초록
+      && topLeft[2] > 150 && topLeft[0] < 120                    // 파랑
+    return {
+      ok,
+      detail: `${formatRGB(bottomLeft)}/${formatRGB(bottomRight)}/${formatRGB(topLeft)}`
+        + ` · ${blocks.length}B (비압축 ${8 * 8 * 4}B)`,
+    }
+  })
+
+  // ③-2 외부 이미지 — three가 `queue.copyExternalImageToTexture()`를 부르는 경로다.
+  //
+  //  three는 DataTexture도 압축도 큐브도 아닌 텍스처를 만나면 `_copyImageToTexture()`로 가서
+  //  이 API를 그대로 부른다. `createImageBitmap()`이 준 객체를 `image`에 넣기만 하면
+  //  브라우저에서 쓰던 코드와 **글자 그대로 같은** 모양이 된다.
+  await check(7, async () => {
+    const bitmap = await createImageBitmap(decodeBase64(PNG_BASE64))
+    const texture = new THREE.Texture(bitmap)
+    texture.magFilter = THREE.NearestFilter
+    texture.minFilter = THREE.NearestFilter
+    texture.generateMipmaps = false
+    // `flipY`는 건드리지 않는다 — three의 기본값이 true다. 그 값이 명세대로
+    // `copyExternalImageToTexture`의 소스 옵션으로 실려야 이미지가 바로 선다.
+    texture.needsUpdate = true
+
+    const scene = new THREE.Scene()
+    scene.add(new THREE.Mesh(
+      new THREE.PlaneGeometry(2, 2),
+      new THREE.MeshBasicMaterial({ map: texture })
+    ))
+    // PNG는 첫 행이 빨강, 마지막 행이 파랑이다. three가 flipY를 걸어 두므로
+    // **화면에서도 위가 빨강**이어야 한다 — 무시하면 여기서 뒤집혀 나온다.
+    const top = await renderAndRead(scene, 4, 2)
+    const bottom = await renderAndRead(scene, 4, 6)
+    bitmap.close()
+    return {
+      ok: top[0] > 150 && top[2] < 120 && bottom[2] > 150 && bottom[0] < 120,
+      detail: `위 ${formatRGB(top)} · 아래 ${formatRGB(bottom)}`,
+    }
+  })
+
+  // ④ 조명 — 흰 StandardMaterial 플레인에 정면 직사광. 라이팅이 죽었으면 검게 나온다.
+  await check(8, async () => {
     const scene = new THREE.Scene()
     scene.add(new THREE.Mesh(
       new THREE.PlaneGeometry(2, 2),
@@ -217,7 +383,7 @@ async function runPixelChecks(
   })
 
   // ⑤ 깊이 테스트 — 파랑이 앞, 빨강이 뒤. 깊이 비교가 죽으면 그리는 순서대로 빨강이 이긴다.
-  await check(7, async () => {
+  await check(9, async () => {
     const scene = new THREE.Scene()
     const back = new THREE.Mesh(
       new THREE.PlaneGeometry(2, 2), new THREE.MeshBasicMaterial({ color: 0xff0000 })
@@ -237,7 +403,7 @@ async function runPixelChecks(
   })
 
   // ⑥ 인스턴싱 — 인스턴스마다 다른 위치·색. 인스턴스 버퍼가 안 오면 하나만 그려진다.
-  await check(8, async () => {
+  await check(10, async () => {
     const mesh = new THREE.InstancedMesh(
       new THREE.PlaneGeometry(0.8, 2),
       new THREE.MeshBasicMaterial(),
@@ -267,7 +433,7 @@ async function runPixelChecks(
 
   // ⑦ 밉맵 — three가 자체 컴퓨트 패스로 밉을 만든다. 낮은 밉을 강제로 샘플링해
   //    두 색의 평균이 나오는지 본다 (밉 생성이 죽으면 원본 색 그대로거나 검다).
-  await check(9, async () => {
+  await check(11, async () => {
     const size = 4
     const texels = new Uint8Array(size * size * 4)
     for (let index = 0; index < size * size; index++) {
@@ -295,7 +461,7 @@ async function runPixelChecks(
   })
 
   // ⑧ 알파 블렌딩 — 불투명 빨강 위에 50% 파랑. 합성이 죽으면 순색이 나온다.
-  await check(10, async () => {
+  await check(12, async () => {
     const scene = new THREE.Scene()
     const back = new THREE.Mesh(
       new THREE.PlaneGeometry(2, 2), new THREE.MeshBasicMaterial({ color: 0xff0000 })
@@ -314,7 +480,7 @@ async function runPixelChecks(
   })
 
   // ⑨ 비동기 파이프라인 — three의 compileAsync가 createRenderPipelineAsync를 탄다.
-  await check(11, async () => {
+  await check(13, async () => {
     const scene = new THREE.Scene()
     scene.add(new THREE.Mesh(
       new THREE.PlaneGeometry(2, 2),
@@ -333,37 +499,66 @@ async function runPixelChecks(
 // ---------------------------------------------------------------------------
 
 /** 눈으로 볼 회전 큐브 — 체커 텍스처 + 조명이라 어느 기능이 죽어도 티가 난다. */
-function buildSpinScene(aspect: number) {
+/**
+ * 눈으로 보는 씬 — **이 브랜치가 연 두 경로가 실제로 화면을 만든다.**
+ *
+ * - 도는 큐브의 표면은 **ASTC 블록 압축 데이터**다. GPU가 블록을 디코딩해 그린다.
+ * - 뒤 판은 **PNG를 네이티브에서 디코딩**해(`createImageBitmap`) 올린 텍스처다.
+ *   three가 `queue.copyExternalImageToTexture()`를 스스로 부르는 경로를 탄다.
+ *
+ * 압축 계열이 없는 기기에서는 큐브가 예전 `DataTexture` 체커로 돌아간다 — 화면이
+ * 비는 것보다 낫고, HUD가 어느 쪽인지 알려 준다.
+ */
+function buildSpinScene(aspect: number, options: { compressed: boolean, backdrop: any }) {
   const scene = new THREE.Scene()
   scene.background = new THREE.Color(0x0b0e14)
 
   const camera = new THREE.PerspectiveCamera(50, aspect, 0.1, 20)
   camera.position.z = 4
 
-  const size = 8
-  const texels = new Uint8Array(size * size * 4)
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const even = (x + y) % 2 === 0
-      texels.set(even ? [255, 176, 32, 255] : [24, 60, 116, 255], (y * size + x) * 4)
+  let surface: any
+  let note: string
+  if (options.compressed) {
+    const grid = makeCompressedGrid()
+    surface = grid.texture
+    note = `ASTC 4x4 ${grid.bytes}B (비압축 ${grid.raw}B)`
+  } else {
+    const size = 8
+    const texels = new Uint8Array(size * size * 4)
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const even = (x + y) % 2 === 0
+        texels.set(even ? [255, 176, 32, 255] : [24, 60, 116, 255], (y * size + x) * 4)
+      }
     }
+    surface = new THREE.DataTexture(texels, size, size, THREE.RGBAFormat, THREE.UnsignedByteType)
+    surface.magFilter = THREE.NearestFilter
+    surface.needsUpdate = true
+    note = '비압축 (이 기기에 ASTC가 없다)'
   }
-  const checker = new THREE.DataTexture(texels, size, size, THREE.RGBAFormat, THREE.UnsignedByteType)
-  checker.magFilter = THREE.NearestFilter
-  checker.needsUpdate = true
 
   const mesh = new THREE.Mesh(
     new THREE.BoxGeometry(1.6, 1.6, 1.6),
-    new THREE.MeshStandardMaterial({ map: checker, roughness: 0.4, metalness: 0.1 })
+    new THREE.MeshStandardMaterial({ map: surface, roughness: 0.4, metalness: 0.1 })
   )
   scene.add(mesh)
+
+  // 뒤 판 — 네이티브가 디코딩한 PNG. 큐브 뒤에 두어 둘이 한 프레임에 같이 나온다.
+  if (options.backdrop) {
+    const backdrop = new THREE.Mesh(
+      new THREE.PlaneGeometry(7, 7),
+      new THREE.MeshBasicMaterial({ map: options.backdrop, opacity: 0.35, transparent: true })
+    )
+    backdrop.position.z = -2.5
+    scene.add(backdrop)
+  }
 
   const key = new THREE.DirectionalLight(0xffffff, 2.6)
   key.position.set(2, 3, 4)
   scene.add(key)
   scene.add(new THREE.AmbientLight(0xffffff, 0.35))
 
-  return { scene, camera, mesh }
+  return { scene, camera, mesh, note }
 }
 
 function ThreeScene() {
@@ -464,7 +659,23 @@ function ThreeScene() {
       if (disposed) return
 
       // 눈으로 볼 회전 큐브 + 프레임 카운터.
-      const spin = buildSpinScene(size.width / size.height)
+      //
+      // 큐브 표면은 ASTC 압축 데이터, 뒤 판은 네이티브가 디코딩한 PNG다 — 이 브랜치가
+      // 연 두 경로가 **화면에 실제로 나오는지**를 보는 자리다.
+      const compressed = device.features.has('texture-compression-astc')
+      let backdrop: any = null
+      try {
+        const bitmap = await createImageBitmap(decodeBase64(PNG_BASE64))
+        backdrop = new THREE.Texture(bitmap)
+        backdrop.magFilter = THREE.LinearFilter
+        backdrop.minFilter = THREE.LinearFilter
+        backdrop.generateMipmaps = false
+        backdrop.needsUpdate = true
+      } catch (error) {
+        console.log(`[3js-error] 배경 이미지 실패: ${error && (error as Error).message}`)
+      }
+      const spin = buildSpinScene(size.width / size.height, { compressed, backdrop })
+      setStatus(`${size.width}×${size.height} · r${THREE.REVISION} · ${spin.note}`)
       let frames = 0
       let elapsedStart: number | null = null
       renderer.setAnimationLoop((time: number) => {

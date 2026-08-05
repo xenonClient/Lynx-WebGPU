@@ -119,6 +119,10 @@ Three.js `WebGPURenderer`를 실제로 올려 보며(데모 `three` 씬) 드러�
 - `copyExternalImageToTexture` op — 부분 복사(`origin`·`copySize`)와 밉 레벨 지정까지.
 - JS `createImageBitmap()` / `GPUImageBitmap.close()` / `queue.copyExternalImageToTexture()`.
 
+웹 라이브러리가 **손대지 않고** 이 길을 탄다는 것도 확인했다 — three.js는 `CompressedTexture`를
+보면 블록 단위 `writeTexture`로, 이미지가 붙은 `Texture`를 보면 `copyExternalImageToTexture`로
+스스로 간다 (`three` 데모 씬). 그 과정에서 복사 시점 `flipY`가 빠져 있던 것도 드러났다.
+
 `importExternalTexture`(비디오)는 여전히 없다. 비디오 프레임 핸들이 Lynx 쪽에 생기면
 같은 자리에 붙는다. 눈 검증은 `images` 데모 씬이 한다 (`docs/TESTING.md` §8).
 
