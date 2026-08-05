@@ -133,6 +133,94 @@ final class CommandInterpreterTests: XCTestCase {
         XCTAssertEqual(harness.context.liveObjectCount, before, "present했으니 이제 회수된다")
     }
 
+    /// **명령이 하나도 없는 배치도 present한다.**
+    ///
+    /// 프레임 경계가 `submit()`이 아니라 **프레임 루프 콜백의 끝**이므로 (브라우저가 태스크
+    /// 끝에 present하는 자리), 틱의 마지막에는 명령이 비어 있고 present만 하는 배치가 온다.
+    /// 그때 커맨드 버퍼가 없다고 그냥 지나가면 **화면이 멈춘 채 아무 말이 없다.**
+    func test_명령이_없는_배치도_present하고_프레임_핸들을_회수한다() {
+        harness.executeExpectingSuccess([
+            ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
+        ])
+        let before = harness.context.liveObjectCount
+
+        // 틱 안의 제출들 — present는 미뤄져 있다.
+        let midFrame = harness.context.execute([
+            "commands": [
+                ["op": "getCurrentTexture", "id": 60, "canvas": "test"],
+                ["op": "createTextureView", "id": 61, "texture": 60],
+                ["op": "beginRenderPass", "colorAttachments": [[
+                    "view": 61, "loadOp": "clear", "storeOp": "store",
+                    "clearValue": ["r": 0, "g": 1, "b": 0, "a": 1],
+                ]]],
+                ["op": "endPass"],
+            ] as [[String: Any]],
+            "present": false,
+        ])
+        XCTAssertEqual(midFrame["ok"] as? Bool, true, harness.describeErrors(midFrame))
+        XCTAssertEqual(harness.context.liveObjectCount, before + 2, "아직 프레임 중간이다")
+
+        // 틱의 끝 — 명령은 비어 있고 present만 한다.
+        let closing = harness.context.execute(["commands": [[String: Any]](), "present": true])
+        XCTAssertEqual(closing["ok"] as? Bool, true, harness.describeErrors(closing))
+        XCTAssertEqual(
+            harness.context.liveObjectCount, before,
+            "빈 배치라도 present했으면 프레임 스코프 핸들이 회수돼야 한다"
+        )
+    }
+
+    /// 획득한 드로어블이 없으면 빈 배치는 **아무것도 하지 않는다** — 커맨드 버퍼를 괜히
+    /// 만들어 커밋하면 in-flight 회계가 헛돈다.
+    func test_드로어블이_없으면_빈_배치는_아무것도_하지_않는다() {
+        harness.executeExpectingSuccess([
+            ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
+        ])
+        let before = harness.context.liveObjectCount
+
+        let result = harness.context.execute(["commands": [[String: Any]](), "present": true])
+
+        XCTAssertEqual(result["ok"] as? Bool, true, harness.describeErrors(result))
+        XCTAssertEqual(harness.context.liveObjectCount, before)
+    }
+
+    /// 한 프레임의 제출 여러 개가 **드로어블 뷰를 공유**한다 — three.js의 포스트프로세싱이
+    /// 그 모양이다 (씬 패스 → bloom 밉 체인 → 출력 패스). 중간에 present하면 두 번째 패스가
+    /// "GPUTextureView가 존재하지 않는다"로 거부된다.
+    func test_한_프레임의_여러_제출이_드로어블_뷰를_공유한다() {
+        harness.executeExpectingSuccess([
+            ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
+        ])
+
+        let acquire = harness.context.execute([
+            "commands": [
+                ["op": "getCurrentTexture", "id": 70, "canvas": "test"],
+                ["op": "createTextureView", "id": 71, "texture": 70],
+                ["op": "beginRenderPass", "colorAttachments": [[
+                    "view": 71, "loadOp": "clear", "storeOp": "store",
+                    "clearValue": ["r": 1, "g": 0, "b": 0, "a": 1],
+                ]]],
+                ["op": "endPass"],
+            ] as [[String: Any]],
+            "present": false,
+        ])
+        XCTAssertEqual(acquire["ok"] as? Bool, true, harness.describeErrors(acquire))
+
+        // 같은 프레임의 두 번째 제출이 **같은 뷰**로 다시 그린다.
+        let second = harness.context.execute([
+            "commands": [
+                ["op": "beginRenderPass", "colorAttachments": [[
+                    "view": 71, "loadOp": "clear", "storeOp": "store",
+                    "clearValue": ["r": 0, "g": 1, "b": 0, "a": 1],
+                ]]],
+                ["op": "endPass"],
+            ] as [[String: Any]],
+            "present": false,
+        ])
+        XCTAssertEqual(second["ok"] as? Bool, true, harness.describeErrors(second))
+
+        harness.context.execute(["commands": [[String: Any]](), "present": true])
+    }
+
     /// 프레임 중간 배치가 **커맨드 버퍼를 만들어도**(writeBuffer 등) 스왑체인이 살아남아야 한다.
     ///
     /// Three.js의 지연 파이프라인 생성이 정확히 이 모양이다 — 드로어블을 획득해 둔 채로

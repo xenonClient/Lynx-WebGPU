@@ -10,6 +10,7 @@ import { bloom } from 'three/addons/tsl/display/BloomNode.js'
 import gpu, { installAnimationFrame } from '../webgpu.js'
 import '../demo.css'
 import '../elements.d.ts'
+import { ChecklistHud, type Check } from '../checklist-hud.jsx'
 
 // three의 내부 Animation 루프가 rAF를 전제한다 — import 전에 깔려야 안전하다.
 const uninstallAnimationFrame = installAnimationFrame()
@@ -27,12 +28,6 @@ const uninstallAnimationFrame = installAnimationFrame()
  * 한 덩어리로 켜면 첫 실패에서 화면이 검게 되고 원인이 사라진다.
  */
 
-interface Check {
-  label: string
-  state: 'wait' | 'ok' | 'fail'
-  detail?: string
-}
-
 const CHECK_LABELS = [
   'TSL 절차적 머티리얼 (노이즈 → 색)',
   'TSL 정점 변형 (positionLocal 이동)',
@@ -41,7 +36,7 @@ const CHECK_LABELS = [
   '컴퓨트 결과를 인스턴스가 읽는다',
   '인스턴싱 4096개',
   '포스트프로세싱 bloom (렌더 타깃으로)',
-  '포스트프로세싱을 캔버스로 (알려진 한계)',
+  '포스트프로세싱을 캔버스로 (프레임 경계)',
   '전체 합성 프레임 루프',
   '커맨드 스트림 무오류',
 ]
@@ -431,37 +426,6 @@ function ThreeLabScene() {
         return { ok: halo[0] > 8, detail: `번짐 밖 ${formatRGB(halo)}` }
       })
 
-      // ⑧ 포스트프로세싱을 **캔버스로** 내보내면 깨진다 — 이 씬이 찾아낸 한계다.
-      //
-      //   three는 렌더 타깃 디스크립터에 **텍스처 뷰를 캐시**한다
-      //   (`_getRenderPassDescriptor`, 크기·샘플 수가 바뀔 때만 무효화). 브라우저에서는 한
-      //   프레임의 여러 `submit()`이 present를 일으키지 않아 그 캐시가 유효하지만, 여기서는
-      //   `submit()`마다 present하고 그때 드로어블 뷰가 만료된다 — 다음 프레임에 캐시된
-      //   뷰를 다시 쓰면 "없는 핸들"이 된다.
-      //
-      //   렌더 타깃으로 내보내는 경로(⑦)는 멀쩡하다. 캔버스로 직접 내보낼 때만 걸린다.
-      await check(CHECK_CANVAS_POST, async () => {
-        const probe = new THREE.Scene()
-        probe.background = new THREE.Color(0, 0, 0)
-        probe.add(new THREE.Mesh(
-          new THREE.PlaneGeometry(0.5, 0.5),
-          new THREE.MeshBasicNodeMaterial({ color: 0xffffff })
-        ))
-        const probePass = pass(probe, ortho)
-        const probePost = new THREE.PostProcessing(renderer)
-        probePost.outputNode = probePass.add(bloom(probePass, 1.0, 0.4, 0.0))
-
-        const before = streamStats.errors
-        await probePost.renderAsync()   // 렌더 타깃을 지정하지 않으면 캔버스로 간다
-        await probePost.renderAsync()   // 두 번째 프레임에서 캐시된 뷰가 되살아난다
-        probePost.dispose()
-        const leaked = streamStats.errors - before
-        return {
-          ok: leaked === 0,
-          detail: leaked === 0 ? '오류 0' : `오류 ${leaked}건 — 드로어블 뷰 캐시 (아래 참고)`,
-        }
-      })
-
       if (disposed) return
 
       // --- 전체 합성: 다섯 가지가 한 프레임에 같이 돈다 --------------------
@@ -499,8 +463,10 @@ function ThreeLabScene() {
       camera.position.set(0, 3.4, 9)
       camera.lookAt(0, 2, 0)
 
-      // 합성 화면은 포스트프로세싱을 **끄고** 돈다 — 캔버스 출력 경로가 위 ⑧의 한계에
-      // 걸리기 때문이다. 나머지(절차적 머티리얼·그림자·컴퓨트·인스턴싱)는 그대로 돈다.
+      // 합성 화면은 포스트프로세싱을 **끄고** 돈다. 프레임 경계를 틱 끝으로 옮겨 한 프레임의
+      // 여러 패스가 드로어블을 공유할 수 있게 됐지만, three가 렌더 타깃 디스크립터에 캐시한
+      // 캔버스 뷰를 **프레임을 넘겨** 재사용하는 자리(⑧)는 남아 있다 — 명세대로라면 present
+      // 시점에 만료된 뷰이므로 거부가 맞다. 나머지는 그대로 60fps로 돈다.
       const usePost = false
       const composite = new THREE.PostProcessing(renderer)
       const scenePass = pass(scene, camera)
@@ -508,17 +474,33 @@ function ThreeLabScene() {
 
       let frames = 0
       let startTime: number | null = null
+      // ⑧는 **합성 루프를 띄운 뒤에** 돈다. 이 프로브는 three가 캔버스 뷰를 프레임을 넘겨
+      // 재사용하는 자리를 일부러 밟는데, 그 과정에서 three의 렌더 타깃 디스크립터 캐시가
+      // 오염돼 **뒤따르는 합성 화면까지 검게** 만든다 — 진단이 관찰 대상을 망가뜨리면 안 된다.
+      setStats('루프 시작 대기…')
       renderer.setAnimationLoop((elapsed: number) => {
         if (disposed) return
-        seedTime.value = elapsed / 1000
-        renderer.compute(stepCompute)
-        hero.rotation.x = elapsed / 2600
-        hero.rotation.y = elapsed / 1700
-        camera.position.x = Math.sin(elapsed / 4200) * 9
-        camera.position.z = Math.cos(elapsed / 4200) * 9
-        camera.lookAt(0, 1.8, 0)
-        if (usePost) composite.render()
-        else renderer.render(scene, camera)
+        // 프레임 안의 JS 예외는 **화면에 아무 흔적도 남기지 않는다** — WebGPU 오류가 아니라
+        // 그냥 던져진 것이라 오류 수집기에도 안 잡히고, 루프만 조용히 멈춘다.
+        // 한 번만 붙잡아 HUD로 올린다.
+        try {
+          seedTime.value = elapsed / 1000
+          renderer.compute(stepCompute)
+          hero.rotation.x = elapsed / 2600
+          hero.rotation.y = elapsed / 1700
+          camera.position.x = Math.sin(elapsed / 4200) * 9
+          camera.position.z = Math.cos(elapsed / 4200) * 9
+          camera.lookAt(0, 1.8, 0)
+          if (usePost) composite.render()
+          else renderer.render(scene, camera)
+        } catch (error) {
+          mark(CHECK_COMPOSITE, 'fail', `예외: ${(error && (error as Error).message) || error}`.slice(0, 90))
+          setErrorLines((lines) => (lines.length < 8
+            ? [...lines, `프레임 예외: ${String((error && (error as Error).stack) || error).slice(0, 240)}`]
+            : lines))
+          renderer.setAnimationLoop(null)
+          return
+        }
 
         frames += 1
         if (startTime === null) startTime = elapsed
@@ -533,6 +515,53 @@ function ThreeLabScene() {
           setStats(`합성 프레임 ${frames} · ${fps}fps · 오류 ${streamStats.errors}`)
         }
       })
+
+      // ⑧ 포스트프로세싱을 **캔버스로** 내보내면 깨진다 — 이 씬이 찾아낸 한계다.
+      //
+      //   three는 렌더 타깃 디스크립터에 **텍스처 뷰를 캐시**한다
+      //   (`_getRenderPassDescriptor`, 크기·샘플 수가 바뀔 때만 무효화). 한 **프레임 안의**
+      //   여러 패스는 프레임 경계를 틱 끝으로 옮겨 해결됐지만, 그 뷰를 **프레임을 넘겨**
+      //   재사용하는 자리는 남는다 — 명세대로면 present에서 만료된 뷰라 거부가 맞다.
+      //
+      //   렌더 타깃으로 내보내는 경로(⑦)는 멀쩡하다. 캔버스로 직접 내보낼 때만 걸린다.
+      //   **합성 루프를 띄운 뒤에 돈다** — 이 프로브가 three의 디스크립터 캐시를 오염시켜
+      //   뒤따르는 화면까지 검게 만들기 때문이다 (진단이 관찰 대상을 망가뜨리면 안 된다).
+      await check(CHECK_CANVAS_POST, async () => {
+        const probe = new THREE.Scene()
+        probe.background = new THREE.Color(0, 0, 0)
+        probe.add(new THREE.Mesh(
+          new THREE.PlaneGeometry(0.5, 0.5),
+          new THREE.MeshBasicNodeMaterial({ color: 0xffffff })
+        ))
+        const probePass = pass(probe, ortho)
+        const probePost = new THREE.PostProcessing(renderer)
+        probePost.outputNode = probePass.add(bloom(probePass, 1.0, 0.4, 0.0))
+
+        const before = streamStats.errors
+        // **프레임 루프 안에서** 두 프레임을 돌린다 — present 시점이 틱의 끝이므로,
+        // 한 프레임 안의 여러 패스가 드로어블 뷰를 공유할 수 있어야 한다.
+        // (루프 밖에서 돌리면 submit마다 present라 예전 그대로 깨진다 — 그건 브라우저의
+        //  "태스크 끝에 present"와 다른 자리이므로 재현이 아니라 오용이다.)
+        // **rAF로 돈다** — three의 애니메이션 루프와 같은 펌프를 쓴다. 여기서 별도로
+        // `startFrameLoop`을 열었다 닫으면 그 펌프와 네이티브 티커 소유권이 엇갈린다.
+        await new Promise((resolve) => {
+          let frames = 0
+          const step = () => {
+            probePost.render()
+            frames += 1
+            if (frames >= 2) resolve(undefined)
+            else requestAnimationFrame(step)
+          }
+          requestAnimationFrame(step)
+        })
+        probePost.dispose()
+        const leaked = streamStats.errors - before
+        return {
+          ok: leaked === 0,
+          detail: leaked === 0 ? '오류 0 · 두 프레임' : `오류 ${leaked}건 — 드로어블 뷰 캐시`,
+        }
+      })
+
     }
 
     boot().catch((error) => {
@@ -551,25 +580,10 @@ function ThreeLabScene() {
     }
   }, [])
 
-  const icon = { wait: '○', ok: '✓', fail: '✗' }
-  const passed = checks.filter((check) => check.state === 'ok').length
-
   return (
     <view className="page">
       <webgpu-canvas className="canvas" canvas-id="main" />
-      <view className="three-hud">
-        <text className="title">three.js 고난도 조합</text>
-        <text className="subtitle">{status}</text>
-        {checks.map((check, index) => (
-          <text className={`check-row check-${check.state}`} key={`check-${index}`}>
-            {icon[check.state]} {check.label}{check.detail ? ` — ${check.detail}` : ''}
-          </text>
-        ))}
-        <text className="check-stats">{`통과 ${passed}/${CHECK_LABELS.length}${stats ? ` · ${stats}` : ''}`}</text>
-        {errorLines.map((line, index) => (
-          <text className="check-row check-fail" key={`err-${index}`}>{line}</text>
-        ))}
-      </view>
+      <ChecklistHud title="three.js 고난도 조합" subtitle={status} checks={checks} summary={stats || undefined} errors={errorLines} />
     </view>
   )
 }

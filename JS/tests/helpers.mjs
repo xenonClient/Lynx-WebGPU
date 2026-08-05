@@ -20,6 +20,7 @@ export function installNativeMock(overrides = {}) {
     // 네이티브는 `Data`를 싣고 Lynx가 ArrayBuffer로 바꿔 준다 — 목도 ArrayBuffer를 준다.
     readBufferResult: overrides.readBufferResult ?? { ok: true, data: new ArrayBuffer(0) },
     loadAssetResult: overrides.loadAssetResult ?? { ok: true, data: new ArrayBuffer(0) },
+    stopFrameLoopCalls: 0,
     decodeImageCalls: [],
     decodeImageResult: overrides.decodeImageResult ?? { ok: true, width: 4, height: 4 },
   };
@@ -55,6 +56,7 @@ export function installNativeMock(overrides = {}) {
         return { ok: true };
       },
       stopFrameLoop() {
+        state.stopFrameLoopCalls += 1;
         return { ok: true };
       },
       reset() {
@@ -64,6 +66,35 @@ export function installNativeMock(overrides = {}) {
     },
   };
   return state;
+}
+
+/**
+ * `startFrameLoop`이 기기에서 실제로 타는 경로 — Lynx의 `GlobalEventEmitter`.
+ *
+ * 타이머 폴백과 달리 **동기로 틱을 몰 수 있어** 프레임 경계 검증이 결정적이다
+ * (콜백이 던지는 경우도 그 자리에서 받는다).
+ */
+export function installFrameEmitter() {
+  const listeners = new Map();
+  globalThis.lynx = {
+    getJSModule: () => ({
+      addListener(event, listener) {
+        listeners.set(event, [...(listeners.get(event) || []), listener]);
+      },
+      removeListener(event, listener) {
+        listeners.set(event, (listeners.get(event) || []).filter((entry) => entry !== listener));
+      },
+    }),
+  };
+  return {
+    /** 틱 하나를 지금 몬다. 핸들러가 던지면 그대로 여기로 올라온다. */
+    tick(frame = { timestamp: 0, delta: 16 }) {
+      for (const listener of listeners.get('webgpu:frame') || []) listener(frame);
+    },
+    uninstall() {
+      delete globalThis.lynx;
+    },
+  };
 }
 
 export async function makeDevice() {

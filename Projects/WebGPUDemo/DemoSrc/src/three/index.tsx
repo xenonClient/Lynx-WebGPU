@@ -7,6 +7,7 @@ import gpu, {
 } from '../webgpu.js'
 import '../demo.css'
 import '../elements.d.ts'
+import { ChecklistHud, type Check } from '../checklist-hud.jsx'
 
 // three의 내부 Animation 루프가 rAF를 전제한다 — PrimJS에는 없어서 깔아 줘야 한다.
 // (안 깔면 renderer.init()이 오류 없이 영구 정지한다.) import 전에 깔릴 수 있도록
@@ -121,12 +122,6 @@ function makeCompressedGrid(): { texture: any, bytes: number, raw: number } {
 // ---------------------------------------------------------------------------
 // 기능 체크 — 렌더 타깃에 그리고 픽셀 값을 읽어 기대색과 비교한다
 // ---------------------------------------------------------------------------
-
-interface Check {
-  label: string
-  state: 'wait' | 'ok' | 'fail'
-  detail?: string
-}
 
 const CHECK_LABELS = [
   '부트스트랩 adapter→device→lost',
@@ -721,19 +716,7 @@ function ThreeScene() {
   return (
     <view className="page">
       <webgpu-canvas className="canvas" canvas-id="main" />
-      <view className="three-hud">
-        <text className="title">three.js WebGPURenderer</text>
-        <text className="subtitle">{status}</text>
-        {checks.map((check, index) => (
-          <text className={`check-row check-${check.state}`} key={`check-${index}`}>
-            {icon[check.state]} {check.label}{check.detail ? ` — ${check.detail}` : ''}
-          </text>
-        ))}
-        {stats !== '' && <text className="check-stats">{stats}</text>}
-        {errorLines.map((line, index) => (
-          <text className="check-row check-fail" key={`err-${index}`}>{line}</text>
-        ))}
-      </view>
+      <ChecklistHud title="three.js WebGPURenderer" subtitle={status} checks={checks} summary={stats || undefined} errors={errorLines} />
     </view>
   )
 }

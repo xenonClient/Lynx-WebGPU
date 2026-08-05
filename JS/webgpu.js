@@ -204,6 +204,57 @@ function nativeModule() {
  * 번호는 되돌리지 않는다. `device.destroy()`가 레지스트리를 비워도 재사용하지 않는 편이,
  * 그 번호를 아직 들고 있는 JS 객체가 나중에 **남의 자리**를 가리키는 일을 막는다.
  */
+/**
+ * 지금 **프레임 루프 콜백 안**인가 (중첩까지 세는 깊이).
+ *
+ * 브라우저의 present 시점은 `queue.submit()`이 아니라 **태스크의 끝**이다 — 한 프레임 안에서
+ * submit을 몇 번 하든 캔버스는 콜백이 끝난 뒤에 한 번 나간다. 그래서 웹 라이브러리는 한
+ * 프레임에 여러 번 submit하면서 드로어블 텍스처 뷰를 그 프레임 내내 재사용한다
+ * (three.js의 `PostProcessing`이 그렇다: 씬 패스 → bloom 밉 체인 → 출력 패스).
+ *
+ * submit마다 present하면 첫 submit이 드로어블을 내보내고 그 뷰를 만료시켜, 같은 프레임의
+ * 남은 패스가 "없는 핸들"로 통째로 거부된다. 그래서 **틱 안의 flush는 present를 미루고**,
+ * 틱이 끝날 때 한 번만 present한다 (`endFrameTick`).
+ */
+let frameTickDepth = 0;
+
+/**
+ * 지금 프레임 티커를 구독한 수. 네이티브 티커는 하나뿐이라, 마지막 구독자가 놓을 때만
+ * 멈춘다 — 안 그러면 한 쪽의 `stop()`이 다른 쪽(특히 rAF 펌프)까지 끈다.
+ */
+let frameLoopSubscribers = 0;
+
+/**
+ * 이번 틱에서 present를 빚진 레코더들. 틱이 끝나면 여기 있는 것만 present한다 —
+ * GPU 작업이 없던 틱은 브리지를 건너지 않는다.
+ * @type {Set<Recorder>}
+ */
+const framePresentDebt = new Set();
+
+/**
+ * 프레임 루프 콜백 하나를 감싼다. **콜백이 던져도 present는 나간다** —
+ * 안 그러면 화면이 그 프레임에서 멈춘 채로 남는다.
+ * @param {(frame: {timestamp: number, delta: number}) => void} handler
+ * @param {{timestamp: number, delta: number}} frame
+ */
+function runFrameTick(handler, frame) {
+  frameTickDepth += 1;
+  try {
+    handler(frame);
+  } finally {
+    frameTickDepth -= 1;
+    if (frameTickDepth === 0) endFrameTick();
+  }
+}
+
+/** 틱의 끝 — 미뤄 둔 present를 여기서 한 번에 낸다. */
+function endFrameTick() {
+  if (framePresentDebt.size === 0) return;
+  const owing = Array.from(framePresentDebt);
+  framePresentDebt.clear();
+  for (const recorder of owing) recorder.flush(true, { presentOnly: true });
+}
+
 let nextHandle = 1;
 
 /** @returns {number} 아무도 쓰지 않은 새 핸들 */
@@ -385,11 +436,22 @@ class Recorder {
    * 스왑체인 핸들 만료를 진짜 프레임 제출(`queue.submit`)까지 미룬다 — 안 그러면 획득해 둔
    * 캔버스 텍스처가 그리기도 전에 present되어 남은 패스가 통째로 거부된다.
    *
+   * **프레임 루프 콜백 안에서는 present를 미룬다** (`frameTickDepth`) — 브라우저가 태스크
+   * 끝에 present하는 것과 같은 자리다. 미룬 present는 틱이 끝날 때 `endFrameTick()`이 낸다.
+   *
    * @param {boolean} [present] 이 배치가 프레임 제출인가 (기본 true)
+   * @param {{presentOnly?: boolean}} [options] `presentOnly`는 틱 끝의 마무리 호출 —
+   *   명령이 없어도 배치를 보내 **드로어블을 내보낸다.**
    * @returns {WGPUExecuteResult}
    */
-  flush(present = true) {
-    if (this.pending.length === 0) {
+  flush(present = true, options) {
+    const presentOnly = !!(options && options.presentOnly);
+    // 틱 안의 프레임 제출은 present를 틱 끝으로 미룬다. 내부 제출(present=false)은 그대로다.
+    if (present && !presentOnly && frameTickDepth > 0) {
+      framePresentDebt.add(this);
+      present = false;
+    }
+    if (this.pending.length === 0 && !presentOnly) {
       this.settleErrorScopes([]);
       return { ok: true, commandCount: 0 };
     }
@@ -413,8 +475,20 @@ class Recorder {
         const info = result.canvases[canvasId];
         if (info && typeof info.width === 'number') {
           canvasSizeCache.set(canvasId, { width: info.width, height: info.height });
+          // 명세는 **리사이즈에서도** 현재 텍스처를 만료시킨다 — 크기가 달라진 드로어블을
+          // 옛 텍스처로 계속 가리키면 다음 패스가 어긋난 크기로 그린다.
+          const context = canvasContexts.get(canvasId);
+          if (context && context._currentSize
+              && (context._currentSize.width !== info.width
+                  || context._currentSize.height !== info.height)) {
+            context._expireCurrentTexture();
+          }
         }
       }
+    }
+    // 명세의 "presentation"이 "Expire the current texture"를 부르는 자리다.
+    if (present) {
+      for (const context of canvasContexts.values()) context._expireCurrentTexture();
     }
     if (result.ok === false) this.report(result.errors || []);
     return result;
@@ -1973,6 +2047,13 @@ class GPUCanvasContext {
      * @type {GPUCanvasConfiguration | null}
      */
     this._configuration = null;
+    /**
+     * 명세 `[[currentTexture]]` — 만료 전까지 `getCurrentTexture()`가 돌려주는 **같은 객체**.
+     * @type {GPUTexture | null}
+     */
+    this._currentTexture = null;
+    /** 그 텍스처를 받을 때의 캔버스 크기 — 리사이즈 만료를 가리는 데 쓴다. */
+    this._currentSize = null;
   }
 
   /**
@@ -1980,6 +2061,8 @@ class GPUCanvasContext {
    * @returns {void}
    */
   configure(configuration) {
+    // 명세: `configure()`는 "Expire the current texture"를 부른다 — 새 설정으로 다시 받는다.
+    this._expireCurrentTexture();
     this._device = configuration.device;
     this.format = configuration.format || 'bgra8unorm';
     this._configuration = { ...configuration, format: this.format };
@@ -2011,6 +2094,7 @@ class GPUCanvasContext {
   unconfigure() {
     this._device = null;
     this._configuration = null;
+    this._expireCurrentTexture();
     // 크기 캐시도 버린다 — 다음 configure가 새 크기를 다시 읽게 한다.
     canvasSizeCache.delete(this.canvasId);
   }
@@ -2028,15 +2112,40 @@ class GPUCanvasContext {
    * @returns {GPUTexture}
    */
   getCurrentTexture() {
-    if (!this._device) throw new Error('configure()를 먼저 호출해야 한다');
+    if (!this._device) {
+      const error = new Error('configure()를 먼저 호출해야 한다');
+      error.name = 'InvalidStateError';   // 명세가 정한 이름 — 웹 코드가 이걸로 가른다
+      throw error;
+    }
+    // 명세: `[[currentTexture]]`가 있으면 **그대로 돌려준다.** 만료(present·configure·
+    // 리사이즈) 전까지는 한 프레임 안에서 몇 번을 불러도 같은 객체다.
+    //
+    // 호출마다 새 텍스처를 내면 웹 라이브러리가 깨진다 — 한 프레임에 패스를 여러 개 도는
+    // 코드(three.js `PostProcessing`)가 뷰를 캐시해 두는데, 그 뷰가 가리키는 텍스처가
+    // 매번 달라지기 때문이다.
+    if (this._currentTexture) return this._currentTexture;
+
     const id = this._device._recorder.allocate();
     this._device._recorder.push({ op: 'getCurrentTexture', id, canvas: this.canvasId });
     const info = canvasSizeCache.get(this.canvasId) || this._fetchSize();
-    return new GPUTexture(this._device, id, {
+    this._currentTexture = new GPUTexture(this._device, id, {
       size: { width: info.width, height: info.height },
       format: this.format,
       frameScoped: true,   // 네이티브가 프레임 끝에 회수 — GC 자동 해제 대상이 아니다
     });
+    this._currentSize = { width: info.width, height: info.height };
+    return this._currentTexture;
+  }
+
+  /**
+   * 명세의 "Expire the current texture" — `[[currentTexture]]`를 비운다.
+   *
+   * 명세가 부르는 자리: **present**, `configure()`, 캔버스 리사이즈. 다음 호출에서
+   * 새 드로어블을 받는다.
+   */
+  _expireCurrentTexture() {
+    this._currentTexture = null;
+    this._currentSize = null;
   }
 
   /**
@@ -2200,6 +2309,17 @@ export const gpu = {
 export function startFrameLoop(handler, options) {
   const fps = (options && options.fps) || 60;
   const module = nativeModule();
+  // 네이티브 티커는 **하나뿐**이다 — 구독자를 세지 않으면 한 쪽이 멈출 때 다른 쪽까지
+  // 같이 죽는다. `installAnimationFrame`의 rAF 펌프가 그 위에 올라가 있어서, 씬이
+  // 잠깐 자기 루프를 돌렸다 끄면 rAF가 조용히 영영 멈춘다 (실제로 겪었다).
+  frameLoopSubscribers += 1;
+  const releaseTicker = () => {
+    frameLoopSubscribers -= 1;
+    if (frameLoopSubscribers <= 0) {
+      frameLoopSubscribers = 0;
+      module.stopFrameLoop();
+    }
+  };
 
   /** @type {LynxGlobalEventEmitter | null} */
   let emitter = null;
@@ -2213,12 +2333,15 @@ export function startFrameLoop(handler, options) {
 
   if (emitter) {
     /** @param {{timestamp: number, delta: number} | undefined} frame */
-    const listener = (frame) => handler(frame || { timestamp: 0, delta: 16 });
+    const listener = (frame) => runFrameTick(handler, frame || { timestamp: 0, delta: 16 });
     emitter.addListener('webgpu:frame', listener);
     module.startFrameLoop({ fps });
+    let stopped = false;
     return () => {
-      module.stopFrameLoop();
+      if (stopped) return;   // 두 번 불러도 남의 구독을 깎지 않는다
+      stopped = true;
       emitter.removeListener('webgpu:frame', listener);
+      releaseTicker();
     };
   }
 
@@ -2226,10 +2349,16 @@ export function startFrameLoop(handler, options) {
   let previous = Date.now();
   const timer = setInterval(() => {
     const now = Date.now();
-    handler({ timestamp: now, delta: now - previous });
+    runFrameTick(handler, { timestamp: now, delta: now - previous });
     previous = now;
   }, Math.max(1, Math.round(1000 / fps)));
-  return () => clearInterval(timer);
+  let stopped = false;
+  return () => {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(timer);
+    releaseTicker();
+  };
 }
 
 /**

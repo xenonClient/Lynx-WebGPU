@@ -4,6 +4,7 @@ import gpu, {
 } from '../webgpu.js'
 import '../demo.css'
 import '../elements.d.ts'
+import { ChecklistHud, type Check } from '../checklist-hud.jsx'
 
 /**
  * 이미지 경로 체크리스트 — **블록 압축 텍스처**와 **외부 이미지 → 텍스처**.
@@ -14,12 +15,6 @@ import '../elements.d.ts'
  * 압축 계열은 기기마다 갈린다 — iOS 기기는 ASTC·ETC2를 항상 하고 BC는 A14부터다.
  * 없는 계열은 실패가 아니라 `–`로 표시한다 (`adapter.features`가 답이다).
  */
-
-interface Check {
-  label: string
-  state: 'wait' | 'ok' | 'fail' | 'skip'
-  detail?: string
-}
 
 const CHECKS = [
   'adapter.features — 압축 계열 광고',
@@ -475,28 +470,10 @@ function ImagesScene() {
     }
   }, [])
 
-  const icon = { wait: '○', ok: '✓', fail: '✗', skip: '–' }
-  const failed = checks.filter((check) => check.state === 'fail').length
-  const passed = checks.filter((check) => check.state === 'ok').length
-  const skipped = checks.filter((check) => check.state === 'skip').length
-
   return (
     <view className="page">
       <webgpu-canvas className="canvas" canvas-id="main" />
-      <view className="three-hud">
-        <text className="title">이미지 · 압축 텍스처</text>
-        <text className="subtitle">{status}</text>
-        {checks.map((check, index) => (
-          <text className={`check-row check-${check.state}`} key={`check-${index}`}>
-            {icon[check.state]} {check.label}{check.detail ? ` — ${check.detail}` : ''}
-          </text>
-        ))}
-        <text className="check-stats">
-          {`통과 ${passed}/${CHECKS.length - skipped}`}
-          {skipped ? ` · 미지원 ${skipped}` : ''}
-          {failed ? ` · 실패 ${failed}` : ''}
-        </text>
-      </view>
+      <ChecklistHud title="이미지 · 압축 텍스처" subtitle={status} checks={checks} />
     </view>
   )
 }
