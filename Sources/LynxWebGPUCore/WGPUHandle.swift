@@ -25,12 +25,16 @@ public final class WGPUObjectRegistry {
 
     private var storage: [WGPUHandle: AnyObject] = [:]
     private var warnedThreshold = 0
+    /// 살아 있는 핸들을 덮어쓴 횟수 — 핸들 발급이 깨졌다는 신호다.
+    private var displacedCount = 0
     private let lock = NSLock()
 
     public init() {}
 
     public func insert(_ object: AnyObject, at handle: WGPUHandle) {
         lock.lock()
+        let displaced = storage[handle]
+        if displaced != nil { displacedCount += 1 }
         storage[handle] = object
         var crossed: Int?
         let threshold = warnedThreshold == 0 ? Self.growthWarningFloor : warnedThreshold * 2
@@ -39,6 +43,17 @@ public final class WGPUObjectRegistry {
             crossed = threshold
         }
         lock.unlock()
+
+        // 살아 있는 핸들을 덮어썼다면 **핸들 발급이 깨진 것이다.** 핸들은 JS가 내므로
+        // 여기서 거부하지는 않지만(손으로 쓰는 커맨드 스트림의 자유를 남긴다), 조용히
+        // 넘기면 "내 버퍼가 남의 텍스처가 되는" 증상만 남고 원인은 사라진다.
+        if let displaced {
+            WGPULog.registry.warning(
+                """
+                핸들 \(handle)이 이미 쓰이고 있었다 (\(type(of: displaced)) → \(type(of: object))).                 앞의 객체는 여기서 사라진다 — 핸들 발급기가 번호를 재사용하고 있지 않은지 볼 것                 (디바이스마다 카운터를 두면 두 번째 디바이스가 1번부터 다시 낸다).
+                """
+            )
+        }
 
         if let crossed {
             WGPULog.registry.warning(
@@ -69,6 +84,15 @@ public final class WGPUObjectRegistry {
         defer { lock.unlock() }
         storage.removeAll()
         warnedThreshold = 0
+        displacedCount = 0
+    }
+
+    /// 살아 있는 핸들을 덮어쓴 횟수. 0이 아니면 **핸들 발급기가 번호를 재사용하고 있다** —
+    /// 오류로 드러나지 않고 객체만 바뀌므로, 세어 두지 않으면 원인을 찾을 길이 없다.
+    public var displacedHandleCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return displacedCount
     }
 
     /// 테스트 관찰용 — 마지막으로 경고를 남긴 임계값 (0이면 아직 없음).

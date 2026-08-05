@@ -203,6 +203,33 @@ final class WGPUObjectRegistryTests: XCTestCase {
         XCTAssertEqual(registry.count, 0)
     }
 
+    /// 살아 있는 핸들을 덮어쓰는 것은 **언제나 핸들 발급 버그**다 (JS가 번호를 재사용했다).
+    ///
+    /// 오류로 드러나지 않는 것이 문제다 — 같은 타입끼리 겹치면 조회도 통과하고, "내 버퍼에
+    /// 남이 그린다"는 증상만 남는다. 그래서 세어 두고 경고한다.
+    func test_살아있는_핸들을_덮어쓰면_센다() {
+        let registry = WGPUObjectRegistry()
+        XCTAssertEqual(registry.displacedHandleCount, 0)
+
+        registry.insert(Dummy(), at: WGPUHandle(1))
+        registry.insert(Dummy(), at: WGPUHandle(2))
+        XCTAssertEqual(registry.displacedHandleCount, 0, "다른 핸들은 겹친 것이 아니다")
+
+        registry.insert(Dummy(), at: WGPUHandle(1))
+        XCTAssertEqual(registry.displacedHandleCount, 1)
+        XCTAssertEqual(registry.count, 2, "덮어쓴 것이므로 개수는 그대로다")
+    }
+
+    /// 해제한 뒤 같은 번호를 다시 쓰는 것은 겹친 것이 아니다 — 자리가 비어 있었다.
+    func test_해제한_핸들을_다시_쓰는_것은_겹침이_아니다() {
+        let registry = WGPUObjectRegistry()
+        registry.insert(Dummy(), at: WGPUHandle(1))
+        registry.remove(WGPUHandle(1))
+        registry.insert(Dummy(), at: WGPUHandle(1))
+
+        XCTAssertEqual(registry.displacedHandleCount, 0)
+    }
+
     func test_객체가_임계값을_넘으면_경고하고_임계는_두배씩_올라간다() {
         let registry = WGPUObjectRegistry()
         let floor = WGPUObjectRegistry.growthWarningFloor
@@ -226,7 +253,11 @@ final class WGPUObjectRegistryTests: XCTestCase {
         }
         XCTAssertGreaterThan(registry.lastWarnedThreshold, 0)
 
+        registry.insert(Dummy(), at: WGPUHandle(0))   // 겹침 카운터도 올려 둔다
+        XCTAssertGreaterThan(registry.displacedHandleCount, 0)
+
         registry.removeAll()
         XCTAssertEqual(registry.lastWarnedThreshold, 0, "새 페이지는 깨끗한 상태에서 시작한다")
+        XCTAssertEqual(registry.displacedHandleCount, 0)
     }
 }

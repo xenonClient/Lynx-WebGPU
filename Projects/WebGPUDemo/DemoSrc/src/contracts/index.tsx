@@ -30,6 +30,7 @@ const CHECKS = [
   '번들은 패스의 인덱스 버퍼를 물려받지 않는다',
   'occlusion 쿼리는 번들에 담을 수 없다',
   '드로어블 포맷 역방향 매핑 (캔버스 패스가 아는 이름)',
+  '디바이스가 둘이어도 핸들이 겹치지 않는다',
 ]
 
 /**
@@ -319,6 +320,25 @@ function ContractsScene() {
           detail: reported
             ? `패스가 아는 이름 ${reported} · configure ${canvasFormat}`
             : (message.slice(0, 55) || '거부되지 않았다'),
+        }
+      })
+
+      // ⑩ 핸들 공간 — 네이티브 레지스트리는 컨텍스트당 하나이고 **핸들 정수만으로** 찾는다.
+      //    카운터를 디바이스마다 두면 두 번째 디바이스가 1번부터 다시 내서, 첫 디바이스의
+      //    객체를 조용히 덮어쓴다. 오류가 나지 않고 "내 버퍼에 남이 그리는" 증상만 남는다.
+      await check(9, async () => {
+        const second = await adapter.requestDevice()
+        const a1 = device.createBuffer({ size: 16, usage: GPUBufferUsage.COPY_SRC })
+        const b1 = second.createBuffer({ size: 16, usage: GPUBufferUsage.COPY_SRC })
+        const a2 = device.createBuffer({ size: 16, usage: GPUBufferUsage.COPY_SRC })
+        const handles = [a1.id, b1.id, a2.id]
+        a1.destroy()
+        b1.destroy()
+        a2.destroy()
+        device.queue.submit([])
+        return {
+          ok: new Set(handles).size === handles.length,
+          detail: `A ${a1.id} · B ${b1.id} · A ${a2.id}`,
         }
       })
 

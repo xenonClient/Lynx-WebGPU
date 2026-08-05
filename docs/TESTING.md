@@ -20,7 +20,7 @@ GPU 코드는 "돌려 보고 눈으로 확인"에 기대기 쉽다. 이 저장�
 ## 2. 실행
 
 ```zsh
-swift test                                      # 전체 (292개, 약 5초)
+swift test                                      # 전체 (294개, 약 5초)
 swift test --filter LynxWebGPUCoreTests         # 디스크립터/핸들
 swift test --filter LynxWebGPUShaderTests       # 트랜스파일러 (+ Metal 컴파일 검증)
 swift test --filter LynxWebGPUTests             # GPU 렌더 + 해석기
@@ -31,7 +31,7 @@ JS 클라이언트(shim) 테스트 — 의존성 없이 node 내장 러너로 �
 `NativeModules.WebGPU`를 목으로 바꿔 커맨드 페이로드·왕복 횟수를 단언한다:
 
 ```zsh
-cd JS && npm test            # NODE_OPTIONS=--expose-gc node --test 'tests/*.test.mjs' — 113개
+cd JS && npm test            # NODE_OPTIONS=--expose-gc node --test 'tests/*.test.mjs' — 117개
 cd JS && npm run typecheck   # JSDoc 기준 타입 검사
 ```
 
@@ -189,13 +189,13 @@ try XCTSkipUnless(harness.supports(.indirectArguments), "간접 인자를 지원
 - 비동기 경로(`readBuffer`)는 `XCTestExpectation`으로 검증한다.
 - 테스트 더블은 손으로 만든다 (모킹 라이브러리 없음).
 
-## 6. 커버리지 대상 (Swift 292개 + JS 113개)
+## 6. 커버리지 대상 (Swift 294개 + JS 117개)
 
 | 영역 | 파일 | 주요 케이스 |
 |---|---|---|
 | 값 디코딩 | `WGPUValueReaderTests` | 기본값, NSNull, 열거형 후보 안내, 색/크기 두 표기, **바이너리 세 표현(Data·base64·바이트배열)**, 경로 누적 |
 | 디스크립터 | `WGPUDescriptorTests` | 크기 유추, 범위 검증, 명세 기본값, auto/명시 레이아웃, 블렌드 기본값 |
-| 핸들 레지스트리 | `WGPUObjectRegistryTests` | 등록/조회/해제, 타입 불일치 진단, **증식 경고 임계(4096 → 두 배씩)** |
+| 핸들 레지스트리 | `WGPUObjectRegistryTests` | 등록/조회/해제, 타입 불일치 진단, **증식 경고 임계(4096 → 두 배씩)**, **살아 있는 핸들 덮어쓰기 감지**(해제 뒤 재사용은 겹침이 아니다) |
 | 픽셀 되읽기 해석 | `WGPUPixelReadbackTests` | half→float(서브노멀·Inf·NaN), **1.0 초과·음수 보존**, BGRA 순서, 없는 채널 기본값, 행 패딩, 팩된/정수 포맷 거부 |
 | JS↔Swift 상수 | `JSConstantParityTests` | `JS/webgpu.js`의 사용 플래그·스테이지·컬러마스크가 Swift OptionSet과 같은 값인지 |
 | in-flight 프레임 | `SurfaceInFlightTests` | 카운터 계약(3에서 포화·완료로 해제), 컨텍스트 집계, 해석기 커밋/완료 통지(표면당 1회), CAMetalLayer 헤드리스 왕복 |
@@ -295,7 +295,7 @@ LYNXWEBGPU_WGSL_CORPUS=… LYNXWEBGPU_WGSL_DUMP=/tmp/msl swift test --filter Sam
 | `arraybuffer` | **Lynx 값 변환기 스모크** — 바이트열이 `ArrayBuffer`로 **양방향** 오가는지 본다. 올릴 때는 커맨드의 중첩 위치(`commands[i].data`), 내릴 때는 `mapAsync`. 페이로드 타입까지 단언한다. 화면이 초록이면 통과, 빨강이면 실패 |
 | `hdr` | **HDR 게인맵 재구성** — `loadAsset`으로 받은 애셋을 컴퓨트로 `rgba16float`에 되살리고, 좌우로 갈라 8비트 원본과 같은 조건으로 비교한다. 드래그로 경계 이동. 버튼 셋: 노출 ±, **클리핑**(원본 선형값이 1.0을 넘는 픽셀만 표시 — 오른쪽에만 떠야 정상), **EDR**(캔버스를 `rgba16float` + `toneMapping: extended`로 재configure). **EDR은 실기기에서만 확인된다** |
 | `scrollpass` | **스크롤 통과** — `<scroll-view>` 리스트 **위에** 캔버스 밴드가 형제로 겹친다. 밴드를 세로로 드래그: `passthrough-touches` ON이면 리스트가 스크롤되고 캔버스는 `touchcancel`을 받는다, OFF면 웹 기본처럼 스크롤이 막히고 `touchmove`가 계속 온다. HUD의 스크롤 오프셋·터치 로그로 판정한다. **터치 주입 수단이 없어 손으로 만져야 한다** |
-| `contracts` | **계약 점검 9종** — 검토에서 지적된 자리들을 실기에서 확인한다. `copyBufferToBuffer`의 기본값·범위·0바이트, **정수 vec3 유니폼 배치를 셰이더가 읽은 값으로**(`packed_int3`/`packed_uint3`), 번들의 인덱스 버퍼 격리 양방향, occlusion 쿼리 차단(shim 미노출 + 네이티브 거부 두 겹), **드로어블 포맷 역방향 매핑**(일부러 어긋난 번들의 거부 메시지가 패스의 실제 포맷 이름을 실어 준다 — 네이티브 안에만 있는 표를 밖에서 보는 유일한 통로다) |
+| `contracts` | **계약 점검 10종** — 검토에서 지적된 자리들을 실기에서 확인한다. `copyBufferToBuffer`의 기본값·범위·0바이트, **정수 vec3 유니폼 배치를 셰이더가 읽은 값으로**(`packed_int3`/`packed_uint3`), 번들의 인덱스 버퍼 격리 양방향, occlusion 쿼리 차단(shim 미노출 + 네이티브 거부 두 겹), **드로어블 포맷 역방향 매핑**(일부러 어긋난 번들의 거부 메시지가 패스의 실제 포맷 이름을 실어 준다 — 네이티브 안에만 있는 표를 밖에서 보는 유일한 통로다), **디바이스 둘의 핸들이 겹치지 않는지** |
 | `images` | **이미지 경로 체크리스트 13종** — ASTC 4x4·6x5와 BC1 블록을 손으로 인코딩해 올리고 **되읽은 픽셀 색으로** 확인한다. 블록 경계·렌더 타깃 거부, `createImageBitmap`의 색·방향·`flipY`·부분 복사까지. 기기가 못 하는 압축 계열은 실패가 아니라 `–`로 표시한다 (시뮬레이터에는 BC가 없다) |
 | `spec` | **명세 표면 체크리스트 14종** — 이번에 채운 기능(디버그 마커·`getCompilationInfo`·`adapter.info`·부분 매핑·`clearBuffer`·비동기 파이프라인·`uncapturederror`·core 포맷·`unconfigure`)을 **진짜 GPU와 진짜 브리지**를 지나 값으로 확인한다. 단위 테스트가 목으로 맞춘 계약이 실기에서도 맞는지 보는 자리다 |
 | `three` | **three.js WebGPURenderer 기능 체크리스트 14종** — 렌더러가 자기 부트스트랩(navigator.gpu → adapter.features → requiredFeatures → device.lost → rAF 루프)을 그대로 밟은 뒤, 렌더 타깃에 그려 `readRenderTargetPixelsAsync`로 **픽셀 값을 단언**한다: shim 직접 프로브 2종(버퍼/텍스처 왕복 — three 실패 시 층 가르기용) → 클리어색 → 단색 쿼드(노드 셰이더→WGSL) → DataTexture 샘플링 → Standard+Directional 조명. HUD에 ✓/✗와 실제 (r,g,b), 스트림 통계(P/I 배치·오류 수)가 뜨고 체커 큐브가 회전한다. **기록 시점 스냅샷 버그를 잡아낸 화면**이다 (copySize가 flush 전에 reset되어 폭 0 복사가 나가던 것) |
