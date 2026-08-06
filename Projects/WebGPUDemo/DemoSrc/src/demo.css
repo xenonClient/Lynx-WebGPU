@@ -71,6 +71,30 @@ page {
   flex-direction: column;
 }
 
+/* 머리글 = 접기 버튼. 손가락으로 맞히기 쉽게 카드 폭 전체를 누르게 한다. */
+.hud-header {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+}
+
+.hud-header-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+.hud-toggle {
+  font-size: 16px;
+  color: #7d8fa9;
+  padding: 4px 6px;
+}
+
+/* 접었을 때는 요약 한 줄만 남는다 — 캔버스를 최대한 비워 준다. */
+.hud-collapsed {
+  padding-bottom: 10px;
+}
+
 .check-row {
   font-size: 13px;
   margin-top: 5px;
@@ -86,6 +110,10 @@ page {
 
 .check-wait {
   color: #7d8fa9;
+}
+
+.check-skip {
+  color: #8a93a8;
 }
 
 .check-stats {

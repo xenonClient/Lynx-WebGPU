@@ -705,6 +705,32 @@ if (error) fallBackToSimplePipeline()
 | `dual-source-blending` · `clip-distances` · `subgroups` · `subgroup-size-control` · `primitive-index` · `texture-component-swizzle` | WGSL 확장이 함께 필요하다 (`@blend_src`, `clip_distances`, 서브그룹 내장 함수 …). 트랜스파일러 작업이 붙으므로 실사용 요구가 생길 때 본다 |
 | `rg11b10ufloat-renderable` | `rg11b10ufloat`을 렌더 타깃으로. 포맷 자체는 지원한다 |
 
+### 프레임 경계 — present는 `submit()`이 아니라 **프레임 루프 콜백의 끝**이다
+
+명세는 현재 텍스처의 만료를 "updating the rendering of a WebGPU canvas"에 건다 — 즉
+**프레임의 끝**이다. `queue.submit()`은 present하지 않는다. 그래서 한 프레임 안에서 패스를
+여러 개 도는 코드(three.js `PostProcessing`: 씬 패스 → bloom 밉 체인 → 출력 패스)가
+드로어블 텍스처를 그 프레임 내내 공유할 수 있다.
+
+여기서도 같다:
+
+- **프레임 루프 안**(`startFrameLoop` · `installAnimationFrame`의 rAF)에서는 `submit()`이
+  명령만 보내고 present는 **틱의 끝에 한 번**만 한다. 콜백이 던져도 present는 나간다 —
+  안 그러면 화면이 그 프레임에서 멈춘다.
+- **루프 밖**에서는 `submit()`이 그대로 present한다. 미룰 경계가 없기 때문이다
+  (오프스크린 렌더·테스트 하네스가 이 경로다).
+
+`getCurrentTexture()`도 명세대로다 — **만료 전까지 같은 텍스처를 돌려준다.**
+만료는 present · `configure()` · 캔버스 리사이즈에서 일어난다. 설정 전에 부르면
+`InvalidStateError`다.
+
+이 둘을 맞추고 나서 three.js의 `PostProcessing`을 **캔버스로 직접** 내보내는 경로가 열렸다
+(`threelab` 데모 씬 — 씬 패스 → bloom 밉 체인 → 출력 패스가 한 프레임에 돌고 60fps·오류 0).
+그전에는 첫 제출이 드로어블을 내보내고 뷰를 만료시켜 남은 패스가 통째로 거부됐다.
+
+> 프레임 티커는 **참조로 센다.** 한 씬이 잠깐 `startFrameLoop`을 열었다 닫아도 rAF 펌프까지
+> 같이 멈추지 않는다 — 그러면 화면이 조용히 정지한다.
+
 ### 기기에 따라 갈리는 것
 
 | 기능 | 조건 |

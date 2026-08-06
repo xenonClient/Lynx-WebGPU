@@ -146,6 +146,25 @@ Three.js `WebGPURenderer`를 실제로 올려 보며(데모 `three` 씬) 드러�
 
 ---
 
+## (완료) 프레임 경계를 틱 끝으로 — 명세의 present 시점
+
+`threelab` 씬이 찾아낸 것을 명세(`.claude/skills/webgpu-spec`) 대조로 고쳤다.
+
+- 명세 §21은 현재 텍스처의 만료를 "updating the rendering"에 건다 — **프레임의 끝**이고
+  `submit()`이 아니다. shim은 프레임 루프 콜백 안의 flush에서 present를 미루고, 틱이 끝날 때
+  한 번만 낸다. 루프 밖에서는 예전대로 `submit()`이 present한다 (미룰 경계가 없다).
+- 명세 §21의 `getCurrentTexture()`는 `[[currentTexture]]`가 있으면 **그대로 돌려준다.**
+  호출마다 새 텍스처를 내던 것을 고쳤다 — 만료는 present · `configure()` · 리사이즈에서만.
+- 네이티브는 **명령이 빈 배치도 present**한다 (틱의 마무리 배치). 조건을 "명령이 비었을 때"로
+  좁혀, 드로어블만 얻고 끝난 배치가 그리지도 않은 화면을 내보내지 않게 했다.
+- 프레임 티커를 **참조로 센다** — 한 씬이 잠깐 루프를 열었다 닫아도 rAF 펌프가 같이 죽지
+  않는다 (실제로 화면이 조용히 멈췄다).
+
+결과: three.js `PostProcessing`을 **캔버스로 직접** 내보내는 경로가 열렸다 — `threelab` 씬이
+씬 패스 → bloom 밉 체인 → 출력 패스를 한 프레임에 돌며 60fps·오류 0으로 그린다.
+
+---
+
 ## 공통 완료 기준
 
 1. `swift test` 전부 통과 — GPU 테스트는 `MetalCompilerHarness`가 아니라 `RenderHarness`

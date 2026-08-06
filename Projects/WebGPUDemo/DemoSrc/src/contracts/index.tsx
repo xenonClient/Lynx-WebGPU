@@ -2,6 +2,7 @@ import { root, useEffect, useState } from '@lynx-js/react'
 import gpu, { GPUBufferUsage, GPUTextureUsage, startFrameLoop } from '../webgpu.js'
 import '../demo.css'
 import '../elements.d.ts'
+import { ChecklistHud, type Check } from '../checklist-hud.jsx'
 
 /**
  * 계약 점검 — 검토에서 지적된 자리들이 **실기에서** 어떻게 동작하는지.
@@ -13,12 +14,6 @@ import '../elements.d.ts'
  * 단위 테스트가 같은 계약을 걸고 있지만, 이 화면은 **진짜 GPU와 진짜 브리지**를 지난다 —
  * 목(mock)이 맞춰 준 계약이 실기에서도 맞는지가 요점이다.
  */
-
-interface Check {
-  label: string
-  state: 'wait' | 'ok' | 'fail'
-  detail?: string
-}
 
 const CHECKS = [
   'copyBufferToBuffer — size 생략 = 원본 전부',
@@ -423,23 +418,10 @@ function ContractsScene() {
     }
   }, [])
 
-  const icon = { wait: '○', ok: '✓', fail: '✗' }
-  const failed = checks.filter((check) => check.state === 'fail').length
-  const passed = checks.filter((check) => check.state === 'ok').length
-
   return (
     <view className="page">
       <webgpu-canvas className="canvas" canvas-id="main" />
-      <view className="three-hud">
-        <text className="title">계약 점검</text>
-        <text className="subtitle">{status}</text>
-        {checks.map((check, index) => (
-          <text className={`check-row check-${check.state}`} key={`check-${index}`}>
-            {icon[check.state]} {check.label}{check.detail ? ` — ${check.detail}` : ''}
-          </text>
-        ))}
-        <text className="check-stats">{`통과 ${passed}/${CHECKS.length}${failed ? ` · 실패 ${failed}` : ''}`}</text>
-      </view>
+      <ChecklistHud title="계약 점검" subtitle={status} checks={checks} />
     </view>
   )
 }

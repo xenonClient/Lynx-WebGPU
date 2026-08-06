@@ -245,10 +245,17 @@ declare class Recorder {
      * 스왑체인 핸들 만료를 진짜 프레임 제출(`queue.submit`)까지 미룬다 — 안 그러면 획득해 둔
      * 캔버스 텍스처가 그리기도 전에 present되어 남은 패스가 통째로 거부된다.
      *
+     * **프레임 루프 콜백 안에서는 present를 미룬다** (`frameTickDepth`) — 브라우저가 태스크
+     * 끝에 present하는 것과 같은 자리다. 미룬 present는 틱이 끝날 때 `endFrameTick()`이 낸다.
+     *
      * @param {boolean} [present] 이 배치가 프레임 제출인가 (기본 true)
+     * @param {{presentOnly?: boolean}} [options] `presentOnly`는 틱 끝의 마무리 호출 —
+     *   명령이 없어도 배치를 보내 **드로어블을 내보낸다.**
      * @returns {WGPUExecuteResult}
      */
-    flush(present?: boolean): WGPUExecuteResult;
+    flush(present?: boolean, options?: {
+        presentOnly?: boolean;
+    }): WGPUExecuteResult;
     /**
      * `popErrorScope` 명령을 쌓고 결과 Promise를 돌려준다 — **flush하지 않는다.**
      *
@@ -877,7 +884,9 @@ declare class GPUQueue {
      * 없다 — `GPUImageBitmap`이 그 자리다. 픽셀은 네이티브에 남아 있으므로 **브리지를
      * 건너는 것은 핸들 하나뿐**이다 (`writeTexture`로 올리면 이미지 전체가 오간다).
      *
-     * `flipY`·`premultiplyAlpha`는 디코딩 시점 옵션이라 `createImageBitmap` 쪽에 있다.
+     * `source.flipY`는 **복사 시점**에 위아래를 뒤집는다 (`createImageBitmap`의 `flipY`는
+     * 디코딩 시점이라 별개다 — 둘 다 켜면 두 번 뒤집혀 제자리로 돌아온다). 웹 라이브러리는
+     * 이쪽을 쓴다: three.js의 `Texture.flipY`가 기본 `true`다.
      *
      * @param {{source: GPUImageBitmap, origin?: GPUOrigin3DDict, flipY?: boolean}} source
      * @param {{texture: GPUTexture, mipLevel?: number, origin?: GPUOrigin3DDict,
@@ -1134,6 +1143,16 @@ declare class GPUCanvasContext {
      * @type {GPUCanvasConfiguration | null}
      */
     _configuration: GPUCanvasConfiguration | null;
+    /**
+     * 명세 `[[currentTexture]]` — 만료 전까지 `getCurrentTexture()`가 돌려주는 **같은 객체**.
+     * @type {GPUTexture | null}
+     */
+    _currentTexture: GPUTexture | null;
+    /** 그 텍스처를 받을 때의 캔버스 크기 — 리사이즈 만료를 가리는 데 쓴다. */
+    _currentSize: {
+        width: any;
+        height: any;
+    } | null;
     /** @param {string} canvasId `<webgpu-canvas canvas-id="…">` 의 값 */
     constructor(canvasId: string);
     /**
@@ -1164,6 +1183,13 @@ declare class GPUCanvasContext {
      * @returns {GPUTexture}
      */
     getCurrentTexture(): GPUTexture;
+    /**
+     * 명세의 "Expire the current texture" — `[[currentTexture]]`를 비운다.
+     *
+     * 명세가 부르는 자리: **present**, `configure()`, 캔버스 리사이즈. 다음 호출에서
+     * 새 드로어블을 받는다.
+     */
+    _expireCurrentTexture(): void;
     /**
      * 캔버스의 현재 픽셀 크기.
      *

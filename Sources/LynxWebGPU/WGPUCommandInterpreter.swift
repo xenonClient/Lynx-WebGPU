@@ -137,7 +137,9 @@ final class WGPUCommandInterpreter {
             }
         }
 
-        finish(present: present)
+        // 명령이 비어 있는데 present라면 **틱의 마무리 배치**다 (프레임 루프 콜백의 끝).
+        // 그 배치는 커맨드 버퍼가 없어도 드로어블을 내보내야 한다.
+        finish(present: present, closingFrame: present && commands.isEmpty)
 
         // objects: live 네이티브 객체 수 — JS가 destroy 누락(레지스트리 증식)을 감시할 수 있게.
         var result: [String: Any] = [
@@ -239,7 +241,9 @@ final class WGPUCommandInterpreter {
     /// 드로어블이 그리기도 전에 present되고 핸들이 만료되어, 이어지는 `beginRenderPass`가
     /// "GPUTextureView가 존재하지 않는다"로 통째로 거부된다 — Three.js의 지연 파이프라인
     /// 생성(pop 즉시 flush)이 정확히 이 경로를 밟았다.
-    private func finish(present: Bool) {
+    /// - Parameter closingFrame: 명령 없이 **present만 하는** 배치인가 (틱의 끝).
+    ///   프레임 경계가 `submit()`이 아니라 프레임 루프 콜백의 끝이라 이런 배치가 온다.
+    private func finish(present: Bool, closingFrame: Bool = false) {
         endActiveEncoders()
         // 커맨드 버퍼에 연 그룹도 커밋 전에 닫는다 (인코더와 같은 이유 — Metal이 단언으로 죽는다).
         if let commandBuffer, bufferDebugDepth > 0 {
@@ -250,6 +254,15 @@ final class WGPUCommandInterpreter {
                 commandBuffer.popDebugGroup()
                 bufferDebugDepth -= 1
             }
+        }
+        // 틱의 마무리 배치는 명령이 없어도 **드로어블을 내보내야 한다** — 커맨드 버퍼가
+        // 없다고 지나가면 화면이 멈춘 채 아무 말이 없다.
+        //
+        // 조건을 "명령이 비어 있을 때"로 좁힌 것이 중요하다. 명령은 있는데 커맨드 버퍼가
+        // 안 생긴 배치(드로어블만 얻고 끝난 경우 등)는 예전처럼 present하지 않는다 —
+        // 그리지도 않은 드로어블을 내보내면 그 프레임이 빈 화면으로 나간다.
+        if closingFrame, commandBuffer == nil, !acquiredDrawables.isEmpty {
+            _ = try? activeCommandBuffer()
         }
         if let commandBuffer {
             if present {

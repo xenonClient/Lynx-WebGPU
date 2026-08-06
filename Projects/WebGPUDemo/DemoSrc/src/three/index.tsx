@@ -7,6 +7,7 @@ import gpu, {
 } from '../webgpu.js'
 import '../demo.css'
 import '../elements.d.ts'
+import { ChecklistHud, type Check } from '../checklist-hud.jsx'
 
 // three의 내부 Animation 루프가 rAF를 전제한다 — PrimJS에는 없어서 깔아 줘야 한다.
 // (안 깔면 renderer.init()이 오류 없이 영구 정지한다.) import 전에 깔릴 수 있도록
@@ -23,9 +24,10 @@ function attachStreamCounter(device: any) {
   const recorder = device._recorder
   const originalFlush = recorder.flush.bind(recorder)
   let logged = 0
-  // 주의: flush의 인자(present)를 반드시 그대로 전달한다 — 삼키면 내부 제출이 프레임
-  // 제출로 둔갑해, 프레임 중간 present 버그를 계측이 다시 만든다.
-  recorder.flush = (present?: boolean) => {
+  // 주의: flush의 **모든 인자**를 그대로 전달한다. `present`를 삼키면 내부 제출이 프레임
+  // 제출로 둔갑하고, 두 번째 인자(`presentOnly`)를 삼키면 틱 마무리 배치가 네이티브까지
+  // 가지 못해 화면이 멈춘다 — 계측이 관찰 대상을 망가뜨리는 자리다.
+  recorder.flush = (present?: boolean, ...rest: any[]) => {
     if (recorder.pending.length > 0) {
       if (present === false) streamStats.internalBatches += 1
       else streamStats.frameBatches += 1
@@ -35,7 +37,7 @@ function attachStreamCounter(device: any) {
         logged += 1
       }
     }
-    return originalFlush(present)
+    return originalFlush(present, ...rest)
   }
 }
 
@@ -121,12 +123,6 @@ function makeCompressedGrid(): { texture: any, bytes: number, raw: number } {
 // ---------------------------------------------------------------------------
 // 기능 체크 — 렌더 타깃에 그리고 픽셀 값을 읽어 기대색과 비교한다
 // ---------------------------------------------------------------------------
-
-interface Check {
-  label: string
-  state: 'wait' | 'ok' | 'fail'
-  detail?: string
-}
 
 const CHECK_LABELS = [
   '부트스트랩 adapter→device→lost',
@@ -721,19 +717,7 @@ function ThreeScene() {
   return (
     <view className="page">
       <webgpu-canvas className="canvas" canvas-id="main" />
-      <view className="three-hud">
-        <text className="title">three.js WebGPURenderer</text>
-        <text className="subtitle">{status}</text>
-        {checks.map((check, index) => (
-          <text className={`check-row check-${check.state}`} key={`check-${index}`}>
-            {icon[check.state]} {check.label}{check.detail ? ` — ${check.detail}` : ''}
-          </text>
-        ))}
-        {stats !== '' && <text className="check-stats">{stats}</text>}
-        {errorLines.map((line, index) => (
-          <text className="check-row check-fail" key={`err-${index}`}>{line}</text>
-        ))}
-      </view>
+      <ChecklistHud title="three.js WebGPURenderer" subtitle={status} checks={checks} summary={stats || undefined} errors={errorLines} />
     </view>
   )
 }

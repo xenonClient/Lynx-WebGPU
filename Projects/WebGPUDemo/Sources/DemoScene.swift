@@ -28,6 +28,7 @@ enum DemoScene: String, CaseIterable {
     case spec
     case images
     case contracts
+    case threelab
 
     /// 화면 전체를 덮어 띄울 씬 — 네비게이션 컨트롤러가 아니라 **모달로 표시**한다.
     ///
@@ -61,6 +62,7 @@ enum DemoScene: String, CaseIterable {
         case .spec: return "명세 표면 점검"
         case .images: return "이미지 · 압축 텍스처"
         case .contracts: return "계약 점검"
+        case .threelab: return "three.js 고난도 조합"
         }
     }
 
@@ -90,6 +92,7 @@ enum DemoScene: String, CaseIterable {
         case .spec: return "디버그 마커·진단·부분 매핑 등 명세 표면 14종을 값으로 확인"
         case .images: return "ASTC·BC 블록과 PNG 디코딩을 되읽은 픽셀 색으로 확인"
         case .contracts: return "버퍼 복사 기본값·범위, 정수 vec3 배치, 번들 격리, 포맷 역방향"
+        case .threelab: return "TSL 절차적 머티리얼 · 그림자 맵 · 컴퓨트 파티클 · 인스턴싱 · bloom"
         }
     }
 }

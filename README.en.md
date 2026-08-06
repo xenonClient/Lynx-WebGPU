@@ -35,7 +35,7 @@ Browser WebGPU code and WGSL shaders port over almost verbatim.
 
 ```swift
 // Package.swift
-.package(url: "https://github.com/xenonClient/Lynx-WebGPU", from: "0.3.1")
+.package(url: "https://github.com/xenonClient/Lynx-WebGPU", from: "0.4.0")
 ```
 
 That gives you the **engine** (`LynxWebGPU`). Types that touch Lynx — such as `LynxWebGPUHost` below —
@@ -158,7 +158,7 @@ cd JS && npm test    # JS shim (zero dependencies)
 
 ## Demo app
 
-`Projects/WebGPUDemo` contains a Tuist demo host app and **23 Lynx bundles**. The app opens with a scene list,
+`Projects/WebGPUDemo` contains a Tuist demo host app and **24 Lynx bundles**. The app opens with a scene list,
 and each scene maps 1:1 to a feature the offscreen harness verifies automatically — spinning triangle, 3D cube
 (depth testing), 4096 particles (compute + instancing), texture & sampler, **dynamic texture (CPU plasma via
 `writeTexture` every frame)**, alpha blending, **stencil masking (standalone `stencil8` format)**,

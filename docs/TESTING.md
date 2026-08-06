@@ -20,7 +20,7 @@ GPU 코드는 "돌려 보고 눈으로 확인"에 기대기 쉽다. 이 저장�
 ## 2. 실행
 
 ```zsh
-swift test                                      # 전체 (298개, 약 5초)
+swift test                                      # 전체 (301개, 약 5초)
 swift test --filter LynxWebGPUCoreTests         # 디스크립터/핸들
 swift test --filter LynxWebGPUShaderTests       # 트랜스파일러 (+ Metal 컴파일 검증)
 swift test --filter LynxWebGPUTests             # GPU 렌더 + 해석기
@@ -31,7 +31,7 @@ JS 클라이언트(shim) 테스트 — 의존성 없이 node 내장 러너로 �
 `NativeModules.WebGPU`를 목으로 바꿔 커맨드 페이로드·왕복 횟수를 단언한다:
 
 ```zsh
-cd JS && npm test            # NODE_OPTIONS=--expose-gc node --test 'tests/*.test.mjs' — 118개
+cd JS && npm test            # NODE_OPTIONS=--expose-gc node --test 'tests/*.test.mjs' — 133개
 cd JS && npm run typecheck   # JSDoc 기준 타입 검사
 ```
 
@@ -189,7 +189,7 @@ try XCTSkipUnless(harness.supports(.indirectArguments), "간접 인자를 지원
 - 비동기 경로(`readBuffer`)는 `XCTestExpectation`으로 검증한다.
 - 테스트 더블은 손으로 만든다 (모킹 라이브러리 없음).
 
-## 6. 커버리지 대상 (Swift 298개 + JS 118개)
+## 6. 커버리지 대상 (Swift 301개 + JS 133개)
 
 | 영역 | 파일 | 주요 케이스 |
 |---|---|---|
@@ -199,12 +199,13 @@ try XCTSkipUnless(harness.supports(.indirectArguments), "간접 인자를 지원
 | 픽셀 되읽기 해석 | `WGPUPixelReadbackTests` | half→float(서브노멀·Inf·NaN), **1.0 초과·음수 보존**, BGRA 순서, 없는 채널 기본값, 행 패딩, 팩된/정수 포맷 거부 |
 | JS↔Swift 상수 | `JSConstantParityTests` | `JS/webgpu.js`의 사용 플래그·스테이지·컬러마스크가 Swift OptionSet과 같은 값인지 |
 | in-flight 프레임 | `SurfaceInFlightTests` | 카운터 계약(3에서 포화·완료로 해제), 컨텍스트 집계, 해석기 커밋/완료 통지(표면당 1회), CAMetalLayer 헤드리스 왕복 |
+| 프레임 경계 | `JS/tests/frame-boundary.test.mjs` | present는 **틱의 끝**에 한 번(명세 "updating the rendering") · 마무리 배치는 명령이 없어도 나감 · 작업 없는 틱은 브리지 미통과 · 루프 밖 submit은 그 자리에서 present · 콜백이 던져도 present는 나가고 오류는 안 삼킴 · **티커 참조 계수**(남의 stop에 안 끌려감) · `getCurrentTexture`는 만료 전까지 **같은 텍스처**(present·configure·리사이즈에서 만료, 설정 전엔 `InvalidStateError`) |
 | JS 클라이언트 | `JS/tests` (node:test) | **바이너리 경로(ArrayBuffer 타입·뷰 오프셋 반영·불필요한 복사 없음·양방향)**, 캔버스 크기 캐시(프레임당 왕복 1회·리사이즈 반영), GC 자동 해제(중복 방지·프레임 스코프 제외), objects 전달, **짝 없는 pop의 `OperationError` reject**, **알 수 없는 filter의 동기 `TypeError`**, **브리지 호출 실패 시 대기 스코프 정리**, **번들 `finish()` 재호출 거부·리소스 retain**, **`device.features`(요청한 것만·미지원 요구 거부)·영원히 pending인 `device.lost`**, **flush의 `present` 표시(submit=프레임 / popErrorScope·mapAsync=내부)**, **기록 시점 스냅샷(호출 뒤 copySize·origin·clearValue 재사용/리셋이 스트림에 안 샘)**, **비동기 파이프라인 생성(스코프 두 겹을 한 배치에·`GPUPipelineError` reason 매핑·실패 핸들 회수)**, **`uncapturederror`(GPUError 하위 클래스 매핑·`onError`와 병행·리스너 예외 격리·스코프에 잡힌 오류는 제외)**, **명세 읽기 전용 속성**(GPUTexture 7종·기본값·`textureBindingViewDimension` 유도, `GPUBuffer.mapState` 3상태), **`installAnimationFrame`(틱 경계·예약 비면 링크 해제·기존 rAF 미침범)**, **`copyBufferToBuffer` 오버로드 4형태·`clearBuffer` 인자 전달**, **캔버스 컨텍스트 동일성**(같은 id면 같은 객체 — 갈리면 설정 상태가 핸들마다 달라진다), **디버그 마커가 인코더 4종에 다 있는지**(클래스 계층이 갈려 한쪽만 넣기 쉽다), **`getCompilationInfo`(먼저 flush·실패해도 안 던짐)**, **`getMappedRange` 부분 매핑**(오프셋·쓴 내용 되돌리기·정렬/겹침/범위 거부·4의 배수 아닌 매핑 전체 읽기) |
 | WGSL 트랜스파일 | `WGSLTranspilerTests` | 삼각형(정점속성+유니폼+헬퍼), 리소스 스레딩, 리플렉션, vec3 배치(**정수 vec3의 `packed_int3`/`packed_uint3` 포함**), 컴퓨트/스토리지, 텍스처/샘플러/스토리지텍스처, 제어흐름, workgroup 변수, 오류 보고, 바인딩 배정, **MSL 예약어 맹글링**, **부동소수 `%`**, **벡터 성분 추론**, **추상 정수 벡터(문맥으로 굳는 `vec3(1)`)**, **파이프라인 상수**, **확장 선언**, **`arrayLength()` 크기 표**, **외부 텍스처**, **함수 지역 `const` 배열 크기**, **전역 섀도잉**(가려진 전역은 주입 안 함 — 매개변수·지역·전이 전달, 주입과 겹친 지역 선언 리네임, 중첩 블록 복원), **도달 가능성**(안 부르는 함수 미방출·전이적 도달·진입점별로 다름) |
 | 외부 코퍼스 | `SampleCorpusTests` | 공식 webgpu-samples 셰이더 통과율 리포트 (§7, 기본 스킵) |
 | GPU 렌더 | `RenderPipelineTests` | 삼각형, 유니폼(**정수 vec3 배치를 GPU가 읽은 값으로** — `packed_int3`/`packed_uint3`가 12바이트로 서지 않으면 뒤 필드가 밀린다), 인덱스 드로우, 알파 블렌딩, 컴퓨트+readback, 텍스처 샘플링, **`arrayLength()`가 바인딩된 크기를 돌려주는지**, **가장자리 클램프 샘플링**, 깊이 테스트, **rgba16float 표면이 SDR 범위 밖 값을 보존하는지**, **전역 섀도잉의 스코프 해석이 런타임 값까지 옳은지** |
 | 오프스크린 되읽기 | `OffscreenReadbackTests` | 포맷별 행 간격·길이(1~16B/픽셀), **depth/stencil 거부**, configure 전 거부 |
-| 커맨드 해석기 | `CommandInterpreterTests` | 알 수 없는 명령, 없는 핸들, 오류 누적, 패스 상태, 캔버스 진단, 셰이더 실패 시 MSL 첨부, 드로어블 핸들 수명, **프레임 경계가 배치가 아니라 present인지**, 복사/읽기, 범위 검증, reset, 어댑터 정보, **writeTexture 큐 순서**, **배열 레이어 업로드**, **버퍼 매핑 상태(매핑 중 큐 작업 거부·중복 매핑 거부·unmap 후 복귀)**, **`MAP_READ`/`MAP_WRITE` usage 조합**, **파이프라인 없는 간접 드로우/디스패치의 op별 메시지**, **`present: false` 내부 제출은 커맨드 버퍼가 있어도 드로어블·프레임 핸들을 유지**, **진입점 해석(생략 시 그 스테이지의 유일한 것·후보 둘 이상이면 거부·스테이지 불일치 거부)**, **limits 명세 적합성(전 항목 존재·명세 기본값 이상·정렬은 256 이하)**, **`clearBuffer`(구간·size 생략·COPY_DST/4의 배수/범위 검증)**, **`copyBufferToBuffer`(size 생략 = 남은 전부·범위/음수 거부·0바이트 no-op)**, **디버그 마커**(패스 안팎 스코프·짝 없는 pop·열린 채 끝난 그룹을 프로세스를 죽이지 않고 오류로), **셰이더 진단**(파싱 실패해도 모듈은 생성·줄 번호가 숫자로·깨진 모듈로 만든 파이프라인이 원인을 다시 알리는지·MSL 모듈은 비어 있고 유효), **마커만 있는 배치**, **명세 `GPUAdapterInfo`**(모르는 자리는 빈 문자열) |
+| 커맨드 해석기 | `CommandInterpreterTests` | 알 수 없는 명령, 없는 핸들, 오류 누적, 패스 상태, 캔버스 진단, 셰이더 실패 시 MSL 첨부, 드로어블 핸들 수명, **프레임 경계가 배치가 아니라 present인지**, 복사/읽기, 범위 검증, reset, 어댑터 정보, **writeTexture 큐 순서**, **배열 레이어 업로드**, **버퍼 매핑 상태(매핑 중 큐 작업 거부·중복 매핑 거부·unmap 후 복귀)**, **`MAP_READ`/`MAP_WRITE` usage 조합**, **파이프라인 없는 간접 드로우/디스패치의 op별 메시지**, **`present: false` 내부 제출은 커맨드 버퍼가 있어도 드로어블·프레임 핸들을 유지**, **진입점 해석(생략 시 그 스테이지의 유일한 것·후보 둘 이상이면 거부·스테이지 불일치 거부)**, **limits 명세 적합성(전 항목 존재·명세 기본값 이상·정렬은 256 이하)**, **빈 배치의 present**(틱의 마무리 — 드로어블이 없으면 무동작), **한 프레임의 여러 제출이 드로어블 뷰를 공유**, **`clearBuffer`(구간·size 생략·COPY_DST/4의 배수/범위 검증)**, **`copyBufferToBuffer`(size 생략 = 남은 전부·범위/음수 거부·0바이트 no-op)**, **디버그 마커**(패스 안팎 스코프·짝 없는 pop·열린 채 끝난 그룹을 프로세스를 죽이지 않고 오류로), **셰이더 진단**(파싱 실패해도 모듈은 생성·줄 번호가 숫자로·깨진 모듈로 만든 파이프라인이 원인을 다시 알리는지·MSL 모듈은 비어 있고 유효), **마커만 있는 배치**, **명세 `GPUAdapterInfo`**(모르는 자리는 빈 문자열) |
 | 블록 압축 포맷 | `WGPUCompressedFormatTests` (GPU 불필요) + `CompressedTextureTests` | 블록 크기를 이름에서 읽는지(ASTC 전수), 블록당 바이트 8/16, **올림으로 세는 행 계산**, 손으로 인코딩한 BC1·ASTC 블록을 올려 **픽셀 단언**, 렌더 타깃/블록 경계 거부, `adapter.features`가 실제 기기 능력과 일치 |
 | 외부 이미지 | `ExternalImageTests` | PNG 디코딩(채널 순서·상하 방향·flipY·premultiply·resize), 깨진 데이터 거부, `copyExternalImageToTexture`(전체·부분·copySize 생략), **복사 시점 `flipY`**(디코딩 시점과 다른 층 — 둘 다 켜면 제자리, 부분 복사에서는 영역 안에서만), 4바이트 아닌 포맷과 압축 텍스처 거부, `destroy` 후 참조 |
 | 스테이징 풀 | `StagingPoolTests` | 크기 클래스 반올림, 같은 인스턴스 재사용, 최적합 선택, 총량 상한, 프레임 반복 시 풀 크기 불변 |
@@ -217,6 +218,20 @@ try XCTSkipUnless(harness.supports(.indirectArguments), "간접 인자를 지원
 | 쿼리셋 | `QuerySetTests` | occlusion은 **값 단언**(전체 통과 = 64×64, 완전히 잘린 드로우 = 정확히 0), 구간 resolve, 타임스탬프는 **구조만**(길이·단조·초기값 아님, 절대 시간 임계 금지), 기기 지원과 `adapter.features` 일치, 중첩·범위·usage·256 정렬 계약, **개수 상한(4096)**, **`timestampWrites` 인덱스 최소 하나·중복 금지**, **occlusion 미종료·인덱스 재사용 거부** |
 
 새 기능을 넣으면 위 표에 행을 추가하고 같은 컨벤션으로 테스트를 쓴다.
+
+## 6-1. 회귀 훅 (자동)
+
+작업이 끝날 때 `.claude/hooks/regression.sh`가 돈다 (Stop 훅). 변경이 없으면 건너뛴다.
+
+| 검사 | 왜 |
+|---|---|
+| `npm run typecheck` | JSDoc 누락은 여기서만 걸린다 |
+| `webgpu.d.ts` 드리프트 | 공개 선언은 **JSDoc에서 뽑는 산출물**이다 — 실제로 반복된 드리프트 |
+| 데모 사본 드리프트 | `DemoSrc/src/webgpu.js`가 원본과 다르면 데모만 옛 동작을 한다 |
+| `npm test` · `swift test` | — |
+
+데모 앱 빌드·시뮬레이터 실행은 **일부러 뺐다** (몇 분). 브리지나 씬을 고쳤으면 §8을 직접 돌린다.
+`LYNXWEBGPU_SKIP_REGRESSION=1`로 끌 수 있다.
 
 ## 7. 외부 WGSL 코퍼스 리포트
 
@@ -295,6 +310,7 @@ LYNXWEBGPU_WGSL_CORPUS=… LYNXWEBGPU_WGSL_DUMP=/tmp/msl swift test --filter Sam
 | `arraybuffer` | **Lynx 값 변환기 스모크** — 바이트열이 `ArrayBuffer`로 **양방향** 오가는지 본다. 올릴 때는 커맨드의 중첩 위치(`commands[i].data`), 내릴 때는 `mapAsync`. 페이로드 타입까지 단언한다. 화면이 초록이면 통과, 빨강이면 실패 |
 | `hdr` | **HDR 게인맵 재구성** — `loadAsset`으로 받은 애셋을 컴퓨트로 `rgba16float`에 되살리고, 좌우로 갈라 8비트 원본과 같은 조건으로 비교한다. 드래그로 경계 이동. 버튼 셋: 노출 ±, **클리핑**(원본 선형값이 1.0을 넘는 픽셀만 표시 — 오른쪽에만 떠야 정상), **EDR**(캔버스를 `rgba16float` + `toneMapping: extended`로 재configure). **EDR은 실기기에서만 확인된다** |
 | `scrollpass` | **스크롤 통과** — `<scroll-view>` 리스트 **위에** 캔버스 밴드가 형제로 겹친다. 밴드를 세로로 드래그: `passthrough-touches` ON이면 리스트가 스크롤되고 캔버스는 `touchcancel`을 받는다, OFF면 웹 기본처럼 스크롤이 막히고 `touchmove`가 계속 온다. HUD의 스크롤 오프셋·터치 로그로 판정한다. **터치 주입 수단이 없어 손으로 만져야 한다** |
+| `threelab` | **three.js 고난도 조합 10종** — three가 던질 수 있는 가장 무거운 것들을 한 화면에: TSL 절차적 머티리얼(노이즈→색·정점 변형) · **그림자 맵**(`textureSampleCompare`, 한 줄을 훑어 명암 차로 단언) · **GPU 컴퓨트 → 스토리지 버퍼**(TSL `Fn`이 만든 컴퓨트가 값을 채우고 되읽어 확인) · 컴퓨트 결과를 인스턴스가 읽는 되먹임 · 인스턴싱 4096개 · **bloom 포스트프로세싱**. 합성 화면은 절차적 토러스 노트 + 그림자 + 입자 4096개가 60fps로 돈다. **`copyExternalImageToTexture`의 `flipY` 누락과 프레임 경계 버그를 찾아낸 화면**이다 — present가 `submit()`마다 일어나 한 프레임의 여러 패스가 드로어블을 공유하지 못하던 것 (`docs/WEBGPU-API.md` §8) |
 | `contracts` | **계약 점검 10종** — 검토에서 지적된 자리들을 실기에서 확인한다. `copyBufferToBuffer`의 기본값·범위·0바이트, **정수 vec3 유니폼 배치를 셰이더가 읽은 값으로**(`packed_int3`/`packed_uint3`), 번들의 인덱스 버퍼 격리 양방향, occlusion 쿼리 차단(shim 미노출 + 네이티브 거부 두 겹), **드로어블 포맷 역방향 매핑**(일부러 어긋난 번들의 거부 메시지가 패스의 실제 포맷 이름을 실어 준다 — 네이티브 안에만 있는 표를 밖에서 보는 유일한 통로다), **디바이스 둘의 핸들이 겹치지 않는지** |
 | `images` | **이미지 경로 체크리스트 13종** — ASTC 4x4·6x5와 BC1 블록을 손으로 인코딩해 올리고 **되읽은 픽셀 색으로** 확인한다. 블록 경계·렌더 타깃 거부, `createImageBitmap`의 색·방향·`flipY`·부분 복사까지. 기기가 못 하는 압축 계열은 실패가 아니라 `–`로 표시한다 (시뮬레이터에는 BC가 없다) |
 | `spec` | **명세 표면 체크리스트 14종** — 이번에 채운 기능(디버그 마커·`getCompilationInfo`·`adapter.info`·부분 매핑·`clearBuffer`·비동기 파이프라인·`uncapturederror`·core 포맷·`unconfigure`)을 **진짜 GPU와 진짜 브리지**를 지나 값으로 확인한다. 단위 테스트가 목으로 맞춘 계약이 실기에서도 맞는지 보는 자리다 |

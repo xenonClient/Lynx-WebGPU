@@ -18,12 +18,12 @@ Lynx 연동: `docs/LYNX-INTEGRATION.md` · 번들(JS) 작성: `docs/JS-AUTHORING
 ```zsh
 # macOS 개발 루프 — Lynx 없이 엔진/트랜스파일러만 빌드·테스트 (가장 빠르다)
 swift build
-swift test                                   # 298개 테스트, ~5초
+swift test                                   # 301개 테스트, ~5초
 swift test --filter LynxWebGPUShaderTests    # WGSL → MSL 트랜스파일러만
 swift test --filter RenderPipelineTests      # GPU 오프스크린 렌더 검증
 
 # JS 클라이언트(shim) — 런타임 의존성 0. TypeScript는 **검사·선언 생성 전용**이다 (빌드 산출물 없음)
-cd JS && npm test            # node 내장 러너, 118개
+cd JS && npm test            # node 내장 러너, 133개
 cd JS && npm run typecheck   # JSDoc 기준 타입 검사 (tsc --noEmit)
 cd JS && npm run types       # webgpu.d.ts 를 JSDoc에서 다시 생성
 
@@ -118,6 +118,20 @@ git tag -a 0.2.0 -m "0.2.0 — 요약"
 훅은 `.claude/settings.json`에 `if: "Bash(git tag *)"` 필터로 걸려 있어 태그 명령에만 붙는다.
 
 태그를 문서 갱신 커밋 **뒤에** 옮기는 것을 잊지 말 것 (`git tag -f <버전> HEAD`).
+
+## 회귀 테스트 훅
+
+작업이 끝날 때 `.claude/hooks/regression.sh`가 자동으로 돈다 (`.claude/settings.json`의 Stop 훅).
+**변경이 없으면 건너뛴다.** 도는 것:
+
+1. `npm run typecheck` — JSDoc이 빠지면 여기서 걸린다
+2. `webgpu.d.ts` 드리프트 — 다시 뽑아 보고 달라지면 실패 (구현보다 뒤처졌다는 뜻)
+3. 데모 사본(`DemoSrc/src/webgpu.js`) 드리프트
+4. `npm test` · `swift test`
+
+층이 넷이라(엔진 · shim · 트랜스파일러 · 데모 번들) 한 층만 고치고 넘어가면 조용히 어긋난다.
+**데모 앱 빌드와 시뮬레이터 실행은 넣지 않았다** — 몇 분이 걸린다. 브리지나 씬을 고쳤으면
+`docs/TESTING.md` §8의 명령을 직접 돌릴 것. 건너뛰려면 `LYNXWEBGPU_SKIP_REGRESSION=1`.
 
 ## Git Conventions
 
