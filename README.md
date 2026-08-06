@@ -42,10 +42,11 @@ startFrameLoop(() => {
 `Sources/LynxWebGPUBridge/`의 **네 파일을 앱 쪽 타깃에 넣어** 쓴다 — Lynx SDK의 버전·배포처를
 앱이 정할 수 있게 하기 위해서다 (`docs/LYNX-INTEGRATION.md` §2, 데모가 그 본보기다).
 
-호스트 앱 연동은 세 단계다:
+호스트 앱 연동은 세 단계다. **런타임(GPU 백엔드)은 앱이 넣는다** — 브리지는
+`WebGPURuntime` 프로토콜만 알아서, 다른 백엔드로 갈아끼워도 브리지와 JS 번들은 그대로다:
 
 ```swift
-let host = try LynxWebGPUHost()
+let host = LynxWebGPUHost(runtime: try LynxWebGPUContext())   // 기본 엔진 (Metal)
 let lynxView = LynxView { builder in
     let config = LynxConfig(provider: provider)
     LynxWebGPU.register(in: config, host: host)   // NativeModules.WebGPU + <webgpu-canvas>

@@ -35,6 +35,10 @@ Lynx 위에 제공한다 — 웹에서 쓰던 셰이더와 렌더 코드를 거�
 | `GPUCanvasContext` | `WGPUSurface` | `CAMetalLayer` / 오프스크린 `MTLTexture` |
 | WGSL | `LynxWebGPUShader` | MSL |
 
+이 표는 **이 저장소가 주는 기본 구현**(`LynxWebGPUContext`)의 것이다. 오른쪽 열이 Metal이
+아닌 다른 것이 될 수 있다 — 커맨드 스트림의 반대편은 `WebGPURuntime` 프로토콜이고, 구현체는
+앱이 넣는다 (§3-1).
+
 ## 3. 커맨드 스트림 — 이 설계의 중심
 
 ### 문제
@@ -82,6 +86,28 @@ queue.submit([cb])          ────── execute({commands}) ────�
 직렬화하는 것과 같은 계약이다 — 호출 뒤 디스크립터 객체를 재사용·리셋하는 코드(three.js의
 싱글턴 디스크립터 패턴)가 flush를 기다리는 명령을 오염시키지 못한다. 이 고정이 없으면
 `copySize`가 flush 전에 0으로 리셋되어 **폭 0짜리 복사가 오류 없이** 나가는 식으로 조용히 깨진다.
+
+### 3-1. 커맨드 스트림은 곧 백엔드 경계다
+
+스트림이 **순수 데이터**라는 것에는 따라오는 성질이 하나 더 있다: 반대편에서 무엇이 도는지가
+계약에 없다. 그래서 그 자리를 프로토콜로 열어 두었다 — `WebGPURuntime`(`LynxWebGPUCore`).
+
+```
+JS/webgpu.js  ──{op:…}──▶  LynxWebGPUBridge  ──▶  WebGPURuntime  ──▶  ?
+                            (프로토콜만 안다)         │
+                                          ┌──────────┴──────────┐
+                                  LynxWebGPUContext        앱이 넣는 다른 구현
+                                  (Metal — 이 저장소)      (예: Dawn 위의 런타임)
+```
+
+**런타임 구현체는 앱이 만들어 넣는다** (`LynxWebGPUHost(runtime:)`) — Lynx SDK를 이 패키지가
+가져오지 않는 것과 같은 이유다(§1과 `docs/LYNX-INTEGRATION.md` §1): 버전·배포처·바이너리
+크기를 앱이 정하게 한다. 브리지는 `LynxWebGPUCore`만 의존하므로 **GPU 백엔드를 링크하지 않고도
+컴파일된다.**
+
+두 구현이 지켜야 할 계약은 `docs/COMMAND-STREAM.md`에 있고, 같은 그림을 그리는지는
+적합성 스위트(`Tests/LynxWebGPUTests` — `WebGPUConformance`)가 픽셀로 확인한다.
+대체 가능 범위와 선행 작업 검토는 `docs/extra/DAWN-BACKEND-REVIEW.md`.
 
 ### 스레딩
 

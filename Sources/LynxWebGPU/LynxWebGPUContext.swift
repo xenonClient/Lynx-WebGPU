@@ -1,16 +1,21 @@
 import Foundation
+import CoreGraphics
 import Metal
+import QuartzCore
 import LynxWebGPUCore
 import LynxWebGPUShader
 
-/// WebGPU 런타임 하나. 디바이스·큐·객체 레지스트리·표면 등록부를 소유한다.
+/// `WebGPURuntime`의 **Metal 직접 구현** — 이 패키지가 기본으로 주는 것.
 ///
-/// 호스트 앱이 이 객체를 만들어 Lynx 브리지에 넘기거나 (`LynxWebGPUBridge`),
-/// Lynx 없이 Swift에서 직접 커맨드 스트림을 실행할 수 있다 (테스트 하네스가 그렇게 쓴다).
+/// 디바이스·큐·객체 레지스트리·표면 등록부를 소유한다. 호스트 앱이 이 객체를 만들어 Lynx
+/// 브리지에 넘기거나 (`LynxWebGPUHost(runtime:)`), Lynx 없이 Swift에서 직접 커맨드 스트림을
+/// 실행할 수 있다 (테스트 하네스가 그렇게 쓴다).
+///
+/// 다른 구현으로 갈아끼우는 이야기는 `WebGPURuntime` 문서에 있다.
 ///
 /// **스레딩** — `execute(_:)`는 Lynx의 JS 스레드에서 호출되는 것을 전제로 하며 내부 락으로
 /// 직렬화된다. 표면 등록/해제는 메인 스레드에서 일어나므로 등록부도 락으로 보호한다.
-public final class LynxWebGPUContext {
+public final class LynxWebGPUContext: WebGPURuntime {
     public let device: MTLDevice
     public let queue: MTLCommandQueue
 
@@ -36,6 +41,55 @@ public final class LynxWebGPUContext {
             surfaceProvider: { [weak self] identifier in self?.surface(for: identifier) }
         )
         WGPULog.device.info("WebGPU 컨텍스트 시작 — \(resolved.name, privacy: .public)")
+    }
+
+    // MARK: - 캔버스 (WebGPURuntime)
+
+    /// `<webgpu-canvas>`의 `CAMetalLayer`를 표면으로 붙인다.
+    ///
+    /// 표면 타입을 **여기서** 고르는 것이 요점이다 — 브리지는 레이어만 넘기므로, 런타임을
+    /// 갈아끼워도 엘리먼트 코드가 그대로다 (`WebGPURuntime.attachCanvas` 참고).
+    public func attachCanvas(identifier: String, layer: CAMetalLayer) {
+        registerSurface(WGPUMetalLayerSurface(identifier: identifier, layer: layer))
+    }
+
+    public func attachOffscreenCanvas(identifier: String, size: CGSize) throws {
+        registerSurface(WGPUOffscreenSurface(identifier: identifier, size: size, device: device))
+    }
+
+    public func resizeCanvas(identifier: String, drawableSize: CGSize) {
+        (surface(for: identifier) as? WGPUMetalLayerSurface)?.updateDrawableSize(drawableSize)
+    }
+
+    public func detachCanvas(identifier: String) {
+        unregisterSurface(identifier: identifier)
+    }
+
+    public func canvasInfo(identifier: String) -> [String: Any] {
+        guard let surface = surface(for: identifier) else {
+            return [
+                "ok": false,
+                "errors": [WGPUError.validation(
+                    "캔버스 '\(identifier)'이(가) 없다 (등록된 것: "
+                        + "\(registeredSurfaceIdentifiers.joined(separator: ", ")))"
+                ).payload],
+            ]
+        }
+        return [
+            "ok": true,
+            "width": Int(surface.pixelSize.width),
+            "height": Int(surface.pixelSize.height),
+            "format": surface.configuredFormat.rawValue,
+        ]
+    }
+
+    public func readCanvasPixels(identifier: String) throws -> WGPUPixelReadback {
+        guard let offscreen = surface(for: identifier) as? WGPUOffscreenSurface else {
+            throw WGPUError.validation(
+                "캔버스 '\(identifier)'은(는) 오프스크린 표면이 아니다 — 픽셀을 읽을 수 없다"
+            )
+        }
+        return try offscreen.readPixels(queue: queue)
     }
 
     // MARK: - 표면 등록
@@ -101,12 +155,6 @@ public final class LynxWebGPUContext {
         return interpreter.execute(commands, present: reader.bool("present", default: true))
     }
 
-    /// 편의 오버로드 — 배열을 그대로 넘긴다.
-    @discardableResult
-    public func execute(commands: [[String: Any]]) -> [String: Any] {
-        execute(["commands": commands])
-    }
-
     /// 버퍼 내용을 읽는다 (`GPUBuffer.mapAsync` + `getMappedRange`에 해당).
     ///
     /// 직전에 제출한 GPU 작업이 끝난 뒤에 읽어야 하므로 비동기다.
@@ -121,7 +169,7 @@ public final class LynxWebGPUContext {
         handle: Int,
         data: Data?,
         name: String?,
-        options: WGPUImageDecoder.Options,
+        options: WGPUImageDecodeOptions,
         provider: WGPUAssetProvider?,
         completion: @escaping ([String: Any]) -> Void
     ) {

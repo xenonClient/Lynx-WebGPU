@@ -2,7 +2,6 @@
 import Foundation
 import Lynx
 import LynxWebGPUCore
-import LynxWebGPU
 
 /// JS의 `NativeModules.WebGPU` — WebGPU 커맨드 스트림 입구.
 ///
@@ -52,13 +51,13 @@ public final class WebGPUNativeModule: NSObject, LynxModule {
     /// - Returns: `{"ok": Bool, "errors": [...], "canvases": {...}}`
     public func execute(_ payload: [String: Any]) -> [String: Any] {
         guard let host else { return Self.unavailable }
-        return host.context.execute(payload)
+        return host.runtime.execute(payload)
     }
 
     /// `navigator.gpu.requestAdapter()`가 쓰는 디바이스 정보/한계값.
     public func adapterInfo() -> [String: Any] {
         guard let host else { return Self.unavailable }
-        return host.context.adapterInfo()
+        return host.runtime.adapterInfo()
     }
 
     /// `GPUShaderModule.getCompilationInfo()` — 그 모듈의 컴파일 진단.
@@ -67,7 +66,7 @@ public final class WebGPUNativeModule: NSObject, LynxModule {
         guard let handle = params["module"] as? Int else {
             return ["ok": false, "errors": [WGPUError.validation("module 핸들이 필요하다").payload]]
         }
-        return host.context.shaderCompilationInfo(handle: handle)
+        return host.runtime.shaderCompilationInfo(handle: handle)
     }
 
     /// 캔버스의 현재 픽셀 크기. 뷰포트·투영행렬 계산에 쓴다.
@@ -76,21 +75,7 @@ public final class WebGPUNativeModule: NSObject, LynxModule {
         guard let identifier = params["canvas"] as? String else {
             return ["ok": false, "errors": [WGPUError.validation("canvas 이름이 필요하다").payload]]
         }
-        guard let surface = host.context.surface(for: identifier) else {
-            return [
-                "ok": false,
-                "errors": [WGPUError.validation(
-                    "캔버스 '\(identifier)'이(가) 없다 (등록된 것: "
-                        + "\(host.context.registeredSurfaceIdentifiers.joined(separator: ", ")))"
-                ).payload],
-            ]
-        }
-        return [
-            "ok": true,
-            "width": Int(surface.pixelSize.width),
-            "height": Int(surface.pixelSize.height),
-            "format": surface.configuredFormat.rawValue,
-        ]
+        return host.runtime.canvasInfo(identifier: identifier)
     }
 
     /// 버퍼 내용을 읽는다 (`GPUBuffer.mapAsync` 대응). GPU 완료를 기다리므로 콜백형이다.
@@ -103,7 +88,7 @@ public final class WebGPUNativeModule: NSObject, LynxModule {
             callback(["ok": false, "errors": [WGPUError.validation("buffer 핸들이 필요하다").payload]])
             return
         }
-        host.context.readBuffer(
+        host.runtime.readBuffer(
             handle: handle,
             offset: (params["offset"] as? NSNumber)?.intValue ?? 0,
             size: (params["size"] as? NSNumber)?.intValue,
@@ -152,11 +137,11 @@ public final class WebGPUNativeModule: NSObject, LynxModule {
            let height = (params["resizeHeight"] as? NSNumber)?.intValue {
             resize = (width, height)
         }
-        host.context.decodeImage(
+        host.runtime.decodeImage(
             handle: handle,
             data: WGPUValueReader(params).data("data"),
             name: params["name"] as? String,
-            options: WGPUImageDecoder.Options(
+            options: WGPUImageDecodeOptions(
                 flipY: (params["flipY"] as? NSNumber)?.boolValue ?? false,
                 premultiplyAlpha: (params["premultiplyAlpha"] as? NSNumber)?.boolValue ?? false,
                 resize: resize
@@ -184,7 +169,7 @@ public final class WebGPUNativeModule: NSObject, LynxModule {
     /// 모든 GPU 객체를 버린다 (페이지 이탈/핫 리로드).
     public func reset() -> [String: Any] {
         guard let host else { return Self.unavailable }
-        host.context.reset()
+        host.runtime.reset()
         return ["ok": true]
     }
 

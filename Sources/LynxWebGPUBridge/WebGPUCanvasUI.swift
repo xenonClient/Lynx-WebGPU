@@ -4,7 +4,6 @@ import UIKit
 import QuartzCore
 import Lynx
 import LynxWebGPUCore
-import LynxWebGPU
 
 /// `CAMetalLayer`를 백킹 레이어로 쓰는 뷰.
 ///
@@ -72,7 +71,6 @@ public final class WebGPUCanvasView: UIView {
 /// 바뀌거나 엘리먼트가 사라질 때 해제한다.
 public final class WebGPUCanvasUI: LynxUI<WebGPUCanvasView> {
     private var canvasIdentifier: String?
-    private var surface: WGPUMetalLayerSurface?
     private var pendingPixelRatio: CGFloat?
     private var propsDirty = false
 
@@ -80,7 +78,9 @@ public final class WebGPUCanvasUI: LynxUI<WebGPUCanvasView> {
         let view = WebGPUCanvasView()
         view.onDrawableSizeChange = { [weak self] size in
             guard let self else { return }
-            self.surface?.updateDrawableSize(size)
+            if let canvasIdentifier = self.canvasIdentifier {
+                self.host?.resizeCanvas(identifier: canvasIdentifier, drawableSize: size)
+            }
             self.emit("canvasresize", detail: [
                 "width": Int(size.width),
                 "height": Int(size.height),
@@ -91,9 +91,9 @@ public final class WebGPUCanvasUI: LynxUI<WebGPUCanvasView> {
     }
 
     deinit {
-        // deinit은 임의 스레드일 수 있으나, 해제 자체는 컨텍스트 락으로 보호된다.
+        // deinit은 임의 스레드일 수 있으나, 해제 자체는 런타임의 락으로 보호된다.
         if let canvasIdentifier {
-            host?.unregisterCanvas(identifier: canvasIdentifier)
+            host?.detachCanvas(identifier: canvasIdentifier)
         }
     }
 
@@ -110,9 +110,8 @@ public final class WebGPUCanvasUI: LynxUI<WebGPUCanvasView> {
     public func setCanvasId(_ value: NSString?, requestReset: Bool) {
         let next = requestReset ? nil : (value as String?)
         guard next != canvasIdentifier else { return }
-        if let canvasIdentifier { host?.unregisterCanvas(identifier: canvasIdentifier) }
+        if let canvasIdentifier { host?.detachCanvas(identifier: canvasIdentifier) }
         canvasIdentifier = next
-        surface = nil
         propsDirty = true
     }
 
@@ -150,13 +149,12 @@ public final class WebGPUCanvasUI: LynxUI<WebGPUCanvasView> {
         canvasView.setNeedsLayout()
 
         guard let canvasIdentifier, let host else { return }
-        let surface = WGPUMetalLayerSurface(identifier: canvasIdentifier, layer: canvasView.metalLayer)
-        surface.updateDrawableSize(CGSize(
+        // 레이어만 넘긴다 — 표면 타입은 런타임이 고른다 (`WebGPURuntime.attachCanvas`).
+        host.attachCanvas(identifier: canvasIdentifier, layer: canvasView.metalLayer)
+        host.resizeCanvas(identifier: canvasIdentifier, drawableSize: CGSize(
             width: (canvasView.bounds.width * canvasView.pixelRatio).rounded(),
             height: (canvasView.bounds.height * canvasView.pixelRatio).rounded()
         ))
-        self.surface = surface
-        host.registerCanvas(surface)
         WGPULog.canvas.info("<webgpu-canvas> 등록 — \(canvasIdentifier, privacy: .public)")
     }
 

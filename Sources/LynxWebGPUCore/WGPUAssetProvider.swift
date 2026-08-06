@@ -1,5 +1,4 @@
 import Foundation
-import LynxWebGPUCore
 
 /// JS의 `loadAsset(name)`이 요청한 애셋을 바이트로 바꿔 주는 곳.
 ///

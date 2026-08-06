@@ -60,17 +60,24 @@ LYNXWEBGPU_WGSL_CORPUS=/path/to/webgpu-samples/sample swift test --filter Sample
 의존성 그래프 (화살표 = "depends on"):
 
 ```
-LynxWebGPUCore    ← (없음)                    WebGPU 열거형·디스크립터·오류·핸들 레지스트리.
-                                              Metal/Lynx/UIKit 어느 것도 참조하지 않는다.
+LynxWebGPUCore    ← (없음)                    WebGPU 열거형·디스크립터·**커맨드 디코딩**·오류·
+                                              핸들 레지스트리 + **`WebGPURuntime` 프로토콜**.
+                                              Metal을 import하지 않는다 (GPU 없이 테스트된다).
 LynxWebGPUShader  ← Core                      WGSL 렉서/파서/리플렉션/MSL 방출기. 순수 Swift.
-LynxWebGPU        ← Core, Shader              Metal 백엔드(디바이스·리소스·파이프라인·인코더),
-                                              캔버스 표면, 커맨드 스트림 해석기.
-LynxWebGPUBridge  ← LynxWebGPU, Lynx          NativeModule(`NativeModules.WebGPU`) +
+LynxWebGPU        ← Core, Shader              `WebGPURuntime`의 **기본 구현** — Metal 백엔드
+                                              (리소스·파이프라인·인코더), 캔버스 표면, 해석기.
+LynxWebGPUBridge  ← Core, Lynx                NativeModule(`NativeModules.WebGPU`) +
   (SPM 타깃 아님 — 소스)                        `<webgpu-canvas>` 엘리먼트. iOS 전용.
+                                              **GPU 백엔드를 모른다** — 프로토콜만 본다.
 ```
 
 핵심 원칙:
 - **Core와 Shader는 Metal-free.** GPU 없이도 단위 테스트가 돌아야 한다. Metal 타입이 필요한 코드는 LynxWebGPU에만 둔다.
+  (Core가 이름을 아는 유일한 그래픽 타입은 `CAMetalLayer`다 — `WebGPURuntime.attachCanvas`가 받는
+  **불투명 핸들**이고, Dawn도 Apple 플랫폼에서 같은 레이어를 받는다. GPU 객체는 만들지 않는다.)
+- **런타임(GPU 백엔드)은 앱이 주입한다.** 브리지는 `WebGPURuntime` 프로토콜만 보고,
+  `LynxWebGPUHost(runtime:)`에 구현체가 들어온다 — Lynx SDK를 가져오지 않는 것과 같은 이유다.
+  다른 백엔드(Dawn 등)를 붙일 때 **브리지도 JS 번들도 바뀌지 않는다** (`docs/extra/DAWN-BACKEND-REVIEW.md`).
 - **커맨드 스트림의 디코딩은 전부 Core에서 끝난다** (`WGPUDescriptors.swift` = 명세 디스크립터,
   `WGPUCommands.swift` = op 인자). 해석기는 값만 받는다 — 필드 이름이 코드 곳곳에 흩어지지 않게
   하는 장치이자, 백엔드를 갈아끼울 때 다시 쓸 것을 "인코딩"으로만 좁히는 경계다.
@@ -87,14 +94,16 @@ LynxWebGPUBridge  ← LynxWebGPU, Lynx          NativeModule(`NativeModules.WebG
 ```
 Sources/
 ├── LynxWebGPUCore/     — WGPUEnums / WGPUDescriptors / WGPUCommands(op 인자) / WGPUValueReader
-│                         WGPUHandle / WGPUError
+│                         WGPUHandle / WGPUError / WGPUAssetProvider
+│                         WebGPURuntime(백엔드 프로토콜 — 앱이 구현체를 넣는다)
 ├── LynxWebGPUShader/   — WGSLLexer → WGSLParser → WGSLReflection → MSLEmitter
 │                         WGSLLayout(vec3 배치 보정) · WGSLBindings(Metal 인덱스 배정)
 │                         MSLPrelude(타입 추론을 C++ 템플릿에 위임하는 셰이더 프렐류드)
 ├── LynxWebGPU/         — WGPUMetalMapping / WGPUResources / WGPUPipeline / WGPUSurface
-│                         WGPUCommandInterpreter / LynxWebGPUContext
-│                         WGPUAssetProvider(loadAsset 이름 해석 — 호스트가 갈아끼운다)
-└── LynxWebGPUBridge/   — LynxWebGPUHost / WebGPUNativeModule / WebGPUCanvasUI / WebGPUFrameTicker
+│                         WGPUCommandInterpreter / LynxWebGPUContext(= WebGPURuntime 기본 구현)
+│                         WGPUImageDecoder(ImageIO — createImageBitmap)
+├── LynxWebGPUBridge/   — LynxWebGPUHost / WebGPUNativeModule / WebGPUCanvasUI / WebGPUFrameTicker
+└── (다른 백엔드)        — 이 저장소 밖. `WebGPURuntime`을 구현해 앱이 주입한다
 Tests/
 ├── LynxWebGPUCoreTests/    — 디스크립터 디코딩, 핸들 레지스트리
 ├── LynxWebGPUShaderTests/  — 트랜스파일 + **실제 Metal 컴파일러 통과 검증**(MetalCompilerHarness)

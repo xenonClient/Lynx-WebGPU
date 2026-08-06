@@ -7,11 +7,17 @@
 `Lynx-WebGPU`는 **외부 의존성이 0이다.** Lynx SDK의 버전과 배포처는 **앱이 정한다** —
 SPM으로 받든, CocoaPods로 이미 쓰고 있든, 사내 배포본을 물리든, 다른 버전이 필요하든 그대로 붙는다.
 
-그래서 패키지가 주는 SPM product는 **엔진 하나**다:
+그래서 패키지가 주는 SPM product는 둘이다:
 
 | product | 내용 | 언제 |
 |---|---|---|
-| `LynxWebGPU` | Metal 백엔드 + WGSL 트랜스파일러 (Lynx 무관) | 항상 |
+| `LynxWebGPUCore` | 커맨드 스트림의 **계약** — `WebGPURuntime` 프로토콜, 디스크립터·커맨드 디코딩, 오류 모양. GPU 코드가 없다 | 항상 (브리지가 이것만 본다) |
+| `LynxWebGPU` | 기본 런타임 — Metal 백엔드 + WGSL 트랜스파일러 (Lynx 무관) | 기본 엔진을 쓸 때 |
+
+**GPU 백엔드도 앱이 정한다.** 브리지는 `WebGPURuntime`(=`LynxWebGPUCore`)만 알고, 실제
+런타임 객체는 앱이 만들어 `LynxWebGPUHost(runtime:)`에 넣는다 — Lynx SDK를 여기서 가져오지
+않는 것과 **같은 이유**다. 그래서 다른 백엔드(예: [Dawn](https://github.com/google/dawn) 위에
+얹은 런타임)로 갈아끼워도 **브리지도 JS 번들도 손대지 않는다.**
 
 Lynx 연동 레이어(`LynxWebGPUHost` · `WebGPUNativeModule` · `WebGPUCanvasUI` · `WebGPUFrameTicker`)는
 `Sources/LynxWebGPUBridge/`에 **소스로** 들어 있고, 네 파일 전부가 `#if canImport(Lynx)` 안에 있다.
@@ -45,11 +51,15 @@ targets: [
         product: .staticFramework,
         sources: ["<체크아웃 경로>/Sources/LynxWebGPUBridge/**"],
         dependencies: [
-            .package(product: "LynxWebGPU"),
+            // 브리지는 계약만 본다 — GPU 백엔드를 모른다.
+            .package(product: "LynxWebGPUCore"),
             .package(product: "Lynx"),        // ← 여기서 Lynx 버전을 고른다
         ]
     ),
-    .target(name: "MyApp", dependencies: [.target(name: "LynxWebGPUBridge")]),
+    .target(name: "MyApp", dependencies: [
+        .target(name: "LynxWebGPUBridge"),
+        .package(product: "LynxWebGPU"),      // ← 여기서 GPU 백엔드를 고른다
+    ]),
 ]
 ```
 
@@ -65,7 +75,7 @@ Compile Sources에 넣고, `LynxWebGPU`와 Lynx를 그 타깃의 의존성에 �
 
 ```
 Sources/LynxWebGPUBridge/
-├── LynxWebGPUHost.swift        — MTLDevice·큐·레지스트리 소유
+├── LynxWebGPUHost.swift        — 런타임(WebGPURuntime) 보유 + 프레임 티커·캔버스 연결
 ├── WebGPUNativeModule.swift    — NativeModules.WebGPU
 ├── WebGPUCanvasUI.swift        — <webgpu-canvas> 엘리먼트
 └── WebGPUFrameTicker.swift     — CADisplayLink 프레임 틱
@@ -93,7 +103,8 @@ final class GPUPageViewController: UIViewController {
         super.viewDidLoad()
         LynxEnv.sharedInstance()                     // 앱 시작 시 1회면 충분하다
 
-        host = try! LynxWebGPUHost()                 // MTLDevice·큐·객체 레지스트리를 소유한다
+        // **런타임(GPU 백엔드)을 고르는 유일한 자리.** 기본은 Metal 엔진이다.
+        host = LynxWebGPUHost(runtime: try! LynxWebGPUContext())
 
         lynxView = LynxView { [host] builder in
             let config = LynxConfig(provider: MyTemplateProvider())
@@ -114,7 +125,7 @@ final class GPUPageViewController: UIViewController {
 ```
 
 세 줄이 전부다:
-1. `LynxWebGPUHost()` — 런타임 생성
+1. `LynxWebGPUHost(runtime:)` — 런타임 주입 (`LynxWebGPUContext`가 기본 Metal 구현이다)
 2. `LynxWebGPU.register(in:host:)` — `NativeModules.WebGPU`와 `<webgpu-canvas>` 등록
 3. `host.attach(to:)` — LynxView 연결 (**빠뜨리면** 캔버스 등록과 프레임 이벤트가 동작하지 않는다)
 

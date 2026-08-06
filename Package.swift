@@ -27,6 +27,11 @@ let package = Package(
     products: [
         // Lynx 없이도 쓸 수 있는 WebGPU 엔진 (Metal 백엔드 + WGSL 트랜스파일러).
         .library(name: "LynxWebGPU", targets: ["LynxWebGPU"]),
+        // 커맨드 스트림의 계약만 — `WebGPURuntime` 프로토콜, 디스크립터·커맨드 디코딩, 오류 모양.
+        //
+        // **다른 백엔드를 만들 때 링크하는 것이 이쪽이다.** Metal 엔진(`LynxWebGPU`) 없이
+        // 브리지 + 자체 런타임만으로 앱을 구성할 수 있다 — GPU 코드가 하나도 들어 있지 않다.
+        .library(name: "LynxWebGPUCore", targets: ["LynxWebGPUCore"]),
     ],
     targets: [
         .target(

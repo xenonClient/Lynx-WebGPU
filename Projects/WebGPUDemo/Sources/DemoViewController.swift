@@ -17,7 +17,7 @@ final class BundleTemplateProvider: NSObject, LynxTemplateProvider {
 /// 데모 씬 하나를 띄우는 호스트 화면.
 ///
 /// `docs/LYNX-INTEGRATION.md` §2의 3단계가 그대로 들어 있다:
-/// `LynxWebGPUHost()` → `LynxWebGPU.register(in:host:)` → `host.attach(to:)`
+/// `LynxWebGPUHost(runtime:)` → `LynxWebGPU.register(in:host:)` → `host.attach(to:)`
 final class DemoViewController: UIViewController {
     private let scene: DemoScene
     private var host: LynxWebGPUHost?
@@ -38,7 +38,8 @@ final class DemoViewController: UIViewController {
         view.backgroundColor = UIColor(red: 0.05, green: 0.06, blue: 0.09, alpha: 1)
 
         do {
-            host = try LynxWebGPUHost()
+            // 런타임(백엔드)은 **앱이 고른다** — 기본은 Metal 엔진이다.
+            host = LynxWebGPUHost(runtime: try LynxWebGPUContext())
         } catch {
             showError("WebGPU 런타임을 만들 수 없다: \(error)")
             return

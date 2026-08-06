@@ -32,23 +32,9 @@ public final class WGPUImageBitmapObject {
 /// ImageIO로 대신한다 — 앱이 JS에서 PNG를 손으로 푸는 것보다 수십 배 빠르고, HEIC처럼
 /// JS 디코더가 아예 없는 형식도 열린다.
 public enum WGPUImageDecoder {
-    public struct Options {
-        /// 위아래를 뒤집는다. 웹 이미지의 원점은 좌상단이고 텍스처 좌표계에 따라
-        /// 뒤집어야 할 때가 있다 (`copyExternalImageToTexture`의 `flipY`).
-        public var flipY: Bool
-        /// 알파를 색에 곱해 둘 것인가. 명세 `premultiplyAlpha`의 `'premultiply'`/`'none'`.
-        /// `'default'`는 소스가 정하는데, ImageIO 경로에서는 곱하지 않은 값을 기준으로 삼는다.
-        public var premultiplyAlpha: Bool
-        /// 목표 크기 (`resizeWidth`/`resizeHeight`). nil이면 원본 크기다.
-        public var resize: (width: Int, height: Int)?
-
-        public init(flipY: Bool = false, premultiplyAlpha: Bool = false,
-                    resize: (width: Int, height: Int)? = nil) {
-            self.flipY = flipY
-            self.premultiplyAlpha = premultiplyAlpha
-            self.resize = resize
-        }
-    }
+    /// 디코딩 옵션은 백엔드와 무관한 값이라 `LynxWebGPUCore`에 있다 (`WebGPURuntime`의
+    /// `decodeImage`가 이 타입을 받는다). 예전 이름을 그대로 쓸 수 있게 별칭을 남긴다.
+    public typealias Options = WGPUImageDecodeOptions
 
     /// - Returns: RGBA8 이미지. 실패하면 `WGPUError.validation`을 던진다.
     public static func decode(_ data: Data, options: Options = Options()) throws -> WGPUImageBitmapObject {

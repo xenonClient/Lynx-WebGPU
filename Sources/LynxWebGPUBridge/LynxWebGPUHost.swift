@@ -1,9 +1,9 @@
 #if canImport(Lynx)
 import Foundation
 import UIKit
+import QuartzCore
 import Lynx
 import LynxWebGPUCore
-import LynxWebGPU
 
 /// LynxView 하나에 붙는 WebGPU 런타임.
 ///
@@ -11,8 +11,18 @@ import LynxWebGPU
 /// Lynx는 커스텀 UI를 `[[cls alloc] init]`으로 직접 만들기 때문에 생성자 주입을 할 수 없다 —
 /// 대신 호스트가 LynxView(= UI 트리의 rootView)에 자신을 등록해 두고 엘리먼트가 되찾는다
 /// (`LynxUIContext.rootView`, 양쪽 모두 약한 참조).
+///
+/// **런타임은 앱이 넣는다.** 이 브리지는 `WebGPURuntime` 프로토콜만 알고, Metal 엔진
+/// (`LynxWebGPU`)을 import하지 않는다 — Lynx SDK를 이 패키지가 가져오지 않는 것과 같은
+/// 이유다 (`docs/LYNX-INTEGRATION.md` §1). 그래서 Dawn 같은 다른 백엔드로 갈아끼울 때
+/// **브리지도 JS 번들도 손대지 않는다.**
+///
+/// ```swift
+/// import LynxWebGPU                                            // 기본 엔진을 쓸 때만
+/// let host = LynxWebGPUHost(runtime: try LynxWebGPUContext())
+/// ```
 public final class LynxWebGPUHost: NSObject {
-    public let context: LynxWebGPUContext
+    public let runtime: WebGPURuntime
     private weak var lynxView: LynxView?
     private let ticker = WebGPUFrameTicker()
 
@@ -27,13 +37,9 @@ public final class LynxWebGPUHost: NSObject {
     /// ```
     public var assetProvider: WGPUAssetProvider = WGPUFileAssetProvider()
 
-    public init(context: LynxWebGPUContext) {
-        self.context = context
+    public init(runtime: WebGPURuntime) {
+        self.runtime = runtime
         super.init()
-    }
-
-    public convenience init(device: MTLDevice? = nil) throws {
-        self.init(context: try LynxWebGPUContext(device: device))
     }
 
     /// LynxView가 만들어진 뒤 1회 호출한다. 프레임 이벤트 전송과 `<webgpu-canvas>` 연결에 필요하다.
@@ -45,7 +51,7 @@ public final class LynxWebGPUHost: NSObject {
             // GPU가 in-flight 한도만큼 밀려 있으면 이 틱을 건너뛴다. 여기서 이벤트를 보내면
             // JS가 프레임을 만들다 nextDrawable()에서 **JS 스레드 전체가** 서기 때문이다 —
             // 프레임을 거르는 쪽이 낫다. 완료가 돌아오면 다음 틱부터 재개된다.
-            guard self.context.isReadyForNextFrame else { return }
+            guard self.runtime.isReadyForNextFrame else { return }
             self.lynxView?.sendGlobalEvent("webgpu:frame", withParams: [[
                 "timestamp": timestamp * 1000,
                 "delta": deltaSeconds * 1000,
@@ -56,7 +62,7 @@ public final class LynxWebGPUHost: NSObject {
     /// 페이지를 떠날 때 호출한다 — 디스플레이 링크를 멈추고 GPU 객체를 버린다.
     public func detach() {
         ticker.stop()
-        context.reset()
+        runtime.reset()
         lynxView = nil
     }
 
@@ -76,12 +82,18 @@ public final class LynxWebGPUHost: NSObject {
 
     // MARK: - 캔버스 등록
 
-    func registerCanvas(_ surface: WGPUSurface) {
-        context.registerSurface(surface)
+    /// `<webgpu-canvas>`는 **레이어만** 넘긴다 — 표면 타입은 런타임이 고른다.
+    /// 그래서 백엔드를 갈아끼워도 엘리먼트 코드가 그대로다.
+    func attachCanvas(identifier: String, layer: CAMetalLayer) {
+        runtime.attachCanvas(identifier: identifier, layer: layer)
     }
 
-    func unregisterCanvas(identifier: String) {
-        context.unregisterSurface(identifier: identifier)
+    func resizeCanvas(identifier: String, drawableSize: CGSize) {
+        runtime.resizeCanvas(identifier: identifier, drawableSize: drawableSize)
+    }
+
+    func detachCanvas(identifier: String) {
+        runtime.detachCanvas(identifier: identifier)
     }
 }
 
@@ -109,7 +121,7 @@ public enum LynxWebGPU {
     /// 네이티브 모듈과 커스텀 엘리먼트를 LynxConfig에 등록한다.
     ///
     /// ```swift
-    /// let host = try LynxWebGPUHost()
+    /// let host = LynxWebGPUHost(runtime: try LynxWebGPUContext())   // 런타임은 앱이 고른다
     /// let lynxView = LynxView { builder in
     ///     let config = LynxConfig(provider: provider)
     ///     LynxWebGPU.register(in: config, host: host)
