@@ -10,7 +10,8 @@ Swift 6.2 / iOS 17.0+ / macOS 14.0+. **이 패키지는 외부 의존성이 0이
 앱이 정한다 (`docs/LYNX-INTEGRATION.md` §1). 데모 앱은 [xenonClient/Lynx-XCFramework](https://github.com/xenonClient/Lynx-XCFramework)를 직접 물고 있다.
 
 설계: `docs/ARCHITECTURE.md` · 지원 API: `docs/WEBGPU-API.md` · WGSL 서브셋: `docs/WGSL.md` ·
-Lynx 연동: `docs/LYNX-INTEGRATION.md` · 번들(JS) 작성: `docs/JS-AUTHORING.md` ·
+Lynx 연동: `docs/LYNX-INTEGRATION.md` · 커맨드 스트림 명세: `docs/COMMAND-STREAM.md` ·
+번들(JS) 작성: `docs/JS-AUTHORING.md` ·
 테스트: `docs/TESTING.md` · 로드맵: `docs/ROADMAP.md`
 
 ## Build & Test
