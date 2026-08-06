@@ -89,12 +89,15 @@ public final class WGSLShaderModule {
         MSLTypeMapping.functionName(entryPoint)
     }
 
-    /// 이 진입점들이 `arrayLength()`를 (전이적으로) 쓰는가.
+    /// 이 진입점들이 버퍼 크기 표를 필요로 하는가.
     ///
-    /// 쓰면 런타임이 예약 인덱스에 버퍼 크기 표를 꽂아 줘야 한다
-    /// (`WGSLMetalLimits.bufferSizesIndex`).
+    /// `arrayLength()`를 쓰거나 **런타임 크기 배열을 인덱싱**하면 필요하다 — 후자는 범위를
+    /// 자르려면 상한을 알아야 하기 때문이다 (robustness). 필요하면 런타임이 예약 인덱스에
+    /// 표를 꽂아 줘야 한다 (`WGSLMetalLimits.bufferSizesIndex`).
+    ///
+    /// **방출기와 같은 계산을 봐야 한다** — 어긋나면 셰이더가 바인딩되지 않은 버퍼를 읽는다.
     public func usesArrayLength(entryPoints: [String]) -> Bool {
-        let users = WGSLReflectionBuilder.functionsCalling("arrayLength", in: ast)
+        let users = WGSLReflectionBuilder.functionsNeedingBufferSizes(in: ast)
         return entryPoints.contains(where: users.contains)
     }
 

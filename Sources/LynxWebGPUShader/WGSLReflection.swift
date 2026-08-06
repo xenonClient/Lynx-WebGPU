@@ -173,11 +173,163 @@ enum WGSLReflectionBuilder {
         return reachable
     }
 
+    /// 버퍼 크기 표를 인자로 받아야 하는 함수 이름들 (전이적).
+    ///
+    /// 두 가지 이유로 필요하다:
+    /// 1. `arrayLength()` — 원소 수를 표에서 읽는다.
+    /// 2. **런타임 크기 배열 인덱싱** — 상한을 알아야 범위를 자를 수 있다 (robustness).
+    ///
+    /// **방출기와 파이프라인이 반드시 같은 답을 봐야 한다.** 방출기가 표를 요구했는데
+    /// 파이프라인이 안 묶으면 셰이더가 바인딩되지 않은 버퍼를 읽는다 — 그래서 계산이 여기 하나뿐이다.
+    static func functionsNeedingBufferSizes(in module: WGSLModule) -> Set<String> {
+        let runtimeArrays = runtimeArrayGlobalNames(in: module)
+        return functionsMatching(in: module) { identifiers, calls in
+            calls.contains("arrayLength") || !identifiers.isDisjoint(with: runtimeArrays)
+        }
+    }
+
+    /// 런타임 크기 배열(`array<T>`)을 담고 있는 전역 이름들 — 직접이든 구조체 멤버로든.
+    private static func runtimeArrayGlobalNames(in module: WGSLModule) -> Set<String> {
+        var names = Set<String>()
+        for global in module.globals {
+            switch global.type {
+            case .array(_, nil):
+                names.insert(global.name)
+            case .named(let structName):
+                guard let structure = module.structNamed(structName) else { continue }
+                if structure.members.contains(where: {
+                    if case .array(_, nil) = $0.type { return true } else { return false }
+                }) {
+                    names.insert(global.name)
+                }
+            default:
+                break
+            }
+        }
+        return names
+    }
+
+    /// `discard` 이후의 쓰기를 막는 플래그를 인자로 받아야 하는 함수들 (전이적).
+    ///
+    /// MSL의 `discard_fragment()`는 즉시 종료가 **아니다** — "이 프래그먼트는 버린다"고 표시할 뿐
+    /// 뒤의 코드가 계속 돌아서 버려진 프래그먼트가 스토리지 버퍼·텍스처를 오염시킨다.
+    /// 명세는 이를 금지하므로 `discard`를 플래그로 바꾸고 쓰기를 그 플래그로 가린다.
+    ///
+    /// 플래그는 진입점에서 선언해 호출 그래프를 따라 내려가므로, **discard를 놓는 함수**와
+    /// **가려야 할 쓰기가 있는 함수**, 그리고 그것들을 부르는 함수가 전부 필요하다.
+    /// 모듈에 `discard`가 없으면 빈 집합이다 — 비용이 0이어야 한다.
+    static func functionsNeedingDiscardFlag(in module: WGSLModule) -> Set<String> {
+        let discardsAnywhere = module.functions.contains { bodyDiscards($0.body) }
+        guard discardsAnywhere else { return [] }
+
+        let storageGlobals = Set(module.globals.filter { $0.addressSpace == "storage" }.map(\.name))
+        let seed = Set(module.functions
+            .filter { bodyDiscards($0.body) || bodyWritesResources($0.body, storage: storageGlobals) }
+            .map(\.name))
+        return closure(seed: seed, in: module)
+    }
+
+    /// 시드 함수들과, 그들을 (전이적으로) 부르는 함수들.
+    private static func closure(seed: Set<String>, in module: WGSLModule) -> Set<String> {
+        let functionNames = Set(module.functions.map(\.name))
+        var callees: [String: Set<String>] = [:]
+        for function in module.functions {
+            var identifiers = Set<String>()
+            var calls = Set<String>()
+            collect(
+                function.body, locals: Set(function.parameters.map(\.name)),
+                identifiers: &identifiers, calls: &calls
+            )
+            callees[function.name] = calls.intersection(functionNames)
+        }
+        var result = seed
+        var changed = true
+        while changed {
+            changed = false
+            for function in module.functions where !result.contains(function.name) {
+                if (callees[function.name] ?? []).contains(where: result.contains) {
+                    result.insert(function.name)
+                    changed = true
+                }
+            }
+        }
+        return result
+    }
+
+    private static func bodyDiscards(_ statements: [WGSLStatement]) -> Bool {
+        statements.contains { statement in
+            if case .discardStatement = statement { return true }
+            return nestedBlocks(of: statement).contains(where: bodyDiscards)
+        }
+    }
+
+    /// 이 본문이 스토리지 버퍼·텍스처·원자 연산에 **쓰는가** — `discard` 뒤에 가려야 할 것들.
+    private static func bodyWritesResources(_ statements: [WGSLStatement], storage: Set<String>) -> Bool {
+        statements.contains { statement in
+            switch statement {
+            case .assignment(let target, _, _):
+                if let root = rootIdentifier(of: target), storage.contains(root) { return true }
+            case .increment(let target), .decrement(let target):
+                if let root = rootIdentifier(of: target), storage.contains(root) { return true }
+            case .expressionStatement(let expression):
+                if case .call(let callee, _, _) = expression {
+                    if callee == "textureStore" { return true }
+                    if callee.hasPrefix("atomic"), callee != "atomicLoad" { return true }
+                }
+            default:
+                break
+            }
+            return nestedBlocks(of: statement).contains { bodyWritesResources($0, storage: storage) }
+        }
+    }
+
+    /// 문장 안에 들어 있는 하위 블록들 (제어 구조를 따라 내려가기 위한 것).
+    private static func nestedBlocks(of statement: WGSLStatement) -> [[WGSLStatement]] {
+        switch statement {
+        case .block(let inner):
+            return [inner]
+        case .ifStatement(_, let then, let elseBranch):
+            var blocks = [then]
+            switch elseBranch {
+            case .block(let inner)?: blocks.append(inner)
+            case .chained(let nested)?: blocks.append([nested])
+            case nil: break
+            }
+            return blocks
+        case .forStatement(_, _, _, let body), .whileStatement(_, let body):
+            return [body]
+        case .loopStatement(let body, let continuing):
+            return continuing.map { [body, $0] } ?? [body]
+        case .switchStatement(_, let cases):
+            return cases.map(\.body)
+        default:
+            return []
+        }
+    }
+
+    /// 대입 대상의 뿌리 식별자 (`out[i].x` → `out`).
+    private static func rootIdentifier(of expression: WGSLExpression) -> String? {
+        switch expression {
+        case .identifier(let name): return name
+        case .index(let base, _), .member(let base, _), .dereference(let base), .paren(let base):
+            return rootIdentifier(of: base)
+        default: return nil
+        }
+    }
+
     /// 특정 내장 함수를 (전이적으로) 호출하는 함수 이름들.
     ///
     /// `arrayLength`처럼 **추가 인자가 필요한** 내장 함수를 위해 쓴다 —
     /// 그 인자를 진입점에서 받아 호출 그래프를 따라 내려보내야 하기 때문이다.
     static func functionsCalling(_ builtin: String, in module: WGSLModule) -> Set<String> {
+        functionsMatching(in: module) { _, calls in calls.contains(builtin) }
+    }
+
+    /// 조건을 만족하는 함수와, 그 함수를 (전이적으로) 부르는 함수들.
+    private static func functionsMatching(
+        in module: WGSLModule,
+        seed: (_ identifiers: Set<String>, _ calls: Set<String>) -> Bool
+    ) -> Set<String> {
         var callees: [String: Set<String>] = [:]
         var directly = Set<String>()
         let functionNames = Set(module.functions.map(\.name))
@@ -189,7 +341,7 @@ enum WGSLReflectionBuilder {
                 function.body, locals: Set(function.parameters.map(\.name)),
                 identifiers: &identifiers, calls: &calls
             )
-            if calls.contains(builtin) { directly.insert(function.name) }
+            if seed(identifiers, calls) { directly.insert(function.name) }
             callees[function.name] = calls.intersection(functionNames)
         }
 
