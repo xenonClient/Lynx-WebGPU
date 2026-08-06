@@ -70,6 +70,9 @@ LynxWebGPUBridge  ← LynxWebGPU, Lynx          NativeModule(`NativeModules.WebG
 
 핵심 원칙:
 - **Core와 Shader는 Metal-free.** GPU 없이도 단위 테스트가 돌아야 한다. Metal 타입이 필요한 코드는 LynxWebGPU에만 둔다.
+- **커맨드 스트림의 디코딩은 전부 Core에서 끝난다** (`WGPUDescriptors.swift` = 명세 디스크립터,
+  `WGPUCommands.swift` = op 인자). 해석기는 값만 받는다 — 필드 이름이 코드 곳곳에 흩어지지 않게
+  하는 장치이자, 백엔드를 갈아끼울 때 다시 쓸 것을 "인코딩"으로만 좁히는 경계다.
 - **Lynx 심볼(`LynxModule`, `LynxUI` 등)은 LynxWebGPUBridge 안에서만** 참조하고 반드시 `#if canImport(Lynx)` 가드 안에 둔다.
   **이 패키지는 Lynx를 의존성으로 가져오지 않는다** — 버전·배포처를 앱이 정하게 하기 위해서다
   (`docs/LYNX-INTEGRATION.md` §1). 그래서 `Sources/LynxWebGPUBridge/`는 **SPM 타깃이 아니고**,
@@ -82,7 +85,8 @@ LynxWebGPUBridge  ← LynxWebGPU, Lynx          NativeModule(`NativeModules.WebG
 
 ```
 Sources/
-├── LynxWebGPUCore/     — WGPUEnums / WGPUDescriptors / WGPUValueReader / WGPUHandle / WGPUError
+├── LynxWebGPUCore/     — WGPUEnums / WGPUDescriptors / WGPUCommands(op 인자) / WGPUValueReader
+│                         WGPUHandle / WGPUError
 ├── LynxWebGPUShader/   — WGSLLexer → WGSLParser → WGSLReflection → MSLEmitter
 │                         WGSLLayout(vec3 배치 보정) · WGSLBindings(Metal 인덱스 배정)
 │                         MSLPrelude(타입 추론을 C++ 템플릿에 위임하는 셰이더 프렐류드)
@@ -168,7 +172,7 @@ git tag -a 0.2.0 -m "0.2.0 — 요약"
 - **커맨드 스트림의 필드 이름은 타입 검사가 잡아 주지 않는다.** JS는 `Record<string, any>`로 싣고
   Swift는 문자열 키로 읽으므로, 이름이 어긋나도 양쪽 다 컴파일된다. op를 추가·수정할 때는
   `.claude/skills/webgpu-command/SKILL.md`의 순서를 그대로 따라 양쪽을 함께 고칠 것.
-- **버퍼를 쓰는 새 op은 `WGPUCommandInterpreter.unmappedBuffer(_:field:)`를 거쳐야 한다.**
+- **버퍼를 쓰는 새 op은 `WGPUCommandInterpreter.unmappedBuffer(_:path:)`를 거쳐야 한다.**
   `registry.lookup(..., as: WGPUBufferObject.self, ...)`를 직접 부르면 매핑 검사를 건너뛰어,
   `mapAsync` 중인 버퍼에 GPU가 쓰는 경쟁이 그 경로로 샌다 (명세의 "unavailable" 상태).
   바인드 그룹 경로는 `applyDrawState()`가 `bufferObjects`를 훑어 따로 막는다.

@@ -186,7 +186,7 @@ final class WGPUCommandInterpreter {
 
     private func pushErrorScope(_ command: WGPUValueReader) throws {
         do {
-            errorScopes.append((try command.requiredEnum("filter", WGPUErrorFilter.self), nil))
+            errorScopes.append((try WGPUPushErrorScopeCommand(from: command).filter, nil))
         } catch {
             // 필터를 못 읽어도 스택 깊이는 맞춰 둔다 — 안 그러면 이후 pop이 **바깥 스코프**를
             // 가져가서, 앱이 안쪽 구간의 결과라고 믿는 값이 실제로는 바깥 구간의 결과가 된다.
@@ -411,78 +411,86 @@ final class WGPUCommandInterpreter {
 
     // MARK: - 명령 분기
 
+    /// op 이름 → 처리. **디코딩은 전부 이 자리에서 끝난다** — 아래 함수들은 리더를 보지 않고
+    /// `LynxWebGPUCore`가 옮겨 준 값만 받는다. 백엔드를 갈아끼울 때 다시 써야 하는 것이
+    /// "인코딩"으로만 좁혀지도록 한 배치다 (`WGPUCommands.swift` 머리말).
+    ///
+    /// 예외는 둘뿐이고 이유가 있다:
+    /// - `pushErrorScope` — 필터 디코딩이 **실패해도** 스택 깊이를 맞춰야 해서 리더를 받는다.
+    /// - `createRenderBundle` — 명령 목록을 값으로 **저장**했다가 되풀이하므로 리더 자체가 자료다.
     private func perform(_ command: WGPUValueReader, at index: Int) throws {
         let op = try command.requiredString("op")
         switch op {
         // 리소스
-        case "createBuffer": try createBuffer(command)
-        case "writeBuffer": try writeBuffer(command)
-        case "unmapBuffer": try unmapBuffer(command)
-        case "createTexture": try createTexture(command)
-        case "writeTexture": try writeTexture(command)
-        case "copyExternalImageToTexture": try copyExternalImageToTexture(command)
-        case "createTextureView": try createTextureView(command)
-        case "createSampler": try createSampler(command)
-        case "createShaderModule": try createShaderModule(command)
-        case "createBindGroupLayout": try createBindGroupLayout(command)
-        case "createPipelineLayout": try createPipelineLayout(command)
-        case "createBindGroup": try createBindGroup(command)
-        case "createQuerySet": try createQuerySet(command)
-        case "createRenderBundle": try createRenderBundle(command)
-        case "createRenderPipeline": try createRenderPipeline(command)
-        case "createComputePipeline": try createComputePipeline(command)
-        case "getBindGroupLayout": try getBindGroupLayout(command)
-        case "destroy": registry.remove(try command.requiredHandle("id"))
+        case "createBuffer": try createBuffer(WGPUCreateCommand(from: command))
+        case "writeBuffer": try writeBuffer(WGPUWriteBufferCommand(from: command))
+        case "unmapBuffer": try unmapBuffer(WGPUUnmapBufferCommand(from: command))
+        case "createTexture": try createTexture(WGPUCreateCommand(from: command))
+        case "writeTexture": try writeTexture(WGPUWriteTextureCommand(from: command))
+        case "copyExternalImageToTexture":
+            try copyExternalImageToTexture(WGPUCopyExternalImageCommand(from: command))
+        case "createTextureView": try createTextureView(WGPUCreateTextureViewCommand(from: command))
+        case "createSampler": try createSampler(WGPUCreateCommand(from: command))
+        case "createShaderModule": try createShaderModule(WGPUCreateCommand(from: command))
+        case "createBindGroupLayout": try createBindGroupLayout(WGPUCreateCommand(from: command))
+        case "createPipelineLayout": try createPipelineLayout(WGPUCreateCommand(from: command))
+        case "createBindGroup": try createBindGroup(WGPUCreateCommand(from: command))
+        case "createQuerySet": try createQuerySet(WGPUCreateCommand(from: command))
+        case "createRenderBundle": try createRenderBundle(WGPUCreateRenderBundleCommand(from: command))
+        case "createRenderPipeline": try createRenderPipeline(WGPUCreateCommand(from: command))
+        case "createComputePipeline": try createComputePipeline(WGPUCreateCommand(from: command))
+        case "getBindGroupLayout": try getBindGroupLayout(WGPUGetBindGroupLayoutCommand(from: command))
+        case "destroy": registry.remove(try WGPUDestroyCommand(from: command).id)
 
         // 오류 스코프
         case "pushErrorScope": try pushErrorScope(command)
         case "popErrorScope": popErrorScope()
 
         // 캔버스
-        case "configureCanvas": try configureCanvas(command)
-        case "getCurrentTexture": try getCurrentTexture(command)
+        case "configureCanvas": try configureCanvas(WGPUCanvasConfiguration(from: command))
+        case "getCurrentTexture": try getCurrentTexture(WGPUGetCurrentTextureCommand(from: command))
 
         // 렌더 패스
-        case "beginRenderPass": try beginRenderPass(command)
-        case "setPipeline": try setPipeline(command)
-        case "setBindGroup": try setBindGroup(command)
-        case "setVertexBuffer": try setVertexBuffer(command)
-        case "setIndexBuffer": try setIndexBuffer(command)
-        case "setViewport": try setViewport(command)
-        case "setScissorRect": try setScissorRect(command)
-        case "setBlendConstant": try setBlendConstant(command)
-        // `truncatingIfNeeded`는 WebIDL의 `u32` 변환(modulo)과 같은 동작이다. 비-truncating
-        // 이니셜라이저를 쓰면 `setStencilReference(-1)` 한 줄로 Swift 런타임이 트랩한다 —
-        // "잘못된 인자로 프로세스를 죽이지 않는다"는 이 라이브러리의 계약(WGPUError.swift)에 어긋난다.
-        case "setStencilReference": try requireRenderEncoder()
-            .setStencilReferenceValue(UInt32(truncatingIfNeeded: command.int("reference", default: 0)))
-        case "draw": try draw(command)
-        case "drawIndexed": try drawIndexed(command)
-        case "drawIndirect": try drawIndirect(command)
-        case "drawIndexedIndirect": try drawIndexedIndirect(command)
-        case "executeBundles": try executeBundles(command)
-        case "beginOcclusionQuery": try beginOcclusionQuery(command)
+        case "beginRenderPass": try beginRenderPass(WGPURenderPassDescriptor(from: command))
+        case "setPipeline": try setPipeline(WGPUSetPipelineCommand(from: command))
+        case "setBindGroup": try setBindGroup(WGPUSetBindGroupCommand(from: command))
+        case "setVertexBuffer": try setVertexBuffer(WGPUSetVertexBufferCommand(from: command))
+        case "setIndexBuffer": try setIndexBuffer(WGPUSetIndexBufferCommand(from: command))
+        case "setViewport": try setViewport(WGPUSetViewportCommand(from: command))
+        case "setScissorRect": try setScissorRect(WGPUSetScissorRectCommand(from: command))
+        case "setBlendConstant": try setBlendConstant(WGPUSetBlendConstantCommand(from: command))
+        case "setStencilReference":
+            try requireRenderEncoder()
+                .setStencilReferenceValue(WGPUSetStencilReferenceCommand(from: command).reference)
+        case "draw": try draw(WGPUDrawCommand(from: command))
+        case "drawIndexed": try drawIndexed(WGPUDrawIndexedCommand(from: command))
+        case "drawIndirect": try drawIndirect(WGPUIndirectCommand(from: command))
+        case "drawIndexedIndirect": try drawIndexedIndirect(WGPUIndirectCommand(from: command))
+        case "executeBundles": try executeBundles(WGPUExecuteBundlesCommand(from: command))
+        case "beginOcclusionQuery": try beginOcclusionQuery(WGPUBeginOcclusionQueryCommand(from: command))
         case "endOcclusionQuery": try endOcclusionQuery()
 
         // 컴퓨트 패스
-        case "beginComputePass": try beginComputePass(command)
-        case "dispatchWorkgroups": try dispatchWorkgroups(command)
-        case "dispatchWorkgroupsIndirect": try dispatchWorkgroupsIndirect(command)
+        case "beginComputePass": try beginComputePass(WGPUComputePassDescriptor(from: command))
+        case "dispatchWorkgroups": try dispatchWorkgroups(WGPUDispatchWorkgroupsCommand(from: command))
+        case "dispatchWorkgroupsIndirect":
+            try dispatchWorkgroupsIndirect(WGPUIndirectCommand(from: command))
 
         case "endPass": endActiveEncoders()
 
         // 복사
-        case "copyBufferToBuffer": try copyBufferToBuffer(command)
-        case "clearBuffer": try clearBuffer(command)
+        case "copyBufferToBuffer": try copyBufferToBuffer(WGPUCopyBufferToBufferCommand(from: command))
+        case "clearBuffer": try clearBuffer(WGPUClearBufferCommand(from: command))
 
         // 디버그 마커
-        case "pushDebugGroup": try pushDebugGroup(command)
+        case "pushDebugGroup": try pushDebugGroup(WGPUPushDebugGroupCommand(from: command))
         case "popDebugGroup": popDebugGroup()
-        case "insertDebugMarker": try insertDebugMarker(command)
-        case "copyTextureToBuffer": try copyTextureToBuffer(command)
-        case "copyBufferToTexture": try copyBufferToTexture(command)
-        case "copyTextureToTexture": try copyTextureToTexture(command)
-        case "resolveQuerySet": try resolveQuerySet(command)
+        case "insertDebugMarker": try insertDebugMarker(WGPUInsertDebugMarkerCommand(from: command))
+        case "copyTextureToBuffer": try copyTextureToBuffer(WGPUCopyTextureToBufferCommand(from: command))
+        case "copyBufferToTexture": try copyBufferToTexture(WGPUCopyBufferToTextureCommand(from: command))
+        case "copyTextureToTexture":
+            try copyTextureToTexture(WGPUCopyTextureToTextureCommand(from: command))
+        case "resolveQuerySet": try resolveQuerySet(WGPUResolveQuerySetCommand(from: command))
 
         default:
             throw WGPUError.unsupported("알 수 없는 명령 '\(op)'", path: "commands[\(index)].op")
@@ -491,10 +499,9 @@ final class WGPUCommandInterpreter {
 
     // MARK: - 리소스 생성
 
-    private func createBuffer(_ command: WGPUValueReader) throws {
-        let handle = try command.requiredHandle("id")
-        let object = try WGPUBufferObject(device: device, descriptor: WGPUBufferDescriptor(from: command))
-        registry.insert(object, at: handle)
+    private func createBuffer(_ command: WGPUCreateCommand<WGPUBufferDescriptor>) throws {
+        let object = try WGPUBufferObject(device: device, descriptor: command.descriptor)
+        registry.insert(object, at: command.id)
     }
 
     /// 큐 작업에 쓸 버퍼를 꺼낸다 — **매핑 중이면 거부한다.**
@@ -505,29 +512,31 @@ final class WGPUCommandInterpreter {
     /// 겹쳐 **JS가 받는 값이 어느 프레임 것인지 보장되지 않는다.**
     ///
     /// 버퍼를 쓰는 모든 명령이 이 함수를 지나야 한다 — 한 곳이라도 빠지면 그 경로로 경쟁이 샌다.
-    private func unmappedBuffer(_ reader: WGPUValueReader, field: String) throws -> WGPUBufferObject {
-        let handle = try reader.requiredHandle(field)
-        let object = try registry.lookup(handle, as: WGPUBufferObject.self, kind: "GPUBuffer")
+    ///
+    /// - Parameter path: 오류에 붙일 커맨드 스트림 경로 (`commands[3].buffer`).
+    ///   커맨드 구조체의 `fieldPath(_:)`가 만들어 준다.
+    private func unmappedBuffer(_ handle: WGPUHandle, path: String? = nil) throws -> WGPUBufferObject {
+        let object = try registry.lookup(handle, as: WGPUBufferObject.self, kind: "GPUBuffer", path: path)
         guard !object.isMapped else {
             throw WGPUError.validation(
                 "매핑 중인 GPUBuffer \(handle)은(는) 큐 작업에 쓸 수 없다 "
                     + "(mapAsync로 읽은 뒤 unmap()을 부를 것)",
-                path: reader.fieldPath(field)
+                path: path
             )
         }
         return object
     }
 
-    private func unmapBuffer(_ command: WGPUValueReader) throws {
+    private func unmapBuffer(_ command: WGPUUnmapBufferCommand) throws {
         try registry.lookup(
-            try command.requiredHandle("buffer"), as: WGPUBufferObject.self, kind: "GPUBuffer"
+            command.buffer, as: WGPUBufferObject.self, kind: "GPUBuffer"
         ).isMapped = false
     }
 
-    private func writeBuffer(_ command: WGPUValueReader) throws {
-        let target = try unmappedBuffer(command, field: "buffer")
-        let data = try command.requiredData("data")
-        let offset = command.int("bufferOffset", default: 0)
+    private func writeBuffer(_ command: WGPUWriteBufferCommand) throws {
+        let target = try unmappedBuffer(command.buffer, path: command.fieldPath("buffer"))
+        let offset = command.bufferOffset
+        let data = command.data
         guard offset >= 0, offset + data.count <= target.size else {
             throw WGPUError.validation(
                 "writeBuffer 범위 초과 — offset \(offset) + \(data.count)B > 버퍼 크기 \(target.size)B"
@@ -543,26 +552,28 @@ final class WGPUCommandInterpreter {
         )
     }
 
-    private func createTexture(_ command: WGPUValueReader) throws {
-        let handle = try command.requiredHandle("id")
-        let object = try WGPUTextureObject(device: device, descriptor: WGPUTextureDescriptor(from: command))
-        registry.insert(object, at: handle)
+    private func createTexture(_ command: WGPUCreateCommand<WGPUTextureDescriptor>) throws {
+        let object = try WGPUTextureObject(device: device, descriptor: command.descriptor)
+        registry.insert(object, at: command.id)
     }
 
-    private func writeTexture(_ command: WGPUValueReader) throws {
+    private func writeTexture(_ command: WGPUWriteTextureCommand) throws {
         let target = try registry.lookup(
-            try command.requiredHandle("texture"), as: WGPUTextureObject.self, kind: "GPUTexture"
+            command.texture, as: WGPUTextureObject.self, kind: "GPUTexture",
+            path: command.fieldPath("texture")
         )
-        let data = try command.requiredData("data")
-        let size = try command.requiredExtent("size")
+        let data = command.data
+        let size = command.size
         let format = target.format
-        let bytesPerRow = command.int("bytesPerRow", default: format.bytesPerRow(width: size.width))
-        // 압축 포맷에서 행은 픽셀이 아니라 **블록** 단위로 센다 (명세 GPUTexelCopyBufferLayout).
+        // 생략된 스트라이드의 기본값은 **포맷을 알아야** 나온다 — 압축 포맷에서 행은 픽셀이
+        // 아니라 **블록** 단위이기 때문이다 (명세 GPUTexelCopyBufferLayout). 그래서 디코딩이
+        // 아니라 여기서 채운다.
+        let bytesPerRow = command.bytesPerRow ?? format.bytesPerRow(width: size.width)
         let blockRows = format.blockRows(height: size.height)
-        let rowsPerImage = command.int("rowsPerImage", default: blockRows)
+        let rowsPerImage = command.rowsPerImage ?? blockRows
         guard size.width > 0, size.height > 0, size.depthOrArrayLayers > 0 else { return }   // no-op
-        try validateBlockAlignment(format: format, origin: try command.origin("origin"), size: size,
-                                   texture: target, mipLevel: command.int("mipLevel", default: 0),
+        try validateBlockAlignment(format: format, origin: command.origin, size: size,
+                                   texture: target, mipLevel: command.mipLevel,
                                    label: "writeTexture")
         let bytesPerImage = bytesPerRow * max(rowsPerImage, blockRows)
         let layers = max(size.depthOrArrayLayers, 1)
@@ -576,9 +587,9 @@ final class WGPUCommandInterpreter {
         // writeBuffer와 같은 이유로 blit으로 큐에 순서를 태운다 — 앞선 렌더/복사와 직렬화된다.
         target.encodeWrite(
             from: staging,
-            origin: try command.origin("origin"),
+            origin: command.origin,
             size: size,
-            mipLevel: command.int("mipLevel", default: 0),
+            mipLevel: command.mipLevel,
             bytesPerRow: bytesPerRow,
             rowsPerImage: rowsPerImage,
             blit: try activeBlitEncoder()
@@ -591,14 +602,14 @@ final class WGPUCommandInterpreter {
     /// 웹에서는 브라우저가 `<img>`·`<canvas>`·`VideoFrame`을 소스로 받는다. Lynx에는 그런
     /// 엘리먼트가 없으므로 **`createImageBitmap()`이 만든 네이티브 이미지**가 그 자리다.
     /// 픽셀은 이미 RGBA8이라 여기서는 잘라내고 스테이징에 실어 blit하는 일만 한다.
-    private func copyExternalImageToTexture(_ command: WGPUValueReader) throws {
-        let sourceReader = try command.requiredObject("source")
-        let destinationReader = try command.requiredObject("destination")
+    private func copyExternalImageToTexture(_ command: WGPUCopyExternalImageCommand) throws {
         let bitmap = try registry.lookup(
-            try sourceReader.requiredHandle("source"), as: WGPUImageBitmapObject.self, kind: "ImageBitmap"
+            command.source.image, as: WGPUImageBitmapObject.self, kind: "ImageBitmap",
+            path: command.source.fieldPath("source")
         )
         let target = try registry.lookup(
-            try destinationReader.requiredHandle("texture"), as: WGPUTextureObject.self, kind: "GPUTexture"
+            command.destination.texture, as: WGPUTextureObject.self, kind: "GPUTexture",
+            path: command.destination.fieldPath("texture")
         )
         guard !target.format.isCompressed else {
             throw WGPUError.validation(
@@ -616,8 +627,9 @@ final class WGPUCommandInterpreter {
             )
         }
 
-        let sourceOrigin = try sourceReader.origin("origin")
-        let size = command.extent("copySize")
+        let sourceOrigin = command.source.origin
+        // 생략된 복사 크기는 **이미지의 남은 부분 전부**다 — 이미지 크기를 알아야 나오므로 여기서 채운다.
+        let size = command.copySize
             ?? WGPUExtent3D(width: bitmap.width - sourceOrigin.x, height: bitmap.height - sourceOrigin.y)
         guard size.width > 0, size.height > 0 else { return }   // no-op
         guard sourceOrigin.x + size.width <= bitmap.width,
@@ -631,7 +643,7 @@ final class WGPUCommandInterpreter {
         // 명세 `GPUCopyExternalImageSourceInfo.flipY` — **복사 시점**에 위아래를 뒤집는다.
         // (`createImageBitmap`의 flipY는 디코딩 시점이라 별개다. 웹 라이브러리는 이쪽을 쓴다 —
         // three.js의 `Texture.flipY`가 기본 true라, 무시하면 텍스처가 조용히 뒤집힌다.)
-        let flipY = sourceReader.bool("flipY", default: false)
+        let flipY = command.source.flipY
 
         // 필요한 만큼만 잘라 스테이징에 싣는다. 전체 폭을 그대로 쓰면 부분 복사에서
         // bytesPerRow가 맞지 않는다.
@@ -653,9 +665,9 @@ final class WGPUCommandInterpreter {
         let staging = try makeStagingBuffer(slice)
         target.encodeWrite(
             from: staging,
-            origin: try destinationReader.origin("origin"),
+            origin: command.destination.origin,
             size: WGPUExtent3D(width: size.width, height: size.height),
-            mipLevel: destinationReader.int("mipLevel", default: 0),
+            mipLevel: command.destination.mipLevel,
             bytesPerRow: rowBytes,
             rowsPerImage: size.height,
             blit: try activeBlitEncoder()
@@ -701,24 +713,22 @@ final class WGPUCommandInterpreter {
         return staging
     }
 
-    private func createTextureView(_ command: WGPUValueReader) throws {
-        let handle = try command.requiredHandle("id")
-        let sourceHandle = try command.requiredHandle("texture")
-        let source = try registry.lookup(sourceHandle, as: WGPUTextureObject.self, kind: "GPUTexture")
-        let drawable = acquiredDrawables.first { $0.handle == sourceHandle }?.drawable
-        let view = try WGPUTextureViewObject(
-            source: source,
-            descriptor: WGPUTextureViewDescriptor(from: command),
-            drawable: drawable
+    private func createTextureView(_ command: WGPUCreateTextureViewCommand) throws {
+        let source = try registry.lookup(
+            command.texture, as: WGPUTextureObject.self, kind: "GPUTexture",
+            path: command.fieldPath("texture")
         )
-        registry.insert(view, at: handle)
-        if source.isDrawable { frameScopedHandles.append(handle) }
+        let drawable = acquiredDrawables.first { $0.handle == command.texture }?.drawable
+        let view = try WGPUTextureViewObject(
+            source: source, descriptor: command.descriptor, drawable: drawable
+        )
+        registry.insert(view, at: command.id)
+        if source.isDrawable { frameScopedHandles.append(command.id) }
     }
 
-    private func createSampler(_ command: WGPUValueReader) throws {
-        let handle = try command.requiredHandle("id")
-        let object = try WGPUSamplerObject(device: device, descriptor: WGPUSamplerDescriptor(from: command))
-        registry.insert(object, at: handle)
+    private func createSampler(_ command: WGPUCreateCommand<WGPUSamplerDescriptor>) throws {
+        let object = try WGPUSamplerObject(device: device, descriptor: command.descriptor)
+        registry.insert(object, at: command.id)
     }
 
     /// 명세에서 **셰이더 모듈은 컴파일에 실패해도 만들어진다** — 오류는 `getCompilationInfo()`와
@@ -726,10 +736,9 @@ final class WGPUCommandInterpreter {
     ///
     /// 핸들이 아예 없으면 이후 명령이 전부 "존재하지 않는다"로만 깨져 **진짜 원인(파싱 실패)이
     /// 화면에서 사라진다.** 여기서는 원인도 그 자리에서 보고한다.
-    private func createShaderModule(_ command: WGPUValueReader) throws {
-        let handle = try command.requiredHandle("id")
-        let object = WGPUShaderModuleObject(descriptor: try WGPUShaderModuleDescriptor(from: command))
-        registry.insert(object, at: handle)
+    private func createShaderModule(_ command: WGPUCreateCommand<WGPUShaderModuleDescriptor>) throws {
+        let object = WGPUShaderModuleObject(descriptor: command.descriptor)
+        registry.insert(object, at: command.id)
         if let failure = object.compilationMessages.first, !object.isValid {
             throw WGPUError(
                 kind: failure.kind, message: failure.message,
@@ -738,59 +747,58 @@ final class WGPUCommandInterpreter {
         }
     }
 
-    private func createBindGroupLayout(_ command: WGPUValueReader) throws {
-        let handle = try command.requiredHandle("id")
-        let descriptor = try WGPUBindGroupLayoutDescriptor(from: command)
-        registry.insert(WGPUBindGroupLayoutObject(entries: descriptor.entries), at: handle)
+    private func createBindGroupLayout(_ command: WGPUCreateCommand<WGPUBindGroupLayoutDescriptor>) throws {
+        registry.insert(WGPUBindGroupLayoutObject(entries: command.descriptor.entries), at: command.id)
     }
 
-    private func createPipelineLayout(_ command: WGPUValueReader) throws {
-        let handle = try command.requiredHandle("id")
-        let descriptor = try WGPUPipelineLayoutDescriptor(from: command)
-        let groups = try descriptor.bindGroupLayouts.map {
-            try registry.lookup($0, as: WGPUBindGroupLayoutObject.self, kind: "GPUBindGroupLayout")
+    private func createPipelineLayout(_ command: WGPUCreateCommand<WGPUPipelineLayoutDescriptor>) throws {
+        let groups = try command.descriptor.bindGroupLayouts.map {
+            try registry.lookup(
+                $0, as: WGPUBindGroupLayoutObject.self, kind: "GPUBindGroupLayout",
+                path: command.fieldPath("bindGroupLayouts")
+            )
         }
-        registry.insert(try WGPUPipelineLayoutObject(groups: groups), at: handle)
+        registry.insert(try WGPUPipelineLayoutObject(groups: groups), at: command.id)
     }
 
-    private func createBindGroup(_ command: WGPUValueReader) throws {
-        let handle = try command.requiredHandle("id")
-        let descriptor = try WGPUBindGroupDescriptor(from: command)
+    private func createBindGroup(_ command: WGPUCreateCommand<WGPUBindGroupDescriptor>) throws {
         let layout = try registry.lookup(
-            descriptor.layout, as: WGPUBindGroupLayoutObject.self, kind: "GPUBindGroupLayout"
+            command.descriptor.layout, as: WGPUBindGroupLayoutObject.self, kind: "GPUBindGroupLayout",
+            path: command.fieldPath("layout")
         )
         registry.insert(
-            try WGPUBindGroupObject(layout: layout, descriptor: descriptor, registry: registry), at: handle
+            try WGPUBindGroupObject(layout: layout, descriptor: command.descriptor, registry: registry),
+            at: command.id
         )
     }
 
-    private func createQuerySet(_ command: WGPUValueReader) throws {
-        let handle = try command.requiredHandle("id")
-        let object = try WGPUQuerySetObject(device: device, descriptor: WGPUQuerySetDescriptor(from: command))
-        registry.insert(object, at: handle)
+    private func createQuerySet(_ command: WGPUCreateCommand<WGPUQuerySetDescriptor>) throws {
+        let object = try WGPUQuerySetObject(device: device, descriptor: command.descriptor)
+        registry.insert(object, at: command.id)
     }
 
     /// `bundleEncoder.finish()` — JS가 모아 둔 명령 목록을 번들 객체로 등록한다.
     ///
     /// 번들 인코더 자체는 네이티브에 없다. JS가 명령을 배열에 모으고 `finish()`에서 한 번에
     /// 내려보내므로, 인코더의 수명을 양쪽에서 맞출 이유가 없다.
-    private func createRenderBundle(_ command: WGPUValueReader) throws {
-        let handle = try command.requiredHandle("id")
+    private func createRenderBundle(_ command: WGPUCreateRenderBundleCommand) throws {
         let bundle = try WGPURenderBundleObject(
-            commands: try command.requiredObjects("commands"),
-            descriptor: try WGPURenderBundleDescriptor(from: command)
+            commands: command.commands, descriptor: command.descriptor
         )
-        registry.insert(bundle, at: handle)
+        registry.insert(bundle, at: command.id)
     }
 
-    private func createRenderPipeline(_ command: WGPUValueReader) throws {
-        let handle = try command.requiredHandle("id")
-        var descriptor = try WGPURenderPipelineDescriptor(from: command)
+    private func createRenderPipeline(_ command: WGPUCreateCommand<WGPURenderPipelineDescriptor>) throws {
+        var descriptor = command.descriptor
         let vertexModule = try registry.lookup(
-            descriptor.vertex.module, as: WGPUShaderModuleObject.self, kind: "GPUShaderModule"
+            descriptor.vertex.module, as: WGPUShaderModuleObject.self, kind: "GPUShaderModule",
+            path: command.fieldPath("vertex.module")
         )
         let fragmentModule = try descriptor.fragment.map {
-            try registry.lookup($0.module, as: WGPUShaderModuleObject.self, kind: "GPUShaderModule")
+            try registry.lookup(
+                $0.module, as: WGPUShaderModuleObject.self, kind: "GPUShaderModule",
+                path: command.fieldPath("fragment.module")
+            )
         }
 
         // 명세의 "get the entry point" — 이름을 생략하면 그 스테이지의 유일한 진입점을 쓴다.
@@ -819,14 +827,14 @@ final class WGPUCommandInterpreter {
             device: device, descriptor: descriptor, layout: layout,
             vertexModule: vertexModule, fragmentModule: fragmentModule
         )
-        registry.insert(pipeline, at: handle)
+        registry.insert(pipeline, at: command.id)
     }
 
-    private func createComputePipeline(_ command: WGPUValueReader) throws {
-        let handle = try command.requiredHandle("id")
-        var descriptor = try WGPUComputePipelineDescriptor(from: command)
+    private func createComputePipeline(_ command: WGPUCreateCommand<WGPUComputePipelineDescriptor>) throws {
+        var descriptor = command.descriptor
         let module = try registry.lookup(
-            descriptor.module, as: WGPUShaderModuleObject.self, kind: "GPUShaderModule"
+            descriptor.module, as: WGPUShaderModuleObject.self, kind: "GPUShaderModule",
+            path: command.fieldPath("compute.module")
         )
         descriptor.entryPoint = try module.resolveEntryPoint(
             descriptor.entryPoint, stage: .compute, path: command.fieldPath("compute.entryPoint")
@@ -836,34 +844,31 @@ final class WGPUCommandInterpreter {
         )
         registry.insert(
             try WGPUComputePipelineObject(device: device, descriptor: descriptor, layout: layout, module: module),
-            at: handle
+            at: command.id
         )
     }
 
     /// `pipeline.getBindGroupLayout(index)` — `layout: "auto"`로 유도된 레이아웃을 핸들로 꺼낸다.
-    private func getBindGroupLayout(_ command: WGPUValueReader) throws {
-        let handle = try command.requiredHandle("id")
-        let pipelineHandle = try command.requiredHandle("pipeline")
-        let index = try command.requiredInt("index")
-
+    private func getBindGroupLayout(_ command: WGPUGetBindGroupLayoutCommand) throws {
+        let pipelineHandle = command.pipeline
         let layout: WGPUPipelineLayoutObject
         if let render = try? registry.lookup(pipelineHandle, as: WGPURenderPipelineObject.self, kind: "x") {
             layout = render.layout
         } else {
             layout = try registry.lookup(
-                pipelineHandle, as: WGPUComputePipelineObject.self, kind: "GPUPipeline"
+                pipelineHandle, as: WGPUComputePipelineObject.self, kind: "GPUPipeline",
+                path: command.fieldPath("pipeline")
             ).layout
         }
-        guard let group = layout.group(at: index) else {
-            throw WGPUError.validation("파이프라인에 바인드 그룹 \(index)이(가) 없다")
+        guard let group = layout.group(at: command.index) else {
+            throw WGPUError.validation("파이프라인에 바인드 그룹 \(command.index)이(가) 없다")
         }
-        registry.insert(group, at: handle)
+        registry.insert(group, at: command.id)
     }
 
     // MARK: - 캔버스
 
-    private func configureCanvas(_ command: WGPUValueReader) throws {
-        let configuration = try WGPUCanvasConfiguration(from: command)
+    private func configureCanvas(_ configuration: WGPUCanvasConfiguration) throws {
         guard let surface = surfaceProvider(configuration.canvasId) else {
             throw WGPUError.validation(
                 "캔버스 '\(configuration.canvasId)'이(가) 등록되지 않았다 "
@@ -874,9 +879,9 @@ final class WGPUCommandInterpreter {
         touchedCanvases[configuration.canvasId] = surface
     }
 
-    private func getCurrentTexture(_ command: WGPUValueReader) throws {
-        let handle = try command.requiredHandle("id")
-        let canvasId = try command.requiredString("canvas")
+    private func getCurrentTexture(_ command: WGPUGetCurrentTextureCommand) throws {
+        let handle = command.id
+        let canvasId = command.canvas
         guard let surface = surfaceProvider(canvasId) else {
             throw WGPUError.validation("캔버스 '\(canvasId)'이(가) 등록되지 않았다")
         }
@@ -897,9 +902,8 @@ final class WGPUCommandInterpreter {
 
     // MARK: - 렌더 패스
 
-    private func beginRenderPass(_ command: WGPUValueReader) throws {
+    private func beginRenderPass(_ descriptor: WGPURenderPassDescriptor) throws {
         endActiveEncoders()
-        let descriptor = try WGPURenderPassDescriptor(from: command)
         let passDescriptor = MTLRenderPassDescriptor()
         var colorFormats: [WGPUTextureFormat] = []
         var sampleCount = 1
@@ -1030,7 +1034,7 @@ final class WGPUCommandInterpreter {
         return buffer
     }
 
-    private func beginOcclusionQuery(_ command: WGPUValueReader) throws {
+    private func beginOcclusionQuery(_ command: WGPUBeginOcclusionQueryCommand) throws {
         let encoder = try requireRenderEncoder()
         guard let querySet = passOcclusionQuerySet else {
             throw WGPUError.validation(
@@ -1040,7 +1044,7 @@ final class WGPUCommandInterpreter {
         guard openOcclusionQuery == nil else {
             throw WGPUError.validation("occlusion 쿼리는 중첩할 수 없다 (앞의 것을 endOcclusionQuery로 닫을 것)")
         }
-        let index = try command.requiredInt("queryIndex")
+        let index = command.queryIndex
         try querySet.checkRange(first: index, count: 1, path: command.fieldPath("queryIndex"))
         // 한 패스에서 같은 인덱스를 두 번 쓰면 두 구간이 같은 8바이트 슬롯을 나눠 쓴다 —
         // 최종 값이 Metal의 누적/덮어쓰기 동작에 달린 값이 되어 브라우저와 결과가 갈린다.
@@ -1065,14 +1069,16 @@ final class WGPUCommandInterpreter {
     }
 
     /// 쿼리 결과를 버퍼로 내린다. 종류마다 blit 명령이 다르다.
-    private func resolveQuerySet(_ command: WGPUValueReader) throws {
+    private func resolveQuerySet(_ command: WGPUResolveQuerySetCommand) throws {
         let querySet = try registry.lookup(
-            try command.requiredHandle("querySet"), as: WGPUQuerySetObject.self, kind: "GPUQuerySet"
+            command.querySet, as: WGPUQuerySetObject.self, kind: "GPUQuerySet",
+            path: command.fieldPath("querySet")
         )
-        let destination = try unmappedBuffer(command, field: "destination")
-        let first = command.int("firstQuery", default: 0)
-        let count = command.int("queryCount", default: querySet.count - first)
-        let offset = command.int("destinationOffset", default: 0)
+        let destination = try unmappedBuffer(command.destination, path: command.fieldPath("destination"))
+        let first = command.firstQuery
+        // 생략하면 쿼리셋의 남은 전부 — 쿼리셋 크기를 알아야 하므로 여기서 채운다.
+        let count = command.queryCount ?? (querySet.count - first)
+        let offset = command.destinationOffset
         try querySet.checkRange(first: first, count: count, path: command.fieldPath("firstQuery"))
 
         // 명세가 요구하는 정렬. Metal은 이보다 느슨해서 여기서 안 막으면 브라우저에서만 깨진다.
@@ -1135,13 +1141,16 @@ final class WGPUCommandInterpreter {
         dirtyVertexSlots.removeAll()
     }
 
-    private func executeBundles(_ command: WGPUValueReader) throws {
+    private func executeBundles(_ command: WGPUExecuteBundlesCommand) throws {
         _ = try requireRenderEncoder()
         guard let formats = passFormats else {
             throw WGPUError.validation("executeBundles는 렌더 패스 안에서만 쓸 수 있다")
         }
-        let bundles = try command.handles("bundles").map {
-            try registry.lookup($0, as: WGPURenderBundleObject.self, kind: "GPURenderBundle")
+        let bundles = try command.bundles.map {
+            try registry.lookup(
+                $0, as: WGPURenderBundleObject.self, kind: "GPURenderBundle",
+                path: command.fieldPath("bundles")
+            )
         }
 
         for bundle in bundles {
@@ -1166,11 +1175,12 @@ final class WGPUCommandInterpreter {
         }
     }
 
-    private func setPipeline(_ command: WGPUValueReader) throws {
-        let handle = try command.requiredHandle("pipeline")
+    private func setPipeline(_ command: WGPUSetPipelineCommand) throws {
+        let handle = command.pipeline
         if let encoder = renderEncoder {
             let pipeline = try registry.lookup(
-                handle, as: WGPURenderPipelineObject.self, kind: "GPURenderPipeline"
+                handle, as: WGPURenderPipelineObject.self, kind: "GPURenderPipeline",
+                path: command.fieldPath("pipeline")
             )
             // read-only로 선언한 어태치먼트를 쓰는 파이프라인은 여기서 막는다 — Metal은 그냥
             // 써 버리므로, 안 막으면 read-only라고 적어 둔 깊이 버퍼가 실제로 변조된다.
@@ -1199,7 +1209,8 @@ final class WGPUCommandInterpreter {
             currentRenderPipeline = pipeline
         } else if let encoder = computeEncoder {
             let pipeline = try registry.lookup(
-                handle, as: WGPUComputePipelineObject.self, kind: "GPUComputePipeline"
+                handle, as: WGPUComputePipelineObject.self, kind: "GPUComputePipeline",
+                path: command.fieldPath("pipeline")
             )
             encoder.setComputePipelineState(pipeline.state)
             currentComputePipeline = pipeline
@@ -1210,14 +1221,13 @@ final class WGPUCommandInterpreter {
         dirtyGroups = Set(boundGroups.keys)
     }
 
-    private func setBindGroup(_ command: WGPUValueReader) throws {
-        let index = try command.requiredInt("index")
+    private func setBindGroup(_ command: WGPUSetBindGroupCommand) throws {
         let group = try registry.lookup(
-            try command.requiredHandle("bindGroup"), as: WGPUBindGroupObject.self, kind: "GPUBindGroup"
+            command.bindGroup, as: WGPUBindGroupObject.self, kind: "GPUBindGroup",
+            path: command.fieldPath("bindGroup")
         )
-        let offsets = (try? command.integers("dynamicOffsets")) ?? []
-        boundGroups[index] = (group, offsets)
-        dirtyGroups.insert(index)
+        boundGroups[command.index] = (group, command.dynamicOffsets)
+        dirtyGroups.insert(command.index)
     }
 
     /// 드로우·디스패치 직전에 파이프라인이 요구하는 상태를 전부 확인하고 인코더에 올린다.
@@ -1352,14 +1362,14 @@ final class WGPUCommandInterpreter {
         return false
     }
 
-    private func setVertexBuffer(_ command: WGPUValueReader) throws {
+    private func setVertexBuffer(_ command: WGPUSetVertexBufferCommand) throws {
         _ = try requireRenderEncoder()
-        let slot = try command.requiredInt("slot")
+        let slot = command.slot
         guard slot >= 0, slot < WGSLMetalLimits.maxVertexBufferSlots else {
             throw WGPUError.validation("정점 버퍼 슬롯은 0~\(WGSLMetalLimits.maxVertexBufferSlots - 1) 범위다")
         }
-        let buffer = try unmappedBuffer(command, field: "buffer")
-        let offset = command.int("offset", default: 0)
+        let buffer = try unmappedBuffer(command.buffer, path: command.fieldPath("buffer"))
+        let offset = command.offset
         guard offset >= 0, offset <= buffer.size else {
             throw WGPUError.validation(
                 "정점 버퍼 offset(\(offset))이 버퍼 크기(\(buffer.size)B)를 벗어난다",
@@ -1395,49 +1405,45 @@ final class WGPUCommandInterpreter {
         dirtyVertexSlots.removeAll()
     }
 
-    private func setIndexBuffer(_ command: WGPUValueReader) throws {
+    private func setIndexBuffer(_ command: WGPUSetIndexBufferCommand) throws {
         _ = try requireRenderEncoder()
-        let buffer = try unmappedBuffer(command, field: "buffer")
-        let format = try command.requiredEnum("format", WGPUIndexFormat.self)
+        let buffer = try unmappedBuffer(command.buffer, path: command.fieldPath("buffer"))
         indexBinding = (
             buffer.buffer,
-            command.int("offset", default: 0),
-            WGPUMetalMapping.indexType(format),
-            format == .uint16 ? 2 : 4
+            command.offset,
+            WGPUMetalMapping.indexType(command.format),
+            command.indexStride
         )
     }
 
-    private func setViewport(_ command: WGPUValueReader) throws {
+    private func setViewport(_ command: WGPUSetViewportCommand) throws {
         let encoder = try requireRenderEncoder()
         encoder.setViewport(MTLViewport(
-            originX: command.double("x", default: 0),
-            originY: command.double("y", default: 0),
-            width: try command.requiredDouble("width"),
-            height: try command.requiredDouble("height"),
-            znear: command.double("minDepth", default: 0),
-            zfar: command.double("maxDepth", default: 1)
+            originX: command.x,
+            originY: command.y,
+            width: command.width,
+            height: command.height,
+            znear: command.minDepth,
+            zfar: command.maxDepth
         ))
     }
 
-    private func setScissorRect(_ command: WGPUValueReader) throws {
+    private func setScissorRect(_ command: WGPUSetScissorRectCommand) throws {
         let encoder = try requireRenderEncoder()
         encoder.setScissorRect(MTLScissorRect(
-            x: command.int("x", default: 0),
-            y: command.int("y", default: 0),
-            width: try command.requiredInt("width"),
-            height: try command.requiredInt("height")
+            x: command.x, y: command.y, width: command.width, height: command.height
         ))
     }
 
-    private func setBlendConstant(_ command: WGPUValueReader) throws {
+    private func setBlendConstant(_ command: WGPUSetBlendConstantCommand) throws {
         let encoder = try requireRenderEncoder()
-        let color = try command.color("color", default: .transparent)
+        let color = command.color
         encoder.setBlendColor(
             red: Float(color.red), green: Float(color.green), blue: Float(color.blue), alpha: Float(color.alpha)
         )
     }
 
-    private func draw(_ command: WGPUValueReader) throws {
+    private func draw(_ command: WGPUDrawCommand) throws {
         let encoder = try requireRenderEncoder()
         // 파이프라인 가드는 `applyDrawState()`보다 **먼저** 둔다 — 그 안의 같은 검사가 먼저
         // 던지면 이 op 이름이 든 메시지가 영영 나가지 못하는 죽은 코드가 된다 (아래 draw 계열 공통).
@@ -1447,14 +1453,14 @@ final class WGPUCommandInterpreter {
         try applyDrawState()
         encoder.drawPrimitives(
             type: pipeline.primitiveType,
-            vertexStart: command.int("firstVertex", default: 0),
-            vertexCount: try command.requiredInt("vertexCount"),
-            instanceCount: command.int("instanceCount", default: 1),
-            baseInstance: command.int("firstInstance", default: 0)
+            vertexStart: command.firstVertex,
+            vertexCount: command.vertexCount,
+            instanceCount: command.instanceCount,
+            baseInstance: command.firstInstance
         )
     }
 
-    private func drawIndexed(_ command: WGPUValueReader) throws {
+    private func drawIndexed(_ command: WGPUDrawIndexedCommand) throws {
         let encoder = try requireRenderEncoder()
         guard let pipeline = currentRenderPipeline else {
             throw WGPUError.validation("drawIndexed 전에 setPipeline이 필요하다")
@@ -1463,16 +1469,15 @@ final class WGPUCommandInterpreter {
             throw WGPUError.validation("drawIndexed 전에 setIndexBuffer가 필요하다")
         }
         try applyDrawState()
-        let firstIndex = command.int("firstIndex", default: 0)
         encoder.drawIndexedPrimitives(
             type: pipeline.primitiveType,
-            indexCount: try command.requiredInt("indexCount"),
+            indexCount: command.indexCount,
             indexType: indexBinding.type,
             indexBuffer: indexBinding.buffer,
-            indexBufferOffset: indexBinding.offset + firstIndex * indexBinding.stride,
-            instanceCount: command.int("instanceCount", default: 1),
-            baseVertex: command.int("baseVertex", default: 0),
-            baseInstance: command.int("firstInstance", default: 0)
+            indexBufferOffset: indexBinding.offset + command.firstIndex * indexBinding.stride,
+            instanceCount: command.instanceCount,
+            baseVertex: command.baseVertex,
+            baseInstance: command.firstInstance
         )
     }
 
@@ -1487,7 +1492,7 @@ final class WGPUCommandInterpreter {
     /// - `INDIRECT` usage는 Metal에 대응하는 개념이 아예 없어 Metal이 봐 주지 않는다.
     ///   확인하지 않으면 여기서는 돌고 브라우저에서만 깨지는 코드가 나온다.
     private func indirectArguments(
-        _ command: WGPUValueReader,
+        _ command: WGPUIndirectCommand,
         argumentSize: Int
     ) throws -> (buffer: MTLBuffer, offset: Int) {
         // 기기가 간접 인자를 지원하지 않으면 **여기서 막는다.** 그대로 Metal에 넘기면
@@ -1500,8 +1505,8 @@ final class WGPUCommandInterpreter {
                     + "동작하므로, 직접 드로우로 대체하거나 실기기에서 확인할 것"
             )
         }
-        let object = try unmappedBuffer(command, field: "indirectBuffer")
-        let offset = command.int("indirectOffset", default: 0)
+        let object = try unmappedBuffer(command.indirectBuffer, path: command.fieldPath("indirectBuffer"))
+        let offset = command.indirectOffset
         guard offset >= 0, offset % 4 == 0 else {
             throw WGPUError.validation(
                 "indirectOffset은 4의 배수여야 한다 (받은 값 \(offset))",
@@ -1524,7 +1529,7 @@ final class WGPUCommandInterpreter {
         return (object.buffer, offset)
     }
 
-    private func drawIndirect(_ command: WGPUValueReader) throws {
+    private func drawIndirect(_ command: WGPUIndirectCommand) throws {
         let encoder = try requireRenderEncoder()
         // 인자 검증을 `applyDrawState()`보다 **먼저** 한다 — 거부할 명령이 인코더 상태를
         // 이미 바꿔 놓는 일이 없어야 한다 (오류는 프레임을 죽이지 않고 누적되므로 더 그렇다).
@@ -1541,7 +1546,7 @@ final class WGPUCommandInterpreter {
         )
     }
 
-    private func drawIndexedIndirect(_ command: WGPUValueReader) throws {
+    private func drawIndexedIndirect(_ command: WGPUIndirectCommand) throws {
         let encoder = try requireRenderEncoder()
         // indexCount, instanceCount, firstIndex, baseVertex(i32), firstInstance — 5칸.
         let arguments = try indirectArguments(command, argumentSize: 20)
@@ -1564,7 +1569,7 @@ final class WGPUCommandInterpreter {
         )
     }
 
-    private func dispatchWorkgroupsIndirect(_ command: WGPUValueReader) throws {
+    private func dispatchWorkgroupsIndirect(_ command: WGPUIndirectCommand) throws {
         let encoder = try requireComputeEncoder()
         // x, y, z — u32 3개.
         let arguments = try indirectArguments(command, argumentSize: 12)
@@ -1581,9 +1586,8 @@ final class WGPUCommandInterpreter {
 
     // MARK: - 컴퓨트 패스
 
-    private func beginComputePass(_ command: WGPUValueReader) throws {
+    private func beginComputePass(_ descriptor: WGPUComputePassDescriptor) throws {
         endActiveEncoders()
-        let descriptor = try WGPUComputePassDescriptor(from: command)
         let buffer = try activeCommandBuffer()
 
         let encoder: MTLComputeCommandEncoder?
@@ -1607,33 +1611,29 @@ final class WGPUCommandInterpreter {
         dirtyGroups.removeAll()
     }
 
-    private func dispatchWorkgroups(_ command: WGPUValueReader) throws {
+    private func dispatchWorkgroups(_ command: WGPUDispatchWorkgroupsCommand) throws {
         let encoder = try requireComputeEncoder()
         guard let pipeline = currentComputePipeline else {
             throw WGPUError.validation("dispatchWorkgroups 전에 setPipeline이 필요하다")
         }
         try applyDrawState()
         encoder.dispatchThreadgroups(
-            MTLSize(
-                width: max(command.int("x", default: 1), 1),
-                height: max(command.int("y", default: 1), 1),
-                depth: max(command.int("z", default: 1), 1)
-            ),
+            MTLSize(width: command.x, height: command.y, depth: command.z),
             threadsPerThreadgroup: pipeline.threadsPerThreadgroup
         )
     }
 
     // MARK: - 복사
 
-    private func copyBufferToBuffer(_ command: WGPUValueReader) throws {
-        let source = try unmappedBuffer(command, field: "source")
-        let destination = try unmappedBuffer(command, field: "destination")
-        let sourceOffset = command.int("sourceOffset", default: 0)
-        let destinationOffset = command.int("destinationOffset", default: 0)
+    private func copyBufferToBuffer(_ command: WGPUCopyBufferToBufferCommand) throws {
+        let source = try unmappedBuffer(command.source, path: command.fieldPath("source"))
+        let destination = try unmappedBuffer(command.destination, path: command.fieldPath("destination"))
+        let sourceOffset = command.sourceOffset
+        let destinationOffset = command.destinationOffset
         // 명세의 짧은 형태 `copyBufferToBuffer(src, dst)`는 "원본의 남은 전부"다.
         // JS shim이 채워 보내지만, 커맨드 스트림을 직접 만드는 쪽(네이티브 단독 사용)에도
         // 같은 기본값을 준다 — `clearBuffer`와 규칙을 맞춘다.
-        let size = command.int("size", default: max(0, source.size - sourceOffset))
+        let size = command.size ?? max(0, source.size - sourceOffset)
         // 범위를 넘는 복사는 **Metal이 단언으로 죽인다.** 여기서 검증 오류로 바꾼다.
         guard sourceOffset >= 0, destinationOffset >= 0, size >= 0 else {
             throw WGPUError.validation(
@@ -1678,8 +1678,8 @@ final class WGPUCommandInterpreter {
         renderEncoder ?? computeEncoder
     }
 
-    private func pushDebugGroup(_ command: WGPUValueReader) throws {
-        let label = try command.requiredString("groupLabel")
+    private func pushDebugGroup(_ command: WGPUPushDebugGroupCommand) throws {
+        let label = command.groupLabel
         if let encoder = debugScope {
             encoder.pushDebugGroup(label)
             encoderDebugDepth += 1
@@ -1726,8 +1726,8 @@ final class WGPUCommandInterpreter {
         }
     }
 
-    private func insertDebugMarker(_ command: WGPUValueReader) throws {
-        let label = try command.requiredString("markerLabel")
+    private func insertDebugMarker(_ command: WGPUInsertDebugMarkerCommand) throws {
+        let label = command.markerLabel
         // 인코더에는 signpost(점 이벤트)가 있다. 커맨드 버퍼에는 그룹밖에 없어 여닫아 흉내 낸다.
         if let encoder = debugScope {
             encoder.insertDebugSignpost(label)
@@ -1742,11 +1742,11 @@ final class WGPUCommandInterpreter {
     ///
     /// `writeBuffer`로 0을 밀어 넣는 것과 결과는 같지만 **CPU에서 0 배열을 만들어 브리지로
     /// 실어 보내지 않는다.** 큰 스토리지 버퍼를 프레임마다 초기화하는 컴퓨트 경로에서 차이가 크다.
-    private func clearBuffer(_ command: WGPUValueReader) throws {
-        let object = try unmappedBuffer(command, field: "buffer")
-        let offset = command.int("offset", default: 0)
+    private func clearBuffer(_ command: WGPUClearBufferCommand) throws {
+        let object = try unmappedBuffer(command.buffer, path: command.fieldPath("buffer"))
+        let offset = command.offset
         // 명세: size를 생략하면 버퍼 끝까지다.
-        let size = command.int("size", default: max(0, object.size - offset))
+        let size = command.size ?? max(0, object.size - offset)
 
         guard object.usage.contains(.copyDst) else {
             throw WGPUError.validation(
@@ -1774,87 +1774,89 @@ final class WGPUCommandInterpreter {
         encoder.fill(buffer: object.buffer, range: offset..<(offset + size), value: 0)
     }
 
-    private func copyTextureToBuffer(_ command: WGPUValueReader) throws {
-        let sourceReader = try command.requiredObject("source")
-        let destinationReader = try command.requiredObject("destination")
+    private func copyTextureToBuffer(_ command: WGPUCopyTextureToBufferCommand) throws {
+        let source = command.source
+        let destination = command.destination
         let texture = try registry.lookup(
-            try sourceReader.requiredHandle("texture"), as: WGPUTextureObject.self, kind: "GPUTexture"
+            source.texture, as: WGPUTextureObject.self, kind: "GPUTexture",
+            path: source.fieldPath("texture")
         )
-        let buffer = try unmappedBuffer(destinationReader, field: "buffer")
-        let size = try command.requiredExtent("copySize")
+        let buffer = try unmappedBuffer(destination.buffer, path: destination.fieldPath("buffer"))
+        let size = command.copySize
         let format = texture.format
-        let bytesPerRow = destinationReader.int("bytesPerRow", default: format.bytesPerRow(width: size.width))
-        let origin = try sourceReader.origin("origin")
-        let mipLevel = sourceReader.int("mipLevel", default: 0)
-        try validateBlockAlignment(format: format, origin: origin, size: size,
-                                   texture: texture, mipLevel: mipLevel, label: "copyTextureToBuffer")
+        let bytesPerRow = destination.bytesPerRow ?? format.bytesPerRow(width: size.width)
+        try validateBlockAlignment(format: format, origin: source.origin, size: size,
+                                   texture: texture, mipLevel: source.mipLevel,
+                                   label: "copyTextureToBuffer")
 
         let encoder = try activeBlitEncoder()
         encoder.copy(
             from: texture.texture,
-            sourceSlice: origin.z,
-            sourceLevel: mipLevel,
-            sourceOrigin: MTLOrigin(x: origin.x, y: origin.y, z: 0),
+            sourceSlice: source.origin.z,
+            sourceLevel: source.mipLevel,
+            sourceOrigin: MTLOrigin(x: source.origin.x, y: source.origin.y, z: 0),
             sourceSize: MTLSize(width: size.width, height: size.height, depth: 1),
             to: buffer.buffer,
-            destinationOffset: destinationReader.int("offset", default: 0),
+            destinationOffset: destination.offset,
             destinationBytesPerRow: bytesPerRow,
+            // 한 슬라이스만 복사하므로 `rowsPerImage`는 쓰이지 않는다
+            // (`docs/COMMAND-STREAM.md`의 알려진 차이).
             destinationBytesPerImage: bytesPerRow * format.blockRows(height: size.height)
         )
     }
 
-    private func copyBufferToTexture(_ command: WGPUValueReader) throws {
-        let sourceReader = try command.requiredObject("source")
-        let destinationReader = try command.requiredObject("destination")
-        let buffer = try unmappedBuffer(sourceReader, field: "buffer")
+    private func copyBufferToTexture(_ command: WGPUCopyBufferToTextureCommand) throws {
+        let source = command.source
+        let destination = command.destination
+        let buffer = try unmappedBuffer(source.buffer, path: source.fieldPath("buffer"))
         let texture = try registry.lookup(
-            try destinationReader.requiredHandle("texture"), as: WGPUTextureObject.self, kind: "GPUTexture"
+            destination.texture, as: WGPUTextureObject.self, kind: "GPUTexture",
+            path: destination.fieldPath("texture")
         )
-        let size = try command.requiredExtent("copySize")
+        let size = command.copySize
         let format = texture.format
-        let bytesPerRow = sourceReader.int("bytesPerRow", default: format.bytesPerRow(width: size.width))
-        let origin = try destinationReader.origin("origin")
-        let mipLevel = destinationReader.int("mipLevel", default: 0)
-        try validateBlockAlignment(format: format, origin: origin, size: size,
-                                   texture: texture, mipLevel: mipLevel, label: "copyBufferToTexture")
+        let bytesPerRow = source.bytesPerRow ?? format.bytesPerRow(width: size.width)
+        try validateBlockAlignment(format: format, origin: destination.origin, size: size,
+                                   texture: texture, mipLevel: destination.mipLevel,
+                                   label: "copyBufferToTexture")
 
         let encoder = try activeBlitEncoder()
         encoder.copy(
             from: buffer.buffer,
-            sourceOffset: sourceReader.int("offset", default: 0),
+            sourceOffset: source.offset,
             sourceBytesPerRow: bytesPerRow,
             sourceBytesPerImage: bytesPerRow * format.blockRows(height: size.height),
             sourceSize: MTLSize(width: size.width, height: size.height, depth: 1),
             to: texture.texture,
-            destinationSlice: origin.z,
-            destinationLevel: mipLevel,
-            destinationOrigin: MTLOrigin(x: origin.x, y: origin.y, z: 0)
+            destinationSlice: destination.origin.z,
+            destinationLevel: destination.mipLevel,
+            destinationOrigin: MTLOrigin(x: destination.origin.x, y: destination.origin.y, z: 0)
         )
     }
 
-    private func copyTextureToTexture(_ command: WGPUValueReader) throws {
-        let sourceReader = try command.requiredObject("source")
-        let destinationReader = try command.requiredObject("destination")
+    private func copyTextureToTexture(_ command: WGPUCopyTextureToTextureCommand) throws {
         let source = try registry.lookup(
-            try sourceReader.requiredHandle("texture"), as: WGPUTextureObject.self, kind: "GPUTexture"
+            command.source.texture, as: WGPUTextureObject.self, kind: "GPUTexture",
+            path: command.source.fieldPath("texture")
         )
         let destination = try registry.lookup(
-            try destinationReader.requiredHandle("texture"), as: WGPUTextureObject.self, kind: "GPUTexture"
+            command.destination.texture, as: WGPUTextureObject.self, kind: "GPUTexture",
+            path: command.destination.fieldPath("texture")
         )
-        let size = try command.requiredExtent("copySize")
-        let sourceOrigin = try sourceReader.origin("origin")
-        let destinationOrigin = try destinationReader.origin("origin")
+        let size = command.copySize
+        let sourceOrigin = command.source.origin
+        let destinationOrigin = command.destination.origin
 
         let encoder = try activeBlitEncoder()
         encoder.copy(
             from: source.texture,
             sourceSlice: sourceOrigin.z,
-            sourceLevel: sourceReader.int("mipLevel", default: 0),
+            sourceLevel: command.source.mipLevel,
             sourceOrigin: MTLOrigin(x: sourceOrigin.x, y: sourceOrigin.y, z: 0),
             sourceSize: MTLSize(width: size.width, height: size.height, depth: 1),
             to: destination.texture,
             destinationSlice: destinationOrigin.z,
-            destinationLevel: destinationReader.int("mipLevel", default: 0),
+            destinationLevel: command.destination.mipLevel,
             destinationOrigin: MTLOrigin(x: destinationOrigin.x, y: destinationOrigin.y, z: 0)
         )
     }
