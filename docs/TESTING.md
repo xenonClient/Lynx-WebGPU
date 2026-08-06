@@ -7,8 +7,9 @@ GPU 코드는 "돌려 보고 눈으로 확인"에 기대기 쉽다. 이 저장�
 
 | 계층 | 어떻게 검증하나 | 도구 |
 |---|---|---|
-| Core (디스크립터·핸들) | 순수 단위 테스트 | XCTest |
+| Core (디스크립터·커맨드 디코딩·핸들) | 순수 단위 테스트 | XCTest |
 | Shader (WGSL → MSL) | 문자열 단언 **+ 실제 Metal 컴파일러 통과** | `MetalCompilerHarness` |
+| **커맨드 스트림 계약** (런타임 무관) | 오프스크린 렌더 후 **픽셀 값 단언** — 어느 `WebGPURuntime`에든 건다 | `LynxWebGPUConformance` |
 | Metal 백엔드 | 오프스크린 렌더 후 **픽셀 값 단언** | `RenderHarness` |
 | 커맨드 해석기 | 오류 누적·경로·핸들 수명 계약 | `RenderHarness` |
 | Lynx 브리지 | 컴파일 검증 + 호스트 앱 수동 확인 (**데모 앱 빌드로만** — SPM 타깃이 아니다) | `xcodebuild` |
@@ -64,6 +65,31 @@ arch -arm64 xcodebuild -workspace LynxWebGPUDemo.xcworkspace -scheme WebGPUDemo 
   -configuration Debug -sdk iphonesimulator \
   -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' -derivedDataPath .derivedData-cli build
 ```
+
+## 2-1. 적합성 스위트 — 런타임을 갈아끼워도 도는 검사
+
+`Sources/LynxWebGPUConformance`는 **테스트 타깃이 아니라 라이브러리**다. SPM의 테스트 타깃은
+다른 패키지가 가져다 쓸 수 없으므로, 저장소 밖에서 만든 런타임(예: Dawn 위에 얹은 구현)이
+같은 스위트로 자신을 증명할 수 있게 하려면 라이브러리여야 한다.
+
+```swift
+let outcomes = WebGPUConformance.run(on: myRuntime)
+print(WebGPUConformance.summary(outcomes))     // "적합성 19/19 통과"
+```
+
+검사는 **커맨드 스트림 · `readCanvasPixels` · `readBuffer` · `adapterInfo`만** 쓴다.
+백엔드 내부를 들여다보는 검사는 여기 들어올 수 없다 — 그러면 다른 런타임에서 돌지 않는다.
+
+기존 GPU 테스트는 이 기준으로 두 종류로 갈린다:
+
+| 종류 | 파일 | 다른 런타임에서 |
+|---|---|---|
+| **계약** — 커맨드 스트림 수준 | `CommandInterpreterTests` `RenderPipelineTests` `ErrorScopeTests` `StencilTests` `QuerySetTests` `RenderBundleTests` `IndirectDrawTests` `CompressedTextureTests` `ExternalImageTests` `OffscreenReadbackTests` | 그대로 옮길 수 있다. 스위트가 그중 **핵심을 추려** 라이브러리로 옮겨 둔 것이다 |
+| **Metal 내부** | `MetalMappingTests` `StagingPoolTests` `SurfaceInFlightTests` `RenderHarnessTests` | 옮겨지지 않는다 — 인자 테이블 배정·스테이징 풀·드로어블 회계는 이 백엔드에만 있다 |
+
+`ConformanceTests`가 기본 런타임을 스위트에 걸고, **스위트가 실제로 걸러 내는지도 함께 잰다** —
+응답을 일부러 망가뜨린 런타임(`MisbehavingRuntime`)을 걸어 실패가 나오는지 본다. 항상 통과하는
+적합성 스위트는 "19/19"라는 문장이 아무것도 보증하지 못하게 만든다.
 
 ## 3. Metal 컴파일러 하네스
 

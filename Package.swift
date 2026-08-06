@@ -32,6 +32,11 @@ let package = Package(
         // **다른 백엔드를 만들 때 링크하는 것이 이쪽이다.** Metal 엔진(`LynxWebGPU`) 없이
         // 브리지 + 자체 런타임만으로 앱을 구성할 수 있다 — GPU 코드가 하나도 들어 있지 않다.
         .library(name: "LynxWebGPUCore", targets: ["LynxWebGPUCore"]),
+        // 어떤 `WebGPURuntime`이든 계약을 지키는지 재는 적합성 스위트.
+        //
+        // 테스트 타깃이 아니라 **라이브러리**인 이유: SPM의 테스트 타깃은 다른 패키지가 가져다
+        // 쓸 수 없다. 저장소 밖에서 만든 런타임이 같은 스위트로 자신을 증명할 수 있어야 한다.
+        .library(name: "LynxWebGPUConformance", targets: ["LynxWebGPUConformance"]),
     ],
     targets: [
         .target(
@@ -48,6 +53,11 @@ let package = Package(
             dependencies: ["LynxWebGPUCore", "LynxWebGPUShader"],
             swiftSettings: swiftSettings
         ),
+        .target(
+            name: "LynxWebGPUConformance",
+            dependencies: ["LynxWebGPUCore"],
+            swiftSettings: swiftSettings
+        ),
         .testTarget(
             name: "LynxWebGPUCoreTests",
             dependencies: ["LynxWebGPUCore"],
@@ -60,7 +70,7 @@ let package = Package(
         ),
         .testTarget(
             name: "LynxWebGPUTests",
-            dependencies: ["LynxWebGPU"],
+            dependencies: ["LynxWebGPU", "LynxWebGPUConformance"],
             swiftSettings: swiftSettings
         ),
     ]
