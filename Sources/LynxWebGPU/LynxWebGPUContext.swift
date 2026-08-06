@@ -25,7 +25,12 @@ public final class LynxWebGPUContext: WebGPURuntime {
     private let executionLock = NSLock()
     private var interpreter: WGPUCommandInterpreter!
 
-    public init(device: MTLDevice? = nil) throws {
+    /// in-flight 프레임 회계 — **백엔드와 무관한 정책**이라 Core에 있다
+    /// (`WGPUFrameCoordinator` 문서 참고). 호스트가 프레임 티커를 자기 방식으로 몰 때
+    /// 들여다볼 수 있도록 공개한다.
+    public let frameCoordinator: WGPUFrameCoordinator
+
+    public init(device: MTLDevice? = nil, frameCoordinator: WGPUFrameCoordinator = WGPUFrameCoordinator()) throws {
         guard let resolved = device ?? MTLCreateSystemDefaultDevice() else {
             throw WGPUError.backend("Metal 디바이스를 만들 수 없다 (시뮬레이터/기기 지원 확인)")
         }
@@ -34,10 +39,12 @@ public final class LynxWebGPUContext: WebGPURuntime {
         }
         self.device = resolved
         self.queue = queue
+        self.frameCoordinator = frameCoordinator
         self.interpreter = WGPUCommandInterpreter(
             device: resolved,
             queue: queue,
             registry: registry,
+            frameCoordinator: frameCoordinator,
             surfaceProvider: { [weak self] identifier in self?.surface(for: identifier) }
         )
         WGPULog.device.info("WebGPU 컨텍스트 시작 — \(resolved.name, privacy: .public)")
@@ -98,12 +105,16 @@ public final class LynxWebGPUContext: WebGPURuntime {
         surfaceLock.lock()
         surfaces[surface.identifier] = surface
         surfaceLock.unlock()
+        // 드로어블 풀이 있는 표면만 페이싱 대상이다 — 오프스크린은 밀릴 일이 없다.
+        if surface.pacesFrames { frameCoordinator.track(canvas: surface.identifier) }
     }
 
     public func unregisterSurface(identifier: String) {
         surfaceLock.lock()
         surfaces.removeValue(forKey: identifier)
         surfaceLock.unlock()
+        // 죽은 캔버스의 카운터를 남겨 두면 그것이 영원히 프레임 틱을 막는다.
+        frameCoordinator.forget(canvas: identifier)
     }
 
     public func surface(for identifier: String) -> WGPUSurface? {
@@ -118,17 +129,8 @@ public final class LynxWebGPUContext: WebGPURuntime {
         return Array(surfaces.keys).sorted()
     }
 
-    /// 등록된 모든 표면이 새 프레임을 받을 수 있는가.
-    ///
-    /// 프레임 티커가 이 값을 보고 포화 시 `webgpu:frame` 틱을 건너뛴다 — GPU가 in-flight
-    /// 한도(표면당 3프레임)만큼 밀려 있을 때 JS가 프레임을 만들면 `nextDrawable()`이
-    /// JS 스레드 전체(터치 핸들러·타이머 포함)를 최대 1초까지 세우기 때문이다.
-    /// 완료 핸들러가 돌아오면 다음 틱부터 자연히 재개된다.
-    public var isReadyForNextFrame: Bool {
-        surfaceLock.lock()
-        defer { surfaceLock.unlock() }
-        return surfaces.values.allSatisfy { $0.isReadyForNextFrame }
-    }
+    /// 등록된 모든 표면이 새 프레임을 받을 수 있는가 — 회계는 `frameCoordinator`가 한다.
+    public var isReadyForNextFrame: Bool { frameCoordinator.isReadyForNextFrame }
 
     // MARK: - 커맨드 실행
 

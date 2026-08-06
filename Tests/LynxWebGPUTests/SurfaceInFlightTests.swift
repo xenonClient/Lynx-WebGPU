@@ -1,11 +1,14 @@
 import XCTest
 import Metal
 import QuartzCore
-import LynxWebGPUCore
+@testable import LynxWebGPUCore
 @testable import LynxWebGPU
 
-/// in-flight 프레임 회계 — 드로어블을 실은 커맨드 버퍼의 커밋/완료가 표면에 통지되고,
-/// 포화된 표면이 "다음 프레임 준비 안 됨"을 보고하는 계약.
+/// in-flight 프레임 회계의 **배선** — 드로어블을 실은 커맨드 버퍼의 커밋/완료가
+/// 코디네이터에 통지되는지 본다.
+///
+/// 회계 규칙 자체(한도·음수 방지·해제)는 GPU 없이 `WGPUFrameCoordinatorTests`가 검증한다.
+/// 여기서 볼 것은 Metal 경로가 그 규칙에 **제대로 물려 있는가**뿐이다.
 final class SurfaceInFlightTests: XCTestCase {
     private var device: MTLDevice!
 
@@ -14,52 +17,47 @@ final class SurfaceInFlightTests: XCTestCase {
         try XCTSkipIf(device == nil, "Metal 디바이스 없음")
     }
 
-    // MARK: - 카운터 계약 (CAMetalLayer 표면)
+    // MARK: - 등록 배선
 
-    func test_in_flight가_3에_닿으면_준비_안됨이_되고_완료가_돌아오면_풀린다() {
-        let surface = WGPUMetalLayerSurface(identifier: "s", layer: CAMetalLayer())
-        XCTAssertTrue(surface.isReadyForNextFrame)
-
-        surface.noteFrameCommitted()
-        surface.noteFrameCommitted()
-        XCTAssertTrue(surface.isReadyForNextFrame, "2프레임까지는 받아들인다")
-        surface.noteFrameCommitted()
-        XCTAssertFalse(surface.isReadyForNextFrame, "드로어블 풀 크기(3)만큼 밀리면 거른다")
-
-        surface.noteFrameCompleted()
-        XCTAssertTrue(surface.isReadyForNextFrame)
-    }
-
-    func test_완료가_커밋보다_많아져도_음수로_내려가지_않는다() {
-        let surface = WGPUMetalLayerSurface(identifier: "s", layer: CAMetalLayer())
-        surface.noteFrameCompleted()
-        XCTAssertEqual(surface.currentFramesInFlight, 0)
-    }
-
-    func test_컨텍스트는_포화된_표면이_하나라도_있으면_준비_안됨이다() throws {
+    func test_스왑체인_표면만_페이싱_대상으로_등록된다() throws {
         let context = try LynxWebGPUContext(device: device)
-        let offscreen = WGPUOffscreenSurface(identifier: "off", size: CGSize(width: 8, height: 8), device: device)
-        let saturated = WGPUMetalLayerSurface(identifier: "sat", layer: CAMetalLayer())
-        for _ in 0..<WGPUMetalLayerSurface.maxFramesInFlight { saturated.noteFrameCommitted() }
+        context.registerSurface(WGPUOffscreenSurface(
+            identifier: "off", size: CGSize(width: 8, height: 8), device: device
+        ))
+        XCTAssertEqual(context.frameCoordinator.trackedCanvases, [], "오프스크린은 밀릴 일이 없다")
 
-        context.registerSurface(offscreen)
-        XCTAssertTrue(context.isReadyForNextFrame, "오프스크린 표면은 항상 준비 상태다")
+        context.registerSurface(WGPUMetalLayerSurface(identifier: "screen", layer: CAMetalLayer()))
+        XCTAssertEqual(context.frameCoordinator.trackedCanvases, ["screen"])
+    }
 
-        context.registerSurface(saturated)
+    func test_컨텍스트는_포화된_캔버스가_하나라도_있으면_준비_안됨이다() throws {
+        let context = try LynxWebGPUContext(device: device)
+        context.registerSurface(WGPUMetalLayerSurface(identifier: "sat", layer: CAMetalLayer()))
+        XCTAssertTrue(context.isReadyForNextFrame)
+
+        for _ in 0..<WGPUFrameCoordinator.defaultMaxFramesInFlight {
+            context.frameCoordinator.noteCommitted(canvas: "sat")
+        }
         XCTAssertFalse(context.isReadyForNextFrame)
 
+        // 해제하면 죽은 카운터가 남지 않는다 — 남으면 화면이 조용히 멈춘다.
         context.unregisterSurface(identifier: "sat")
         XCTAssertTrue(context.isReadyForNextFrame)
     }
 
-    // MARK: - 해석기 배선 (기록용 표면 더블)
+    // MARK: - 해석기 배선
 
     /// 드로어블을 실은 배치가 커밋 1회·완료 1회를 통지하는지 — 같은 표면에서 텍스처를
     /// 여러 번 얻어도 프레임은 하나이므로 통지도 한 번이어야 한다.
-    func test_드로어블을_실은_배치는_표면에_커밋과_완료를_한_번씩_알린다() throws {
-        let context = try LynxWebGPUContext(device: device)
-        let surface = CountingSurface(identifier: "count", size: CGSize(width: 8, height: 8), device: device)
-        context.registerSurface(surface)
+    func test_드로어블을_실은_배치는_커밋과_완료를_한_번씩_알린다() throws {
+        let coordinator = CountingCoordinator()
+        let context = try LynxWebGPUContext(device: device, frameCoordinator: coordinator)
+        // 오프스크린 표면을 쓰되 페이싱 대상으로 직접 등록한다 — 헤드리스에서도 드로어블이
+        // 반드시 나오게 하면서, 통지 경로는 화면 표면과 같은 것을 지난다.
+        context.registerSurface(WGPUOffscreenSurface(
+            identifier: "count", size: CGSize(width: 8, height: 8), device: device
+        ))
+        coordinator.track(canvas: "count")
 
         let result = context.execute(commands: [
             ["op": "configureCanvas", "canvas": "count", "format": "rgba8unorm"],
@@ -74,14 +72,14 @@ final class SurfaceInFlightTests: XCTestCase {
         ])
         XCTAssertEqual(result["ok"] as? Bool, true, "\(result)")
 
-        XCTAssertEqual(surface.committedCount, 1, "표면당 프레임 회계는 한 번이다")
-        XCTAssertTrue(waitUntil { surface.completedCount == 1 }, "GPU 완료가 표면으로 돌아와야 한다")
+        XCTAssertEqual(coordinator.committedCount, 1, "캔버스당 프레임 회계는 한 번이다")
+        XCTAssertTrue(waitUntil { coordinator.completedCount == 1 }, "GPU 완료가 돌아와야 한다")
     }
 
-    func test_드로어블이_없는_배치는_표면에_알리지_않는다() throws {
-        let context = try LynxWebGPUContext(device: device)
-        let surface = CountingSurface(identifier: "idle", size: CGSize(width: 8, height: 8), device: device)
-        context.registerSurface(surface)
+    func test_드로어블이_없는_배치는_알리지_않는다() throws {
+        let coordinator = CountingCoordinator()
+        let context = try LynxWebGPUContext(device: device, frameCoordinator: coordinator)
+        coordinator.track(canvas: "idle")
 
         let result = context.execute(commands: [
             ["op": "createBuffer", "id": 1, "size": 16, "usage": TestUsage.copyDst],
@@ -90,16 +88,42 @@ final class SurfaceInFlightTests: XCTestCase {
         XCTAssertEqual(result["ok"] as? Bool, true, "\(result)")
 
         XCTAssertTrue(waitUntil { context.stagingPool.pooledBufferCount == 1 }, "배치는 실제로 실행됐다")
-        XCTAssertEqual(surface.committedCount, 0)
-        XCTAssertEqual(surface.completedCount, 0)
+        XCTAssertEqual(coordinator.committedCount, 0)
+        XCTAssertEqual(coordinator.completedCount, 0)
+    }
+
+    /// 프레임 **중간**의 내부 제출(`present: false`)은 프레임이 아니므로 세지 않는다 —
+    /// 세면 popErrorScope 한 번에 티커가 막힌다.
+    func test_present_false_배치는_회계에_잡히지_않는다() throws {
+        let coordinator = CountingCoordinator()
+        let context = try LynxWebGPUContext(device: device, frameCoordinator: coordinator)
+        context.registerSurface(WGPUOffscreenSurface(
+            identifier: "mid", size: CGSize(width: 8, height: 8), device: device
+        ))
+        coordinator.track(canvas: "mid")
+
+        let result = context.execute([
+            "present": false,
+            "commands": [
+                ["op": "configureCanvas", "canvas": "mid", "format": "rgba8unorm"],
+                ["op": "getCurrentTexture", "id": 1, "canvas": "mid"],
+                ["op": "createTextureView", "id": 2, "texture": 1],
+                ["op": "beginRenderPass", "colorAttachments": [[
+                    "view": 2, "loadOp": "clear", "storeOp": "store",
+                    "clearValue": ["r": 0, "g": 0, "b": 0, "a": 1],
+                ]]],
+                ["op": "endPass"],
+            ],
+        ])
+        XCTAssertEqual(result["ok"] as? Bool, true, "\(result)")
+        XCTAssertEqual(coordinator.committedCount, 0, "프레임 중간 제출은 프레임이 아니다")
     }
 
     // MARK: - CAMetalLayer 왕복 (헤드리스에서 드로어블이 나오는 환경에서만)
 
     func test_CAMetalLayer_표면도_프레임_왕복_후_카운터가_0으로_돌아온다() throws {
         let context = try LynxWebGPUContext(device: device)
-        let layer = CAMetalLayer()
-        let surface = WGPUMetalLayerSurface(identifier: "layer", layer: layer)
+        let surface = WGPUMetalLayerSurface(identifier: "layer", layer: CAMetalLayer())
         surface.updateDrawableSize(CGSize(width: 32, height: 32))
         context.registerSurface(surface)
 
@@ -115,8 +139,11 @@ final class SurfaceInFlightTests: XCTestCase {
         ])
         try XCTSkipIf((result["ok"] as? Bool) != true, "헤드리스에서 드로어블을 얻지 못했다: \(result)")
 
-        XCTAssertTrue(waitUntil { surface.currentFramesInFlight == 0 }, "완료 후 카운터가 돌아와야 한다")
-        XCTAssertTrue(surface.isReadyForNextFrame)
+        XCTAssertTrue(
+            waitUntil { context.frameCoordinator.framesInFlight(canvas: "layer") == 0 },
+            "완료 후 카운터가 돌아와야 한다"
+        )
+        XCTAssertTrue(context.isReadyForNextFrame)
     }
 
     private func waitUntil(timeout: TimeInterval = 2, _ condition: () -> Bool) -> Bool {
@@ -129,47 +156,35 @@ final class SurfaceInFlightTests: XCTestCase {
     }
 }
 
-/// 통지 횟수를 기록하는 표면 더블 — 오프스크린 표면에 in-flight 훅만 얹는다.
-private final class CountingSurface: WGPUSurface {
-    let identifier: String
-    private let inner: WGPUOffscreenSurface
-    private let lock = NSLock()
+/// 통지 횟수를 기록하는 코디네이터 — 해석기가 회계를 **부르는지**만 본다.
+private final class CountingCoordinator: WGPUFrameCoordinator {
+    private let counterLock = NSLock()
     private var committed = 0
     private var completed = 0
 
-    init(identifier: String, size: CGSize, device: MTLDevice) {
-        self.identifier = identifier
-        self.inner = WGPUOffscreenSurface(identifier: identifier, size: size, device: device)
-    }
-
-    var pixelSize: CGSize { inner.pixelSize }
-    var configuredFormat: WGPUTextureFormat { inner.configuredFormat }
-    func configure(_ configuration: WGPUCanvasConfiguration, device: MTLDevice) throws {
-        try inner.configure(configuration, device: device)
-    }
-    func nextDrawable() -> WGPUDrawable? { inner.nextDrawable() }
-
-    func noteFrameCommitted() {
-        lock.lock()
+    override func noteCommitted(canvas: String) {
+        counterLock.lock()
         committed += 1
-        lock.unlock()
+        counterLock.unlock()
+        super.noteCommitted(canvas: canvas)
     }
 
-    func noteFrameCompleted() {
-        lock.lock()
+    override func noteCompleted(canvas: String) {
+        counterLock.lock()
         completed += 1
-        lock.unlock()
+        counterLock.unlock()
+        super.noteCompleted(canvas: canvas)
     }
 
     var committedCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
+        counterLock.lock()
+        defer { counterLock.unlock() }
         return committed
     }
 
     var completedCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
+        counterLock.lock()
+        defer { counterLock.unlock() }
         return completed
     }
 }

@@ -25,22 +25,16 @@ public protocol WGPUSurface: AnyObject {
     /// 이번 프레임에 그릴 드로어블. 표면이 아직 크기를 못 받았거나 드로어블이 고갈되면 nil.
     func nextDrawable() -> WGPUDrawable?
 
-    // MARK: in-flight 프레임 회계
-
-    /// 새 프레임을 받아들일 수 있는가. GPU가 in-flight 한도만큼 밀려 있으면 false —
-    /// 프레임 티커가 이 값을 보고 틱을 건너뛰어, JS가 `nextDrawable()` 블로킹에 걸리지 않게 한다.
-    var isReadyForNextFrame: Bool { get }
-    /// 이 표면의 드로어블을 실은 커맨드 버퍼가 커밋될 때 해석기가 부른다.
-    func noteFrameCommitted()
-    /// 그 커맨드 버퍼가 GPU에서 완료될 때 해석기가 부른다 (임의 스레드).
-    func noteFrameCompleted()
+    /// 드로어블 풀이 있어 **밀릴 수 있는** 표면인가.
+    ///
+    /// in-flight 회계 자체는 백엔드 밖(`WGPUFrameCoordinator`)에 있다 — Dawn을 쓰든
+    /// Metal을 쓰든 같은 정책이 필요하기 때문이다. 표면이 답할 것은 "내가 그 대상인가"뿐이다.
+    /// 오프스크린 표면은 풀이 없으므로 false.
+    var pacesFrames: Bool { get }
 }
 
 public extension WGPUSurface {
-    // 오프스크린처럼 스왑체인이 없는 표면은 밀릴 일이 없다 — 기본은 항상 준비 상태.
-    var isReadyForNextFrame: Bool { true }
-    func noteFrameCommitted() {}
-    func noteFrameCompleted() {}
+    var pacesFrames: Bool { false }
 }
 
 // MARK: - 화면 표면 (CAMetalLayer)
@@ -62,16 +56,15 @@ final class WGPUMetalLayerDrawable: WGPUDrawable {
 /// `nextDrawable()`은 커맨드를 해석하는 **JS 스레드**에서 일어난다. 크기는 메인 스레드가
 /// 갱신한 값을 락으로 감싼 캐시에서 읽어, 렌더 스레드가 레이어 프로퍼티를 건드리지 않게 한다.
 public final class WGPUMetalLayerSurface: WGPUSurface {
-    /// 동시에 GPU에 걸어 둘 프레임 수 상한. `CAMetalLayer`의 드로어블 풀 크기(기본 3)와 같다 —
-    /// 이보다 밀리면 `nextDrawable()`이 최대 1초까지 JS 스레드를 세우므로, 그 전에 프레임을 거른다.
-    public static let maxFramesInFlight = 3
-
     public let identifier: String
     public let layer: CAMetalLayer
 
+    /// 드로어블 풀이 고갈되면 `nextDrawable()`이 JS 스레드를 세운다 — 페이싱 대상이다.
+    /// 세는 일은 `WGPUFrameCoordinator`가 한다.
+    public var pacesFrames: Bool { true }
+
     private var cachedSize: CGSize = .zero
     private var format: WGPUTextureFormat = .bgra8unorm
-    private var framesInFlight = 0
     private let lock = NSLock()
 
     public init(identifier: String, layer: CAMetalLayer) {
@@ -145,32 +138,6 @@ public final class WGPUMetalLayerSurface: WGPUSurface {
         return WGPUMetalLayerDrawable(drawable)
     }
 
-    // MARK: in-flight 프레임 회계
-
-    public var isReadyForNextFrame: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return framesInFlight < Self.maxFramesInFlight
-    }
-
-    public func noteFrameCommitted() {
-        lock.lock()
-        framesInFlight += 1
-        lock.unlock()
-    }
-
-    public func noteFrameCompleted() {
-        lock.lock()
-        framesInFlight = max(framesInFlight - 1, 0)
-        lock.unlock()
-    }
-
-    /// 테스트 관찰용.
-    var currentFramesInFlight: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return framesInFlight
-    }
 }
 
 // MARK: - 오프스크린 표면 (테스트 하네스)

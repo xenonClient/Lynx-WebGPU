@@ -217,14 +217,21 @@ GPU가 프레임을 소화하지 못하고 밀리면 `CAMetalLayer`의 드로어
 `nextDrawable()`이 **JS 스레드 전체를 최대 1초까지 세운다** — 캔버스뿐 아니라 그 페이지의
 터치 핸들러·타이머·네트워크 콜백까지 함께 멈추는 최악의 백프레셔다.
 
-그래서 표면마다 in-flight 카운터를 둔다. 드로어블을 실은 커맨드 버퍼가 커밋될 때 올리고
-완료 핸들러에서 내린다 (`WGPUMetalLayerSurface.maxFramesInFlight = 3`). 카운터가 상한에
-닿은 표면이 있으면 **프레임 티커가 그 틱을 통째로 건너뛴다** — JS는 깨어나지도 않으므로
+그래서 캔버스마다 in-flight 카운터를 둔다. 드로어블을 실은 커맨드 버퍼가 커밋될 때 올리고
+완료 핸들러에서 내린다 (`WGPUFrameCoordinator.defaultMaxFramesInFlight = 3`). 카운터가 상한에
+닿은 캔버스가 있으면 **프레임 티커가 그 틱을 통째로 건너뛴다** — JS는 깨어나지도 않으므로
 블록될 일이 없고, GPU가 완료를 돌려주면 다음 틱부터 자연히 재개된다. 화면에는 프레임 드랍으로
 보인다 (밀린 프레임을 기다렸다 몰아서 그리는 것보다 낫다).
 
 티커 없이 직접 프레임을 만드는 코드는 이 게이트를 지나지 않는다 — 그 경우의 백프레셔는
 이전과 같이 `nextDrawable()` 블로킹이다.
+
+**이 회계와 present 시점은 백엔드 밖(`LynxWebGPUCore`)에 있다.** `WGPUFrameCoordinator`(캔버스별
+in-flight)와 `WGPUFrameBoundary`(이 배치가 present하는가)에는 GPU 타입이 하나도 없다 — Dawn을
+쓰든 Metal을 쓰든 **같은 정책이 필요한데 Dawn이 대신해 주지 않기** 때문이다
+(`wgpuSurfacePresent`에는 "지금 내보내면 블록되는가"를 묻는 통로가 없다). 새 런타임은 커밋할 때
+`noteCommitted(canvas:)`, 완료 핸들러에서 `noteCompleted(canvas:)`만 부르면 된다.
+정책 자체는 GPU 없이 `WGPUFrameCoordinatorTests`가 검증한다.
 
 ## 7. 동시성
 
@@ -237,6 +244,7 @@ JS 스레드와 메인 스레드가 공유하므로, 컴파일러 격리 대신 
 | `LynxWebGPUContext.surfaces` | `NSLock` | JS(조회), 메인(등록/해제) |
 | 커맨드 실행 | `executionLock` — 한 번에 하나 | JS |
 | `WGPUMetalLayerSurface.cachedSize` | `NSLock` | 메인(쓰기), JS(읽기) |
+| `WGPUFrameCoordinator` (캔버스별 in-flight) | `NSLock` | JS(커밋), GPU 완료 핸들러(완료), 메인(조회) |
 | `WGPUShaderModuleObject.libraryCache` | `NSLock` | JS |
 
 락 구간에서는 딕셔너리 조작만 하고 GPU 작업은 하지 않는다.

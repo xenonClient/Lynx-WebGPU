@@ -96,6 +96,7 @@ Sources/
 ├── LynxWebGPUCore/     — WGPUEnums / WGPUDescriptors / WGPUCommands(op 인자) / WGPUValueReader
 │                         WGPUHandle / WGPUError / WGPUAssetProvider
 │                         WebGPURuntime(백엔드 프로토콜 — 앱이 구현체를 넣는다)
+│                         WGPUFrameCoordinator(present 시점·in-flight 회계 — 백엔드 무관)
 ├── LynxWebGPUShader/   — WGSLLexer → WGSLParser → WGSLReflection → MSLEmitter
 │                         WGSLLayout(vec3 배치 보정) · WGSLBindings(Metal 인덱스 배정)
 │                         MSLPrelude(타입 추론을 C++ 템플릿에 위임하는 셰이더 프렐류드)

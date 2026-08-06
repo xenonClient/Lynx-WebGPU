@@ -15,6 +15,8 @@ final class WGPUCommandInterpreter {
     private let device: MTLDevice
     private let queue: MTLCommandQueue
     private let registry: WGPUObjectRegistry
+    /// 프레임 경계 정책 — present 시점과 in-flight 회계. **백엔드와 무관하다.**
+    private let frameCoordinator: WGPUFrameCoordinator
     private let surfaceProvider: (String) -> WGPUSurface?
     /// 업로드 스테이징 버퍼 재사용 풀 (writeBuffer/writeTexture 공용).
     let stagingPool: WGPUStagingPool
@@ -100,11 +102,13 @@ final class WGPUCommandInterpreter {
         device: MTLDevice,
         queue: MTLCommandQueue,
         registry: WGPUObjectRegistry,
+        frameCoordinator: WGPUFrameCoordinator,
         surfaceProvider: @escaping (String) -> WGPUSurface?
     ) {
         self.device = device
         self.queue = queue
         self.registry = registry
+        self.frameCoordinator = frameCoordinator
         self.surfaceProvider = surfaceProvider
         self.stagingPool = WGPUStagingPool(device: device)
     }
@@ -139,7 +143,7 @@ final class WGPUCommandInterpreter {
 
         // 명령이 비어 있는데 present라면 **틱의 마무리 배치**다 (프레임 루프 콜백의 끝).
         // 그 배치는 커맨드 버퍼가 없어도 드로어블을 내보내야 한다.
-        finish(present: present, closingFrame: present && commands.isEmpty)
+        finish(WGPUFrameBoundary(requestedPresent: present, commandCount: commands.count))
 
         // objects: live 네이티브 객체 수 — JS가 destroy 누락(레지스트리 증식)을 감시할 수 있게.
         var result: [String: Any] = [
@@ -241,9 +245,10 @@ final class WGPUCommandInterpreter {
     /// 드로어블이 그리기도 전에 present되고 핸들이 만료되어, 이어지는 `beginRenderPass`가
     /// "GPUTextureView가 존재하지 않는다"로 통째로 거부된다 — Three.js의 지연 파이프라인
     /// 생성(pop 즉시 flush)이 정확히 이 경로를 밟았다.
-    /// - Parameter closingFrame: 명령 없이 **present만 하는** 배치인가 (틱의 끝).
-    ///   프레임 경계가 `submit()`이 아니라 프레임 루프 콜백의 끝이라 이런 배치가 온다.
-    private func finish(present: Bool, closingFrame: Bool = false) {
+    /// - Parameter boundary: 이 배치가 프레임 경계에서 할 일 (`WGPUFrameBoundary`).
+    ///   present 시점 자체는 백엔드와 무관한 정책이라 값으로 뽑아 두었다.
+    private func finish(_ boundary: WGPUFrameBoundary) {
+        let present = boundary.presents
         endActiveEncoders()
         // 커맨드 버퍼에 연 그룹도 커밋 전에 닫는다 (인코더와 같은 이유 — Metal이 단언으로 죽는다).
         if let commandBuffer, bufferDebugDepth > 0 {
@@ -261,7 +266,7 @@ final class WGPUCommandInterpreter {
         // 조건을 "명령이 비어 있을 때"로 좁힌 것이 중요하다. 명령은 있는데 커맨드 버퍼가
         // 안 생긴 배치(드로어블만 얻고 끝난 경우 등)는 예전처럼 present하지 않는다 —
         // 그리지도 않은 드로어블을 내보내면 그 프레임이 빈 화면으로 나간다.
-        if closingFrame, commandBuffer == nil, !acquiredDrawables.isEmpty {
+        if boundary.closesFrame, commandBuffer == nil, !acquiredDrawables.isEmpty {
             _ = try? activeCommandBuffer()
         }
         if let commandBuffer {
@@ -279,11 +284,12 @@ final class WGPUCommandInterpreter {
             // in-flight 회계 — 프레임 티커가 이 수를 보고 포화 시 틱을 건너뛴다.
             // present하지 않는 배치는 프레임이 아니므로 세지 않는다.
             if present {
-                let presentedSurfaces = uniquePresentedSurfaces()
-                if !presentedSurfaces.isEmpty {
-                    for surface in presentedSurfaces { surface.noteFrameCommitted() }
+                let presentedCanvases = uniquePresentedCanvases()
+                if !presentedCanvases.isEmpty {
+                    let coordinator = frameCoordinator
+                    for canvas in presentedCanvases { coordinator.noteCommitted(canvas: canvas) }
                     commandBuffer.addCompletedHandler { _ in
-                        for surface in presentedSurfaces { surface.noteFrameCompleted() }
+                        for canvas in presentedCanvases { coordinator.noteCompleted(canvas: canvas) }
                     }
                 }
             }
@@ -331,14 +337,14 @@ final class WGPUCommandInterpreter {
         return failures
     }
 
-    /// 이번 프레임에 드로어블을 내준 표면들 (중복 제거 — 한 표면에서 여러 번 얻어도 프레임은 하나다).
-    private func uniquePresentedSurfaces() -> [WGPUSurface] {
-        var seen = Set<ObjectIdentifier>()
-        var surfaces: [WGPUSurface] = []
-        for acquired in acquiredDrawables where seen.insert(ObjectIdentifier(acquired.surface)).inserted {
-            surfaces.append(acquired.surface)
+    /// 이번 프레임에 드로어블을 내준 캔버스들 (중복 제거 — 한 표면에서 여러 번 얻어도 프레임은 하나다).
+    private func uniquePresentedCanvases() -> [String] {
+        var seen = Set<String>()
+        var canvases: [String] = []
+        for acquired in acquiredDrawables where seen.insert(acquired.surface.identifier).inserted {
+            canvases.append(acquired.surface.identifier)
         }
-        return surfaces
+        return canvases
     }
 
     // MARK: - 인코더 수명
