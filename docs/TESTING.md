@@ -273,17 +273,19 @@ LYNXWEBGPU_WGSL_CORPUS=/tmp/webgpu-samples/sample swift test --filter SampleCorp
 통과율과 실패 원인을 한 화면에 출력한다. 리포트가 목적이므로 실패해도 테스트를 깨지 않는다.
 
 ```
-│ 파일 68개 → 완성 모듈 66개
-│ 통과: 61/66  (92%)  — 그대로 60 + 조립 1
+│ 파일 69개 → 완성 모듈 67개
+│ 통과: 61/67  (91%)  — 그대로 60 + 조립 1
 ├─ 같은 폴더 조각을 붙여 통과 1건 ──────────
 │ ✓ cornell/rasterizer.wgsl (+common.wgsl)
 ├─ 분모에서 뺀 것 ───────────────────────────────
 │ 조각 파일(진입점 없음) 1개: cornell/common.wgsl
 │ 템플릿(호스트 치환 전) 1개: cornell/tonemapper.wgsl {OUTPUT_FORMAT}
 │ constants를 줘야 하는 것 4개: …
-├─ 실패 1건 ───────────────────────────────
+├─ 실패 2건 ───────────────────────────────
 │ ✗ skinnedMesh/gltf.wgsl
 │     번역[vertexMain]: 진입점 매개변수 'input'의 타입 'VertexInput'을(를) 찾을 수 없다
+│ ✗ wireframe/wireframeBufferView.wgsl
+│     파싱: WGSL 파싱 실패 (line 31)
 ```
 
 **분모는 "완성된 모듈"이다.** 코퍼스의 `.wgsl`이 모두 그대로 컴파일되는 것은 아니다 —
@@ -297,8 +299,13 @@ LYNXWEBGPU_WGSL_CORPUS=/tmp/webgpu-samples/sample swift test --filter SampleCorp
 
 분모에서 뺀 것은 **전부 이름까지 찍는다**. 숫자를 좋게 만들려고 조용히 뺄 수 없게 하기 위해서다.
 
-남은 실패 1건(`skinnedMesh/gltf.wgsl`)은 호스트가 glTF 접근자를 보고 `VertexInput` 구조체를
+남은 실패 2건 중 `skinnedMesh/gltf.wgsl`은 호스트가 glTF 접근자를 보고 `VertexInput` 구조체를
 **런타임에 만들어 붙이는** 셰이더다 — 파일만으로는 완성될 수 없다.
+`wireframe/wireframeBufferView.wgsl`은 파서의 빈틈이다 (코퍼스에 나중에 들어온 샘플).
+
+> **트랜스파일러를 고쳤으면 이 수치를 반드시 다시 잰다.** 로컬 테스트는 통과하는데 코퍼스가
+> 내려간 변경이 실제로 있었다 — 안전 변환(`docs/WGSL.md` §3-2)을 넣을 때도 벡터 인덱싱과
+> 벡터 변환에서 4건이 깨졌다가 되돌렸다. **고치기 전 수치를 먼저 재 두는 것**이 요령이다.
 
 번역 결과를 눈으로 보려면 덤프를 켠다:
 
