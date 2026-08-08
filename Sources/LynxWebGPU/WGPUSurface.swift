@@ -70,6 +70,13 @@ public final class WGPUMetalLayerSurface: WGPUSurface {
     public init(identifier: String, layer: CAMetalLayer) {
         self.identifier = identifier
         self.layer = layer
+        // 레이어 초기 속성은 런타임 정책이다 — 엘리먼트는 레이어를 넘기기만 한다
+        // (`WebGPURuntime.attachCanvas`). configure 반영이 비동기라(아래 configure 참고)
+        // 기본값을 첫 프레임 전에 맞춰 둔다 — getPreferredCanvasFormat()(= bgra8unorm)을
+        // 쓰는 일반적인 경우 첫 프레임부터 일치한다. attachCanvas는 메인 스레드 계약이라
+        // 동기 설정이 안전하다.
+        layer.pixelFormat = .bgra8Unorm
+        layer.framebufferOnly = true
     }
 
     public var pixelSize: CGSize {

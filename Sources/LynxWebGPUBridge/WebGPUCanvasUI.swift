@@ -25,10 +25,9 @@ public final class WebGPUCanvasView: UIView {
     public override init(frame: CGRect) {
         super.init(frame: frame)
         isOpaque = true
-        // 기본 포맷을 미리 맞춰 둔다. JS의 configure는 메인 스레드에 비동기로 반영되므로,
-        // getPreferredCanvasFormat()(= bgra8unorm)을 쓰는 일반적인 경우 첫 프레임부터 일치한다.
-        metalLayer.pixelFormat = .bgra8Unorm
-        metalLayer.framebufferOnly = true
+        // 레이어의 픽셀 포맷 등 초기 속성은 여기서 건드리지 않는다 — 그건 **런타임 정책**이다
+        // (`WebGPURuntime.attachCanvas`). 엘리먼트는 레이어를 넘기기만 해야 백엔드를
+        // 갈아끼워도 이 코드가 정말로 무변경이 된다.
     }
 
     @available(*, unavailable)

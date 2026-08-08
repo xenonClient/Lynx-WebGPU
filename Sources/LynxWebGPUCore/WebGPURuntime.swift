@@ -122,6 +122,9 @@ public protocol WebGPURuntime: AnyObject {
     /// **레이어 타입이 `CAMetalLayer`인 것은 두 백엔드의 공통분모다** — Dawn도 Apple 플랫폼에서는
     /// `WGPUSurfaceSourceMetalLayer`로 같은 레이어를 받는다. 그래서 `<webgpu-canvas>` 엘리먼트는
     /// 어느 런타임을 쓰든 코드가 같다.
+    ///
+    /// 엘리먼트는 레이어를 **넘기기만** 한다 — `pixelFormat` 등 초기 속성은 런타임이 정한다.
+    /// 이 호출은 메인 스레드에서 오므로 (위 스레딩 규약) 동기 설정이 안전하다.
     func attachCanvas(identifier: String, layer: CAMetalLayer)
 
     /// 화면 없이 그리는 표면을 붙인다.
