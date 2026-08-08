@@ -461,7 +461,7 @@ final class RenderBundleTests: XCTestCase {
     /// MSAA 패스(그림자 맵·깊이 프리패스)에서 패스가 1로 잡힌다. 그러면 명세대로 정확히
     /// `sampleCount: 4`를 선언한 번들이 오탐으로 거부된다.
     func test_컬러_없는_MSAA_깊이_패스에서_sampleCount가_깊이_뷰로_결정된다() throws {
-        try XCTSkipUnless(harness.context.device.supportsTextureSampleCount(4), "4x MSAA 미지원")
+        try XCTSkipUnless(harness.context!.device.supportsTextureSampleCount(4), "4x MSAA 미지원")
 
         let result = harness.execute([
             ["op": "createTexture", "id": 2, "size": ["width": 64, "height": 64],
@@ -544,7 +544,7 @@ final class RenderBundleTests: XCTestCase {
             ((errors(result).first?["message"] as? String) ?? "").contains("어태치먼트"),
             harness.describeErrors(result)
         )
-        XCTAssertEqual(harness.context.liveObjectCount, 0, "거부한 번들이 등록되면 안 된다")
+        XCTAssertEqual(harness.liveObjects, 0, "거부한 번들이 등록되면 안 된다")
     }
 
     func test_번들의_깊이_포맷이_패스와_다르면_거부한다() {
@@ -586,7 +586,7 @@ final class RenderBundleTests: XCTestCase {
                 errors(result).first?["kind"] as? String, "validation",
                 "'\(forbidden["op"] ?? "?")'은 번들에 담을 수 없어야 한다"
             )
-            XCTAssertEqual(harness.context.liveObjectCount, 0, "거부한 번들이 등록되면 안 된다")
+            XCTAssertEqual(harness.liveObjects, 0, "거부한 번들이 등록되면 안 된다")
         }
     }
 

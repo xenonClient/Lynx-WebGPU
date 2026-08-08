@@ -59,7 +59,7 @@ final class ExternalImageTests: XCTestCase {
     ) throws -> [String: Any] {
         let expectation = expectation(description: "decodeImage")
         var payload: [String: Any] = [:]
-        harness.context.decodeImage(
+        harness.runtime.decodeImage(
             handle: handle, data: data, name: nil, options: options, provider: nil
         ) { result in
             payload = result
@@ -133,7 +133,7 @@ final class ExternalImageTests: XCTestCase {
     func test_이미지_바이트도_이름도_없으면_거부한다() throws {
         let expectation = expectation(description: "decodeImage")
         var payload: [String: Any] = [:]
-        harness.context.decodeImage(
+        harness.runtime.decodeImage(
             handle: 40, data: nil, name: nil, options: .init(), provider: nil
         ) { payload = $0; expectation.fulfill() }
         wait(for: [expectation], timeout: 5)
@@ -321,7 +321,7 @@ final class ExternalImageTests: XCTestCase {
     /// 압축 텍스처로는 올릴 수 없다 — GPU에 블록 인코더가 없다.
     func test_압축_텍스처로는_올릴_수_없다() throws {
         try XCTSkipUnless(
-            WGPUDeviceCapability.supportsCompression(.astc4x4Unorm, on: harness.context.device),
+            WGPUDeviceCapability.supportsCompression(.astc4x4Unorm, on: harness.context!.device),
             "이 기기는 ASTC를 지원하지 않는다"
         )
         let png = try makePNG(width: 4, height: 4, top: (255, 0, 0, 255), bottom: (255, 0, 0, 255))

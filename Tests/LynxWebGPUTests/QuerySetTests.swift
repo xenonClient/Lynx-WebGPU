@@ -228,7 +228,7 @@ final class QuerySetTests: XCTestCase {
     }
 
     func test_어댑터가_타임스탬프_지원을_기능으로_알린다() throws {
-        let info = harness.context.adapterInfo()
+        let info = harness.runtime.adapterInfo()
         let features = try XCTUnwrap(info["features"] as? [String])
 
         XCTAssertEqual(

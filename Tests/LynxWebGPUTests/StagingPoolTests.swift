@@ -72,19 +72,19 @@ final class StagingPoolTests: XCTestCase {
         for frame in 0..<4 {
             // 직전 프레임의 완료 핸들러가 돌 때까지 기다린다 — 회수는 GPU 완료 시점이다.
             XCTAssertTrue(
-                waitUntil { harness.context.stagingPool.pooledBufferCount == 1 },
+                waitUntil { harness.context!.stagingPool.pooledBufferCount == 1 },
                 "프레임 \(frame): 완료 후 풀에 버퍼 1개가 있어야 한다"
             )
             harness.executeExpectingSuccess([
                 ["op": "writeBuffer", "buffer": 1, "data": payload.base64],
             ])
             XCTAssertLessThanOrEqual(
-                harness.context.stagingPool.pooledBufferCount, 1,
+                harness.context!.stagingPool.pooledBufferCount, 1,
                 "프레임 \(frame): 풀이 프레임 수만큼 자라면 재사용이 안 되는 것이다"
             )
         }
-        XCTAssertTrue(waitUntil { harness.context.stagingPool.pooledBufferCount == 1 })
-        XCTAssertEqual(harness.context.stagingPool.pooledByteCount, 4096, "16B 업로드는 4KB 클래스 하나면 된다")
+        XCTAssertTrue(waitUntil { harness.context!.stagingPool.pooledBufferCount == 1 })
+        XCTAssertEqual(harness.context!.stagingPool.pooledByteCount, 4096, "16B 업로드는 4KB 클래스 하나면 된다")
     }
 
     private func waitUntil(timeout: TimeInterval = 2, _ condition: () -> Bool) -> Bool {

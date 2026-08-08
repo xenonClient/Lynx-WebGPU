@@ -244,7 +244,7 @@ final class ErrorScopeTests: XCTestCase {
 
     func test_reset은_열려_있던_스코프를_버린다() {
         harness.executeExpectingSuccess([["op": "pushErrorScope", "filter": "validation"]])
-        harness.context.reset()
+        harness.runtime.reset()
 
         // 스코프가 남아 있었다면 이 오류를 조용히 삼켰을 것이다.
         let result = harness.execute([failingCommand])

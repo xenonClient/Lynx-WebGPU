@@ -101,7 +101,7 @@ final class CompressedTextureTests: XCTestCase {
 
     func test_BC1_텍스처를_샘플링한다() throws {
         try XCTSkipUnless(
-            WGPUDeviceCapability.supportsCompression(.bc1RGBAUnorm, on: harness.context.device),
+            WGPUDeviceCapability.supportsCompression(.bc1RGBAUnorm, on: harness.context!.device),
             "이 기기는 BC를 지원하지 않는다"
         )
         // RGB565의 순수 빨강 = R5 최대(31) → 8비트로 펼치면 255다.
@@ -117,7 +117,7 @@ final class CompressedTextureTests: XCTestCase {
     /// 정사각이 아닌 블록(6×5)까지 확인한다 — 행 수를 높이로 세면 여기서 깨진다.
     func test_ASTC_6x5_텍스처를_샘플링한다() throws {
         try XCTSkipUnless(
-            WGPUDeviceCapability.supportsCompression(.astc6x5Unorm, on: harness.context.device),
+            WGPUDeviceCapability.supportsCompression(.astc6x5Unorm, on: harness.context!.device),
             "이 기기는 ASTC를 지원하지 않는다"
         )
         let color = try renderCompressed(
@@ -133,7 +133,7 @@ final class CompressedTextureTests: XCTestCase {
     /// 픽셀로 계산하던 예전 식이면 데이터가 모자라 "부족하다"로 거부된다.
     func test_bytesPerRow를_생략해도_블록으로_계산한다() throws {
         try XCTSkipUnless(
-            WGPUDeviceCapability.supportsCompression(.astc4x4Unorm, on: harness.context.device),
+            WGPUDeviceCapability.supportsCompression(.astc4x4Unorm, on: harness.context!.device),
             "이 기기는 ASTC를 지원하지 않는다"
         )
         // 8x8 = 4x4 블록이 2x2개 = 64바이트. bytesPerRow는 32여야 한다.
@@ -159,7 +159,7 @@ final class CompressedTextureTests: XCTestCase {
 
     func test_압축_텍스처의_어긋난_origin을_거부한다() throws {
         try XCTSkipUnless(
-            WGPUDeviceCapability.supportsCompression(.astc4x4Unorm, on: harness.context.device),
+            WGPUDeviceCapability.supportsCompression(.astc4x4Unorm, on: harness.context!.device),
             "이 기기는 ASTC를 지원하지 않는다"
         )
         let block = Self.astcVoidExtent(r: 0xFFFF, g: 0, b: 0, a: 0xFFFF)
@@ -177,7 +177,7 @@ final class CompressedTextureTests: XCTestCase {
     /// 가장자리 블록은 잘려 있으므로, **밉 레벨 끝에 닿는** 크기는 블록 배수가 아니어도 된다.
     func test_밉_레벨_끝에_닿으면_블록_배수가_아니어도_된다() throws {
         try XCTSkipUnless(
-            WGPUDeviceCapability.supportsCompression(.astc4x4Unorm, on: harness.context.device),
+            WGPUDeviceCapability.supportsCompression(.astc4x4Unorm, on: harness.context!.device),
             "이 기기는 ASTC를 지원하지 않는다"
         )
         let block = Self.astcVoidExtent(r: 0xFFFF, g: 0, b: 0, a: 0xFFFF)
@@ -194,9 +194,9 @@ final class CompressedTextureTests: XCTestCase {
     /// `adapter.features`가 실제 기기 능력과 일치하는지 — 있다고 알리고 못 만들면
     /// 확인하고 쓴 앱이 오히려 배신당한다.
     func test_기능_광고가_실제_지원과_일치한다() throws {
-        let info = harness.context.adapterInfo()
+        let info = harness.runtime.adapterInfo()
         let features = Set(info["features"] as? [String] ?? [])
-        let device = harness.context.device
+        let device = harness.context!.device
         XCTAssertEqual(
             features.contains("texture-compression-astc"),
             WGPUDeviceCapability.supportsCompression(.astc4x4Unorm, on: device)

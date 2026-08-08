@@ -8,26 +8,52 @@ import LynxWebGPUCore
 ///
 /// GPU 결과를 "눈으로 보는" 대신 **픽셀 값으로 단언**한다. 시뮬레이터 스크린샷과 달리
 /// 결정적이고 CI에서도 돌아간다 (`docs/TESTING.md` §4).
+///
+/// **`WebGPURuntime` 프로토콜만 본다** — 계약 테스트가 하네스 경유로는 기본 구현의 프로토콜 밖
+/// API에 닿지 못하게 하기 위해서다. 하네스로 표현할 수 없는 검증이 생기면 그것이 프로토콜의
+/// 구멍이라는 신호다 (`docs/extra/DAWN-BACKEND-REVIEW.md` §3-4).
 struct RenderHarness {
-    let context: LynxWebGPUContext
-    let surface: WGPUOffscreenSurface
+    let runtime: WebGPURuntime
+    let canvasId = "test"
     let width: Int
     let height: Int
+
+    /// Metal 내부 관찰 전용 탈출구 (디바이스 기능 게이트·스테이징 풀). 계약 검증에는 쓰지 말 것 —
+    /// 여기 의존한 단언은 다른 런타임에서 재사용되지 않는다.
+    var context: LynxWebGPUContext? { runtime as? LynxWebGPUContext }
 
     /// Metal을 쓸 수 없는 환경이면 nil — 호출 측이 테스트를 건너뛴다.
     static func make(width: Int = 64, height: Int = 64) -> RenderHarness? {
         guard let device = MTLCreateSystemDefaultDevice(),
               let context = try? LynxWebGPUContext(device: device) else { return nil }
-        let surface = WGPUOffscreenSurface(
-            identifier: "test", size: CGSize(width: width, height: height), device: device
-        )
-        context.registerSurface(surface)
-        return RenderHarness(context: context, surface: surface, width: width, height: height)
+        return make(runtime: context, width: width, height: height)
+    }
+
+    /// 주입점 — 다른 `WebGPURuntime` 구현으로도 같은 계약 테스트를 돌릴 수 있다.
+    static func make(runtime: WebGPURuntime, width: Int, height: Int) -> RenderHarness? {
+        do {
+            try runtime.attachOffscreenCanvas(
+                identifier: "test", size: CGSize(width: width, height: height)
+            )
+        } catch {
+            return nil
+        }
+        return RenderHarness(runtime: runtime, width: width, height: height)
     }
 
     @discardableResult
-    func execute(_ commands: [[String: Any]]) -> [String: Any] {
-        context.execute(commands: commands)
+    func execute(_ commands: [[String: Any]], present: Bool = true) -> [String: Any] {
+        runtime.execute(commands: commands, present: present)
+    }
+
+    /// 프로토콜 통로로 본 live 네이티브 객체 수 — 배치 결과의 `objects` 필드다
+    /// (`docs/COMMAND-STREAM.md` §2).
+    ///
+    /// 프로브는 **빈 present:false 배치**다: 프레임 스코프 핸들·오류 스코프·드로어블 상태를
+    /// 건드리지 않고 커맨드 버퍼도 만들지 않는다. 유일한 부작용은 앞선 배치의 GPU 실패를
+    /// 한 배치 먼저 비우는 것 — GPU 실패를 검사하는 테스트에서는 쓰지 말 것.
+    var liveObjects: Int {
+        execute([], present: false)["objects"] as? Int ?? -1
     }
 
     /// 오류 없이 실행됐는지 확인하고, 아니면 오류를 그대로 보여 준다.
@@ -54,7 +80,7 @@ struct RenderHarness {
 
     /// 렌더 결과를 포맷·행 간격과 함께 되읽는다.
     func readback() throws -> WGPUPixelReadback {
-        try surface.readPixels(queue: context.queue)
+        try runtime.readCanvasPixels(identifier: canvasId)
     }
 
     /// 렌더 결과 픽셀을 채널 값 그대로 읽는다. float 표면이면 **1.0 초과·음수도 그대로** 나온다.
@@ -173,7 +199,7 @@ struct RenderHarness {
         let semaphore = DispatchSemaphore(value: 0)
         // 이미 완료된 커맨드 버퍼면 콜백이 **이 스레드에서 동기로** 온다 — signal이 wait보다
         // 앞서지만 세마포어가 값을 세므로 그대로 통과한다 (교착 없음).
-        context.readBuffer(handle: handle, offset: offset, size: size) { result in
+        runtime.readBuffer(handle: handle, offset: offset, size: size) { result in
             box.result = result
             semaphore.signal()
         }
@@ -211,14 +237,17 @@ struct RenderHarness {
     }
 
     func supports(_ capability: Capability) -> Bool {
+        // 기능 게이트는 Metal 디바이스를 봐야 한다 — 다른 런타임은 adapterInfo의 features로
+        // 스스로 알린다 (적합성 스위트가 그 경로를 쓴다).
+        guard let device = context?.device else { return false }
         switch capability {
         case .timestampQuery:
-            guard context.device.supportsCounterSampling(.atStageBoundary) else { return false }
-            return context.device.counterSets?.contains {
+            guard device.supportsCounterSampling(.atStageBoundary) else { return false }
+            return device.counterSets?.contains {
                 $0.name == MTLCommonCounterSet.timestamp.rawValue
             } ?? false
         case .indirectArguments:
-            return WGPUDeviceCapability.supportsIndirectArguments(context.device)
+            return WGPUDeviceCapability.supportsIndirectArguments(device)
         }
     }
 

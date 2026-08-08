@@ -47,7 +47,7 @@ final class CommandInterpreterTests: XCTestCase {
 
         // 오류 2개가 모두 보고되고, 사이의 정상 명령은 실행된다.
         XCTAssertEqual(errors(result).count, 2)
-        XCTAssertEqual(harness.context.liveObjectCount, 1)
+        XCTAssertEqual(harness.liveObjects, 1)
     }
 
     func test_패스없이_draw하면_오류다() {
@@ -84,7 +84,7 @@ final class CommandInterpreterTests: XCTestCase {
         harness.executeExpectingSuccess([
             ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
         ])
-        let before = harness.context.liveObjectCount
+        let before = harness.liveObjects
 
         harness.executeExpectingSuccess([
             ["op": "getCurrentTexture", "id": 50, "canvas": "test"],
@@ -97,7 +97,7 @@ final class CommandInterpreterTests: XCTestCase {
         ])
 
         // 스왑체인 텍스처와 그 뷰는 프레임 밖에서 유효하지 않다 (브라우저와 같은 규칙).
-        XCTAssertEqual(harness.context.liveObjectCount, before)
+        XCTAssertEqual(harness.liveObjects, before)
     }
 
     /// 프레임의 경계는 **배치가 아니라 present**다.
@@ -109,7 +109,7 @@ final class CommandInterpreterTests: XCTestCase {
         harness.executeExpectingSuccess([
             ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
         ])
-        let before = harness.context.liveObjectCount
+        let before = harness.liveObjects
 
         // 배치 ①: 드로어블만 얻고 끝난다 (mid-frame flush가 만드는 상황).
         harness.executeExpectingSuccess([
@@ -117,7 +117,7 @@ final class CommandInterpreterTests: XCTestCase {
             ["op": "createTextureView", "id": 51, "texture": 50],
         ])
         XCTAssertEqual(
-            harness.context.liveObjectCount, before + 2,
+            harness.liveObjects, before + 2,
             "아직 present하지 않았으므로 핸들이 살아 있어야 한다"
         )
 
@@ -130,7 +130,7 @@ final class CommandInterpreterTests: XCTestCase {
             ["op": "endPass"],
         ])
 
-        XCTAssertEqual(harness.context.liveObjectCount, before, "present했으니 이제 회수된다")
+        XCTAssertEqual(harness.liveObjects, before, "present했으니 이제 회수된다")
     }
 
     /// **명령이 하나도 없는 배치도 present한다.**
@@ -142,10 +142,10 @@ final class CommandInterpreterTests: XCTestCase {
         harness.executeExpectingSuccess([
             ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
         ])
-        let before = harness.context.liveObjectCount
+        let before = harness.liveObjects
 
         // 틱 안의 제출들 — present는 미뤄져 있다.
-        let midFrame = harness.context.execute([
+        let midFrame = harness.runtime.execute([
             "commands": [
                 ["op": "getCurrentTexture", "id": 60, "canvas": "test"],
                 ["op": "createTextureView", "id": 61, "texture": 60],
@@ -158,13 +158,13 @@ final class CommandInterpreterTests: XCTestCase {
             "present": false,
         ])
         XCTAssertEqual(midFrame["ok"] as? Bool, true, harness.describeErrors(midFrame))
-        XCTAssertEqual(harness.context.liveObjectCount, before + 2, "아직 프레임 중간이다")
+        XCTAssertEqual(harness.liveObjects, before + 2, "아직 프레임 중간이다")
 
         // 틱의 끝 — 명령은 비어 있고 present만 한다.
-        let closing = harness.context.execute(["commands": [[String: Any]](), "present": true])
+        let closing = harness.runtime.execute(["commands": [[String: Any]](), "present": true])
         XCTAssertEqual(closing["ok"] as? Bool, true, harness.describeErrors(closing))
         XCTAssertEqual(
-            harness.context.liveObjectCount, before,
+            harness.liveObjects, before,
             "빈 배치라도 present했으면 프레임 스코프 핸들이 회수돼야 한다"
         )
     }
@@ -175,12 +175,12 @@ final class CommandInterpreterTests: XCTestCase {
         harness.executeExpectingSuccess([
             ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
         ])
-        let before = harness.context.liveObjectCount
+        let before = harness.liveObjects
 
-        let result = harness.context.execute(["commands": [[String: Any]](), "present": true])
+        let result = harness.runtime.execute(["commands": [[String: Any]](), "present": true])
 
         XCTAssertEqual(result["ok"] as? Bool, true, harness.describeErrors(result))
-        XCTAssertEqual(harness.context.liveObjectCount, before)
+        XCTAssertEqual(harness.liveObjects, before)
     }
 
     /// 한 프레임의 제출 여러 개가 **드로어블 뷰를 공유**한다 — three.js의 포스트프로세싱이
@@ -191,7 +191,7 @@ final class CommandInterpreterTests: XCTestCase {
             ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
         ])
 
-        let acquire = harness.context.execute([
+        let acquire = harness.runtime.execute([
             "commands": [
                 ["op": "getCurrentTexture", "id": 70, "canvas": "test"],
                 ["op": "createTextureView", "id": 71, "texture": 70],
@@ -206,7 +206,7 @@ final class CommandInterpreterTests: XCTestCase {
         XCTAssertEqual(acquire["ok"] as? Bool, true, harness.describeErrors(acquire))
 
         // 같은 프레임의 두 번째 제출이 **같은 뷰**로 다시 그린다.
-        let second = harness.context.execute([
+        let second = harness.runtime.execute([
             "commands": [
                 ["op": "beginRenderPass", "colorAttachments": [[
                     "view": 71, "loadOp": "clear", "storeOp": "store",
@@ -218,7 +218,7 @@ final class CommandInterpreterTests: XCTestCase {
         ])
         XCTAssertEqual(second["ok"] as? Bool, true, harness.describeErrors(second))
 
-        harness.context.execute(["commands": [[String: Any]](), "present": true])
+        harness.runtime.execute(["commands": [[String: Any]](), "present": true])
     }
 
     /// 프레임 중간 배치가 **커맨드 버퍼를 만들어도**(writeBuffer 등) 스왑체인이 살아남아야 한다.
@@ -232,10 +232,10 @@ final class CommandInterpreterTests: XCTestCase {
         harness.executeExpectingSuccess([
             ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
         ])
-        let before = harness.context.liveObjectCount
+        let before = harness.liveObjects
 
         // 배치 ①: 드로어블 획득 + writeBuffer(블릿 인코더 → 커맨드 버퍼 생성) — 내부 제출.
-        let midFrame = harness.context.execute([
+        let midFrame = harness.runtime.execute([
             "commands": [
                 ["op": "getCurrentTexture", "id": 50, "canvas": "test"],
                 ["op": "createTextureView", "id": 51, "texture": 50],
@@ -246,7 +246,7 @@ final class CommandInterpreterTests: XCTestCase {
         ])
         XCTAssertEqual(midFrame["ok"] as? Bool, true, harness.describeErrors(midFrame))
         XCTAssertEqual(
-            harness.context.liveObjectCount, before + 3,
+            harness.liveObjects, before + 3,
             "내부 제출에서는 프레임 스코프 핸들이 만료되면 안 된다"
         )
 
@@ -259,7 +259,7 @@ final class CommandInterpreterTests: XCTestCase {
             ["op": "endPass"],
         ])
         XCTAssertEqual(
-            harness.context.liveObjectCount, before + 1,
+            harness.liveObjects, before + 1,
             "present 후에는 프레임 스코프 핸들만 회수된다 (버퍼 52는 남는다)"
         )
     }
@@ -419,10 +419,10 @@ final class CommandInterpreterTests: XCTestCase {
             ["op": "createBuffer", "id": 1, "size": 16, "usage": TestUsage.uniform],
             ["op": "createBuffer", "id": 2, "size": 16, "usage": TestUsage.uniform],
         ])
-        XCTAssertEqual(harness.context.liveObjectCount, 2)
+        XCTAssertEqual(harness.liveObjects, 2)
 
-        harness.context.reset()
-        XCTAssertEqual(harness.context.liveObjectCount, 0)
+        harness.runtime.reset()
+        XCTAssertEqual(harness.liveObjects, 0)
     }
 
     // MARK: - writeTexture 큐 순서
@@ -565,7 +565,7 @@ final class CommandInterpreterTests: XCTestCase {
         XCTAssertEqual(first?["line"] as? Int, 3, "줄 번호가 숫자로도 실려야 편집기가 점프할 수 있다")
 
         // ② 그래도 모듈은 있고, 진단을 돌려준다.
-        let info = harness.context.shaderCompilationInfo(handle: 1)
+        let info = harness.runtime.shaderCompilationInfo(handle: 1)
         XCTAssertEqual(info["ok"] as? Bool, true)
         let messages = try? XCTUnwrap(info["messages"] as? [[String: Any]])
         XCTAssertEqual(messages?.count, 1)
@@ -596,13 +596,13 @@ final class CommandInterpreterTests: XCTestCase {
              """],
         ])
 
-        let info = harness.context.shaderCompilationInfo(handle: 1)
+        let info = harness.runtime.shaderCompilationInfo(handle: 1)
         XCTAssertEqual(info["ok"] as? Bool, true)
         XCTAssertEqual((info["messages"] as? [[String: Any]])?.count, 0)
     }
 
     func test_없는_모듈의_진단은_오류다() {
-        let info = harness.context.shaderCompilationInfo(handle: 999)
+        let info = harness.runtime.shaderCompilationInfo(handle: 999)
         XCTAssertEqual(info["ok"] as? Bool, false)
     }
 
@@ -698,7 +698,7 @@ final class CommandInterpreterTests: XCTestCase {
         ])
 
         XCTAssertEqual(result["ok"] as? Bool, true, harness.describeErrors(result))
-        let info = harness.context.shaderCompilationInfo(handle: 1)
+        let info = harness.runtime.shaderCompilationInfo(handle: 1)
         XCTAssertEqual(info["ok"] as? Bool, true)
         XCTAssertEqual((info["messages"] as? [[String: Any]])?.count, 0)
     }
@@ -858,7 +858,7 @@ final class CommandInterpreterTests: XCTestCase {
     /// 반대 방향 — 지원하는 기기에서는 `indirect-first-instance`를 광고하고, 못 하면 감춘다.
     /// 있다고 알려 놓고 첫 호출에서 거부하면 확인하고 쓴 앱이 오히려 배신당한다.
     func test_간접_기능_광고는_기기_능력과_일치한다() throws {
-        let features = try XCTUnwrap(harness.context.adapterInfo()["features"] as? [String])
+        let features = try XCTUnwrap(harness.runtime.adapterInfo()["features"] as? [String])
         XCTAssertEqual(
             features.contains("indirect-first-instance"),
             harness.supports(.indirectArguments),
@@ -892,7 +892,7 @@ final class CommandInterpreterTests: XCTestCase {
     }
 
     func test_어댑터_정보가_한계값을_보고한다() {
-        let info = harness.context.adapterInfo()
+        let info = harness.runtime.adapterInfo()
 
         XCTAssertEqual(info["ok"] as? Bool, true)
         XCTAssertEqual(info["backend"] as? String, "metal")
@@ -903,7 +903,7 @@ final class CommandInterpreterTests: XCTestCase {
 
     /// 명세 `GPUAdapterInfo` — 웹 코드가 GPU 종류로 분기할 때 읽는 표준 이름들.
     func test_어댑터_정보가_명세_GPUAdapterInfo를_싣는다() throws {
-        let info = try XCTUnwrap(harness.context.adapterInfo()["info"] as? [String: Any])
+        let info = try XCTUnwrap(harness.runtime.adapterInfo()["info"] as? [String: Any])
 
         XCTAssertEqual(info["vendor"] as? String, "apple")
         XCTAssertFalse((info["description"] as? String ?? "").isEmpty, "디바이스 이름이 있어야 한다")
@@ -919,7 +919,7 @@ final class CommandInterpreterTests: XCTestCase {
     /// limits의 **키는 명세 철자여야 한다.** 웹 라이브러리가 이 이름으로 읽고 예산을 정하므로,
     /// 우리 식으로 지으면 그쪽은 `undefined`를 보고 잘못된 가정을 세운다 (값이 있는데도 없는 것처럼).
     func test_limits는_명세_이름을_전부_싣는다() throws {
-        let limits = try XCTUnwrap(harness.context.adapterInfo()["limits"] as? [String: Any])
+        let limits = try XCTUnwrap(harness.runtime.adapterInfo()["limits"] as? [String: Any])
 
         // 명세 `GPUSupportedLimits`의 전 항목 (webgpu-md §3.6.2).
         let required = [
@@ -946,7 +946,7 @@ final class CommandInterpreterTests: XCTestCase {
     /// 명세는 각 limit의 **기본값(=최소 보장치)**을 정한다. 그보다 낮게 보고하면 브라우저에서
     /// 되는 코드가 여기서만 거부되고, 앱은 이유를 알 수 없다.
     func test_limits는_명세_기본값보다_낮지_않다() throws {
-        let limits = try XCTUnwrap(harness.context.adapterInfo()["limits"] as? [String: Any])
+        let limits = try XCTUnwrap(harness.runtime.adapterInfo()["limits"] as? [String: Any])
 
         let minimums: [String: Int] = [
             "maxTextureDimension1D": 8192, "maxTextureDimension2D": 8192,
