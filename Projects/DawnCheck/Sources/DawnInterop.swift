@@ -124,6 +124,29 @@ enum DawnBootstrap {
         return adapter
     }
 
+    /// 어댑터가 지원하는 기능 중 **명세 철자로 옮길 수 있고 이 환경에서 안전한 것**.
+    ///
+    /// 광고(adapterInfo)와 요청(requestDevice)이 **같은 목록**을 써야 한다 — 광고만 하고
+    /// 요청하지 않으면 JS가 본 기능과 디바이스 실제가 어긋난다 (한계와 같은 함정).
+    /// 시뮬레이터에서는 간접 드로우가 Metal 단언으로 죽는 경로라 `indirect-first-instance`를
+    /// 뺀다 (`CLAUDE.md` — Metal 런타임과 같은 판단).
+    static func supportedFeatures(adapter: WGPUAdapter) -> [WGPUFeatureName] {
+        var supported = WGPUSupportedFeatures()
+        wgpuAdapterGetFeatures(adapter, &supported)
+        defer { wgpuSupportedFeaturesFreeMembers(supported) }
+        var result: [WGPUFeatureName] = []
+        guard let features = supported.features else { return result }
+        for index in 0..<supported.featureCount {
+            let feature = features[index]
+            guard DawnEnum.featureLabel(feature) != nil else { continue }
+            #if targetEnvironment(simulator)
+            if feature == WGPUFeatureName_IndirectFirstInstance { continue }
+            #endif
+            result.append(feature)
+        }
+        return result
+    }
+
     /// - Parameter onUncapturedError: 스코프에 안 잡힌 디바이스 오류 (지연 보고 큐로 보낼 것).
     static func requestDevice(
         instance: WGPUInstance,
@@ -166,8 +189,23 @@ enum DawnBootstrap {
             box.done = true
         }
         callbackInfo.userdata1 = Unmanaged.passRetained(box).toOpaque()
-        _ = withUnsafePointer(to: descriptor) { pointer in
-            wgpuAdapterRequestDevice(adapter, pointer, callbackInfo)
+
+        // 어댑터의 한계를 **그대로 요구**한다 — 안 넘기면 디바이스는 명세 기본값(예:
+        // maxUniformBufferBindingSize 64KB)에 묶이는데, adapterInfo는 어댑터 한계를 광고하므로
+        // JS가 본 한계와 실제 디바이스 한계가 어긋난다 (threelab이 실제로 밟았다: 광고 256MB,
+        // 디바이스 64KB → 256KB 유니폼 바인딩이 거부됐다). 기능도 같은 이유로 함께 요구한다.
+        var adapterLimits = WGPULimits()
+        let haveLimits = wgpuAdapterGetLimits(adapter, &adapterLimits) == WGPUStatus_Success
+        let features = supportedFeatures(adapter: adapter)
+        _ = withUnsafePointer(to: adapterLimits) { limitsPointer in
+            features.withUnsafeBufferPointer { featuresPointer in
+                descriptor.requiredLimits = haveLimits ? limitsPointer : nil
+                descriptor.requiredFeatureCount = features.count
+                descriptor.requiredFeatures = featuresPointer.baseAddress
+                return withUnsafePointer(to: descriptor) { pointer in
+                    wgpuAdapterRequestDevice(adapter, pointer, callbackInfo)
+                }
+            }
         }
         try pump(instance: instance, until: { box.done }, what: "requestDevice")
         guard let device = box.value else {

@@ -289,11 +289,13 @@ final class DawnWebGPURuntime: WebGPURuntime {
                 UInt32(c.firstIndex), Int32(c.baseVertex), UInt32(c.firstInstance)
             )
         case .drawIndirect(let c):
+            try ensureIndirectSupported()
             let buffer = try lookupBuffer(c.indirectBuffer, path: c.fieldPath("indirectBuffer"))
             wgpuRenderPassEncoderDrawIndirect(
                 try requireRenderPass(), buffer.buffer, UInt64(c.indirectOffset)
             )
         case .drawIndexedIndirect(let c):
+            try ensureIndirectSupported()
             let buffer = try lookupBuffer(c.indirectBuffer, path: c.fieldPath("indirectBuffer"))
             wgpuRenderPassEncoderDrawIndexedIndirect(
                 try requireRenderPass(), buffer.buffer, UInt64(c.indirectOffset)
@@ -311,6 +313,7 @@ final class DawnWebGPURuntime: WebGPURuntime {
                 try requireComputePass(), UInt32(c.x), UInt32(c.y), UInt32(c.z)
             )
         case .dispatchWorkgroupsIndirect(let c):
+            try ensureIndirectSupported()
             let buffer = try lookupBuffer(c.indirectBuffer, path: c.fieldPath("indirectBuffer"))
             wgpuComputePassEncoderDispatchWorkgroupsIndirect(
                 try requireComputePass(), buffer.buffer, UInt64(c.indirectOffset)
@@ -375,6 +378,17 @@ final class DawnWebGPURuntime: WebGPURuntime {
 
     private func lookupBuffer(_ handle: WGPUHandle, path: String? = nil) throws -> DawnBufferObject {
         try registry.lookup(handle, as: DawnBufferObject.self, kind: "GPUBuffer", path: path)
+    }
+
+    /// 시뮬레이터는 간접 인자를 지원하지 않는다 (Apple GPU family 2 — Metal은 3 이상 요구).
+    /// Dawn도 결국 Metal 단언으로 죽는 경로라 여기서 막는다 — Metal 런타임의
+    /// `WGPUDeviceCapability.supportsIndirectArguments`와 같은 자리다 (`CLAUDE.md`).
+    private func ensureIndirectSupported() throws {
+        #if targetEnvironment(simulator)
+        throw WGPUError.unsupported(
+            "iOS 시뮬레이터는 간접 드로우·디스패치를 지원하지 않는다 (실기기 A12 이상에서는 동작)"
+        )
+        #endif
     }
 
     /// 버퍼를 쓰는 큐·복사 명령은 이 경로로 — 매핑 중이면 거부한다 (명세의 unavailable).
@@ -950,9 +964,11 @@ final class DawnWebGPURuntime: WebGPURuntime {
                     UInt32(c.firstIndex), Int32(c.baseVertex), UInt32(c.firstInstance)
                 )
             case .drawIndirect(let c):
+                try ensureIndirectSupported()
                 let buffer = try lookupBuffer(c.indirectBuffer, path: c.fieldPath("indirectBuffer"))
                 wgpuRenderBundleEncoderDrawIndirect(encoder, buffer.buffer, UInt64(c.indirectOffset))
             case .drawIndexedIndirect(let c):
+                try ensureIndirectSupported()
                 let buffer = try lookupBuffer(c.indirectBuffer, path: c.fieldPath("indirectBuffer"))
                 wgpuRenderBundleEncoderDrawIndexedIndirect(
                     encoder, buffer.buffer, UInt64(c.indirectOffset)
@@ -1355,9 +1371,10 @@ final class DawnWebGPURuntime: WebGPURuntime {
             "backend": "dawn-metal",
             "preferredCanvasFormat": LynxWebGPUCore.WGPUTextureFormat.bgra8unorm.rawValue,
             "limits": limitsPayload,
-            // 기능은 광고하지 않는다 — 시뮬레이터의 간접 드로우가 Metal 단언으로 죽는 경로라
-            // (`CLAUDE.md`), 간접 검사가 건너뛰게 두는 쪽이 픽스처로서 정직하다.
-            "features": [String](),
+            // 요청한 것만 광고한다 — 목록의 출처가 requestDevice와 같아야 광고와 실제가
+            // 어긋나지 않는다 (시뮬레이터에서는 간접 기능이 목록에서 빠진다).
+            "features": DawnBootstrap.supportedFeatures(adapter: adapter)
+                .compactMap(DawnEnum.featureLabel),
         ]
     }
 

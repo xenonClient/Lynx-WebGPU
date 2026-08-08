@@ -142,12 +142,25 @@ xcrun simctl install <device> .derivedData-cli/Build/Products/Debug-iphonesimula
 xcrun simctl launch <device> org.lynxwebgpu.dawndemo -demo triangle
 ```
 
-triangle·cube 씬이 시뮬레이터에서 Metal 데모와 같은 그림을 그린다 (2026-08-08 확인).
-**wgsl 씬은 Dawn이 거부한다** — 셰이더가 varying 분기 안에서 `textureSample`을 불러
-WGSL uniformity 규칙을 위반하고, Dawn(=브라우저와 같은 검증)은 이를 막는다. 오류는
-와이어 오류 경로를 타고 씬의 오류 오버레이에 그대로 표시된다 — 검토 문서 §4의
-"동작 발산"의 실사례다. 샘플을 분기 앞으로 올리고 `select`로 고르면 해소되는 것까지
-확인했지만, 데모 씬은 **기존 로직 그대로** 두었다 — 수정 여부는 별도 결정이다.
+**전체 씬 스위프 (2026-08-08, 시뮬레이터 · 24씬)** — 씬마다 8초 구동해 런타임 오류 로그와
+화면을 수집한 결과다. 씬·브리지·JS는 전부 무변경이다:
+
+| 분류 | 씬 |
+|---|---|
+| 무오류 구동 (15) | arraybuffer · bench · blending · bundle · constants · contracts · cube · dynamic · interactive · particles · readback · scrollpass · texture · triangle · **three** (three.js WebGPURenderer r185 — 자체 검증 16/16: ASTC 압축·인스턴싱·밉맵 컴퓨트 패스·비동기 파이프라인 포함 · 커맨드 스트림 무오류 · 60fps) |
+| 의도된 오류 수신 (1) | spec — 씬 자체가 validation 오류를 유발해 수신 경로를 검증한다 (3건 수신, 정상) |
+| 의도된 거부 (2) | gpudriven — 간접 드로우를 시뮬레이터 가드가 `unsupported`로 막는다 (Metal 런타임과 같은 판단 — 실기기 대상 씬) · msl — 선택 기능 거부 (`docs/COMMAND-STREAM.md` §4-1 계약) |
+| **명세 발산** — 씬이 관대한 Metal 런타임에 기대던 것 (4) | wgsl·hdr — varying 분기 안 `textureSample` (uniformity 위반; 샘플을 분기 앞으로 올리면 해소됨을 확인, 씬은 무변경) · stencil·query — `layout:"auto"` 파이프라인의 바인드 그룹을 **다른** 파이프라인에 재사용 (명세상 auto 레이아웃은 파이프라인 전용) · images — `copyTextureToBuffer`의 `bytesPerRow` 32 (256 배수 위반, 리드백 1건만 실패하고 그림은 그려진다) |
+| 이 Dawn 빌드의 제약 (1) | threelab — 비교 샘플러가 거부된다 ("Compare functions are disabled with the Metal backend") — three.js 그림자 경로. Dawn-xcFramework 빌드 구성 확인 대상 |
+
+발산 4건은 전부 **브라우저에서도 같은 이유로 깨질 코드**다 — Dawn의 엄격 검증이 데모의
+이식성 버그를 찾아 준 것이고, 오류는 와이어 경로를 타고 씬 오버레이에 그대로 표시된다.
+씬 수정 여부는 별도 결정으로 남겨 두었다.
+
+스위프가 잡아 준 런타임 쪽 교훈 셋 (전부 반영됨): **광고와 실제가 어긋나면 안 된다** —
+adapterInfo가 광고한 한계·기능을 `requestDevice`에서 **그대로 요구**해야 하고(안 하면
+디바이스는 명세 기본값에 묶인다 — threelab의 256KB 유니폼이 실제로 밟았다), 기능을
+광고하면 그 기능이 여는 경로(압축 텍스처 포맷 전체)까지 매핑이 닫혀 있어야 한다.
 
 ## 3. Metal 컴파일러 하네스
 

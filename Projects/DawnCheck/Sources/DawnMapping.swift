@@ -13,28 +13,39 @@ enum DawnEnum {
     static func textureFormat(
         _ format: LynxWebGPUCore.WGPUTextureFormat
     ) throws -> WebGPU.WGPUTextureFormat {
+        // Core의 전 케이스를 옮긴다 — default가 없어 Core에 포맷이 늘면 컴파일이 잡는다.
         switch format {
         case .r8unorm: return WGPUTextureFormat_R8Unorm
+        case .r8snorm: return WGPUTextureFormat_R8Snorm
         case .r8uint: return WGPUTextureFormat_R8Uint
         case .r8sint: return WGPUTextureFormat_R8Sint
         case .r16uint: return WGPUTextureFormat_R16Uint
         case .r16sint: return WGPUTextureFormat_R16Sint
         case .r16float: return WGPUTextureFormat_R16Float
         case .rg8unorm: return WGPUTextureFormat_RG8Unorm
+        case .rg8snorm: return WGPUTextureFormat_RG8Snorm
+        case .rg8uint: return WGPUTextureFormat_RG8Uint
+        case .rg8sint: return WGPUTextureFormat_RG8Sint
         case .r32uint: return WGPUTextureFormat_R32Uint
         case .r32sint: return WGPUTextureFormat_R32Sint
         case .r32float: return WGPUTextureFormat_R32Float
+        case .rg16uint: return WGPUTextureFormat_RG16Uint
+        case .rg16sint: return WGPUTextureFormat_RG16Sint
         case .rg16float: return WGPUTextureFormat_RG16Float
         case .rgba8unorm: return WGPUTextureFormat_RGBA8Unorm
         case .rgba8unormSRGB: return WGPUTextureFormat_RGBA8UnormSrgb
+        case .rgba8snorm: return WGPUTextureFormat_RGBA8Snorm
         case .rgba8uint: return WGPUTextureFormat_RGBA8Uint
         case .rgba8sint: return WGPUTextureFormat_RGBA8Sint
         case .bgra8unorm: return WGPUTextureFormat_BGRA8Unorm
         case .bgra8unormSRGB: return WGPUTextureFormat_BGRA8UnormSrgb
         case .rgb10a2unorm: return WGPUTextureFormat_RGB10A2Unorm
-        case .rg32float: return WGPUTextureFormat_RG32Float
+        case .rgb10a2uint: return WGPUTextureFormat_RGB10A2Uint
+        case .rg11b10ufloat: return WGPUTextureFormat_RG11B10Ufloat
+        case .rgb9e5ufloat: return WGPUTextureFormat_RGB9E5Ufloat
         case .rg32uint: return WGPUTextureFormat_RG32Uint
         case .rg32sint: return WGPUTextureFormat_RG32Sint
+        case .rg32float: return WGPUTextureFormat_RG32Float
         case .rgba16uint: return WGPUTextureFormat_RGBA16Uint
         case .rgba16sint: return WGPUTextureFormat_RGBA16Sint
         case .rgba16float: return WGPUTextureFormat_RGBA16Float
@@ -47,8 +58,58 @@ enum DawnEnum {
         case .depth24plusStencil8: return WGPUTextureFormat_Depth24PlusStencil8
         case .depth32float: return WGPUTextureFormat_Depth32Float
         case .depth32floatStencil8: return WGPUTextureFormat_Depth32FloatStencil8
-        default:
-            throw WGPUError.unsupported("Dawn 런타임이 아직 안 옮긴 텍스처 포맷 \(format.rawValue)")
+        case .bc1RGBAUnorm: return WGPUTextureFormat_BC1RGBAUnorm
+        case .bc1RGBAUnormSRGB: return WGPUTextureFormat_BC1RGBAUnormSrgb
+        case .bc2RGBAUnorm: return WGPUTextureFormat_BC2RGBAUnorm
+        case .bc2RGBAUnormSRGB: return WGPUTextureFormat_BC2RGBAUnormSrgb
+        case .bc3RGBAUnorm: return WGPUTextureFormat_BC3RGBAUnorm
+        case .bc3RGBAUnormSRGB: return WGPUTextureFormat_BC3RGBAUnormSrgb
+        case .bc4RUnorm: return WGPUTextureFormat_BC4RUnorm
+        case .bc4RSnorm: return WGPUTextureFormat_BC4RSnorm
+        case .bc5RGUnorm: return WGPUTextureFormat_BC5RGUnorm
+        case .bc5RGSnorm: return WGPUTextureFormat_BC5RGSnorm
+        case .bc6hRGBUfloat: return WGPUTextureFormat_BC6HRGBUfloat
+        case .bc6hRGBFloat: return WGPUTextureFormat_BC6HRGBFloat
+        case .bc7RGBAUnorm: return WGPUTextureFormat_BC7RGBAUnorm
+        case .bc7RGBAUnormSRGB: return WGPUTextureFormat_BC7RGBAUnormSrgb
+        case .etc2RGB8Unorm: return WGPUTextureFormat_ETC2RGB8Unorm
+        case .etc2RGB8UnormSRGB: return WGPUTextureFormat_ETC2RGB8UnormSrgb
+        case .etc2RGB8A1Unorm: return WGPUTextureFormat_ETC2RGB8A1Unorm
+        case .etc2RGB8A1UnormSRGB: return WGPUTextureFormat_ETC2RGB8A1UnormSrgb
+        case .etc2RGBA8Unorm: return WGPUTextureFormat_ETC2RGBA8Unorm
+        case .etc2RGBA8UnormSRGB: return WGPUTextureFormat_ETC2RGBA8UnormSrgb
+        case .eacR11Unorm: return WGPUTextureFormat_EACR11Unorm
+        case .eacR11Snorm: return WGPUTextureFormat_EACR11Snorm
+        case .eacRG11Unorm: return WGPUTextureFormat_EACRG11Unorm
+        case .eacRG11Snorm: return WGPUTextureFormat_EACRG11Snorm
+        case .astc4x4Unorm: return WGPUTextureFormat_ASTC4x4Unorm
+        case .astc4x4UnormSRGB: return WGPUTextureFormat_ASTC4x4UnormSrgb
+        case .astc5x4Unorm: return WGPUTextureFormat_ASTC5x4Unorm
+        case .astc5x4UnormSRGB: return WGPUTextureFormat_ASTC5x4UnormSrgb
+        case .astc5x5Unorm: return WGPUTextureFormat_ASTC5x5Unorm
+        case .astc5x5UnormSRGB: return WGPUTextureFormat_ASTC5x5UnormSrgb
+        case .astc6x5Unorm: return WGPUTextureFormat_ASTC6x5Unorm
+        case .astc6x5UnormSRGB: return WGPUTextureFormat_ASTC6x5UnormSrgb
+        case .astc6x6Unorm: return WGPUTextureFormat_ASTC6x6Unorm
+        case .astc6x6UnormSRGB: return WGPUTextureFormat_ASTC6x6UnormSrgb
+        case .astc8x5Unorm: return WGPUTextureFormat_ASTC8x5Unorm
+        case .astc8x5UnormSRGB: return WGPUTextureFormat_ASTC8x5UnormSrgb
+        case .astc8x6Unorm: return WGPUTextureFormat_ASTC8x6Unorm
+        case .astc8x6UnormSRGB: return WGPUTextureFormat_ASTC8x6UnormSrgb
+        case .astc8x8Unorm: return WGPUTextureFormat_ASTC8x8Unorm
+        case .astc8x8UnormSRGB: return WGPUTextureFormat_ASTC8x8UnormSrgb
+        case .astc10x5Unorm: return WGPUTextureFormat_ASTC10x5Unorm
+        case .astc10x5UnormSRGB: return WGPUTextureFormat_ASTC10x5UnormSrgb
+        case .astc10x6Unorm: return WGPUTextureFormat_ASTC10x6Unorm
+        case .astc10x6UnormSRGB: return WGPUTextureFormat_ASTC10x6UnormSrgb
+        case .astc10x8Unorm: return WGPUTextureFormat_ASTC10x8Unorm
+        case .astc10x8UnormSRGB: return WGPUTextureFormat_ASTC10x8UnormSrgb
+        case .astc10x10Unorm: return WGPUTextureFormat_ASTC10x10Unorm
+        case .astc10x10UnormSRGB: return WGPUTextureFormat_ASTC10x10UnormSrgb
+        case .astc12x10Unorm: return WGPUTextureFormat_ASTC12x10Unorm
+        case .astc12x10UnormSRGB: return WGPUTextureFormat_ASTC12x10UnormSrgb
+        case .astc12x12Unorm: return WGPUTextureFormat_ASTC12x12Unorm
+        case .astc12x12UnormSRGB: return WGPUTextureFormat_ASTC12x12UnormSrgb
         }
     }
 
@@ -303,6 +364,24 @@ enum DawnEnum {
             height: UInt32(extent.height),
             depthOrArrayLayers: UInt32(extent.depthOrArrayLayers)
         )
+    }
+
+    /// Dawn 기능 → 명세 철자. 모르는 기능은 nil — 광고하지도, 요청하지도 않는다.
+    static func featureLabel(_ feature: WGPUFeatureName) -> String? {
+        switch feature {
+        case WGPUFeatureName_DepthClipControl: return "depth-clip-control"
+        case WGPUFeatureName_Depth32FloatStencil8: return "depth32float-stencil8"
+        case WGPUFeatureName_TextureCompressionBC: return "texture-compression-bc"
+        case WGPUFeatureName_TextureCompressionETC2: return "texture-compression-etc2"
+        case WGPUFeatureName_TextureCompressionASTC: return "texture-compression-astc"
+        case WGPUFeatureName_TimestampQuery: return "timestamp-query"
+        case WGPUFeatureName_IndirectFirstInstance: return "indirect-first-instance"
+        case WGPUFeatureName_ShaderF16: return "shader-f16"
+        case WGPUFeatureName_RG11B10UfloatRenderable: return "rg11b10ufloat-renderable"
+        case WGPUFeatureName_BGRA8UnormStorage: return "bgra8unorm-storage"
+        case WGPUFeatureName_Float32Filterable: return "float32-filterable"
+        default: return nil
+        }
     }
 
     static func errorType(_ type: WebGPU.WGPUErrorType, message: String) -> WGPUError {
