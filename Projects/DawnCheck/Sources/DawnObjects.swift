@@ -1,5 +1,6 @@
 import Foundation
 import CoreGraphics
+import QuartzCore
 import WebGPU
 import LynxWebGPUCore
 
@@ -134,15 +135,35 @@ final class DawnImageBitmapObject {
     }
 }
 
+/// 캔버스 표면 — 화면(`DawnLayerCanvas`) 또는 오프스크린(`DawnOffscreenCanvas`).
+///
+/// Metal 런타임의 `WGPUSurface` 프로토콜에 해당하는 자리다 — 표면 추상은 백엔드 내부 사정이고
+/// (`docs/ARCHITECTURE.md` §3-1), 런타임 경계는 "레이어/크기를 넘길 테니 표면 타입은 네가 골라라"다.
+protocol DawnCanvas: AnyObject {
+    var identifier: String { get }
+    var size: CGSize { get }
+    var format: LynxWebGPUCore.WGPUTextureFormat { get }
+    /// 드로어블 풀이 있어 **밀릴 수 있는** 표면인가 — in-flight 회계(`WGPUFrameCoordinator`) 대상.
+    var pacesFrames: Bool { get }
+    func configure(device: WGPUDevice, format: LynxWebGPUCore.WGPUTextureFormat) throws
+    func updateSize(_ size: CGSize, device: WGPUDevice)
+    /// 이번 프레임의 텍스처. `owned`면 +1 참조를 호출자가 소유하고(표면 경로 — 매 프레임 새로 나옴),
+    /// 아니면 캔버스 소유 참조를 빌린 것이다(오프스크린 — 래퍼가 retain해야 한다).
+    func acquireTexture(device: WGPUDevice) throws -> (texture: WGPUTexture, owned: Bool)
+    /// 프레임을 화면에 올린다. 오프스크린은 no-op.
+    func present()
+}
+
 /// 오프스크린 캔버스 — 적합성 스위트의 픽셀 통로 (`attachOffscreenCanvas`/`readCanvasPixels`).
 ///
 /// Metal 런타임의 `WGPUOffscreenSurface`와 같은 역할이다: `configure`가 백킹 텍스처를 만들고,
 /// `getCurrentTexture`가 그 텍스처를 프레임 스코프 핸들로 내준다.
-final class DawnOffscreenCanvas {
+final class DawnOffscreenCanvas: DawnCanvas {
     let identifier: String
     private(set) var size: CGSize
     private(set) var format: LynxWebGPUCore.WGPUTextureFormat = .rgba8unorm
     private(set) var texture: WGPUTexture?
+    var pacesFrames: Bool { false }
 
     init(identifier: String, size: CGSize) {
         self.identifier = identifier
@@ -165,6 +186,15 @@ final class DawnOffscreenCanvas {
         try? remakeTexture(device: device)
     }
 
+    func acquireTexture(device: WGPUDevice) throws -> (texture: WGPUTexture, owned: Bool) {
+        guard let texture else {
+            throw WGPUError.validation("캔버스 '\(identifier)'이(가) 아직 configure되지 않았다")
+        }
+        return (texture, false)
+    }
+
+    func present() {}
+
     private func remakeTexture(device: WGPUDevice) throws {
         releaseTexture()
         var descriptor = WGPUTextureDescriptor()
@@ -186,5 +216,121 @@ final class DawnOffscreenCanvas {
     private func releaseTexture() {
         if let texture { wgpuTextureRelease(texture) }
         texture = nil
+    }
+}
+
+/// 화면 캔버스 — `<webgpu-canvas>`의 `CAMetalLayer`를 Dawn 표면(`WGPUSurfaceSourceMetalLayer`)으로
+/// 감싼다. **엘리먼트·브리지는 무변경**이다: 레이어만 넘어오고, 표면 생성·설정·present는 전부
+/// 런타임 몫이다 (검토 문서 §3-1이 약속한 그 절단면).
+///
+/// 스레딩: 생성은 메인(attachCanvas 계약), `updateSize`는 메인, `acquireTexture`/`present`는
+/// JS 스레드다. 크기·설정 상태는 락으로 감싸고, **실제 wgpuSurfaceConfigure는 acquire 직전에
+/// JS 스레드에서 lazy로** 한다 — 메인↔JS 양쪽에서 Dawn 표면을 만지지 않게 하는 배치다.
+final class DawnLayerCanvas: DawnCanvas {
+    let identifier: String
+    private let layer: CAMetalLayer
+    private var surface: WGPUSurface?
+    private let lock = NSLock()
+    private var desiredSize: CGSize
+    private var desiredFormat: LynxWebGPUCore.WGPUTextureFormat = .bgra8unorm
+    private var configuredSize: CGSize = .zero
+    private var needsConfigure = true
+    var pacesFrames: Bool { true }
+
+    init(identifier: String, layer: CAMetalLayer, instance: WGPUInstance) {
+        self.identifier = identifier
+        self.layer = layer
+        self.desiredSize = layer.drawableSize
+        var source = WGPUSurfaceSourceMetalLayer()
+        source.chain.sType = WGPUSType_SurfaceSourceMetalLayer
+        source.layer = Unmanaged.passUnretained(layer).toOpaque()
+        surface = withUnsafeMutablePointer(to: &source) { sourcePointer in
+            var descriptor = WGPUSurfaceDescriptor()
+            descriptor.nextInChain = UnsafeMutableRawPointer(sourcePointer)
+                .assumingMemoryBound(to: WGPUChainedStruct.self)
+            return wgpuInstanceCreateSurface(instance, &descriptor)
+        }
+    }
+
+    deinit {
+        if let surface {
+            wgpuSurfaceUnconfigure(surface)
+            wgpuSurfaceRelease(surface)
+        }
+    }
+
+    var size: CGSize {
+        lock.lock()
+        defer { lock.unlock() }
+        return desiredSize
+    }
+
+    var format: LynxWebGPUCore.WGPUTextureFormat {
+        lock.lock()
+        defer { lock.unlock() }
+        return desiredFormat
+    }
+
+    func configure(device: WGPUDevice, format: LynxWebGPUCore.WGPUTextureFormat) throws {
+        lock.lock()
+        desiredFormat = format
+        needsConfigure = true
+        lock.unlock()
+    }
+
+    func updateSize(_ newSize: CGSize, device: WGPUDevice) {
+        lock.lock()
+        if newSize != desiredSize {
+            desiredSize = newSize
+            needsConfigure = true
+        }
+        lock.unlock()
+    }
+
+    func acquireTexture(device: WGPUDevice) throws -> (texture: WGPUTexture, owned: Bool) {
+        guard let surface else {
+            throw WGPUError.backend("캔버스 '\(identifier)'의 Dawn 표면 생성이 실패했었다")
+        }
+        try reconfigureIfNeeded(surface: surface, device: device)
+
+        var surfaceTexture = WGPUSurfaceTexture()
+        wgpuSurfaceGetCurrentTexture(surface, &surfaceTexture)
+        let usable = surfaceTexture.status == WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal
+            || surfaceTexture.status == WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal
+        guard usable, let texture = surfaceTexture.texture else {
+            throw WGPUError.validation(
+                "캔버스 '\(identifier)'의 드로어블을 얻지 못했다 (status \(surfaceTexture.status))"
+            )
+        }
+        return (texture, true)   // 표면 텍스처는 매 프레임 호출자 소유 +1로 나온다
+    }
+
+    func present() {
+        if let surface { _ = wgpuSurfacePresent(surface) }
+    }
+
+    private func reconfigureIfNeeded(surface: WGPUSurface, device: WGPUDevice) throws {
+        lock.lock()
+        let size = desiredSize
+        let format = desiredFormat
+        let needed = needsConfigure
+        lock.unlock()
+        guard needed else { return }
+        guard size.width > 0, size.height > 0 else {
+            throw WGPUError.validation("캔버스 '\(identifier)'의 크기가 아직 0이다 (레이아웃 전)")
+        }
+        var configuration = WGPUSurfaceConfiguration()
+        configuration.device = device
+        configuration.format = try DawnEnum.textureFormat(format)
+        configuration.usage = WGPUTextureUsage_RenderAttachment
+        configuration.width = UInt32(size.width)
+        configuration.height = UInt32(size.height)
+        configuration.alphaMode = WGPUCompositeAlphaMode_Auto
+        configuration.presentMode = WGPUPresentMode_Fifo
+        wgpuSurfaceConfigure(surface, &configuration)
+        lock.lock()
+        configuredSize = size
+        needsConfigure = false
+        lock.unlock()
     }
 }

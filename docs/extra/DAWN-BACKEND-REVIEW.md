@@ -118,7 +118,7 @@ A를 고르는 이유는 하나다: **커맨드 스트림이 이미 직렬화된
 > | 4 | 적합성 스위트 분리 | **완료** — `Sources/LynxWebGPUConformance`(라이브러리 product). **28개 검사** — 프레임 수명(present:false 생존·만료)·readBuffer·resize·컴파일 진단·msl-optional·decodeImage 포함 |
 > | 5 | 프레임 정책 분리 | **완료** — `WGPUFrameCoordinator` · `WGPUFrameBoundary`(Core). GPU 없이 검증된다 |
 > | 5+ | 인터페이스 완결 | **완료 (2026-08-08)** — ① 디스패치 표 `WGPUCommand`(51케이스 열거형 — 백엔드는 default 없는 switch만 쓰고, op 추가 누락은 컴파일이 잡는다) ② 와이어 정책의 Core 이관 (`WGPUErrorScopeStack` · `WGPUBatchResult` · `WGPUDeferredErrorQueue`) ③ 비동기 펌프 훅 `processEvents()` ④ `RenderHarness` 런타임 매개변수화 ⑤ 외부 주입 픽스처 `Examples/ExternalRuntime` (Core+Conformance만 링크한 스텁이 28검사를 전부 판정) |
-> | 6 | 빌드·배포 경로 | **시제품 완료 (2026-08-08)** — 프리빌트는 [Dawn-xcFramework](https://github.com/xenonClient/Dawn-xcFramework)(별도 저장소, SPM binaryTarget)가 제공하고, 그 위의 `WebGPURuntime` 구현 시제품이 `Projects/DawnCheck`에 있다. **시뮬레이터 적합성 27/28 통과 · 1 건너뜀(간접 드로우 — 시뮬레이터 제약으로 미광고) · 0 실패.** 남은 것: 시제품을 실제 배포 저장소(Lynx-WebGPU-Dawn)로 옮기고 화면 표면(`WGPUSurfaceSourceMetalLayer`) 배선 |
+> | 6 | 빌드·배포 경로 | **시제품 완료 (2026-08-08)** — 프리빌트는 [Dawn-xcFramework](https://github.com/xenonClient/Dawn-xcFramework)(별도 저장소, SPM binaryTarget)가 제공하고, 그 위의 `WebGPURuntime` 구현 시제품이 `Projects/DawnCheck`에 있다. **시뮬레이터 적합성 27/28 통과 · 1 건너뜀(간접 드로우 — 시뮬레이터 제약으로 미광고) · 0 실패.** 화면 표면(`WGPUSurfaceSourceMetalLayer`)까지 배선되어 **DawnDemo 앱이 데모 씬(triangle·wgsl·cube)을 브리지·JS 무변경으로 그린다** — in-flight 페이싱은 `WGPUFrameCoordinator`의 `noteCommitted`/`noteCompleted` 그대로다. 남은 것: 시제품을 실제 배포 저장소(Lynx-WebGPU-Dawn)로 옮기고 실기기 확인 |
 >
 > Dawn 런타임이 채워야 할 자리는 이제 **`WebGPURuntime`의 14개 멤버**(기본 no-op인
 > `processEvents` 포함)로 닫혀 있고, 지켜야 할 계약은 `docs/COMMAND-STREAM.md`, 증명 수단은
@@ -233,7 +233,7 @@ Swift ↔ Dawn은 **C API(`webgpu.h`)로 충분하다** — C++ interop 불필�
 | **바이너리 크기** | **실측 완료 (2026-08-08, Dawn-xcFramework 릴리스 빌드)** — 정적 라이브러리 19MB(기기 슬라이스), 런타임+적합성 스위트까지 **링크한 최종 바이너리 11MB.** "900MB대" 보고는 디버그 미스트립 수치였다. 단독 기각 사유가 아니다 — 관문 통과 |
 | **빌드 파이프라인** | CMake → 기기/시뮬레이터 슬라이스 → XCFramework → CI. Tuist 데모까지 엮으면 작지 않다 |
 | **비동기 펌프** | **해소** — `WebGPURuntime.processEvents()`(기본 no-op)가 그 자리다. 프레임 티커가 준비 게이트 **앞**에서 틱마다 부르고 (완료 통지가 펌프에서 나오면 게이트 뒤에선 포화가 안 풀린다), 적합성 하네스도 콜백 대기 중에 부른다. 티커 없는 구성은 런타임이 자체 대기 수단을 갖출 것 (프로토콜 문서) |
-| **동작 발산** | Dawn은 엄격히 검증한다 — **지금 도는 코드 중 일부가 거부된다.** 그게 목적이긴 하지만, 문서화된 선택이어야 한다 |
+| **동작 발산** | Dawn은 엄격히 검증한다 — **지금 도는 코드 중 일부가 거부된다.** 그게 목적이긴 하지만, 문서화된 선택이어야 한다. **실사례 (2026-08-08):** wgsl 데모 씬의 varying 분기 안 `textureSample`이 uniformity 분석으로 거부됐다 — 자체 트랜스파일러는 관대하게 통과시키던 명세 위반이고, 브라우저에서도 거부됐을 코드다. 씬을 고쳐 해소 (예견된 발산이 이식성 버그를 잡아 준 경우) |
 | **진단 품질 하락** | 우리 오류에는 `commands[3].vertex.buffers[0].format` 경로와 한국어 메시지가 붙는다. Dawn은 영어 문자열 하나다. `kind` 매핑은 문제없다 (`WGPUErrorType_Validation`/`OutOfMemory`/`Internal` ↔ 우리 4종) |
 | **시뮬레이터 제약** | 간접 드로우 미지원 같은 기기 갈림은 Dawn을 써도 그대로다 (Metal 자체 제약) |
 

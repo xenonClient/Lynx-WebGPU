@@ -130,8 +130,10 @@ Examples/HelloTriangle.tsx  — ReactLynx 최소 예제
 Examples/ExternalRuntime/   — 외부 백엔드 주입 검증 픽스처 (Core+Conformance만 링크하는 중첩 SPM)
 Projects/WebGPUDemo/    — Tuist 데모 호스트 앱 (Sources/) + 데모 번들 rspeedy 소스 (DemoSrc/)
                           Tools/ — 빌드 시점 애셋 변환 (HDR HEIC → GPU가 바로 먹는 바이너리)
-Projects/DawnCheck/     — 진짜 Dawn 위의 WebGPURuntime 시제품 + 적합성 실행 (자체 Tuist 루트 —
-                          Dawn 바이너리 해석을 데모 루프에 안 끌어들인다. 시뮬레이터 전용)
+Projects/DawnCheck/     — 진짜 Dawn 위의 WebGPURuntime 시제품 (자체 Tuist 루트 — Dawn 바이너리
+                          해석을 데모 루프에 안 끌어들인다. 시뮬레이터 전용). 타깃 둘:
+                          DawnCheckTests(오프스크린 적합성 28검사) ·
+                          DawnDemo(화면 실증 앱 — 데모 씬·브리지·JS 무변경, 런타임만 Dawn)
 Tuist.swift · Workspace.swift — 데모 앱 전용. 라이브러리 자체는 SPM만으로 완결된다
 docs/                   — ARCHITECTURE / WEBGPU-API / WGSL / LYNX-INTEGRATION / JS-AUTHORING / TESTING
 .claude/skills/         — webgpu-command / wgsl-feature / gpu-smoke

@@ -128,6 +128,25 @@ arch -arm64 xcodebuild -workspace Projects/DawnCheck/DawnCheck.xcworkspace \
 런타임이 기능을 광고하지 않는다 (실기기에서는 광고해도 된다). 렌더 번들 동치성은
 Metal 런타임의 명령 재생과 달리 **진짜 Dawn 렌더 번들**로 통과한다.
 
+**화면 연동은 같은 프로젝트의 DawnDemo 앱**이 실증한다 — 데모의 씬 목록·런처·`.lynx.bundle`을
+그대로 쓰고, 다른 것은 런타임 주입 한 줄뿐이다 (`LynxWebGPUHost(runtime: try
+DawnWebGPURuntime())` — Metal 엔진 `LynxWebGPU`는 링크하지 않는다). 화면 표면은
+`WGPUSurfaceSourceMetalLayer`, in-flight 페이싱은 Core의 `WGPUFrameCoordinator` 그대로다:
+
+```zsh
+arch -arm64 xcodebuild -workspace Projects/DawnCheck/DawnCheck.xcworkspace \
+  -scheme DawnDemo -configuration Debug -sdk iphonesimulator \
+  -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' \
+  -derivedDataPath .derivedData-dawncheck build
+xcrun simctl install <device> .derivedData-dawncheck/Build/Products/Debug-iphonesimulator/DawnDemo.app
+xcrun simctl launch <device> org.lynxwebgpu.dawndemo -demo wgsl
+```
+
+triangle·wgsl·cube 씬이 시뮬레이터에서 Metal 데모와 같은 그림을 그린다 (2026-08-08 확인).
+이 과정에서 Dawn의 명세 검증이 wgsl 씬 셰이더의 **uniformity 위반**(varying 분기 안
+`textureSample`)을 실제로 잡아냈다 — 검토 문서 §4의 "동작 발산"이 말하던 그것이고,
+같은 셰이더는 브라우저에서도 거부됐을 것이다. 씬을 명세에 맞게 고쳤다.
+
 ## 3. Metal 컴파일러 하네스
 
 트랜스파일러 테스트에서 **문자열 단언만으로는 부족하다.** 기대한 조각이 다 들어 있어도

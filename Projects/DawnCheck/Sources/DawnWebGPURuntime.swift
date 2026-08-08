@@ -35,7 +35,11 @@ final class DawnWebGPURuntime: WebGPURuntime {
     private let deferredErrors = WGPUDeferredErrorQueue()
     private var errorScopes = WGPUErrorScopeStack()
 
-    private var canvases: [String: DawnOffscreenCanvas] = [:]
+    /// in-flight 프레임 회계 — **Core의 것 그대로**다. Dawn에는 "지금 내보내면 블록되는가"를
+    /// 묻는 통로가 없어 제출/완료를 직접 세야 한다 (검토 문서 §3-5가 예고한 그대로).
+    private let frameCoordinator = WGPUFrameCoordinator()
+
+    private var canvases: [String: DawnCanvas] = [:]
 
     // 배치 수명 상태 (execute 하나 동안)
     private var commandEncoder: WGPUCommandEncoder?
@@ -43,7 +47,7 @@ final class DawnWebGPURuntime: WebGPURuntime {
     private var computePass: WGPUComputePassEncoder?
     private var errors: [WGPUError] = []
     private var poppedScopes: [WGPUPoppedErrorScope] = []
-    private var touchedCanvases: [String: DawnOffscreenCanvas] = [:]
+    private var touchedCanvases: [String: DawnCanvas] = [:]
 
     // 프레임 수명 상태 (present까지)
     private var frameScopedHandles: [WGPUHandle] = []
@@ -133,11 +137,26 @@ final class DawnWebGPURuntime: WebGPURuntime {
         drainDeviceScope()
 
         // 프레임 경계 — 정책은 Core의 값 타입이 정하고 여기는 적용만 한다.
+        // present는 제출 **뒤**, 핸들 만료 **앞**이다.
         let boundary = WGPUFrameBoundary(requestedPresent: present, commandCount: commands.count)
         if boundary.presents, !acquiredCanvases.isEmpty {
+            var pacedCanvases: [String] = []
+            for identifier in acquiredCanvases {
+                guard let canvas = canvases[identifier] else { continue }
+                canvas.present()
+                if canvas.pacesFrames { pacedCanvases.append(identifier) }
+            }
             for handle in frameScopedHandles { registry.remove(handle) }
             frameScopedHandles.removeAll()
             acquiredCanvases.removeAll()
+            // in-flight 회계 — 완료 통지는 processEvents 펌프(호스트 틱)에서 돌아온다.
+            if !pacedCanvases.isEmpty {
+                let coordinator = frameCoordinator
+                for identifier in pacedCanvases { coordinator.noteCommitted(canvas: identifier) }
+                notifyWorkDone {
+                    for identifier in pacedCanvases { coordinator.noteCompleted(canvas: identifier) }
+                }
+            }
         }
 
         return WGPUBatchResult(
@@ -163,6 +182,9 @@ final class DawnWebGPURuntime: WebGPURuntime {
     }
 
     private func record(_ error: WGPUError) {
+        // 검증 픽스처의 진단 통로 — 뿌리 오류가 "이전 오류 때문에 무효" 연쇄에 가려지지 않게
+        // 콘솔에도 남긴다 (JS 오버레이는 마지막 오류만 보여 준다).
+        print("DawnCheck error: \(error)")
         if errorScopes.capture(error) { return }
         errors.append(error)
     }
@@ -184,6 +206,21 @@ final class DawnWebGPURuntime: WebGPURuntime {
         _ = wgpuDevicePopErrorScope(device, callbackInfo)
         try? DawnBootstrap.pump(instance: instance, until: { box.done }, what: "popErrorScope")
         if let error = box.error { record(error) }
+    }
+
+    /// 제출한 작업이 끝나면 부른다 — 콜백은 `processEvents` 펌프에서 온다.
+    private func notifyWorkDone(_ body: @escaping () -> Void) {
+        final class WorkBox {
+            let body: () -> Void
+            init(_ body: @escaping () -> Void) { self.body = body }
+        }
+        var callbackInfo = WGPUQueueWorkDoneCallbackInfo()
+        callbackInfo.mode = WGPUCallbackMode_AllowProcessEvents
+        callbackInfo.callback = { _, _, userdata1, _ in
+            Unmanaged<WorkBox>.fromOpaque(userdata1!).takeRetainedValue().body()
+        }
+        callbackInfo.userdata1 = Unmanaged.passRetained(WorkBox(body)).toOpaque()
+        _ = wgpuQueueOnSubmittedWorkDone(queue, callbackInfo)
     }
 
     // MARK: - 디스패치 (Core의 표에 대한 exhaustive switch)
@@ -972,17 +1009,12 @@ final class DawnWebGPURuntime: WebGPURuntime {
                 "캔버스 '\(command.canvas)'이(가) 없다", path: command.fieldPath("canvas")
             )
         }
-        guard let texture = canvas.texture else {
-            throw WGPUError.validation(
-                "캔버스 '\(command.canvas)'이(가) 아직 configure되지 않았다",
-                path: command.fieldPath("canvas")
-            )
-        }
+        let (texture, owned) = try canvas.acquireTexture(device: device)
         registry.insert(
             DawnTextureObject(
                 texture: texture, format: canvas.format,
                 width: Int(canvas.size.width), height: Int(canvas.size.height),
-                retain: true
+                retain: !owned   // 표면 텍스처는 이미 +1로 나온다 — 빌린 것만 retain
             ),
             at: command.id
         )
@@ -1630,9 +1662,11 @@ final class DawnWebGPURuntime: WebGPURuntime {
     // MARK: - 캔버스 (WebGPURuntime)
 
     func attachCanvas(identifier: String, layer: CAMetalLayer) {
-        // 이 픽스처는 화면 표면을 다루지 않는다 — Dawn의 WGPUSurfaceSourceMetalLayer 배선은
-        // 실제 백엔드 저장소(§3-6)의 몫이다. 조용히 무시하지 않고 로그만 남긴다.
-        print("DawnCheck: attachCanvas(\(identifier))는 이 픽스처 범위 밖이다 (오프스크린 전용)")
+        executionLock.lock()
+        canvases[identifier] = DawnLayerCanvas(identifier: identifier, layer: layer, instance: instance)
+        executionLock.unlock()
+        // 드로어블 풀이 있는 표면만 페이싱 대상이다 (Metal 런타임과 같은 규칙).
+        frameCoordinator.track(canvas: identifier)
     }
 
     func attachOffscreenCanvas(identifier: String, size: CGSize) throws {
@@ -1649,15 +1683,21 @@ final class DawnWebGPURuntime: WebGPURuntime {
 
     func detachCanvas(identifier: String) {
         executionLock.lock()
-        defer { executionLock.unlock() }
         canvases.removeValue(forKey: identifier)
+        executionLock.unlock()
+        // 죽은 캔버스의 카운터를 남겨 두면 그것이 영원히 프레임 틱을 막는다.
+        frameCoordinator.forget(canvas: identifier)
     }
 
     func readCanvasPixels(identifier: String) throws -> WGPUPixelReadback {
         executionLock.lock()
         defer { executionLock.unlock() }
-        guard let canvas = canvases[identifier], let texture = canvas.texture else {
-            throw WGPUError.validation("캔버스 '\(identifier)'이(가) 없거나 configure 전이다")
+        // 픽셀 읽기는 오프스크린 통로다 — 화면 표면 텍스처는 present와 함께 사라진다.
+        guard let canvas = canvases[identifier] as? DawnOffscreenCanvas,
+              let texture = canvas.texture else {
+            throw WGPUError.validation(
+                "캔버스 '\(identifier)'은(는) 오프스크린 표면이 아니거나 configure 전이다"
+            )
         }
         let width = Int(canvas.size.width)
         let height = Int(canvas.size.height)
@@ -1720,7 +1760,8 @@ final class DawnWebGPURuntime: WebGPURuntime {
 
     // MARK: - 프레임 · 수명 (WebGPURuntime)
 
-    var isReadyForNextFrame: Bool { true }   // 오프스크린 전용 — 페이싱 대상 표면이 없다
+    /// 회계는 Core 코디네이터가 한다 — 화면 캔버스가 없으면(적합성 실행) 항상 true다.
+    var isReadyForNextFrame: Bool { frameCoordinator.isReadyForNextFrame }
 
     func processEvents() {
         wgpuInstanceProcessEvents(instance)

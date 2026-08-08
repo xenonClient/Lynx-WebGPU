@@ -24,6 +24,11 @@ let project = Project(
             url: "https://github.com/xenonClient/Dawn-xcFramework",
             requirement: .exact("20260731.171941.0")
         ),
+        // Lynx는 **앱 타깃(DawnDemo)이 고른다** — 데모와 같은 규칙 (docs/LYNX-INTEGRATION.md §1).
+        .remote(
+            url: "https://github.com/xenonClient/Lynx-XCFramework",
+            requirement: .exact("4.0.0")
+        ),
     ],
     settings: .settings(
         // 이 환경은 서명이 구성돼 있지 않아 팀을 명시해야 시뮬레이터 테스트 번들이 서명된다.
@@ -34,6 +39,7 @@ let project = Project(
         configurations: [.debug(name: "Debug"), .release(name: "Release")]
     ),
     targets: [
+        // 오프스크린 적합성 검증 (28검사 — docs/TESTING.md §2-1).
         .target(
             name: "DawnCheckTests",
             destinations: .iOS,
@@ -47,6 +53,59 @@ let project = Project(
                 .package(product: "LynxWebGPUConformance"),
             ]
         ),
+        // Lynx 연동 레이어 — 데모와 **같은 브리지 소스**를 컴파일한다. 백엔드 교체 계약의
+        // 반쪽이 여기다: 이 타깃이 무수정으로 컴파일되면 브리지는 정말로 백엔드를 모른다.
+        .target(
+            name: "LynxWebGPUBridge",
+            destinations: .iOS,
+            product: .staticFramework,
+            bundleId: "org.lynxwebgpu.dawncheck.bridge",
+            deploymentTargets: .iOS("17.0"),
+            sources: ["../../Sources/LynxWebGPUBridge/**"],
+            dependencies: [
+                .package(product: "LynxWebGPUCore"),
+                .package(product: "Lynx"),
+            ]
+        ),
+        // 실제 연동 실증 앱 — 데모의 씬 목록·런처·.lynx.bundle을 **그대로** 쓰되
+        // 런타임만 Dawn이다. `LynxWebGPU`(Metal 엔진)는 링크하지 않는다.
+        .target(
+            name: "DawnDemo",
+            destinations: .iOS,
+            product: .app,
+            bundleId: "org.lynxwebgpu.dawndemo",
+            deploymentTargets: .iOS("17.0"),
+            infoPlist: .extendingDefault(with: [
+                "UILaunchScreen": ["UIColorName": "", "UIImageName": ""],
+                "UIApplicationSceneManifest": [
+                    "UIApplicationSupportsMultipleScenes": false,
+                    "UISceneConfigurations": [
+                        "UIWindowSceneSessionRoleApplication": [
+                            [
+                                "UISceneConfigurationName": "Default Configuration",
+                                "UISceneDelegateClassName": "$(PRODUCT_MODULE_NAME).SceneDelegate",
+                            ]
+                        ]
+                    ],
+                ],
+            ]),
+            sources: [
+                "App/**",
+                "Sources/**",   // DawnWebGPURuntime — 적합성 타깃과 같은 소스
+                // 씬 목록과 런처는 데모의 것을 그대로 쓴다 (Foundation/UIKit뿐이다) —
+                // DemoViewController만 이 앱의 것(App/)이 대신한다.
+                "../WebGPUDemo/Sources/DemoScene.swift",
+                "../WebGPUDemo/Sources/LauncherViewController.swift",
+            ],
+            // 데모 번들(.lynx.bundle)도 그대로 — JS 무변경 계약의 증거다.
+            resources: ["../WebGPUDemo/Resources/**"],
+            dependencies: [
+                .target(name: "LynxWebGPUBridge"),
+                .package(product: "Dawn"),
+                .package(product: "LynxWebGPUCore"),
+                .package(product: "Lynx"),
+            ]
+        ),
     ],
     schemes: [
         .scheme(
@@ -55,6 +114,12 @@ let project = Project(
             buildAction: .buildAction(targets: ["DawnCheckTests"]),
             testAction: .targets(["DawnCheckTests"], configuration: "Debug"),
             runAction: .runAction(configuration: "Debug")
-        )
+        ),
+        .scheme(
+            name: "DawnDemo",
+            shared: true,
+            buildAction: .buildAction(targets: ["DawnDemo"]),
+            runAction: .runAction(configuration: "Debug")
+        ),
     ]
 )
