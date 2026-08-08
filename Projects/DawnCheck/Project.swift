@@ -1,18 +1,17 @@
 import ProjectDescription
 
-// Dawn 백엔드 연동 검증 프로젝트.
+// Dawn 백엔드 연동 검증 프로젝트 — **루트 워크스페이스(`LynxWebGPUDemo.xcworkspace`)의
+// 별도 프로젝트**다 (`Workspace.swift`). 데모 로직과 완전히 분리돼 있고, 루트에서
+// `mise exec -- tuist generate` 한 번이면 스킴 셋(WebGPUDemo · DawnCheck · DawnDemo)이 다 나온다.
 //
 // `docs/extra/DAWN-BACKEND-REVIEW.md` §3-6이 그리는 "별도 저장소 Lynx-WebGPU-Dawn"의
 // 시제품이다 — [Dawn-xcFramework](https://github.com/xenonClient/Dawn-xcFramework)의
 // 프리빌트 바이너리 위에 `WebGPURuntime`을 구현하고, 같은 적합성 스위트를 돌려
-// Metal 런타임과 계약이 같은지 잰다.
-//
-// Dawn.xcframework는 iOS 슬라이스만 있으므로(macOS 없음) 검증은 **시뮬레이터의
-// 유닛테스트**로 돈다:
-//   mise exec -- tuist generate --path Projects/DawnCheck --no-open
-//   arch -arm64 xcodebuild -workspace Projects/DawnCheck/DawnCheck.xcworkspace \
-//     -scheme DawnCheck -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' \
-//     -derivedDataPath .derivedData-dawncheck test
+// Metal 런타임과 계약이 같은지 잰다. Dawn.xcframework는 iOS 슬라이스만 있으므로
+// (macOS 없음) 검증은 시뮬레이터에서 돈다:
+//   arch -arm64 xcodebuild -workspace LynxWebGPUDemo.xcworkspace -scheme DawnCheck \
+//     -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' \
+//     -derivedDataPath .derivedData-cli test
 let project = Project(
     name: "DawnCheck",
     organizationName: "LynxWebGPU",

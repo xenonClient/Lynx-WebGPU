@@ -111,16 +111,16 @@ swift run --package-path Examples/ExternalRuntime external-runtime-check # 28검
 
 ### Dawn 연동 검증 — `Projects/DawnCheck`
 
-**진짜 Dawn 위의 `WebGPURuntime` 구현**을 같은 스위트에 거는 프로젝트다.
+**진짜 Dawn 위의 `WebGPURuntime` 구현**을 같은 스위트에 거는, **루트 워크스페이스의 별도
+프로젝트**다 (`Workspace.swift` — 데모 로직과는 완전히 분리, 스킴만 추가된다).
 [Dawn-xcFramework](https://github.com/xenonClient/Dawn-xcFramework) 프리빌트 바이너리를 쓰고,
-데모와 **분리된 자체 Tuist 루트**를 가진다 (Dawn 바이너리 해석을 데모 개발 루프에 끌어들이지
-않기 위해). Dawn.xcframework가 iOS 전용이라 실행은 시뮬레이터 유닛테스트다:
+iOS 전용이라 실행은 시뮬레이터 유닛테스트다:
 
 ```zsh
-mise exec -- tuist generate --path Projects/DawnCheck --no-open
-arch -arm64 xcodebuild -workspace Projects/DawnCheck/DawnCheck.xcworkspace \
+mise exec -- tuist generate --no-open        # 스킴 셋: WebGPUDemo · DawnCheck · DawnDemo
+arch -arm64 xcodebuild -workspace LynxWebGPUDemo.xcworkspace \
   -scheme DawnCheck -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' \
-  -derivedDataPath .derivedData-dawncheck test
+  -derivedDataPath .derivedData-cli test
 ```
 
 기준선 (2026-08-08, 시뮬레이터): **적합성 27/28 통과 · 1 건너뜀 · 0 실패.** 건너뜀은
@@ -134,18 +134,20 @@ DawnWebGPURuntime())` — Metal 엔진 `LynxWebGPU`는 링크하지 않는다). 
 `WGPUSurfaceSourceMetalLayer`, in-flight 페이싱은 Core의 `WGPUFrameCoordinator` 그대로다:
 
 ```zsh
-arch -arm64 xcodebuild -workspace Projects/DawnCheck/DawnCheck.xcworkspace \
+arch -arm64 xcodebuild -workspace LynxWebGPUDemo.xcworkspace \
   -scheme DawnDemo -configuration Debug -sdk iphonesimulator \
   -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' \
-  -derivedDataPath .derivedData-dawncheck build
-xcrun simctl install <device> .derivedData-dawncheck/Build/Products/Debug-iphonesimulator/DawnDemo.app
-xcrun simctl launch <device> org.lynxwebgpu.dawndemo -demo wgsl
+  -derivedDataPath .derivedData-cli build
+xcrun simctl install <device> .derivedData-cli/Build/Products/Debug-iphonesimulator/DawnDemo.app
+xcrun simctl launch <device> org.lynxwebgpu.dawndemo -demo triangle
 ```
 
-triangle·wgsl·cube 씬이 시뮬레이터에서 Metal 데모와 같은 그림을 그린다 (2026-08-08 확인).
-이 과정에서 Dawn의 명세 검증이 wgsl 씬 셰이더의 **uniformity 위반**(varying 분기 안
-`textureSample`)을 실제로 잡아냈다 — 검토 문서 §4의 "동작 발산"이 말하던 그것이고,
-같은 셰이더는 브라우저에서도 거부됐을 것이다. 씬을 명세에 맞게 고쳤다.
+triangle·cube 씬이 시뮬레이터에서 Metal 데모와 같은 그림을 그린다 (2026-08-08 확인).
+**wgsl 씬은 Dawn이 거부한다** — 셰이더가 varying 분기 안에서 `textureSample`을 불러
+WGSL uniformity 규칙을 위반하고, Dawn(=브라우저와 같은 검증)은 이를 막는다. 오류는
+와이어 오류 경로를 타고 씬의 오류 오버레이에 그대로 표시된다 — 검토 문서 §4의
+"동작 발산"의 실사례다. 샘플을 분기 앞으로 올리고 `select`로 고르면 해소되는 것까지
+확인했지만, 데모 씬은 **기존 로직 그대로** 두었다 — 수정 여부는 별도 결정이다.
 
 ## 3. Metal 컴파일러 하네스
 
