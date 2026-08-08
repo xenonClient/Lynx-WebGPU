@@ -1,10 +1,10 @@
 import ProjectDescription
 
-// 실기기 설치용 서명. 환경변수로 팀을 주면 자동 서명이 켜진다:
+// 서명 — 이 환경은 로컬 서명 구성이 없어 팀을 **기본으로 명시**해야 Xcode 빌드가 된다.
+// 다른 팀을 쓰려면 환경변수로 바꾼다:
 //   TUIST_DEVELOPMENT_TEAM=XXXXXXXXXX mise exec -- tuist generate
-// 미지정 시(시뮬레이터 빌드) 서명 설정을 넣지 않는다.
 let signingSettings: SettingsDictionary = {
-    let team = Environment.developmentTeam.getString(default: "")
+    let team = Environment.developmentTeam.getString(default: "TFLQDNW4Z9")
     guard !team.isEmpty else { return [:] }
     return ["DEVELOPMENT_TEAM": .string(team), "CODE_SIGN_STYLE": "Automatic"]
 }()

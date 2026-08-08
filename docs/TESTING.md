@@ -151,7 +151,7 @@ xcrun simctl launch <device> org.lynxwebgpu.dawndemo -demo triangle
 | 의도된 오류 수신 (1) | spec — 씬 자체가 validation 오류를 유발해 수신 경로를 검증한다 (3건 수신, 정상) |
 | 의도된 거부 (2) | gpudriven — 간접 드로우를 시뮬레이터 가드가 `unsupported`로 막는다 (Metal 런타임과 같은 판단 — 실기기 대상 씬) · msl — 선택 기능 거부 (`docs/COMMAND-STREAM.md` §4-1 계약) |
 | **명세 발산** — 씬이 관대한 Metal 런타임에 기대던 것 (4) | wgsl·hdr — varying 분기 안 `textureSample` (uniformity 위반; 샘플을 분기 앞으로 올리면 해소됨을 확인, 씬은 무변경) · stencil·query — `layout:"auto"` 파이프라인의 바인드 그룹을 **다른** 파이프라인에 재사용 (명세상 auto 레이아웃은 파이프라인 전용) · images — `copyTextureToBuffer`의 `bytesPerRow` 32 (256 배수 위반, 리드백 1건만 실패하고 그림은 그려진다) |
-| 이 Dawn 빌드의 제약 (1) | threelab — 비교 샘플러가 거부된다 ("Compare functions are disabled with the Metal backend") — three.js 그림자 경로. Dawn-xcFramework 빌드 구성 확인 대상 |
+| **시뮬레이터에서 실패 (1)** | threelab (three.js 고난도 조합) — **캔버스 출력이 아예 없다.** 뿌리 하나: Dawn이 비교 샘플러를 거부하고("Compare functions are disabled with the Metal backend" — Dawn은 Metal family 3 미만에서 비교 샘플러를 끄는데 시뮬레이터가 family 2로 보고된다), three.js의 객체 바인드 그룹이 그림자용 비교 샘플러를 포함해 통째로 무효 → 모든 드로우 실패 → 합성까지 빈 화면 (오프스크린 검증 항목만 ✓). **Metal 런타임은 같은 시뮬레이터에서 씬 전체(그림자 포함 11/11)를 그린다.** 간접 드로우와 같은 계열의 시뮬레이터 family 가드로 보이며 실기기(A12+)에서 동작할 것으로 추정 — 확인 전까지 미해결로 둔다 |
 
 발산 4건은 전부 **브라우저에서도 같은 이유로 깨질 코드**다 — Dawn의 엄격 검증이 데모의
 이식성 버그를 찾아 준 것이고, 오류는 와이어 경로를 타고 씬 오버레이에 그대로 표시된다.

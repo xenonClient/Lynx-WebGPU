@@ -52,22 +52,12 @@ let project = Project(
                 .package(product: "LynxWebGPUConformance"),
             ]
         ),
-        // Lynx 연동 레이어 — 데모와 **같은 브리지 소스**를 컴파일한다. 백엔드 교체 계약의
-        // 반쪽이 여기다: 이 타깃이 무수정으로 컴파일되면 브리지는 정말로 백엔드를 모른다.
-        .target(
-            name: "LynxWebGPUBridge",
-            destinations: .iOS,
-            product: .staticFramework,
-            bundleId: "org.lynxwebgpu.dawncheck.bridge",
-            deploymentTargets: .iOS("17.0"),
-            sources: ["../../Sources/LynxWebGPUBridge/**"],
-            dependencies: [
-                .package(product: "LynxWebGPUCore"),
-                .package(product: "Lynx"),
-            ]
-        ),
         // 실제 연동 실증 앱 — 데모의 씬 목록·런처·.lynx.bundle을 **그대로** 쓰되
         // 런타임만 Dawn이다. `LynxWebGPU`(Metal 엔진)는 링크하지 않는다.
+        //
+        // 브리지도 **데모 프로젝트의 타깃을 그대로** 쓴다 (`.project` 교차 참조) — 같은 이름의
+        // 타깃을 여기 또 만들면 한 워크스페이스에서 산출물이 충돌하고, 브리지가 백엔드를
+        // 모른다는 계약도 "같은 빌드 산출물"로 증명하는 편이 정확하다.
         .target(
             name: "DawnDemo",
             destinations: .iOS,
@@ -99,7 +89,7 @@ let project = Project(
             // 데모 번들(.lynx.bundle)도 그대로 — JS 무변경 계약의 증거다.
             resources: ["../WebGPUDemo/Resources/**"],
             dependencies: [
-                .target(name: "LynxWebGPUBridge"),
+                .project(target: "LynxWebGPUBridge", path: "../WebGPUDemo"),
                 .package(product: "Dawn"),
                 .package(product: "LynxWebGPUCore"),
                 .package(product: "Lynx"),
