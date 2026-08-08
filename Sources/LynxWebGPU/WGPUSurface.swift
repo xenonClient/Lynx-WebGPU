@@ -25,6 +25,10 @@ public protocol WGPUSurface: AnyObject {
     /// 이번 프레임에 그릴 드로어블. 표면이 아직 크기를 못 받았거나 드로어블이 고갈되면 nil.
     func nextDrawable() -> WGPUDrawable?
 
+    /// 드로어블 크기(픽셀)가 바뀌었다 (`WebGPURuntime.resizeCanvas` — 메인 스레드).
+    /// 화면 표면은 레이어의 `drawableSize`를, 오프스크린 표면은 백킹 텍스처를 새 크기로 맞춘다.
+    func updateDrawableSize(_ size: CGSize)
+
     /// 드로어블 풀이 있어 **밀릴 수 있는** 표면인가.
     ///
     /// in-flight 회계 자체는 백엔드 밖(`WGPUFrameCoordinator`)에 있다 — Dawn을 쓰든
@@ -35,6 +39,8 @@ public protocol WGPUSurface: AnyObject {
 
 public extension WGPUSurface {
     var pacesFrames: Bool { false }
+    /// 기본은 no-op — 크기가 고정인 표면(테스트 더블)은 반응할 것이 없다.
+    func updateDrawableSize(_ size: CGSize) {}
 }
 
 // MARK: - 화면 표면 (CAMetalLayer)
@@ -177,8 +183,22 @@ public final class WGPUOffscreenSurface: WGPUSurface {
 
     public func configure(_ configuration: WGPUCanvasConfiguration, device: MTLDevice) throws {
         format = configuration.format
+        try remakeTexture()
+    }
+
+    /// 크기가 바뀌면 백킹 텍스처를 새 크기로 다시 만든다 — 화면 표면의 `drawableSize` 갱신과
+    /// 같은 의미다 (`canvasInfo`·`getCurrentTexture`·`readCanvasPixels`가 즉시 새 크기를 본다).
+    /// 아직 configure 전이면 크기만 기억한다 — 텍스처는 configure가 만든다.
+    public func updateDrawableSize(_ size: CGSize) {
+        guard size != self.size else { return }
+        self.size = size
+        guard texture != nil else { return }
+        try? remakeTexture()
+    }
+
+    private func remakeTexture() throws {
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: try WGPUMetalMapping.pixelFormat(configuration.format),
+            pixelFormat: try WGPUMetalMapping.pixelFormat(format),
             width: Int(size.width),
             height: Int(size.height),
             mipmapped: false

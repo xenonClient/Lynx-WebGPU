@@ -65,7 +65,7 @@ public final class LynxWebGPUContext: WebGPURuntime {
     }
 
     public func resizeCanvas(identifier: String, drawableSize: CGSize) {
-        (surface(for: identifier) as? WGPUMetalLayerSurface)?.updateDrawableSize(drawableSize)
+        surface(for: identifier)?.updateDrawableSize(drawableSize)
     }
 
     public func detachCanvas(identifier: String) {
