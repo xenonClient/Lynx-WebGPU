@@ -196,13 +196,14 @@ final class DawnOffscreenCanvas: DawnCanvas {
     func present() {}
 
     private func remakeTexture(device: WGPUDevice) throws {
+        let dimensions = try dawnTextureDimensions(size, "오프스크린 캔버스 '\(identifier)'")
         releaseTexture()
         var descriptor = WGPUTextureDescriptor()
         descriptor.usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_CopySrc
             | WGPUTextureUsage_TextureBinding
         descriptor.dimension = WGPUTextureDimension_2D
         descriptor.size = WebGPU.WGPUExtent3D(
-            width: UInt32(size.width), height: UInt32(size.height), depthOrArrayLayers: 1
+            width: dimensions.width, height: dimensions.height, depthOrArrayLayers: 1
         )
         descriptor.format = try DawnEnum.textureFormat(format)
         descriptor.mipLevelCount = 1
@@ -316,15 +317,14 @@ final class DawnLayerCanvas: DawnCanvas {
         let needed = needsConfigure
         lock.unlock()
         guard needed else { return }
-        guard size.width > 0, size.height > 0 else {
-            throw WGPUError.validation("캔버스 '\(identifier)'의 크기가 아직 0이다 (레이아웃 전)")
-        }
+        // 0·NaN·상한 초과는 트랩이 아니라 validation이다 — 레이아웃 전이면 아직 크기가 없다.
+        let dimensions = try dawnTextureDimensions(size, "캔버스 '\(identifier)'")
         var configuration = WGPUSurfaceConfiguration()
         configuration.device = device
         configuration.format = try DawnEnum.textureFormat(format)
         configuration.usage = WGPUTextureUsage_RenderAttachment
-        configuration.width = UInt32(size.width)
-        configuration.height = UInt32(size.height)
+        configuration.width = dimensions.width
+        configuration.height = dimensions.height
         configuration.alphaMode = WGPUCompositeAlphaMode_Auto
         configuration.presentMode = WGPUPresentMode_Fifo
         wgpuSurfaceConfigure(surface, &configuration)

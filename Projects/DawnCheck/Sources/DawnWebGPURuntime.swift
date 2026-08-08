@@ -196,7 +196,8 @@ final class DawnWebGPURuntime: WebGPURuntime {
         var callbackInfo = WGPUPopErrorScopeCallbackInfo()
         callbackInfo.mode = WGPUCallbackMode_AllowProcessEvents
         callbackInfo.callback = { _, type, message, userdata1, _ in
-            let box = Unmanaged<ScopeBox>.fromOpaque(userdata1!).takeRetainedValue()
+            guard let userdata1 else { return }
+            let box = Unmanaged<ScopeBox>.fromOpaque(userdata1).takeRetainedValue()
             if type != WGPUErrorType_NoError {
                 box.error = DawnEnum.errorType(type, message: String(wgpu: message))
             }
@@ -217,7 +218,8 @@ final class DawnWebGPURuntime: WebGPURuntime {
         var callbackInfo = WGPUQueueWorkDoneCallbackInfo()
         callbackInfo.mode = WGPUCallbackMode_AllowProcessEvents
         callbackInfo.callback = { _, _, userdata1, _ in
-            Unmanaged<WorkBox>.fromOpaque(userdata1!).takeRetainedValue().body()
+            guard let userdata1 else { return }
+            Unmanaged<WorkBox>.fromOpaque(userdata1).takeRetainedValue().body()
         }
         callbackInfo.userdata1 = Unmanaged.passRetained(WorkBox(body)).toOpaque()
         _ = wgpuQueueOnSubmittedWorkDone(queue, callbackInfo)
@@ -271,7 +273,10 @@ final class DawnWebGPURuntime: WebGPURuntime {
             )
         case .setScissorRect(let c):
             wgpuRenderPassEncoderSetScissorRect(
-                try requireRenderPass(), UInt32(c.x), UInt32(c.y), UInt32(c.width), UInt32(c.height)
+                try requireRenderPass(),
+                try dawnU32(c.x, c.fieldPath("x")), try dawnU32(c.y, c.fieldPath("y")),
+                try dawnU32(c.width, c.fieldPath("width")),
+                try dawnU32(c.height, c.fieldPath("height"))
             )
         case .setBlendConstant(let c):
             var color = DawnEnum.color(c.color)
@@ -280,29 +285,40 @@ final class DawnWebGPURuntime: WebGPURuntime {
             wgpuRenderPassEncoderSetStencilReference(try requireRenderPass(), c.reference)
         case .draw(let c):
             wgpuRenderPassEncoderDraw(
-                try requireRenderPass(), UInt32(c.vertexCount), UInt32(c.instanceCount),
-                UInt32(c.firstVertex), UInt32(c.firstInstance)
+                try requireRenderPass(),
+                try dawnU32(c.vertexCount, c.fieldPath("vertexCount")),
+                try dawnU32(c.instanceCount, c.fieldPath("instanceCount")),
+                try dawnU32(c.firstVertex, c.fieldPath("firstVertex")),
+                try dawnU32(c.firstInstance, c.fieldPath("firstInstance"))
             )
         case .drawIndexed(let c):
             wgpuRenderPassEncoderDrawIndexed(
-                try requireRenderPass(), UInt32(c.indexCount), UInt32(c.instanceCount),
-                UInt32(c.firstIndex), Int32(c.baseVertex), UInt32(c.firstInstance)
+                try requireRenderPass(),
+                try dawnU32(c.indexCount, c.fieldPath("indexCount")),
+                try dawnU32(c.instanceCount, c.fieldPath("instanceCount")),
+                try dawnU32(c.firstIndex, c.fieldPath("firstIndex")),
+                try dawnI32(c.baseVertex, c.fieldPath("baseVertex")),
+                try dawnU32(c.firstInstance, c.fieldPath("firstInstance"))
             )
         case .drawIndirect(let c):
             try ensureIndirectSupported()
             let buffer = try lookupBuffer(c.indirectBuffer, path: c.fieldPath("indirectBuffer"))
             wgpuRenderPassEncoderDrawIndirect(
-                try requireRenderPass(), buffer.buffer, UInt64(c.indirectOffset)
+                try requireRenderPass(), buffer.buffer,
+                try dawnU64(c.indirectOffset, c.fieldPath("indirectOffset"))
             )
         case .drawIndexedIndirect(let c):
             try ensureIndirectSupported()
             let buffer = try lookupBuffer(c.indirectBuffer, path: c.fieldPath("indirectBuffer"))
             wgpuRenderPassEncoderDrawIndexedIndirect(
-                try requireRenderPass(), buffer.buffer, UInt64(c.indirectOffset)
+                try requireRenderPass(), buffer.buffer,
+                try dawnU64(c.indirectOffset, c.fieldPath("indirectOffset"))
             )
         case .executeBundles(let c): try executeBundles(c)
         case .beginOcclusionQuery(let c):
-            wgpuRenderPassEncoderBeginOcclusionQuery(try requireRenderPass(), UInt32(c.queryIndex))
+            wgpuRenderPassEncoderBeginOcclusionQuery(
+                try requireRenderPass(), try dawnU32(c.queryIndex, c.fieldPath("queryIndex"))
+            )
         case .endOcclusionQuery:
             wgpuRenderPassEncoderEndOcclusionQuery(try requireRenderPass())
 
@@ -310,13 +326,16 @@ final class DawnWebGPURuntime: WebGPURuntime {
         case .beginComputePass: try beginComputePass()
         case .dispatchWorkgroups(let c):
             wgpuComputePassEncoderDispatchWorkgroups(
-                try requireComputePass(), UInt32(c.x), UInt32(c.y), UInt32(c.z)
+                try requireComputePass(),
+                try dawnU32(c.x, c.fieldPath("x")), try dawnU32(c.y, c.fieldPath("y")),
+                try dawnU32(c.z, c.fieldPath("z"))
             )
         case .dispatchWorkgroupsIndirect(let c):
             try ensureIndirectSupported()
             let buffer = try lookupBuffer(c.indirectBuffer, path: c.fieldPath("indirectBuffer"))
             wgpuComputePassEncoderDispatchWorkgroupsIndirect(
-                try requireComputePass(), buffer.buffer, UInt64(c.indirectOffset)
+                try requireComputePass(), buffer.buffer,
+                try dawnU64(c.indirectOffset, c.fieldPath("indirectOffset"))
             )
 
         case .endPass: endOpenPasses()
@@ -333,16 +352,19 @@ final class DawnWebGPURuntime: WebGPURuntime {
 
         // 디버그 마커
         case .pushDebugGroup(let c): try pushDebugGroup(c.groupLabel)
-        case .popDebugGroup: popDebugGroupOnOpenScope()
+        case .popDebugGroup: try popDebugGroupOnOpenScope()
         case .insertDebugMarker(let c): try insertDebugMarker(c.markerLabel)
         }
     }
 
     // MARK: - 인코더 수명
 
-    private func ensureEncoder() -> WGPUCommandEncoder {
+    private func ensureEncoder() throws -> WGPUCommandEncoder {
         if let commandEncoder { return commandEncoder }
-        let encoder = wgpuDeviceCreateCommandEncoder(device, nil)!
+        // 디바이스 로스트 등으로 nil이 올 수 있다 — 강제 언랩은 곧 크래시다.
+        guard let encoder = wgpuDeviceCreateCommandEncoder(device, nil) else {
+            throw WGPUError.backend("커맨드 인코더 생성 실패 (디바이스 로스트?)")
+        }
         commandEncoder = encoder
         return encoder
     }
@@ -409,8 +431,8 @@ final class DawnWebGPURuntime: WebGPURuntime {
         let arena = DawnArena()
         var dawnDescriptor = WebGPU.WGPUBufferDescriptor()
         dawnDescriptor.label = arena.string(descriptor.label)
-        dawnDescriptor.size = UInt64(descriptor.size)
-        dawnDescriptor.usage = WGPUBufferUsage(UInt64(descriptor.usage.rawValue))
+        dawnDescriptor.size = try dawnU64(descriptor.size, command.fieldPath("size"))
+        dawnDescriptor.usage = WGPUBufferUsage(UInt64(truncatingIfNeeded: descriptor.usage.rawValue))
         let needsInitialData = descriptor.initialData != nil
         dawnDescriptor.mappedAtCreation = (descriptor.mappedAtCreation || needsInitialData) ? 1 : 0
 
@@ -420,7 +442,8 @@ final class DawnWebGPURuntime: WebGPURuntime {
         if let data = descriptor.initialData, !data.isEmpty {
             if let mapped = wgpuBufferGetMappedRange(buffer, 0, data.count) {
                 data.withUnsafeBytes { source in
-                    mapped.copyMemory(from: source.baseAddress!, byteCount: data.count)
+                    guard let base = source.baseAddress else { return }
+                    mapped.copyMemory(from: base, byteCount: data.count)
                 }
             }
         }
@@ -436,10 +459,10 @@ final class DawnWebGPURuntime: WebGPURuntime {
 
     private func writeBuffer(_ command: WGPUWriteBufferCommand) throws {
         let buffer = try unmappedBuffer(command.buffer, path: command.fieldPath("buffer"))
+        let bufferOffset = try dawnU64(command.bufferOffset, command.fieldPath("bufferOffset"))
         command.data.withUnsafeBytes { source in
             wgpuQueueWriteBuffer(
-                queue, buffer.buffer, UInt64(command.bufferOffset),
-                source.baseAddress, source.count
+                queue, buffer.buffer, bufferOffset, source.baseAddress, source.count
             )
         }
     }
@@ -458,12 +481,12 @@ final class DawnWebGPURuntime: WebGPURuntime {
         let arena = DawnArena()
         var dawnDescriptor = WebGPU.WGPUTextureDescriptor()
         dawnDescriptor.label = arena.string(descriptor.label)
-        dawnDescriptor.usage = WGPUTextureUsage(UInt64(descriptor.usage.rawValue))
+        dawnDescriptor.usage = WGPUTextureUsage(UInt64(truncatingIfNeeded: descriptor.usage.rawValue))
         dawnDescriptor.dimension = DawnEnum.textureDimension(descriptor.dimension)
-        dawnDescriptor.size = DawnEnum.extent(descriptor.size)
+        dawnDescriptor.size = try DawnEnum.extent(descriptor.size, field: command.fieldPath("size"))
         dawnDescriptor.format = try DawnEnum.textureFormat(descriptor.format)
-        dawnDescriptor.mipLevelCount = UInt32(descriptor.mipLevelCount)
-        dawnDescriptor.sampleCount = UInt32(descriptor.sampleCount)
+        dawnDescriptor.mipLevelCount = try dawnU32(descriptor.mipLevelCount, command.fieldPath("mipLevelCount"))
+        dawnDescriptor.sampleCount = try dawnU32(descriptor.sampleCount, command.fieldPath("sampleCount"))
         guard let texture = wgpuDeviceCreateTexture(device, &dawnDescriptor) else {
             throw WGPUError.outOfMemory("GPUTexture 생성 실패", path: command.path)
         }
@@ -487,16 +510,16 @@ final class DawnWebGPURuntime: WebGPURuntime {
 
         var destination = WGPUTexelCopyTextureInfo()
         destination.texture = texture.texture
-        destination.mipLevel = UInt32(command.mipLevel)
-        destination.origin = DawnEnum.origin(command.origin)
+        destination.mipLevel = try dawnU32(command.mipLevel, command.fieldPath("mipLevel"))
+        destination.origin = try DawnEnum.origin(command.origin, field: command.fieldPath("origin"))
         destination.aspect = WGPUTextureAspect_All
 
         var layout = WGPUTexelCopyBufferLayout()
         layout.offset = 0
-        layout.bytesPerRow = UInt32(bytesPerRow)
-        layout.rowsPerImage = UInt32(rowsPerImage)
+        layout.bytesPerRow = try dawnU32(bytesPerRow, command.fieldPath("bytesPerRow"))
+        layout.rowsPerImage = try dawnU32(rowsPerImage, command.fieldPath("rowsPerImage"))
 
-        var size = DawnEnum.extent(command.size)
+        var size = try DawnEnum.extent(command.size, field: command.fieldPath("size"))
         command.data.withUnsafeBytes { source in
             wgpuQueueWriteTexture(
                 queue, &destination, source.baseAddress, source.count, &layout, &size
@@ -516,10 +539,12 @@ final class DawnWebGPURuntime: WebGPURuntime {
         dawnDescriptor.format = try descriptor.format.map(DawnEnum.textureFormat)
             ?? WGPUTextureFormat_Undefined
         dawnDescriptor.dimension = DawnEnum.viewDimension(descriptor.dimension)
-        dawnDescriptor.baseMipLevel = UInt32(descriptor.baseMipLevel)
-        dawnDescriptor.mipLevelCount = descriptor.mipLevelCount.map(UInt32.init) ?? UInt32.max
-        dawnDescriptor.baseArrayLayer = UInt32(descriptor.baseArrayLayer)
-        dawnDescriptor.arrayLayerCount = descriptor.arrayLayerCount.map(UInt32.init) ?? UInt32.max
+        dawnDescriptor.baseMipLevel = try dawnU32(descriptor.baseMipLevel, command.fieldPath("baseMipLevel"))
+        dawnDescriptor.mipLevelCount = try descriptor.mipLevelCount
+            .map { try dawnU32($0, command.fieldPath("mipLevelCount")) } ?? UInt32.max
+        dawnDescriptor.baseArrayLayer = try dawnU32(descriptor.baseArrayLayer, command.fieldPath("baseArrayLayer"))
+        dawnDescriptor.arrayLayerCount = try descriptor.arrayLayerCount
+            .map { try dawnU32($0, command.fieldPath("arrayLayerCount")) } ?? UInt32.max
         dawnDescriptor.aspect = DawnEnum.aspect(descriptor.aspect)
         guard let view = wgpuTextureCreateView(texture.texture, &dawnDescriptor) else {
             throw WGPUError.backend("GPUTextureView 생성 실패", path: command.path)
@@ -546,7 +571,7 @@ final class DawnWebGPURuntime: WebGPURuntime {
         dawnDescriptor.lodMinClamp = Float(descriptor.lodMinClamp)
         dawnDescriptor.lodMaxClamp = Float(descriptor.lodMaxClamp)
         dawnDescriptor.compare = descriptor.compare.map(DawnEnum.compare) ?? WGPUCompareFunction_Undefined
-        dawnDescriptor.maxAnisotropy = UInt16(descriptor.maxAnisotropy)
+        dawnDescriptor.maxAnisotropy = try dawnU16(descriptor.maxAnisotropy, command.fieldPath("maxAnisotropy"))
         guard let sampler = wgpuDeviceCreateSampler(device, &dawnDescriptor) else {
             throw WGPUError.backend("GPUSampler 생성 실패", path: command.path)
         }
@@ -586,15 +611,15 @@ final class DawnWebGPURuntime: WebGPURuntime {
         _ command: WGPUCreateCommand<LynxWebGPUCore.WGPUBindGroupLayoutDescriptor>
     ) throws {
         let arena = DawnArena()
-        let entries = command.descriptor.entries.map { entry -> WebGPU.WGPUBindGroupLayoutEntry in
+        let entries = try command.descriptor.entries.map { entry -> WebGPU.WGPUBindGroupLayoutEntry in
             var dawnEntry = WebGPU.WGPUBindGroupLayoutEntry()
-            dawnEntry.binding = UInt32(entry.binding)
-            dawnEntry.visibility = WGPUShaderStage(UInt64(entry.visibility.rawValue))
+            dawnEntry.binding = try dawnU32(entry.binding, command.fieldPath("entries.binding"))
+            dawnEntry.visibility = WGPUShaderStage(UInt64(truncatingIfNeeded: entry.visibility.rawValue))
             switch entry.layout {
             case .buffer(let buffer):
                 dawnEntry.buffer.type = DawnEnum.bufferBindingType(buffer.type)
                 dawnEntry.buffer.hasDynamicOffset = buffer.hasDynamicOffset ? 1 : 0
-                dawnEntry.buffer.minBindingSize = UInt64(buffer.minBindingSize)
+                dawnEntry.buffer.minBindingSize = try dawnU64(buffer.minBindingSize, command.fieldPath("entries.buffer.minBindingSize"))
             case .sampler(let sampler):
                 dawnEntry.sampler.type = DawnEnum.samplerBindingType(sampler.type)
             case .texture(let texture):
@@ -649,13 +674,13 @@ final class DawnWebGPURuntime: WebGPURuntime {
         let arena = DawnArena()
         let entries = try command.descriptor.entries.map { entry -> WebGPU.WGPUBindGroupEntry in
             var dawnEntry = WebGPU.WGPUBindGroupEntry()
-            dawnEntry.binding = UInt32(entry.binding)
+            dawnEntry.binding = try dawnU32(entry.binding, command.fieldPath("entries.binding"))
             switch entry.resource {
             case .buffer(let handle, let offset, let size):
                 let buffer = try lookupBuffer(handle, path: command.fieldPath("entries"))
                 dawnEntry.buffer = buffer.buffer
-                dawnEntry.offset = UInt64(offset)
-                dawnEntry.size = size.map(UInt64.init) ?? UInt64.max
+                dawnEntry.offset = try dawnU64(offset, command.fieldPath("entries.offset"))
+                dawnEntry.size = try size.map { try dawnU64($0, command.fieldPath("entries.size")) } ?? UInt64.max
             case .sampler(let handle):
                 dawnEntry.sampler = try registry.lookup(
                     handle, as: DawnSamplerObject.self, kind: "GPUSampler",
@@ -688,7 +713,7 @@ final class DawnWebGPURuntime: WebGPURuntime {
         var dawnDescriptor = WebGPU.WGPUQuerySetDescriptor()
         dawnDescriptor.label = arena.string(descriptor.label)
         dawnDescriptor.type = DawnEnum.queryType(descriptor.type)
-        dawnDescriptor.count = UInt32(descriptor.count)
+        dawnDescriptor.count = try dawnU32(descriptor.count, command.fieldPath("count"))
         guard let querySet = wgpuDeviceCreateQuerySet(device, &dawnDescriptor) else {
             throw WGPUError.backend("GPUQuerySet 생성 실패", path: command.path)
         }
@@ -747,12 +772,12 @@ final class DawnWebGPURuntime: WebGPURuntime {
         let vertexBuffers = try descriptor.vertex.buffers.map { layout -> WebGPU.WGPUVertexBufferLayout in
             var dawnLayout = WebGPU.WGPUVertexBufferLayout()
             dawnLayout.stepMode = DawnEnum.stepMode(layout.stepMode)
-            dawnLayout.arrayStride = UInt64(layout.arrayStride)
+            dawnLayout.arrayStride = try dawnU64(layout.arrayStride, command.fieldPath("vertex.buffers.arrayStride"))
             let attributes = try layout.attributes.map { attribute -> WebGPU.WGPUVertexAttribute in
                 var dawnAttribute = WebGPU.WGPUVertexAttribute()
                 dawnAttribute.format = try DawnEnum.vertexFormat(attribute.format)
-                dawnAttribute.offset = UInt64(attribute.offset)
-                dawnAttribute.shaderLocation = UInt32(attribute.shaderLocation)
+                dawnAttribute.offset = try dawnU64(attribute.offset, command.fieldPath("vertex.buffers.attributes.offset"))
+                dawnAttribute.shaderLocation = try dawnU32(attribute.shaderLocation, command.fieldPath("vertex.buffers.attributes.shaderLocation"))
                 return dawnAttribute
             }
             dawnLayout.attributeCount = attributes.count
@@ -783,7 +808,7 @@ final class DawnWebGPURuntime: WebGPURuntime {
             dawnDepthStencil.stencilBack = stencilFace(depthStencil.stencilBack)
             dawnDepthStencil.stencilReadMask = UInt32(truncatingIfNeeded: depthStencil.stencilReadMask)
             dawnDepthStencil.stencilWriteMask = UInt32(truncatingIfNeeded: depthStencil.stencilWriteMask)
-            dawnDepthStencil.depthBias = Int32(depthStencil.depthBias)
+            dawnDepthStencil.depthBias = try dawnI32(depthStencil.depthBias, command.fieldPath("depthStencil.depthBias"))
             dawnDepthStencil.depthBiasSlopeScale = Float(depthStencil.depthBiasSlopeScale)
             dawnDepthStencil.depthBiasClamp = Float(depthStencil.depthBiasClamp)
             dawnDescriptor.depthStencil = arena.value(dawnDepthStencil)
@@ -791,7 +816,7 @@ final class DawnWebGPURuntime: WebGPURuntime {
 
         // multisample
         var multisample = WGPUMultisampleState()
-        multisample.count = UInt32(descriptor.multisample.count)
+        multisample.count = try dawnU32(descriptor.multisample.count, command.fieldPath("multisample.count"))
         multisample.mask = UInt32(truncatingIfNeeded: descriptor.multisample.mask)
         multisample.alphaToCoverageEnabled = descriptor.multisample.alphaToCoverageEnabled ? 1 : 0
         dawnDescriptor.multisample = multisample
@@ -811,7 +836,7 @@ final class DawnWebGPURuntime: WebGPURuntime {
             let targets = try fragment.targets.map { target -> WebGPU.WGPUColorTargetState in
                 var dawnTarget = WebGPU.WGPUColorTargetState()
                 dawnTarget.format = try DawnEnum.textureFormat(target.format)
-                dawnTarget.writeMask = WGPUColorWriteMask(UInt64(target.writeMask.rawValue))
+                dawnTarget.writeMask = WGPUColorWriteMask(UInt64(truncatingIfNeeded: target.writeMask.rawValue))
                 if let blend = target.blend {
                     var dawnBlend = WebGPU.WGPUBlendState()
                     dawnBlend.color = blendComponent(blend.color)
@@ -882,13 +907,13 @@ final class DawnWebGPURuntime: WebGPURuntime {
         if let render = try? registry.lookup(
             command.pipeline, as: DawnRenderPipelineObject.self, kind: "GPURenderPipeline"
         ) {
-            layout = wgpuRenderPipelineGetBindGroupLayout(render.pipeline, UInt32(command.index))
+            layout = wgpuRenderPipelineGetBindGroupLayout(render.pipeline, try dawnU32(command.index, command.fieldPath("index")))
         } else {
             let compute = try registry.lookup(
                 command.pipeline, as: DawnComputePipelineObject.self, kind: "GPUPipeline",
                 path: command.fieldPath("pipeline")
             )
-            layout = wgpuComputePipelineGetBindGroupLayout(compute.pipeline, UInt32(command.index))
+            layout = wgpuComputePipelineGetBindGroupLayout(compute.pipeline, try dawnU32(command.index, command.fieldPath("index")))
         }
         guard let layout else {
             throw WGPUError.validation("getBindGroupLayout 실패", path: command.path)
@@ -911,7 +936,7 @@ final class DawnWebGPURuntime: WebGPURuntime {
         dawnDescriptor.colorFormats = arena.array(formats)
         dawnDescriptor.depthStencilFormat = try descriptor.depthStencilFormat
             .map(DawnEnum.textureFormat) ?? WGPUTextureFormat_Undefined
-        dawnDescriptor.sampleCount = UInt32(descriptor.sampleCount)
+        dawnDescriptor.sampleCount = try dawnU32(descriptor.sampleCount, command.fieldPath("sampleCount"))
         dawnDescriptor.depthReadOnly = descriptor.depthReadOnly ? 1 : 0
         dawnDescriptor.stencilReadOnly = descriptor.stencilReadOnly ? 1 : 0
 
@@ -936,42 +961,54 @@ final class DawnWebGPURuntime: WebGPURuntime {
                     c.bindGroup, as: DawnBindGroupObject.self, kind: "GPUBindGroup",
                     path: c.fieldPath("bindGroup")
                 )
-                let offsets = c.dynamicOffsets.map(UInt32.init)
+                let offsets = try c.dynamicOffsets.map {
+                    try dawnU32($0, c.fieldPath("dynamicOffsets"))
+                }
+                let groupIndex = try dawnU32(c.index, c.fieldPath("index"))
                 offsets.withUnsafeBufferPointer { pointer in
                     wgpuRenderBundleEncoderSetBindGroup(
-                        encoder, UInt32(c.index), group.group, pointer.count, pointer.baseAddress
+                        encoder, groupIndex, group.group, pointer.count, pointer.baseAddress
                     )
                 }
             case .setVertexBuffer(let c):
                 let buffer = try unmappedBuffer(c.buffer, path: c.fieldPath("buffer"))
                 wgpuRenderBundleEncoderSetVertexBuffer(
-                    encoder, UInt32(c.slot), buffer.buffer, UInt64(c.offset), UInt64.max
+                    encoder, try dawnU32(c.slot, c.fieldPath("slot")), buffer.buffer,
+                    try dawnU64(c.offset, c.fieldPath("offset")), UInt64.max
                 )
             case .setIndexBuffer(let c):
                 let buffer = try unmappedBuffer(c.buffer, path: c.fieldPath("buffer"))
                 wgpuRenderBundleEncoderSetIndexBuffer(
                     encoder, buffer.buffer, DawnEnum.indexFormat(c.format),
-                    UInt64(c.offset), UInt64.max
+                    try dawnU64(c.offset, c.fieldPath("offset")), UInt64.max
                 )
             case .draw(let c):
                 wgpuRenderBundleEncoderDraw(
-                    encoder, UInt32(c.vertexCount), UInt32(c.instanceCount),
-                    UInt32(c.firstVertex), UInt32(c.firstInstance)
+                    encoder,
+                    try dawnU32(c.vertexCount, c.fieldPath("vertexCount")),
+                    try dawnU32(c.instanceCount, c.fieldPath("instanceCount")),
+                    try dawnU32(c.firstVertex, c.fieldPath("firstVertex")),
+                    try dawnU32(c.firstInstance, c.fieldPath("firstInstance"))
                 )
             case .drawIndexed(let c):
                 wgpuRenderBundleEncoderDrawIndexed(
-                    encoder, UInt32(c.indexCount), UInt32(c.instanceCount),
-                    UInt32(c.firstIndex), Int32(c.baseVertex), UInt32(c.firstInstance)
+                    encoder,
+                    try dawnU32(c.indexCount, c.fieldPath("indexCount")),
+                    try dawnU32(c.instanceCount, c.fieldPath("instanceCount")),
+                    try dawnU32(c.firstIndex, c.fieldPath("firstIndex")),
+                    try dawnI32(c.baseVertex, c.fieldPath("baseVertex")),
+                    try dawnU32(c.firstInstance, c.fieldPath("firstInstance"))
                 )
             case .drawIndirect(let c):
                 try ensureIndirectSupported()
                 let buffer = try lookupBuffer(c.indirectBuffer, path: c.fieldPath("indirectBuffer"))
-                wgpuRenderBundleEncoderDrawIndirect(encoder, buffer.buffer, UInt64(c.indirectOffset))
+                wgpuRenderBundleEncoderDrawIndirect(encoder, buffer.buffer, try dawnU64(c.indirectOffset, c.fieldPath("indirectOffset")))
             case .drawIndexedIndirect(let c):
                 try ensureIndirectSupported()
                 let buffer = try lookupBuffer(c.indirectBuffer, path: c.fieldPath("indirectBuffer"))
                 wgpuRenderBundleEncoderDrawIndexedIndirect(
-                    encoder, buffer.buffer, UInt64(c.indirectOffset)
+                    encoder, buffer.buffer,
+                    try dawnU64(c.indirectOffset, c.fieldPath("indirectOffset"))
                 )
             case .pushDebugGroup(let c):
                 let labelArena = DawnArena()
@@ -1095,7 +1132,7 @@ final class DawnWebGPURuntime: WebGPURuntime {
             ).querySet
         }
 
-        guard let pass = wgpuCommandEncoderBeginRenderPass(ensureEncoder(), &dawnDescriptor) else {
+        guard let pass = wgpuCommandEncoderBeginRenderPass(try ensureEncoder(), &dawnDescriptor) else {
             throw WGPUError.backend("렌더 패스 시작 실패")
         }
         renderPass = pass
@@ -1103,7 +1140,7 @@ final class DawnWebGPURuntime: WebGPURuntime {
 
     private func beginComputePass() throws {
         endOpenPasses()
-        guard let pass = wgpuCommandEncoderBeginComputePass(ensureEncoder(), nil) else {
+        guard let pass = wgpuCommandEncoderBeginComputePass(try ensureEncoder(), nil) else {
             throw WGPUError.backend("컴퓨트 패스 시작 실패")
         }
         computePass = pass
@@ -1132,15 +1169,19 @@ final class DawnWebGPURuntime: WebGPURuntime {
             command.bindGroup, as: DawnBindGroupObject.self, kind: "GPUBindGroup",
             path: command.fieldPath("bindGroup")
         )
-        let offsets = command.dynamicOffsets.map(UInt32.init)
+        let offsets = try command.dynamicOffsets.map {
+            try dawnU32($0, command.fieldPath("dynamicOffsets"))
+        }
         try offsets.withUnsafeBufferPointer { pointer in
             if let renderPass {
                 wgpuRenderPassEncoderSetBindGroup(
-                    renderPass, UInt32(command.index), group.group, pointer.count, pointer.baseAddress
+                    renderPass, try dawnU32(command.index, command.fieldPath("index")),
+                    group.group, pointer.count, pointer.baseAddress
                 )
             } else if let computePass {
                 wgpuComputePassEncoderSetBindGroup(
-                    computePass, UInt32(command.index), group.group, pointer.count, pointer.baseAddress
+                    computePass, try dawnU32(command.index, command.fieldPath("index")),
+                    group.group, pointer.count, pointer.baseAddress
                 )
             } else {
                 throw WGPUError.validation("패스가 시작되지 않았다 (setBindGroup)")
@@ -1151,8 +1192,8 @@ final class DawnWebGPURuntime: WebGPURuntime {
     private func setVertexBuffer(_ command: WGPUSetVertexBufferCommand) throws {
         let buffer = try unmappedBuffer(command.buffer, path: command.fieldPath("buffer"))
         wgpuRenderPassEncoderSetVertexBuffer(
-            try requireRenderPass(), UInt32(command.slot), buffer.buffer,
-            UInt64(command.offset), UInt64.max
+            try requireRenderPass(), try dawnU32(command.slot, command.fieldPath("slot")),
+            buffer.buffer, try dawnU64(command.offset, command.fieldPath("offset")), UInt64.max
         )
     }
 
@@ -1160,7 +1201,7 @@ final class DawnWebGPURuntime: WebGPURuntime {
         let buffer = try unmappedBuffer(command.buffer, path: command.fieldPath("buffer"))
         wgpuRenderPassEncoderSetIndexBuffer(
             try requireRenderPass(), buffer.buffer, DawnEnum.indexFormat(command.format),
-            UInt64(command.offset), UInt64.max
+            try dawnU64(command.offset, command.fieldPath("offset")), UInt64.max
         )
     }
 
@@ -1175,8 +1216,11 @@ final class DawnWebGPURuntime: WebGPURuntime {
             throw WGPUError.validation("복사 크기가 음수다", path: command.fieldPath("size"))
         }
         wgpuCommandEncoderCopyBufferToBuffer(
-            ensureEncoder(), source.buffer, UInt64(command.sourceOffset),
-            destination.buffer, UInt64(command.destinationOffset), UInt64(size)
+            try ensureEncoder(), source.buffer,
+            try dawnU64(command.sourceOffset, command.fieldPath("sourceOffset")),
+            destination.buffer,
+            try dawnU64(command.destinationOffset, command.fieldPath("destinationOffset")),
+            UInt64(size)
         )
     }
 
@@ -1187,7 +1231,8 @@ final class DawnWebGPURuntime: WebGPURuntime {
             throw WGPUError.validation("clearBuffer 크기가 음수다", path: command.fieldPath("size"))
         }
         wgpuCommandEncoderClearBuffer(
-            ensureEncoder(), buffer.buffer, UInt64(command.offset), UInt64(size)
+            try ensureEncoder(), buffer.buffer,
+            try dawnU64(command.offset, command.fieldPath("offset")), UInt64(size)
         )
     }
 
@@ -1199,8 +1244,8 @@ final class DawnWebGPURuntime: WebGPURuntime {
         )
         var dawnInfo = WebGPU.WGPUTexelCopyTextureInfo()
         dawnInfo.texture = texture.texture
-        dawnInfo.mipLevel = UInt32(info.mipLevel)
-        dawnInfo.origin = DawnEnum.origin(info.origin)
+        dawnInfo.mipLevel = try dawnU32(info.mipLevel, "\(path).mipLevel")
+        dawnInfo.origin = try DawnEnum.origin(info.origin, field: "\(path).origin")
         dawnInfo.aspect = WGPUTextureAspect_All
         return (dawnInfo, texture)
     }
@@ -1215,10 +1260,10 @@ final class DawnWebGPURuntime: WebGPURuntime {
         let buffer = try unmappedBuffer(info.buffer, path: path)
         var dawnInfo = WebGPU.WGPUTexelCopyBufferInfo()
         dawnInfo.buffer = buffer.buffer
-        dawnInfo.layout.offset = UInt64(info.offset)
+        dawnInfo.layout.offset = try dawnU64(info.offset, "\(path).offset")
         let bytesPerRow = info.bytesPerRow ?? (copyWidth * format.bytesPerPixel)
-        dawnInfo.layout.bytesPerRow = UInt32(bytesPerRow)
-        dawnInfo.layout.rowsPerImage = UInt32(info.rowsPerImage ?? copyHeight)
+        dawnInfo.layout.bytesPerRow = try dawnU32(bytesPerRow, "\(path).bytesPerRow")
+        dawnInfo.layout.rowsPerImage = try dawnU32(info.rowsPerImage ?? copyHeight, "\(path).rowsPerImage")
         return dawnInfo
     }
 
@@ -1231,8 +1276,8 @@ final class DawnWebGPURuntime: WebGPURuntime {
             format: texture.format, copyWidth: command.copySize.width,
             path: command.fieldPath("destination.buffer")
         )
-        var size = DawnEnum.extent(command.copySize)
-        wgpuCommandEncoderCopyTextureToBuffer(ensureEncoder(), &source, &destination, &size)
+        var size = try DawnEnum.extent(command.copySize, field: command.fieldPath("copySize"))
+        wgpuCommandEncoderCopyTextureToBuffer(try ensureEncoder(), &source, &destination, &size)
     }
 
     private func copyBufferToTexture(_ command: WGPUCopyBufferToTextureCommand) throws {
@@ -1244,8 +1289,8 @@ final class DawnWebGPURuntime: WebGPURuntime {
             format: texture.format, copyWidth: command.copySize.width,
             path: command.fieldPath("source.buffer")
         )
-        var size = DawnEnum.extent(command.copySize)
-        wgpuCommandEncoderCopyBufferToTexture(ensureEncoder(), &source, &destination, &size)
+        var size = try DawnEnum.extent(command.copySize, field: command.fieldPath("copySize"))
+        wgpuCommandEncoderCopyBufferToTexture(try ensureEncoder(), &source, &destination, &size)
     }
 
     private func copyTextureToTexture(_ command: WGPUCopyTextureToTextureCommand) throws {
@@ -1255,8 +1300,8 @@ final class DawnWebGPURuntime: WebGPURuntime {
         var (destination, _) = try texelCopyTexture(
             command.destination, path: command.fieldPath("destination.texture")
         )
-        var size = DawnEnum.extent(command.copySize)
-        wgpuCommandEncoderCopyTextureToTexture(ensureEncoder(), &source, &destination, &size)
+        var size = try DawnEnum.extent(command.copySize, field: command.fieldPath("copySize"))
+        wgpuCommandEncoderCopyTextureToTexture(try ensureEncoder(), &source, &destination, &size)
     }
 
     private func resolveQuerySet(_ command: WGPUResolveQuerySetCommand) throws {
@@ -1269,8 +1314,10 @@ final class DawnWebGPURuntime: WebGPURuntime {
         )
         let queryCount = command.queryCount ?? (querySet.count - command.firstQuery)
         wgpuCommandEncoderResolveQuerySet(
-            ensureEncoder(), querySet.querySet, UInt32(command.firstQuery),
-            UInt32(max(queryCount, 0)), destination.buffer, UInt64(command.destinationOffset)
+            try ensureEncoder(), querySet.querySet,
+            try dawnU32(command.firstQuery, command.fieldPath("firstQuery")),
+            UInt32(clamping: max(queryCount, 0)), destination.buffer,
+            try dawnU64(command.destinationOffset, command.fieldPath("destinationOffset"))
         )
     }
 
@@ -1283,17 +1330,17 @@ final class DawnWebGPURuntime: WebGPURuntime {
         } else if let computePass {
             wgpuComputePassEncoderPushDebugGroup(computePass, arena.string(label))
         } else {
-            wgpuCommandEncoderPushDebugGroup(ensureEncoder(), arena.string(label))
+            wgpuCommandEncoderPushDebugGroup(try ensureEncoder(), arena.string(label))
         }
     }
 
-    private func popDebugGroupOnOpenScope() {
+    private func popDebugGroupOnOpenScope() throws {
         if let renderPass {
             wgpuRenderPassEncoderPopDebugGroup(renderPass)
         } else if let computePass {
             wgpuComputePassEncoderPopDebugGroup(computePass)
         } else {
-            wgpuCommandEncoderPopDebugGroup(ensureEncoder())
+            wgpuCommandEncoderPopDebugGroup(try ensureEncoder())
         }
     }
 
@@ -1304,7 +1351,7 @@ final class DawnWebGPURuntime: WebGPURuntime {
         } else if let computePass {
             wgpuComputePassEncoderInsertDebugMarker(computePass, arena.string(label))
         } else {
-            wgpuCommandEncoderInsertDebugMarker(ensureEncoder(), arena.string(label))
+            wgpuCommandEncoderInsertDebugMarker(try ensureEncoder(), arena.string(label))
         }
     }
 
@@ -1394,7 +1441,8 @@ final class DawnWebGPURuntime: WebGPURuntime {
         var callbackInfo = WGPUCompilationInfoCallbackInfo()
         callbackInfo.mode = WGPUCallbackMode_AllowProcessEvents
         callbackInfo.callback = { _, info, userdata1, _ in
-            let box = Unmanaged<InfoBox>.fromOpaque(userdata1!).takeRetainedValue()
+            guard let userdata1 else { return }
+            let box = Unmanaged<InfoBox>.fromOpaque(userdata1).takeRetainedValue()
             if let info = info?.pointee, let messages = info.messages {
                 for index in 0..<info.messageCount {
                     let message = messages[index]
@@ -1405,10 +1453,10 @@ final class DawnWebGPURuntime: WebGPURuntime {
                     box.messages.append([
                         "message": String(wgpu: message.message),
                         "type": type,
-                        "lineNum": Int(message.lineNum),
-                        "linePos": Int(message.linePos),
-                        "offset": Int(message.offset),
-                        "length": Int(message.length),
+                        "lineNum": Int(clamping: message.lineNum),
+                        "linePos": Int(clamping: message.linePos),
+                        "offset": Int(clamping: message.offset),
+                        "length": Int(clamping: message.length),
                     ])
                 }
             }
@@ -1546,7 +1594,8 @@ final class DawnWebGPURuntime: WebGPURuntime {
         var callbackInfo = WGPUBufferMapCallbackInfo()
         callbackInfo.mode = WGPUCallbackMode_AllowProcessEvents
         callbackInfo.callback = { status, message, userdata1, _ in
-            let context = Unmanaged<MapContext>.fromOpaque(userdata1!).takeRetainedValue()
+            guard let userdata1 else { return }
+            let context = Unmanaged<MapContext>.fromOpaque(userdata1).takeRetainedValue()
             defer { if let staging = context.releaseAfter { wgpuBufferRelease(staging) } }
             guard status == WGPUMapAsyncStatus_Success else {
                 context.markDawnMapped?.isMapped = false
@@ -1555,14 +1604,17 @@ final class DawnWebGPURuntime: WebGPURuntime {
                 ).payload]])
                 return
             }
-            let data: Data
-            if let pointer = wgpuBufferGetConstMappedRange(
+            guard context.readLength >= 0, let pointer = wgpuBufferGetConstMappedRange(
                 context.buffer, context.readOffset, context.readLength
-            ) {
-                data = Data(bytes: pointer, count: context.readLength)
-            } else {
-                data = Data()
+            ) else {
+                wgpuBufferUnmap(context.buffer)
+                context.markDawnMapped?.isMapped = false
+                context.completion(["ok": false, "errors": [WGPUError.backend(
+                    "매핑 범위를 얻지 못했다 (offset \(context.readOffset), length \(context.readLength))"
+                ).payload]])
+                return
             }
+            let data = Data(bytes: pointer, count: context.readLength)
             wgpuBufferUnmap(context.buffer)
             context.completion(["ok": true, "data": data, "byteLength": data.count])
         }
@@ -1647,25 +1699,37 @@ final class DawnWebGPURuntime: WebGPURuntime {
             command.destination, path: command.fieldPath("destination.texture")
         )
         _ = texture
-        let copyWidth = command.copySize?.width ?? (bitmap.width - command.source.origin.x)
-        let copyHeight = command.copySize?.height ?? (bitmap.height - command.source.origin.y)
+        let originX = command.source.origin.x
+        let originY = command.source.origin.y
+        let copyWidth = command.copySize?.width ?? (bitmap.width - originX)
+        let copyHeight = command.copySize?.height ?? (bitmap.height - originY)
         guard copyWidth > 0, copyHeight > 0 else { return }
+        // 범위를 벗어난 origin/copySize는 슬라이스에서 **크래시**가 아니라 여기서 거부한다.
+        guard originX >= 0, originY >= 0,
+              originX + copyWidth <= bitmap.width,
+              originY + copyHeight <= bitmap.height else {
+            throw WGPUError.validation(
+                "복사 영역(\(originX),\(originY) \(copyWidth)×\(copyHeight))이 "
+                    + "이미지(\(bitmap.width)×\(bitmap.height))를 벗어난다",
+                path: command.fieldPath("copySize")
+            )
+        }
 
         // 원본에서 (origin, flipY)를 반영한 행들을 촘촘히 이어 붙인다.
         var upload = Data(capacity: copyWidth * copyHeight * 4)
         for row in 0..<copyHeight {
             let sourceRow = command.source.flipY
-                ? (command.source.origin.y + (copyHeight - 1 - row))
-                : (command.source.origin.y + row)
-            let start = (sourceRow * bitmap.width + command.source.origin.x) * 4
+                ? (originY + (copyHeight - 1 - row))
+                : (originY + row)
+            let start = (sourceRow * bitmap.width + originX) * 4
             upload.append(bitmap.data.subdata(in: start..<(start + copyWidth * 4)))
         }
 
         var dawnDestination = destination
         var layout = WGPUTexelCopyBufferLayout()
         layout.offset = 0
-        layout.bytesPerRow = UInt32(copyWidth * 4)
-        layout.rowsPerImage = UInt32(copyHeight)
+        layout.bytesPerRow = try dawnU32(copyWidth * 4, command.fieldPath("copySize.width"))
+        layout.rowsPerImage = try dawnU32(copyHeight, command.fieldPath("copySize.height"))
         var size = WebGPU.WGPUExtent3D(
             width: UInt32(copyWidth), height: UInt32(copyHeight), depthOrArrayLayers: 1
         )
@@ -1693,6 +1757,9 @@ final class DawnWebGPURuntime: WebGPURuntime {
     }
 
     func resizeCanvas(identifier: String, drawableSize: CGSize) {
+        // NaN·음수·비유한 크기는 이후 모든 UInt32 변환의 트랩 씨앗이다 — 입구에서 거른다.
+        guard drawableSize.width.isFinite, drawableSize.height.isFinite,
+              drawableSize.width >= 0, drawableSize.height >= 0 else { return }
         executionLock.lock()
         defer { executionLock.unlock() }
         canvases[identifier]?.updateSize(drawableSize, device: device)
@@ -1716,8 +1783,9 @@ final class DawnWebGPURuntime: WebGPURuntime {
                 "캔버스 '\(identifier)'은(는) 오프스크린 표면이 아니거나 configure 전이다"
             )
         }
-        let width = Int(canvas.size.width)
-        let height = Int(canvas.size.height)
+        let dimensions = try dawnTextureDimensions(canvas.size, "캔버스 '\(identifier)'")
+        let width = Int(dimensions.width)
+        let height = Int(dimensions.height)
         let bytesPerPixel = canvas.format.bytesPerPixel
         let bytesPerRow = max(256, (width * bytesPerPixel + 255) / 256 * 256)
         let total = bytesPerRow * height
@@ -1758,7 +1826,8 @@ final class DawnWebGPURuntime: WebGPURuntime {
         var callbackInfo = WGPUBufferMapCallbackInfo()
         callbackInfo.mode = WGPUCallbackMode_AllowProcessEvents
         callbackInfo.callback = { status, message, userdata1, _ in
-            let box = Unmanaged<MapBox>.fromOpaque(userdata1!).takeRetainedValue()
+            guard let userdata1 else { return }
+            let box = Unmanaged<MapBox>.fromOpaque(userdata1).takeRetainedValue()
             if status != WGPUMapAsyncStatus_Success { box.message = String(wgpu: message) }
             box.done = true
         }

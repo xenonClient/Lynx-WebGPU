@@ -354,15 +354,20 @@ enum DawnEnum {
         WebGPU.WGPUColor(r: color.red, g: color.green, b: color.blue, a: color.alpha)
     }
 
-    static func origin(_ origin: LynxWebGPUCore.WGPUOrigin3D) -> WebGPU.WGPUOrigin3D {
-        WebGPU.WGPUOrigin3D(x: UInt32(origin.x), y: UInt32(origin.y), z: UInt32(origin.z))
+    /// 음수·범위 초과는 트랩이 아니라 validation이다 (`dawnU32`).
+    static func origin(_ origin: LynxWebGPUCore.WGPUOrigin3D, field: String) throws -> WebGPU.WGPUOrigin3D {
+        WebGPU.WGPUOrigin3D(
+            x: try dawnU32(origin.x, "\(field).x"),
+            y: try dawnU32(origin.y, "\(field).y"),
+            z: try dawnU32(origin.z, "\(field).z")
+        )
     }
 
-    static func extent(_ extent: LynxWebGPUCore.WGPUExtent3D) -> WebGPU.WGPUExtent3D {
+    static func extent(_ extent: LynxWebGPUCore.WGPUExtent3D, field: String) throws -> WebGPU.WGPUExtent3D {
         WebGPU.WGPUExtent3D(
-            width: UInt32(extent.width),
-            height: UInt32(extent.height),
-            depthOrArrayLayers: UInt32(extent.depthOrArrayLayers)
+            width: try dawnU32(extent.width, "\(field).width"),
+            height: try dawnU32(extent.height, "\(field).height"),
+            depthOrArrayLayers: try dawnU32(extent.depthOrArrayLayers, "\(field).depthOrArrayLayers")
         )
     }
 

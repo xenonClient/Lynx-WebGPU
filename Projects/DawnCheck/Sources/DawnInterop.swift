@@ -1,5 +1,6 @@
 import Foundation
 import WebGPU
+import LynxWebGPUCore
 
 // webgpu.h C API ↔ Swift 브리징 도구.
 //
@@ -11,6 +12,52 @@ final class DawnBox<Value> {
     var value: Value?
     var message = ""
     var done = false
+}
+
+// MARK: - 안전 정수 변환
+//
+// JS가 실어 보낸 Int는 음수·거대값일 수 있다. `UInt32(value)` 같은 직변환은 범위를 벗어나면
+// **Swift 런타임 트랩(프로세스 종료)**이다 — "잘못된 인자로 프로세스를 죽이지 않는다"는
+// 이 라이브러리의 계약(`WGPUError`)에 정면으로 어긋난다. GPU 인자 폭으로 옮기는 모든 자리는
+// 아래 헬퍼를 거쳐 **validation 오류로 거부**한다.
+
+func dawnU32(_ value: Int, _ field: String) throws -> UInt32 {
+    guard let converted = UInt32(exactly: value) else {
+        throw WGPUError.validation("\(field) 값 \(value)이(가) u32 범위를 벗어난다")
+    }
+    return converted
+}
+
+func dawnU64(_ value: Int, _ field: String) throws -> UInt64 {
+    guard value >= 0 else {
+        throw WGPUError.validation("\(field) 값 \(value)이(가) 음수다")
+    }
+    return UInt64(value)
+}
+
+func dawnI32(_ value: Int, _ field: String) throws -> Int32 {
+    guard let converted = Int32(exactly: value) else {
+        throw WGPUError.validation("\(field) 값 \(value)이(가) i32 범위를 벗어난다")
+    }
+    return converted
+}
+
+func dawnU16(_ value: Int, _ field: String) throws -> UInt16 {
+    guard let converted = UInt16(exactly: value) else {
+        throw WGPUError.validation("\(field) 값 \(value)이(가) u16 범위를 벗어난다")
+    }
+    return converted
+}
+
+/// CGSize(레이아웃·JS 유래)를 텍스처 크기로 옮긴다 — NaN·음수·0·상한 초과를 전부 거른다.
+/// `UInt32(CGFloat.nan)`도 트랩이다.
+func dawnTextureDimensions(_ size: CGSize, _ what: String) throws -> (width: UInt32, height: UInt32) {
+    guard size.width.isFinite, size.height.isFinite,
+          size.width >= 1, size.height >= 1,
+          size.width <= 16384, size.height <= 16384 else {
+        throw WGPUError.validation("\(what) 크기가 유효하지 않다: \(Int(size.width))×\(Int(size.height))")
+    }
+    return (UInt32(size.width), UInt32(size.height))
 }
 
 extension WGPUStringView {
@@ -75,8 +122,9 @@ final class DawnArena {
         guard !values.isEmpty else { return nil }
         let buffer = UnsafeMutableBufferPointer<T>.allocate(capacity: values.count)
         _ = buffer.initialize(from: values)
-        allocations.append(UnsafeMutableRawPointer(buffer.baseAddress!))
-        return UnsafePointer(buffer.baseAddress)
+        guard let base = buffer.baseAddress else { return nil }
+        allocations.append(UnsafeMutableRawPointer(base))
+        return UnsafePointer(base)
     }
 
     /// 값 하나 → 포인터 (옵셔널 서브 디스크립터 자리).
@@ -107,7 +155,8 @@ enum DawnBootstrap {
         var callbackInfo = WGPURequestAdapterCallbackInfo()
         callbackInfo.mode = WGPUCallbackMode_AllowProcessEvents
         callbackInfo.callback = { status, adapter, message, userdata1, _ in
-            let box = Unmanaged<DawnBox<WGPUAdapter>>.fromOpaque(userdata1!).takeRetainedValue()
+            guard let userdata1 else { return }
+            let box = Unmanaged<DawnBox<WGPUAdapter>>.fromOpaque(userdata1).takeRetainedValue()
             if status == WGPURequestAdapterStatus_Success {
                 box.value = adapter
             } else {
@@ -162,7 +211,8 @@ enum DawnBootstrap {
         var descriptor = WGPUDeviceDescriptor()
         var uncaptured = WGPUUncapturedErrorCallbackInfo()
         uncaptured.callback = { _, type, message, userdata1, _ in
-            let sink = Unmanaged<ErrorSink>.fromOpaque(userdata1!).takeUnretainedValue()
+            guard let userdata1 else { return }
+            let sink = Unmanaged<ErrorSink>.fromOpaque(userdata1).takeUnretainedValue()
             sink.handler(type, String(wgpu: message))
         }
         uncaptured.userdata1 = Unmanaged.passRetained(ErrorSink(onUncapturedError)).toOpaque()
@@ -180,7 +230,8 @@ enum DawnBootstrap {
         var callbackInfo = WGPURequestDeviceCallbackInfo()
         callbackInfo.mode = WGPUCallbackMode_AllowProcessEvents
         callbackInfo.callback = { status, device, message, userdata1, _ in
-            let box = Unmanaged<DawnBox<WGPUDevice>>.fromOpaque(userdata1!).takeRetainedValue()
+            guard let userdata1 else { return }
+            let box = Unmanaged<DawnBox<WGPUDevice>>.fromOpaque(userdata1).takeRetainedValue()
             if status == WGPURequestDeviceStatus_Success {
                 box.value = device
             } else {
