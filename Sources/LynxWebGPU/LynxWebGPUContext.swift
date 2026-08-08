@@ -147,9 +147,9 @@ public final class LynxWebGPUContext: WebGPURuntime {
         do {
             commands = try reader.requiredObjects("commands")
         } catch let error as WGPUError {
-            return ["ok": false, "errors": [error.payload]]
+            return WGPUBatchResult.failure([error])
         } catch {
-            return ["ok": false, "errors": [WGPUError.validation("\(error)").payload]]
+            return WGPUBatchResult.failure([WGPUError.validation("\(error)")])
         }
         // `present: false`는 프레임 **중간**의 내부 제출이라는 뜻이다 (shim의 popErrorScope·
         // mapAsync). 커밋은 하되 드로어블 present와 프레임 핸들 만료를 미룬다 — 진짜 프레임

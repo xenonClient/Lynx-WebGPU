@@ -63,40 +63,16 @@ final class WGPUCommandInterpreter {
     private var touchedCanvases: [String: WGPUSurface] = [:]
     private var errors: [WGPUError] = []
 
-    /// 앞선 배치의 GPU 실행이 실패했다는 보고 — **완료 핸들러(Metal 스레드)가 채운다.**
-    ///
-    /// `record()`가 도는 시점은 이미 커밋 전이라 GPU 측 실패는 구조상 그때 잡을 수 없다.
-    /// 그래서 완료 핸들러가 여기 모아 두었다가 **다음 배치 결과**에 실어 보낸다. 이것이 없으면
-    /// `.outOfMemory`·`.timeout` 같은 실패가 어디에도 나타나지 않고 무성으로 남는다.
-    private let gpuFailureLock = NSLock()
-    private var gpuFailures: [WGPUError] = []
+    /// 앞선 배치의 GPU 실행이 실패했다는 보고 — 완료 핸들러(Metal 스레드)가 채우고
+    /// 다음 배치가 비운다. 모델 자체가 와이어 계약이라 큐는 Core에 있다
+    /// (`WGPUDeferredErrorQueue` 문서 참고).
+    private let gpuFailures = WGPUDeferredErrorQueue()
 
-    /// 열려 있는 오류 스코프 (안쪽이 뒤). **배치 사이에도 살아 있다** — WebGPU에서 오류 스코프는
-    /// 디바이스 상태이고, `push`와 `pop` 사이에 `submit`이 몇 번이든 들어갈 수 있기 때문이다.
-    /// `filter`가 nil이면 **아무것도 잡지 않는 자리표시자**다 — 필터 파싱이 실패했을 때
-    /// 스택 깊이를 맞추려고 쌓는다 (안 쌓으면 이후 pop이 바깥 스코프를 가져간다).
-    private var errorScopes: [(filter: WGPUErrorFilter?, captured: WGPUError?)] = []
+    /// 열려 있는 오류 스코프 — 규칙(배치 넘어 생존·안쪽 우선·첫 오류만·자리표시자)은 전부
+    /// `WGPUErrorScopeStack`(Core) 문서에 있다.
+    private var errorScopes = WGPUErrorScopeStack()
     /// 이번 배치에서 pop된 스코프의 결과 (pop 순서 — JS의 Promise 순서와 1:1로 맞춘다).
-    private var poppedScopes: [PoppedScope] = []
-
-    /// pop 결과의 세 가지 상태. JS는 이것을 보고 Promise를 resolve할지 reject할지 정한다.
-    private enum PoppedScope {
-        /// 스코프는 있었고 잡힌 오류는 없었다 → `null`로 resolve.
-        case clean
-        /// 스코프가 오류를 잡았다 → 그 오류로 resolve.
-        case captured(WGPUError)
-        /// `push`와 짝이 맞지 않는다 → 명세대로 `OperationError`로 **reject**한다.
-        /// 이 실패는 GPUError가 아니므로 전역 오류 핸들러로 내보내지 않는다.
-        case unmatched
-
-        var payload: Any {
-            switch self {
-            case .clean: return NSNull()
-            case .captured(let error): return error.payload
-            case .unmatched: return ["rejected": true]
-            }
-        }
-    }
+    private var poppedScopes: [WGPUPoppedErrorScope] = []
 
     init(
         device: MTLDevice,
@@ -122,7 +98,7 @@ final class WGPUCommandInterpreter {
         reset()
 
         // 앞선 배치의 GPU 실행 실패를 먼저 흘려보낸다 — 오류 스코프가 열려 있으면 그쪽이 잡는다.
-        for failure in drainGPUFailures() { record(failure) }
+        for failure in gpuFailures.drain() { record(failure) }
 
         for (index, command) in commands.enumerated() {
             do {
@@ -145,69 +121,47 @@ final class WGPUCommandInterpreter {
         // 그 배치는 커맨드 버퍼가 없어도 드로어블을 내보내야 한다.
         finish(WGPUFrameBoundary(requestedPresent: present, commandCount: commands.count))
 
-        // objects: live 네이티브 객체 수 — JS가 destroy 누락(레지스트리 증식)을 감시할 수 있게.
-        var result: [String: Any] = [
-            "ok": errors.isEmpty,
-            "commandCount": commands.count,
-            "objects": registry.count,
-        ]
-        if !errors.isEmpty {
-            result["errors"] = errors.map(\.payload)
-        }
-        if !touchedCanvases.isEmpty {
-            result["canvases"] = touchedCanvases.mapValues { surface in
-                ["width": Int(surface.pixelSize.width), "height": Int(surface.pixelSize.height)]
-            }
-        }
-        if !poppedScopes.isEmpty {
-            // pop 순서 그대로 — JS는 popErrorScope()가 돌려준 Promise를 같은 순서로 풀어 준다.
-            result["errorScopes"] = poppedScopes.map(\.payload)
-        }
-        return result
+        // 응답 모양은 Core의 조립기가 정한다 — 키 철자·생략 규칙이 와이어 계약이라서다.
+        return WGPUBatchResult(
+            commandCount: commands.count,
+            liveObjectCount: registry.count,
+            errors: errors,
+            canvases: touchedCanvases.mapValues { surface in
+                WGPUCanvasReport(
+                    width: Int(surface.pixelSize.width),
+                    height: Int(surface.pixelSize.height)
+                )
+            },
+            poppedScopes: poppedScopes
+        ).payload
     }
 
     // MARK: - 오류 스코프
 
-    /// 오류 하나를 **가장 안쪽의 맞는 스코프**에 넣거나, 없으면 배치 결과로 내보낸다.
-    ///
-    /// 스코프에 잡힌 오류는 결과의 `errors`에 실리지 않는다 — 그래야 JS의 전역 핸들러
-    /// (`device.onError`)가 "내가 이미 처리하기로 한 오류"를 다시 보고하지 않는다.
+    /// 오류 하나를 가장 안쪽의 맞는 스코프에 넣거나, 없으면 배치 결과로 내보낸다
+    /// (`WGPUErrorScopeStack.capture` 문서 참고).
     private func record(_ error: WGPUError) {
-        for index in errorScopes.indices.reversed()
-        where errorScopes[index].filter?.captures(error.kind) == true {
-            // 명세상 스코프가 돌려주는 것은 **처음 잡힌 오류 하나**다.
-            if errorScopes[index].captured == nil { errorScopes[index].captured = error }
-            return
-        }
+        if errorScopes.capture(error) { return }
         errors.append(error)
     }
 
-    /// 디바이스를 버릴 때 (`GPUDevice.destroy`) 열려 있던 스코프도 함께 버린다 —
-    /// 남겨 두면 다음 페이지의 오류가 죽은 스코프에 잡혀 아무 데도 보고되지 않는다.
+    /// 디바이스를 버릴 때 (`GPUDevice.destroy`) — 이유는 `WGPUErrorScopeStack.discardAll` 문서에.
     func discardErrorScopes() {
-        errorScopes.removeAll()
+        errorScopes.discardAll()
     }
 
     private func pushErrorScope(_ command: WGPUValueReader) throws {
         do {
-            errorScopes.append((try WGPUPushErrorScopeCommand(from: command).filter, nil))
+            errorScopes.push(try WGPUPushErrorScopeCommand(from: command).filter)
         } catch {
-            // 필터를 못 읽어도 스택 깊이는 맞춰 둔다 — 안 그러면 이후 pop이 **바깥 스코프**를
-            // 가져가서, 앱이 안쪽 구간의 결과라고 믿는 값이 실제로는 바깥 구간의 결과가 된다.
-            errorScopes.append((nil, nil))
+            // 필터를 못 읽어도 스택 깊이는 맞춰 둔다 (자리표시자 — `WGPUErrorScopeStack.push` 문서).
+            errorScopes.push(nil)
             throw error
         }
     }
 
     private func popErrorScope() {
-        guard let scope = errorScopes.popLast() else {
-            // 명세는 이 경우 Promise를 `OperationError`로 **reject**하라고만 하고, 오류를
-            // 생성하라고 하지 않는다. 그래서 throw하지 않고 상태만 실어 보낸다 —
-            // 명세에 없는 GPUError가 앱의 전역 핸들러·텔레메트리에 섞이지 않게.
-            poppedScopes.append(.unmatched)
-            return
-        }
-        poppedScopes.append(scope.captured.map(PoppedScope.captured) ?? .clean)
+        poppedScopes.append(errorScopes.pop())
     }
 
     private func reset() {
@@ -294,12 +248,11 @@ final class WGPUCommandInterpreter {
                 }
             }
             // GPU 측 실패(.outOfMemory / .timeout / .deviceRemoved 등)를 주워 담는다.
-            commandBuffer.addCompletedHandler { [weak self] buffer in
+            // 해석기가 아니라 큐를 잡는다 — 해석기가 먼저 해제되어도 보고가 안전하다.
+            let failures = gpuFailures
+            commandBuffer.addCompletedHandler { buffer in
                 guard buffer.status == .error else { return }
-                guard let self else { return }
-                self.gpuFailureLock.lock()
-                self.gpuFailures.append(LynxWebGPUContext.commandBufferError(buffer))
-                self.gpuFailureLock.unlock()
+                failures.report(LynxWebGPUContext.commandBufferError(buffer))
             }
             commandBuffer.commit()
             lastCommittedBuffer = commandBuffer
@@ -325,16 +278,7 @@ final class WGPUCommandInterpreter {
         acquiredDrawables.removeAll()
         frameScopedHandles.removeAll()
         lastCommittedBuffer = nil
-        _ = drainGPUFailures()
-    }
-
-    /// 모아 둔 GPU 실행 실패를 꺼내 비운다 (완료 핸들러가 다른 스레드에서 채운다).
-    private func drainGPUFailures() -> [WGPUError] {
-        gpuFailureLock.lock()
-        defer { gpuFailureLock.unlock() }
-        let failures = gpuFailures
-        gpuFailures.removeAll()
-        return failures
+        _ = gpuFailures.drain()
     }
 
     /// 이번 프레임에 드로어블을 내준 캔버스들 (중복 제거 — 한 표면에서 여러 번 얻어도 프레임은 하나다).
