@@ -35,7 +35,7 @@ Dawn의 사정권에 드는 것은 Swift 10,387줄 중 **약 5,000줄(≈50%)**�
 | 얻는 것 | 지금 상태 |
 |---|---|
 | 완전한 WGSL | `docs/WGSL.md` §4의 거부 목록(`atomicCompareExchangeWeak` · `modf`/`frexp` · `workgroupUniformLoad` · `break if`)이 사라진다. 코퍼스 92% → 사실상 100% |
-| 셰이더 로버스트니스 | Tint의 OOB 클램프. 지금은 없다 (Metal 검증 레이어 밖의 범위 초과는 정의되지 않은 값) |
+| 셰이더 로버스트니스 | **자체 구현으로 해소됐다** — `docs/WGSL.md` §3-2 "안전 변환"(인덱싱 클램프·정수 나눗셈·시프트·포화 변환·workgroup 0초기화 등 7종). Dawn 도입 논거에서 빠진다 |
 | 명세 검증 전부 | `docs/ARCHITECTURE.md` §8이 "의도적으로 안 한다"고 적어 둔 사용 플래그·포맷 호환성·동기화 스코프 검증. **브라우저와 같은 곳에서 같이 거부된다** = 이식성 |
 | 진짜 렌더 번들 | 지금은 명령 목록 재생(`WGPURenderBundleObject`) |
 | Vulkan / D3D12 / GL 백엔드 | **Android·데스크톱 경로.** Lynx가 크로스 플랫폼인데 이 패키지는 Metal 전용이다 — 구조적으로 가장 큰 논거다 |
@@ -84,6 +84,12 @@ A를 고르는 이유는 하나다: **커맨드 스트림이 이미 직렬화된
 (`{op, …}` 배열 → `{ok, errors, canvases, errorScopes}`). 두 런타임이 지켜야 할 계약이 이미
 데이터로 존재하므로, 추가 추상화를 발명할 필요가 없다.
 
+> 2026-08-08 보충: 절단면은 A 그대로다. 다만 Dawn이 대신해 주지 **않는** 와이어 정책 —
+> 디스패치 표(`WGPUCommand`), 오류 스코프 스택(`WGPUErrorScopeStack`), 응답 모양
+> (`WGPUBatchResult`), 지연 오류 전달(`WGPUDeferredErrorQueue`) — 은 Core의 공용 타입이
+> 되어, B가 우려한 이중 관리 없이 두 런타임이 같은 코드를 쓴다. Dawn 구현이 다시 쓰는 것은
+> 정말로 "인코딩"뿐이다.
+
 ```
                         JS/webgpu.js  (무변경)
                               │  {commands, present}
@@ -101,46 +107,54 @@ A를 고르는 이유는 하나다: **커맨드 스트림이 이미 직렬화된
 
 각 항목은 **Dawn이 끝내 안 들어와도 그 자체로 값이 있다.** 그게 선행작업의 조건이다.
 
-> **진행 상태 (2026-08-06):** 1~5가 끝났다. 남은 것은 (6) 빌드 경로뿐이고,
-> 거기서 재는 바이너리 크기가 도입 여부를 가른다.
+> **진행 상태 (2026-08-08):** 1~5에 이어 **인터페이스 완결(5+)**까지 끝났다. 남은 것은
+> (6) 빌드 경로뿐이고, 거기서 재는 바이너리 크기가 도입 여부를 가른다.
 >
 > | # | 항목 | 상태 |
 > |---|---|---|
 > | 1 | `WebGPURuntime` 프로토콜 | **완료** — `Sources/LynxWebGPUCore/WebGPURuntime.swift`. 브리지가 `LynxWebGPUCore`만 의존한다 |
-> | 2 | 디코딩 완결 | **완료** — `Sources/LynxWebGPUCore/WGPUCommands.swift`. 해석기의 인라인 필드 읽기 81곳 → 2곳(op 이름) |
-> | 3 | 커맨드 스트림 문서 | **완료** — `docs/COMMAND-STREAM.md` (51개 op 전수) |
-> | 4 | 적합성 스위트 분리 | **완료** — `Sources/LynxWebGPUConformance`(라이브러리 product). 19개 검사 |
+> | 2 | 디코딩 완결 | **완료** — `Sources/LynxWebGPUCore/WGPUCommands.swift`. 해석기의 인라인 필드 읽기 81곳 → 0곳 |
+> | 3 | 커맨드 스트림 문서 | **완료** — `docs/COMMAND-STREAM.md` (51개 op 전수 + §5-1 스레딩·수명 규약 + §5-2 adapterInfo 등급) |
+> | 4 | 적합성 스위트 분리 | **완료** — `Sources/LynxWebGPUConformance`(라이브러리 product). **28개 검사** — 프레임 수명(present:false 생존·만료)·readBuffer·resize·컴파일 진단·msl-optional·decodeImage 포함 |
 > | 5 | 프레임 정책 분리 | **완료** — `WGPUFrameCoordinator` · `WGPUFrameBoundary`(Core). GPU 없이 검증된다 |
+> | 5+ | 인터페이스 완결 | **완료 (2026-08-08)** — ① 디스패치 표 `WGPUCommand`(51케이스 열거형 — 백엔드는 default 없는 switch만 쓰고, op 추가 누락은 컴파일이 잡는다) ② 와이어 정책의 Core 이관 (`WGPUErrorScopeStack` · `WGPUBatchResult` · `WGPUDeferredErrorQueue`) ③ 비동기 펌프 훅 `processEvents()` ④ `RenderHarness` 런타임 매개변수화 ⑤ 외부 주입 픽스처 `Examples/ExternalRuntime` (Core+Conformance만 링크한 스텁이 28검사를 전부 판정) |
 > | 6 | 빌드·배포 경로 | 미착수 — **여기서 재는 바이너리 크기가 도입 여부를 가른다** |
 >
-> Dawn 런타임이 채워야 할 자리는 이제 **`WebGPURuntime`의 13개 멤버**로 닫혀 있고,
-> 지켜야 할 계약은 `docs/COMMAND-STREAM.md`, 증명 수단은 `WebGPUConformance.run(on:)`이다.
+> Dawn 런타임이 채워야 할 자리는 이제 **`WebGPURuntime`의 14개 멤버**(기본 no-op인
+> `processEvents` 포함)로 닫혀 있고, 지켜야 할 계약은 `docs/COMMAND-STREAM.md`, 증명 수단은
+> `WebGPUConformance.run(on:)`(28검사), 출발점 예시는 `Examples/ExternalRuntime`의
+> `StubRuntime`이다.
 
 ### 1) `WebGPURuntime` 프로토콜 추출 · 소 · 위험 낮음
 
-브리지가 `LynxWebGPUContext` 구체 타입을 보고 있다 (`LynxWebGPUHost.context`,
-`WebGPUCanvasUI`가 `WGPUMetalLayerSurface`를 직접 생성). 프로토콜로 바꾼다:
+브리지가 `LynxWebGPUContext` 구체 타입을 보던 것을 프로토콜로 바꿨다. **실제 시그니처**
+(정본은 `Sources/LynxWebGPUCore/WebGPURuntime.swift` — 제안 당시 모양에서 표면 API가
+attach/detach/resize/오프스크린/픽셀 읽기 5멤버로 자라고, 적합성 스위트의 픽셀 통로가
+계약에 들어갔다):
 
 ```swift
 public protocol WebGPURuntime: AnyObject {
-    func execute(_ payload: [String: Any]) -> [String: Any]
+    func execute(_ payload: [String: Any]) -> [String: Any]      // 조립은 WGPUBatchResult로
     func adapterInfo() -> [String: Any]
     func shaderCompilationInfo(handle: Int) -> [String: Any]
+    func canvasInfo(identifier: String) -> [String: Any]
     func readBuffer(handle: Int, offset: Int, size: Int?, completion: @escaping ([String: Any]) -> Void)
-    func decodeImage(…)
-    func reset()
-
-    // 표면 — 브리지는 CAMetalLayer만 넘기고 구현체를 모른다
-    func makeSurface(identifier: String, layer: CAMetalLayer) -> WGPUSurfaceHandle
-    func unregisterSurface(identifier: String)
+    func decodeImage(handle:data:name:options:provider:completion:)
+    func attachCanvas(identifier: String, layer: CAMetalLayer)   // 레이어 초기 속성은 런타임 몫
+    func attachOffscreenCanvas(identifier: String, size: CGSize) throws   // 적합성 픽셀 통로
+    func resizeCanvas(identifier: String, drawableSize: CGSize)
+    func detachCanvas(identifier: String)                        // 임의 스레드에서 온다
+    func readCanvasPixels(identifier: String) throws -> WGPUPixelReadback // 적합성 픽셀 통로
     var isReadyForNextFrame: Bool { get }
-    func canvasInfo(identifier: String) -> (width: Int, height: Int, format: String)?
+    func processEvents()   // 기본 no-op — Dawn의 wgpuInstanceProcessEvents 자리
+    func reset()
 }
 ```
 
 핵심은 **`WGPUMetalLayerSurface` 생성을 브리지에서 걷어내는 것**이다. `<webgpu-canvas>`가
 `CAMetalLayer`를 backing layer로 쓰는 사실은 양쪽 공통이므로 (Dawn도 `WGPUSurfaceSourceMetalLayer`가
-같은 레이어를 받는다) 엘리먼트 코드는 정말로 무변경이 된다.
+같은 레이어를 받는다) 엘리먼트 코드는 정말로 무변경이 된다 — 레이어의 초기 속성
+(`pixelFormat` 등)까지 런타임이 정하므로 엘리먼트는 레이어를 넘기기만 한다.
 
 > Dawn 없이도 이득: 브리지를 가짜 런타임으로 단위 테스트할 수 있게 된다 (지금은 못 한다 —
 > 브리지에 테스트가 하나도 없는 이유이기도 하다).
@@ -174,8 +188,9 @@ op × 필드 × 의미를 명세로 적는다. 지금은 `.claude/skills/webgpu-
 | 커맨드 스트림 계약 (런타임 무관) | `CommandInterpreterTests` `RenderPipelineTests` `ErrorScopeTests` `RenderBundleTests` `QuerySetTests` `StencilTests` `IndirectDrawTests` `CompressedTextureTests` `ExternalImageTests` `OffscreenReadbackTests` | **그대로 재사용 — 이게 동치 증명이다** |
 | Metal 내부 | `MetalMappingTests` `StagingPoolTests` `SurfaceInFlightTests` `RenderHarnessTests` | Metal 경로 전용으로 남는다 |
 
-`RenderHarness`를 런타임으로 매개변수화한다. 그러면 같은 스위트를 두 백엔드에 돌려
-**"픽셀까지 같은가"**를 기계로 확인할 수 있다. 이게 없으면 Dawn 전환은 신뢰 근거가 없다.
+`RenderHarness`를 런타임으로 매개변수화한다 (**완료** — `make(runtime:width:height:)`가
+주입점이고, Metal 내부 관찰만 `context` 탈출구로 남았다). 그러면 같은 스위트를 두 백엔드에
+돌려 **"픽셀까지 같은가"**를 기계로 확인할 수 있다. 이게 없으면 Dawn 전환은 신뢰 근거가 없다.
 
 ### 5) 프레임 정책을 런타임 밖으로 — 소~중 · 위험 중
 
@@ -217,7 +232,7 @@ Swift ↔ Dawn은 **C API(`webgpu.h`)로 충분하다** — C++ interop 불필�
 |---|---|
 | **바이너리 크기** | Dawn + Tint + abseil + SPIRV-Tools. 디버그 정적 라이브러리가 900MB대라는 보고가 있다 — 실제로 중요한 건 링크·스트립 후 크기이고 **반드시 측정해야 한다.** "몇 MB"는 아니다. 모바일 앱에서 이게 단독 기각 사유가 될 수 있다 |
 | **빌드 파이프라인** | CMake → 기기/시뮬레이터 슬라이스 → XCFramework → CI. Tuist 데모까지 엮으면 작지 않다 |
-| **비동기 펌프** | Dawn의 `mapAsync`·`createPipelineAsync`는 `wgpuInstanceProcessEvents` 호출을 요구한다. 지금 모델은 JS 스레드 동기 실행이라, 펌프를 어디서 돌릴지 정해야 한다 |
+| **비동기 펌프** | **해소** — `WebGPURuntime.processEvents()`(기본 no-op)가 그 자리다. 프레임 티커가 준비 게이트 **앞**에서 틱마다 부르고 (완료 통지가 펌프에서 나오면 게이트 뒤에선 포화가 안 풀린다), 적합성 하네스도 콜백 대기 중에 부른다. 티커 없는 구성은 런타임이 자체 대기 수단을 갖출 것 (프로토콜 문서) |
 | **동작 발산** | Dawn은 엄격히 검증한다 — **지금 도는 코드 중 일부가 거부된다.** 그게 목적이긴 하지만, 문서화된 선택이어야 한다 |
 | **진단 품질 하락** | 우리 오류에는 `commands[3].vertex.buffers[0].format` 경로와 한국어 메시지가 붙는다. Dawn은 영어 문자열 하나다. `kind` 매핑은 문제없다 (`WGPUErrorType_Validation`/`OutOfMemory`/`Internal` ↔ 우리 4종) |
 | **시뮬레이터 제약** | 간접 드로우 미지원 같은 기기 갈림은 Dawn을 써도 그대로다 (Metal 자체 제약) |

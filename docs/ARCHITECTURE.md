@@ -105,8 +105,12 @@ JS/webgpu.js  ──{op:…}──▶  LynxWebGPUBridge  ──▶  WebGPURuntim
 크기를 앱이 정하게 한다. 브리지는 `LynxWebGPUCore`만 의존하므로 **GPU 백엔드를 링크하지 않고도
 컴파일된다.**
 
-두 구현이 지켜야 할 계약은 `docs/COMMAND-STREAM.md`에 있고, 같은 그림을 그리는지는
-적합성 스위트(`Tests/LynxWebGPUTests` — `WebGPUConformance`)가 픽셀로 확인한다.
+두 구현이 지켜야 할 계약은 `docs/COMMAND-STREAM.md`에 있다. 디코딩과 **디스패치 표**
+(`WGPUCommand` — 백엔드는 default 없는 exhaustive switch만 쓴다), 오류 스코프 스택·응답
+조립·지연 오류 큐 같은 **와이어 정책**까지 `LynxWebGPUCore`가 공유하므로, 백엔드가 다시
+쓰는 것은 정말로 "인코딩"뿐이다. 같은 그림을 그리는지는 적합성 스위트
+(`Sources/LynxWebGPUConformance` — 라이브러리 product)가 픽셀로 확인하고, 외부에서 이
+경계로 런타임을 만들 수 있다는 사실은 `Examples/ExternalRuntime`이 컴파일로 증명한다.
 대체 가능 범위와 선행 작업 검토는 `docs/extra/DAWN-BACKEND-REVIEW.md`.
 
 ### 스레딩

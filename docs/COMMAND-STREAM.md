@@ -10,7 +10,9 @@ JS(`JS/webgpu.js`)와 네이티브 런타임(`WebGPURuntime`) 사이의 **유일
    이름이 어긋나도 **양쪽 다 컴파일된다.** 타입 검사가 잡아 주지 않는 자리라 글로 못 박는다.
 
 Swift 쪽 디코딩은 전부 `LynxWebGPUCore`에 있다 — 여기 적힌 이름과 1:1이다:
-`WGPUDescriptors.swift`(명세 `GPU*Descriptor`) · `WGPUCommands.swift`(op 인자).
+`WGPUDescriptors.swift`(명세 `GPU*Descriptor`) · `WGPUCommands.swift`(op 인자) ·
+`WGPUCommand.swift`(op 이름 → 케이스 **디스패치 표**). 백엔드는 `WGPUCommand`에 대한
+exhaustive switch만 쓰므로, §4에 op을 더하면 컴파일러가 모든 백엔드의 누락을 잡는다.
 
 ---
 
@@ -66,6 +68,14 @@ Three.js의 지연 파이프라인 생성이 정확히 이 모양이었다.
 
 `path`는 **선택이지만 강하게 권한다.** 이것이 있으면 JS 쪽에서 어느 인자가 문제인지 바로 안다.
 `line`은 셰이더 오류에만 붙고, `getCompilationInfo()`의 `lineNum`이 이 값을 그대로 쓴다.
+
+**배치가 끝난 뒤에 드러나는 실패는 다음 배치에 실어 보낸다.** GPU 실행 실패(메모리 부족·
+타임아웃·디바이스 제거 — Dawn이라면 uncaptured error)는 배치가 결과를 돌려준 뒤에야 도착하고
+따로 콜백 통로가 없다. 런타임은 모아 두었다가 **다음 `execute` 응답의 `errors`**로 흘려보낸다
+(열린 오류 스코프가 있으면 그쪽이 먼저 잡는다). Swift 쪽 자리는 `WGPUDeferredErrorQueue`(Core)다.
+
+응답 키의 철자와 생략 규칙은 `WGPUBatchResult`(Core)가 조립한다 — 백엔드가 이 모양을 손으로
+다시 만들면 철자 하나로 어긋난다. 적합성 검사 `error-accumulation`이 판정하는 것이 이 모양이다.
 
 ## 3. 스트림 전체에 걸리는 규칙
 
@@ -126,6 +136,11 @@ shim의 `snapshotValue`가 기록 시점에 깊은 복사를 한다. 브라우�
 | `createShaderModule` | `id` · `code` · `language`(`"wgsl"` \| `"msl"`) · `label` |
 | `createQuerySet` | `id` · `type`(`"occlusion"`\|`"timestamp"`) · `count` · `label` |
 | `destroy` | `id` — 그 핸들의 객체를 버린다 |
+
+`language: "msl"`은 **선택 기능**이다 — Metal 백엔드의 탈출구라 와이어에 남는다. 지원하지 않는
+런타임은 그 `createShaderModule`을 `unsupported`로 **깨끗이 거부**해야 한다 (크래시·조용한
+무시 금지). 적합성 검사 `msl-optional`이 이 계약을 판정한다 — 이 op을 쓰는 번들은 백엔드를
+갈아끼우면 그 모듈만 거부된다는 것을 감수하는 것이다.
 
 ### 4-2. 바인딩 · 파이프라인
 
@@ -277,6 +292,35 @@ occlusion 쿼리는 중첩할 수 없고, 한 패스에서 같은 인덱스를 �
 | `startFrameLoop({fps})` / `stopFrameLoop()` | `webgpu:frame` 전역 이벤트 |
 | `reset()` | 모든 GPU 객체를 버린다 |
 
+### 5-1. 스레딩·수명 규약
+
+원본은 `WebGPURuntime`(Sources/LynxWebGPUCore/WebGPURuntime.swift)의 문서 주석이다. 요약:
+
+| 멤버 | 스레드 | 비고 |
+|---|---|---|
+| `execute` | JS 백그라운드 | 구현이 직렬화한다 |
+| `attachCanvas` · `attachOffscreenCanvas` · `resizeCanvas` | 메인 | 레이어 초기 속성(`pixelFormat` 등)은 **런타임이** 정한다 — 엘리먼트는 레이어를 넘기기만 한다 |
+| `detachCanvas` | **임의** | 엘리먼트 deinit이 부른다 — 표면 등록부는 락 필수 |
+| `reset` | 메인 | `execute`와 동시 진입 가능 |
+| `readBuffer` · `decodeImage` 콜백 | 임의 · **동기 가능** | 이미 끝난 작업이면 호출 스레드에서 즉시 와도 계약 위반이 아니다 |
+| `isReadyForNextFrame` · `processEvents` | 메인 (틱마다) | 저비용·논블로킹. 펌프는 준비 게이트 **앞**에서 불린다 |
+
+- `configureCanvas`의 레이어 반영은 **비동기여도 된다** — 첫 프레임이 이전 설정으로 나갈 수
+  있고, 그래서 `getCurrentTexture`는 캐시가 아니라 실제 드로어블의 포맷을 보고해야 한다.
+- `processEvents()`는 명시적 이벤트 처리를 요구하는 백엔드(Dawn의
+  `wgpuInstanceProcessEvents`)의 펌프 자리다. 프레임 티커가 틱을 건너뛸 때도 디스플레이
+  주기마다 부르고, 적합성 하네스도 콜백 대기 중에 부른다. 기본 구현은 no-op이다.
+
+### 5-2. `adapterInfo` 확장 키 등급
+
+명세 철자 키(`info`·`limits`·`features`·`preferredCanvasFormat`)는 필수다. 그 밖의 키:
+
+| 등급 | 키 | 소비처 |
+|---|---|---|
+| 확장 — 권장 | `name` (표시명) | 데모 씬. 없으면 shim이 `info.description`으로 메꾼다 |
+| 확장 — 선택 | `backend` · `hasUnifiedMemory` | shim이 `GPUAdapter` 필드로 실을 뿐 분기하지 않는다. 없으면 `''`/`false` |
+| Metal 런타임 전용 — **계약 아님** | `supportsFamilyApple7` | 소비처 없음. 다른 런타임은 채우지 않는다 |
+
 ---
 
 ## 6. 알려진 차이
@@ -300,8 +344,11 @@ occlusion 쿼리는 중첩할 수 없고, 한 패스에서 같은 인덱스를 �
 `.claude/skills/webgpu-command/SKILL.md`의 순서를 따른다. 이 문서 기준으로는:
 
 1. `LynxWebGPUCore/WGPUCommands.swift`에 디코딩 구조체를 더한다 (**이름의 출처**).
-2. 해석기의 `perform` switch에 한 줄 — 디코딩은 거기서 끝내고 op 함수는 값만 받는다.
-3. JS shim이 같은 이름으로 싣는지 확인한다.
-4. **§4의 표에 행을 더한다.** 여기 없는 op은 다른 런타임에서 구현되지 않는다.
-5. 적합성 테스트(`Tests/LynxWebGPUTests`)에 커맨드 스트림 수준의 계약 테스트를 더한다 —
-   런타임을 갈아끼워도 같은 결과가 나오는지 보는 자리다.
+2. `LynxWebGPUCore/WGPUCommand.swift`에 케이스 + 디코더 분기 + `opName`을 더한다 —
+   여기부터는 컴파일러가 안내한다: 케이스가 늘면 **모든 백엔드의 exhaustive switch가 깨져서**
+   누락이 조용히 지나가지 않는다. `WGPUCommandDecodeTests`의 픽스처(수 단언 51 포함)도 한 줄.
+3. 해석기의 `dispatch` switch에 케이스 한 줄 — op 함수는 값만 받는다.
+4. JS shim이 같은 이름으로 싣는지 확인한다.
+5. **§4의 표에 행을 더한다.** 여기 없는 op은 다른 런타임에서 구현되지 않는다.
+6. 적합성 검사(`Sources/LynxWebGPUConformance`)나 계약 테스트(`Tests/LynxWebGPUTests`)를
+   더한다 — 런타임을 갈아끼워도 같은 결과가 나오는지 보는 자리다.

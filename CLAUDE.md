@@ -19,9 +19,13 @@ Lynx 연동: `docs/LYNX-INTEGRATION.md` · 커맨드 스트림 명세: `docs/COM
 ```zsh
 # macOS 개발 루프 — Lynx 없이 엔진/트랜스파일러만 빌드·테스트 (가장 빠르다)
 swift build
-swift test                                   # 301개 테스트, ~5초
+swift test                                   # 362개 테스트, ~7초
 swift test --filter LynxWebGPUShaderTests    # WGSL → MSL 트랜스파일러만
 swift test --filter RenderPipelineTests      # GPU 오프스크린 렌더 검증
+
+# 외부 백엔드 주입 검증 — Core의 public 표면을 바꿨으면 반드시 (회귀 훅에는 없다)
+swift build --package-path Examples/ExternalRuntime
+swift run --package-path Examples/ExternalRuntime external-runtime-check
 
 # JS 클라이언트(shim) — 런타임 의존성 0. TypeScript는 **검사·선언 생성 전용**이다 (빌드 산출물 없음)
 cd JS && npm test            # node 내장 러너, 133개
@@ -78,9 +82,12 @@ LynxWebGPUBridge  ← Core, Lynx                NativeModule(`NativeModules.WebG
 - **런타임(GPU 백엔드)은 앱이 주입한다.** 브리지는 `WebGPURuntime` 프로토콜만 보고,
   `LynxWebGPUHost(runtime:)`에 구현체가 들어온다 — Lynx SDK를 가져오지 않는 것과 같은 이유다.
   다른 백엔드(Dawn 등)를 붙일 때 **브리지도 JS 번들도 바뀌지 않는다** (`docs/extra/DAWN-BACKEND-REVIEW.md`).
-- **커맨드 스트림의 디코딩은 전부 Core에서 끝난다** (`WGPUDescriptors.swift` = 명세 디스크립터,
-  `WGPUCommands.swift` = op 인자). 해석기는 값만 받는다 — 필드 이름이 코드 곳곳에 흩어지지 않게
-  하는 장치이자, 백엔드를 갈아끼울 때 다시 쓸 것을 "인코딩"으로만 좁히는 경계다.
+- **커맨드 스트림의 디코딩·디스패치·와이어 정책은 전부 Core에서 끝난다** (`WGPUDescriptors.swift` =
+  명세 디스크립터, `WGPUCommands.swift` = op 인자, `WGPUCommand.swift` = op 이름 → 케이스 디스패치 표,
+  `WGPUErrorScopeStack`/`WGPUBatchResult`/`WGPUDeferredErrorQueue` = 오류 스코프·응답 조립·지연 오류).
+  백엔드는 `WGPUCommand`에 대한 **default 없는 exhaustive switch**만 쓴다 — op을 더하면 컴파일러가
+  모든 백엔드의 누락을 잡고, 필드 이름이 흩어지지 않으며, 백엔드를 갈아끼울 때 다시 쓸 것이
+  "인코딩"으로만 좁혀진다.
 - **Lynx 심볼(`LynxModule`, `LynxUI` 등)은 LynxWebGPUBridge 안에서만** 참조하고 반드시 `#if canImport(Lynx)` 가드 안에 둔다.
   **이 패키지는 Lynx를 의존성으로 가져오지 않는다** — 버전·배포처를 앱이 정하게 하기 위해서다
   (`docs/LYNX-INTEGRATION.md` §1). 그래서 `Sources/LynxWebGPUBridge/`는 **SPM 타깃이 아니고**,
@@ -93,9 +100,11 @@ LynxWebGPUBridge  ← Core, Lynx                NativeModule(`NativeModules.WebG
 
 ```
 Sources/
-├── LynxWebGPUCore/     — WGPUEnums / WGPUDescriptors / WGPUCommands(op 인자) / WGPUValueReader
+├── LynxWebGPUCore/     — WGPUEnums / WGPUDescriptors / WGPUCommands(op 인자) /
+│                         WGPUCommand(op → 케이스 디스패치 표) / WGPUValueReader
 │                         WGPUHandle / WGPUError / WGPUAssetProvider
-│                         WebGPURuntime(백엔드 프로토콜 — 앱이 구현체를 넣는다)
+│                         WGPUErrorScopeStack · WGPUBatchResult · WGPUDeferredErrorQueue(와이어 정책)
+│                         WebGPURuntime(백엔드 프로토콜 — 앱이 구현체를 넣는다. processEvents 펌프 포함)
 │                         WGPUFrameCoordinator(present 시점·in-flight 회계 — 백엔드 무관)
 ├── LynxWebGPUShader/   — WGSLLexer → WGSLParser → WGSLReflection → MSLEmitter
 │                         WGSLLayout(vec3 배치 보정) · WGSLBindings(Metal 인덱스 배정)
@@ -106,13 +115,14 @@ Sources/
 ├── LynxWebGPUBridge/   — LynxWebGPUHost / WebGPUNativeModule / WebGPUCanvasUI / WebGPUFrameTicker
 └── (다른 백엔드)        — 이 저장소 밖. `WebGPURuntime`을 구현해 앱이 주입한다
 Tests/
-├── LynxWebGPUCoreTests/    — 디스크립터 디코딩, 핸들 레지스트리
+├── LynxWebGPUCoreTests/    — 디스크립터·커맨드 디코딩, 핸들 레지스트리, 와이어 정책, 프레임 회계
 ├── LynxWebGPUShaderTests/  — 트랜스파일 + **실제 Metal 컴파일러 통과 검증**(MetalCompilerHarness)
 └── LynxWebGPUTests/        — 오프스크린 GPU 렌더 검증(RenderHarness) + 커맨드 해석기 계약
 JS/                     — webgpu.js(클라이언트 shim) / webgpu.d.ts(**JSDoc에서 생성**) / elements.d.ts
                           lynx-env.d.ts(호스트 전역·네이티브 모듈 선언) · tsconfig.json(검사·선언 생성 전용)
                           tests/(node:test — 코덱·캔버스 크기·수명)
 Examples/HelloTriangle.tsx  — ReactLynx 최소 예제
+Examples/ExternalRuntime/   — 외부 백엔드 주입 검증 픽스처 (Core+Conformance만 링크하는 중첩 SPM)
 Projects/WebGPUDemo/    — Tuist 데모 호스트 앱 (Sources/) + 데모 번들 rspeedy 소스 (DemoSrc/)
                           Tools/ — 빌드 시점 애셋 변환 (HDR HEIC → GPU가 바로 먹는 바이너리)
 Tuist.swift · Workspace.swift — 데모 앱 전용. 라이브러리 자체는 SPM만으로 완결된다

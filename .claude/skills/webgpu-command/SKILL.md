@@ -6,7 +6,9 @@ description: Lynx-WebGPU에 새 WebGPU API(커맨드 스트림 op)를 끝에서 
 # WebGPU 커맨드 추가
 
 WebGPU API 하나를 늘리는 일은 **여섯 지점**을 순서대로 건드리는 일이다. 하나라도 빠지면
-"JS에서 부르면 아무 일도 안 일어남" 또는 "알 수 없는 명령" 오류가 난다.
+"JS에서 부르면 아무 일도 안 일어남" 또는 "알 수 없는 명령" 오류가 난다. 디스패치 표
+(`WGPUCommand`)에 케이스를 더한 뒤부터는 Swift 쪽 누락을 컴파일러가 잡아 준다 —
+**JS ↔ Swift 필드 이름과 디코더의 문자열 분기만은 여전히 사람이 맞춰야 한다.**
 
 ## 0. 먼저 확인
 
@@ -37,6 +39,10 @@ public struct WGPUFooDescriptor {
 - 명세에 기본값이 있는 필드는 `enumValue(_:default:)` / `int(_:default:)`를 쓴다. required는 명세가 required인 것만.
 - 검증(범위·조합)은 `init`에서 던진다. 여기서 막아야 Metal 검증 레이어의 단언(=크래시)까지 안 간다.
 
+**op 자체의 인자**(핸들·오프셋·개수)는 `WGPUCommands.swift`에 `WGPUFooBarCommand` 구조체로 —
+필드 이름의 출처를 Core 한 곳에 둔다. 생성 op이면 제네릭 `WGPUCreateCommand<Descriptor>`가
+`id` 처리를 대신하므로 디스크립터만 있으면 된다.
+
 ## 2. Metal 백엔드 (`Sources/LynxWebGPU/`)
 
 - 열거형 → Metal 변환은 `WGPUMetalMapping.swift`. **대응이 없으면 던진다.**
@@ -44,23 +50,38 @@ public struct WGPUFooDescriptor {
   `final class`로. 생성자에서 Metal 객체를 만들고 실패하면 `.outOfMemory` / `.backend`.
 - **디스크립터 `label`은 `if let`으로 감쌀 것** — Metal 검증 레이어는 nil label에 단언으로 죽는다.
 
-## 3. 해석기 (`WGPUCommandInterpreter.swift`)
+## 3. 디스패치 표 (`LynxWebGPUCore/WGPUCommand.swift`) + 해석기 (`WGPUCommandInterpreter.swift`)
+
+먼저 **Core의 디스패치 표**에 세 줄 — 케이스, 디코더 분기, `opName` 분기:
 
 ```swift
-private func perform(_ command: WGPUValueReader, at index: Int) throws {
-    let op = try command.requiredString("op")
-    switch op {
+case fooBar(WGPUFooBarCommand)                                        // 케이스
+case "fooBar": self = .fooBar(try WGPUFooBarCommand(from: reader))    // init(from:)
+case .fooBar: return "fooBar"                                         // opName
+```
+
+여기까지 하면 **컴파일러가 나머지를 안내한다** — 케이스가 늘어난 순간 해석기(그리고 외부
+백엔드)의 default 없는 switch가 깨져서, 분기 누락이 런타임 오류가 아니라 컴파일 오류가 된다.
+`Tests/LynxWebGPUCoreTests/WGPUCommandDecodeTests.swift`의 픽스처 표에도 한 줄 더한다
+(픽스처 수 단언이 op 수에 걸려 있다 — 함께 올린다).
+
+해석기의 `dispatch`에는 컴파일러가 시키는 대로 한 줄:
+
+```swift
+private func dispatch(_ command: WGPUCommand) throws {
+    switch command {
     // …
-    case "fooBar": try fooBar(command)      // ← 여기에 한 줄
+    case .fooBar(let c): try fooBar(c)      // ← op 함수는 디코딩된 값만 받는다
 ```
 
 ```swift
-private func fooBar(_ command: WGPUValueReader) throws {
+private func fooBar(_ command: WGPUFooBarCommand) throws {
     let encoder = try requireRenderEncoder()          // 패스가 필요한 명령이면
     let target = try registry.lookup(
-        try command.requiredHandle("target"), as: WGPUFooObject.self, kind: "GPUFoo"
+        command.target, as: WGPUFooObject.self, kind: "GPUFoo", path: command.fieldPath("target")
     )
-    let buffer = try unmappedBuffer(command, field: "buffer")   // 버퍼를 쓰는 명령이면 반드시
+    // 버퍼를 쓰는 명령이면 반드시 이 경로로 — 매핑 검사를 건너뛰면 mapAsync와 경쟁이 샌다
+    let buffer = try unmappedBuffer(command.buffer, path: command.fieldPath("buffer"))
     try applyDrawState()                              // draw/dispatch 계열이면 반드시
     encoder.doSomething(target.metalThing)
 }
@@ -160,7 +181,7 @@ arch -arm64 xcodebuild -workspace LynxWebGPUDemo.xcworkspace -scheme WebGPUDemo 
 
 | 증상 | 원인 |
 |---|---|
-| "알 수 없는 명령 'fooBar'" | 3번(해석기 switch) 누락 |
+| "알 수 없는 명령 'fooBar'" | 3번의 **디코더 분기**(`WGPUCommand.init(from:)`) 누락 — 케이스·`opName`·해석기 누락은 컴파일이 잡지만 문자열 분기만은 못 잡는다 (`WGPUCommandDecodeTests` 픽스처가 그물이다) |
 | JS에서 불러도 아무 일 없음 | 4번에서 `_commands` 대신 다른 배열에 push |
 | 바인딩이 안 꽂힌 채 draw | `applyDrawState()` 호출 누락 |
 | Metal 단언으로 크래시 | label nil, 또는 검증을 1번에서 안 했다 |
