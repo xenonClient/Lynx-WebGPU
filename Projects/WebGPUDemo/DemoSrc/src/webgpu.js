@@ -2224,12 +2224,14 @@ class GPUAdapter {
     /**
      * 명세 `GPUAdapterInfo`. 아래 `name`·`backend`·`hasUnifiedMemory`는 **이 구현의 추가**로,
      * 명세 이름이 없던 시절부터 있던 것이라 그대로 둔다 (기존 코드가 쓴다).
+     * 명세 밖 키는 **선택**이다 — 다른 런타임(Dawn 등)이 안 채워도 여기서 무해하게 메꾼다
+     * (`docs/COMMAND-STREAM.md` §5의 등급표).
      */
     this.info = makeAdapterInfo(info.info);
-    this.name = info.name;
-    this.backend = info.backend;
+    this.name = info.name || this.info.description || '';
+    this.backend = info.backend || '';
     this.limits = info.limits || {};
-    this.hasUnifiedMemory = info.hasUnifiedMemory;
+    this.hasUnifiedMemory = !!info.hasUnifiedMemory;
     /**
      * 기기마다 갈리는 기능 — 웹과 같은 분기(`adapter.features.has('timestamp-query')`)가
      * 동작하도록 `has`만 흉내 낸다 (엔진에 `Set`이 없을 수 있다).

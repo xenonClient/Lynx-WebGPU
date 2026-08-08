@@ -49,9 +49,12 @@ interface WGPUShaderCompilationInfo {
 /** `adapterInfo`의 반환. */
 interface WGPUAdapterInfo {
   ok?: boolean;
-  name: string;
-  backend: string;
+  /** 확장 — 표시명. 명세 밖이라 런타임이 생략할 수 있다 (shim이 `info.description`으로 메꾼다). */
+  name?: string;
+  /** 확장 — 백엔드 이름 (`'metal'` 등). 명세 밖이라 런타임이 생략할 수 있다. */
+  backend?: string;
   limits?: Record<string, number>;
+  /** 확장 — 통합 메모리 여부. 런타임이 모르면 생략한다 (shim은 false로 본다). */
   hasUnifiedMemory?: boolean;
   /** 명세 `GPUAdapterInfo` (vendor/architecture/device/description …). */
   info?: Record<string, any>;
