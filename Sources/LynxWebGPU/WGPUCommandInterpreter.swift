@@ -102,7 +102,7 @@ final class WGPUCommandInterpreter {
 
         for (index, command) in commands.enumerated() {
             do {
-                try perform(command, at: index)
+                try perform(command)
             } catch let error as WGPUError {
                 // 경로만 채우고 나머지는 **그대로 옮긴다** — 여기서 필드를 빠뜨리면
                 // (줄 번호처럼) 아래 계층이 애써 붙인 단서가 조용히 사라진다.
@@ -148,16 +148,6 @@ final class WGPUCommandInterpreter {
     /// 디바이스를 버릴 때 (`GPUDevice.destroy`) — 이유는 `WGPUErrorScopeStack.discardAll` 문서에.
     func discardErrorScopes() {
         errorScopes.discardAll()
-    }
-
-    private func pushErrorScope(_ command: WGPUValueReader) throws {
-        do {
-            errorScopes.push(try WGPUPushErrorScopeCommand(from: command).filter)
-        } catch {
-            // 필터를 못 읽어도 스택 깊이는 맞춰 둔다 (자리표시자 — `WGPUErrorScopeStack.push` 문서).
-            errorScopes.push(nil)
-            throw error
-        }
     }
 
     private func popErrorScope() {
@@ -361,89 +351,86 @@ final class WGPUCommandInterpreter {
 
     // MARK: - 명령 분기
 
-    /// op 이름 → 처리. **디코딩은 전부 이 자리에서 끝난다** — 아래 함수들은 리더를 보지 않고
-    /// `LynxWebGPUCore`가 옮겨 준 값만 받는다. 백엔드를 갈아끼울 때 다시 써야 하는 것이
-    /// "인코딩"으로만 좁혀지도록 한 배치다 (`WGPUCommands.swift` 머리말).
-    ///
-    /// 예외는 둘뿐이고 이유가 있다:
-    /// - `pushErrorScope` — 필터 디코딩이 **실패해도** 스택 깊이를 맞춰야 해서 리더를 받는다.
-    /// - `createRenderBundle` — 명령 목록을 값으로 **저장**했다가 되풀이하므로 리더 자체가 자료다.
-    private func perform(_ command: WGPUValueReader, at index: Int) throws {
-        let op = try command.requiredString("op")
-        switch op {
+    /// 디코딩과 분기표는 `WGPUCommand`(Core)가 끝낸다 — 여기는 디코딩된 값을 Metal 인코딩으로
+    /// 옮기는 **exhaustive switch**만 남는다 (`default` 없음). op을 더할 때 케이스를 빠뜨리면
+    /// 컴파일이 깨진다 — 백엔드 누락이 조용히 지나가지 않게 하는 장치다 (`WGPUCommand` 문서).
+    private func perform(_ command: WGPUValueReader) throws {
+        try dispatch(WGPUCommand(from: command))
+    }
+
+    private func dispatch(_ command: WGPUCommand) throws {
+        switch command {
         // 리소스
-        case "createBuffer": try createBuffer(WGPUCreateCommand(from: command))
-        case "writeBuffer": try writeBuffer(WGPUWriteBufferCommand(from: command))
-        case "unmapBuffer": try unmapBuffer(WGPUUnmapBufferCommand(from: command))
-        case "createTexture": try createTexture(WGPUCreateCommand(from: command))
-        case "writeTexture": try writeTexture(WGPUWriteTextureCommand(from: command))
-        case "copyExternalImageToTexture":
-            try copyExternalImageToTexture(WGPUCopyExternalImageCommand(from: command))
-        case "createTextureView": try createTextureView(WGPUCreateTextureViewCommand(from: command))
-        case "createSampler": try createSampler(WGPUCreateCommand(from: command))
-        case "createShaderModule": try createShaderModule(WGPUCreateCommand(from: command))
-        case "createBindGroupLayout": try createBindGroupLayout(WGPUCreateCommand(from: command))
-        case "createPipelineLayout": try createPipelineLayout(WGPUCreateCommand(from: command))
-        case "createBindGroup": try createBindGroup(WGPUCreateCommand(from: command))
-        case "createQuerySet": try createQuerySet(WGPUCreateCommand(from: command))
-        case "createRenderBundle": try createRenderBundle(WGPUCreateRenderBundleCommand(from: command))
-        case "createRenderPipeline": try createRenderPipeline(WGPUCreateCommand(from: command))
-        case "createComputePipeline": try createComputePipeline(WGPUCreateCommand(from: command))
-        case "getBindGroupLayout": try getBindGroupLayout(WGPUGetBindGroupLayoutCommand(from: command))
-        case "destroy": registry.remove(try WGPUDestroyCommand(from: command).id)
+        case .createBuffer(let c): try createBuffer(c)
+        case .writeBuffer(let c): try writeBuffer(c)
+        case .unmapBuffer(let c): try unmapBuffer(c)
+        case .createTexture(let c): try createTexture(c)
+        case .writeTexture(let c): try writeTexture(c)
+        case .copyExternalImageToTexture(let c): try copyExternalImageToTexture(c)
+        case .createTextureView(let c): try createTextureView(c)
+        case .createSampler(let c): try createSampler(c)
+        case .createShaderModule(let c): try createShaderModule(c)
+        case .createBindGroupLayout(let c): try createBindGroupLayout(c)
+        case .createPipelineLayout(let c): try createPipelineLayout(c)
+        case .createBindGroup(let c): try createBindGroup(c)
+        case .createQuerySet(let c): try createQuerySet(c)
+        case .createRenderBundle(let c): try createRenderBundle(c)
+        case .createRenderPipeline(let c): try createRenderPipeline(c)
+        case .createComputePipeline(let c): try createComputePipeline(c)
+        case .getBindGroupLayout(let c): try getBindGroupLayout(c)
+        case .destroy(let c): registry.remove(c.id)
 
         // 오류 스코프
-        case "pushErrorScope": try pushErrorScope(command)
-        case "popErrorScope": popErrorScope()
+        case .pushErrorScope(let filter, let decodeFailure):
+            // 실패해도 push부터 한다 — 깊이 유지 계약 (`WGPUCommand` 문서 참고).
+            errorScopes.push(filter)
+            if let decodeFailure { throw decodeFailure }
+        case .popErrorScope: popErrorScope()
 
         // 캔버스
-        case "configureCanvas": try configureCanvas(WGPUCanvasConfiguration(from: command))
-        case "getCurrentTexture": try getCurrentTexture(WGPUGetCurrentTextureCommand(from: command))
+        case .configureCanvas(let c): try configureCanvas(c)
+        case .getCurrentTexture(let c): try getCurrentTexture(c)
 
         // 렌더 패스
-        case "beginRenderPass": try beginRenderPass(WGPURenderPassDescriptor(from: command))
-        case "setPipeline": try setPipeline(WGPUSetPipelineCommand(from: command))
-        case "setBindGroup": try setBindGroup(WGPUSetBindGroupCommand(from: command))
-        case "setVertexBuffer": try setVertexBuffer(WGPUSetVertexBufferCommand(from: command))
-        case "setIndexBuffer": try setIndexBuffer(WGPUSetIndexBufferCommand(from: command))
-        case "setViewport": try setViewport(WGPUSetViewportCommand(from: command))
-        case "setScissorRect": try setScissorRect(WGPUSetScissorRectCommand(from: command))
-        case "setBlendConstant": try setBlendConstant(WGPUSetBlendConstantCommand(from: command))
-        case "setStencilReference":
-            try requireRenderEncoder()
-                .setStencilReferenceValue(WGPUSetStencilReferenceCommand(from: command).reference)
-        case "draw": try draw(WGPUDrawCommand(from: command))
-        case "drawIndexed": try drawIndexed(WGPUDrawIndexedCommand(from: command))
-        case "drawIndirect": try drawIndirect(WGPUIndirectCommand(from: command))
-        case "drawIndexedIndirect": try drawIndexedIndirect(WGPUIndirectCommand(from: command))
-        case "executeBundles": try executeBundles(WGPUExecuteBundlesCommand(from: command))
-        case "beginOcclusionQuery": try beginOcclusionQuery(WGPUBeginOcclusionQueryCommand(from: command))
-        case "endOcclusionQuery": try endOcclusionQuery()
+        case .beginRenderPass(let c): try beginRenderPass(c)
+        case .setPipeline(let c): try setPipeline(c)
+        case .setBindGroup(let c): try setBindGroup(c)
+        case .setVertexBuffer(let c): try setVertexBuffer(c)
+        case .setIndexBuffer(let c): try setIndexBuffer(c)
+        case .setViewport(let c): try setViewport(c)
+        case .setScissorRect(let c): try setScissorRect(c)
+        case .setBlendConstant(let c): try setBlendConstant(c)
+        case .setStencilReference(let c):
+            try requireRenderEncoder().setStencilReferenceValue(c.reference)
+        case .draw(let c): try draw(c)
+        case .drawIndexed(let c): try drawIndexed(c)
+        case .drawIndirect(let c): try drawIndirect(c)
+        case .drawIndexedIndirect(let c): try drawIndexedIndirect(c)
+        case .executeBundles(let c): try executeBundles(c)
+        case .beginOcclusionQuery(let c): try beginOcclusionQuery(c)
+        case .endOcclusionQuery: try endOcclusionQuery()
 
         // 컴퓨트 패스
-        case "beginComputePass": try beginComputePass(WGPUComputePassDescriptor(from: command))
-        case "dispatchWorkgroups": try dispatchWorkgroups(WGPUDispatchWorkgroupsCommand(from: command))
-        case "dispatchWorkgroupsIndirect":
-            try dispatchWorkgroupsIndirect(WGPUIndirectCommand(from: command))
+        case .beginComputePass(let c): try beginComputePass(c)
+        case .dispatchWorkgroups(let c): try dispatchWorkgroups(c)
+        case .dispatchWorkgroupsIndirect(let c): try dispatchWorkgroupsIndirect(c)
 
-        case "endPass": endActiveEncoders()
+        case .endPass: endActiveEncoders()
 
         // 복사
-        case "copyBufferToBuffer": try copyBufferToBuffer(WGPUCopyBufferToBufferCommand(from: command))
-        case "clearBuffer": try clearBuffer(WGPUClearBufferCommand(from: command))
+        case .copyBufferToBuffer(let c): try copyBufferToBuffer(c)
+        case .clearBuffer(let c): try clearBuffer(c)
+        case .copyTextureToBuffer(let c): try copyTextureToBuffer(c)
+        case .copyBufferToTexture(let c): try copyBufferToTexture(c)
+        case .copyTextureToTexture(let c): try copyTextureToTexture(c)
+
+        // 쿼리
+        case .resolveQuerySet(let c): try resolveQuerySet(c)
 
         // 디버그 마커
-        case "pushDebugGroup": try pushDebugGroup(WGPUPushDebugGroupCommand(from: command))
-        case "popDebugGroup": popDebugGroup()
-        case "insertDebugMarker": try insertDebugMarker(WGPUInsertDebugMarkerCommand(from: command))
-        case "copyTextureToBuffer": try copyTextureToBuffer(WGPUCopyTextureToBufferCommand(from: command))
-        case "copyBufferToTexture": try copyBufferToTexture(WGPUCopyBufferToTextureCommand(from: command))
-        case "copyTextureToTexture":
-            try copyTextureToTexture(WGPUCopyTextureToTextureCommand(from: command))
-        case "resolveQuerySet": try resolveQuerySet(WGPUResolveQuerySetCommand(from: command))
-
-        default:
-            throw WGPUError.unsupported("알 수 없는 명령 '\(op)'", path: "commands[\(index)].op")
+        case .pushDebugGroup(let c): try pushDebugGroup(c)
+        case .popDebugGroup: popDebugGroup()
+        case .insertDebugMarker(let c): try insertDebugMarker(c)
         }
     }
 
@@ -1120,7 +1107,7 @@ final class WGPUCommandInterpreter {
         for bundle in bundles {
             resetPassBindings()
             for bundleCommand in bundle.commands {
-                try perform(bundleCommand, at: 0)
+                try perform(bundleCommand)
             }
         }
     }
