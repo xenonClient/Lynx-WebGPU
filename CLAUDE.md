@@ -27,6 +27,11 @@ swift test --filter RenderPipelineTests      # GPU 오프스크린 렌더 검증
 swift build --package-path Examples/ExternalRuntime
 swift run --package-path Examples/ExternalRuntime external-runtime-check
 
+# Dawn 연동 검증 — 진짜 Dawn 위의 WebGPURuntime을 같은 적합성 스위트에 건다 (docs/TESTING.md §2-1)
+mise exec -- tuist generate --path Projects/DawnCheck --no-open
+arch -arm64 xcodebuild -workspace Projects/DawnCheck/DawnCheck.xcworkspace -scheme DawnCheck \
+  -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' -derivedDataPath .derivedData-dawncheck test
+
 # JS 클라이언트(shim) — 런타임 의존성 0. TypeScript는 **검사·선언 생성 전용**이다 (빌드 산출물 없음)
 cd JS && npm test            # node 내장 러너, 133개
 cd JS && npm run typecheck   # JSDoc 기준 타입 검사 (tsc --noEmit)
@@ -125,6 +130,8 @@ Examples/HelloTriangle.tsx  — ReactLynx 최소 예제
 Examples/ExternalRuntime/   — 외부 백엔드 주입 검증 픽스처 (Core+Conformance만 링크하는 중첩 SPM)
 Projects/WebGPUDemo/    — Tuist 데모 호스트 앱 (Sources/) + 데모 번들 rspeedy 소스 (DemoSrc/)
                           Tools/ — 빌드 시점 애셋 변환 (HDR HEIC → GPU가 바로 먹는 바이너리)
+Projects/DawnCheck/     — 진짜 Dawn 위의 WebGPURuntime 시제품 + 적합성 실행 (자체 Tuist 루트 —
+                          Dawn 바이너리 해석을 데모 루프에 안 끌어들인다. 시뮬레이터 전용)
 Tuist.swift · Workspace.swift — 데모 앱 전용. 라이브러리 자체는 SPM만으로 완결된다
 docs/                   — ARCHITECTURE / WEBGPU-API / WGSL / LYNX-INTEGRATION / JS-AUTHORING / TESTING
 .claude/skills/         — webgpu-command / wgsl-feature / gpu-smoke

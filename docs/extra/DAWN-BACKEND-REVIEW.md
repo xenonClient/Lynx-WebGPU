@@ -118,12 +118,12 @@ A를 고르는 이유는 하나다: **커맨드 스트림이 이미 직렬화된
 > | 4 | 적합성 스위트 분리 | **완료** — `Sources/LynxWebGPUConformance`(라이브러리 product). **28개 검사** — 프레임 수명(present:false 생존·만료)·readBuffer·resize·컴파일 진단·msl-optional·decodeImage 포함 |
 > | 5 | 프레임 정책 분리 | **완료** — `WGPUFrameCoordinator` · `WGPUFrameBoundary`(Core). GPU 없이 검증된다 |
 > | 5+ | 인터페이스 완결 | **완료 (2026-08-08)** — ① 디스패치 표 `WGPUCommand`(51케이스 열거형 — 백엔드는 default 없는 switch만 쓰고, op 추가 누락은 컴파일이 잡는다) ② 와이어 정책의 Core 이관 (`WGPUErrorScopeStack` · `WGPUBatchResult` · `WGPUDeferredErrorQueue`) ③ 비동기 펌프 훅 `processEvents()` ④ `RenderHarness` 런타임 매개변수화 ⑤ 외부 주입 픽스처 `Examples/ExternalRuntime` (Core+Conformance만 링크한 스텁이 28검사를 전부 판정) |
-> | 6 | 빌드·배포 경로 | 미착수 — **여기서 재는 바이너리 크기가 도입 여부를 가른다** |
+> | 6 | 빌드·배포 경로 | **시제품 완료 (2026-08-08)** — 프리빌트는 [Dawn-xcFramework](https://github.com/xenonClient/Dawn-xcFramework)(별도 저장소, SPM binaryTarget)가 제공하고, 그 위의 `WebGPURuntime` 구현 시제품이 `Projects/DawnCheck`에 있다. **시뮬레이터 적합성 27/28 통과 · 1 건너뜀(간접 드로우 — 시뮬레이터 제약으로 미광고) · 0 실패.** 남은 것: 시제품을 실제 배포 저장소(Lynx-WebGPU-Dawn)로 옮기고 화면 표면(`WGPUSurfaceSourceMetalLayer`) 배선 |
 >
 > Dawn 런타임이 채워야 할 자리는 이제 **`WebGPURuntime`의 14개 멤버**(기본 no-op인
 > `processEvents` 포함)로 닫혀 있고, 지켜야 할 계약은 `docs/COMMAND-STREAM.md`, 증명 수단은
-> `WebGPUConformance.run(on:)`(28검사), 출발점 예시는 `Examples/ExternalRuntime`의
-> `StubRuntime`이다.
+> `WebGPUConformance.run(on:)`(28검사), 출발점은 `Examples/ExternalRuntime`의 `StubRuntime`
+> (컴파일 가능성)과 `Projects/DawnCheck`의 `DawnWebGPURuntime`(실물 — 27/28)이다.
 
 ### 1) `WebGPURuntime` 프로토콜 추출 · 소 · 위험 낮음
 
@@ -230,7 +230,7 @@ Swift ↔ Dawn은 **C API(`webgpu.h`)로 충분하다** — C++ interop 불필�
 
 | 항목 | 내용 |
 |---|---|
-| **바이너리 크기** | Dawn + Tint + abseil + SPIRV-Tools. 디버그 정적 라이브러리가 900MB대라는 보고가 있다 — 실제로 중요한 건 링크·스트립 후 크기이고 **반드시 측정해야 한다.** "몇 MB"는 아니다. 모바일 앱에서 이게 단독 기각 사유가 될 수 있다 |
+| **바이너리 크기** | **실측 완료 (2026-08-08, Dawn-xcFramework 릴리스 빌드)** — 정적 라이브러리 19MB(기기 슬라이스), 런타임+적합성 스위트까지 **링크한 최종 바이너리 11MB.** "900MB대" 보고는 디버그 미스트립 수치였다. 단독 기각 사유가 아니다 — 관문 통과 |
 | **빌드 파이프라인** | CMake → 기기/시뮬레이터 슬라이스 → XCFramework → CI. Tuist 데모까지 엮으면 작지 않다 |
 | **비동기 펌프** | **해소** — `WebGPURuntime.processEvents()`(기본 no-op)가 그 자리다. 프레임 티커가 준비 게이트 **앞**에서 틱마다 부르고 (완료 통지가 펌프에서 나오면 게이트 뒤에선 포화가 안 풀린다), 적합성 하네스도 콜백 대기 중에 부른다. 티커 없는 구성은 런타임이 자체 대기 수단을 갖출 것 (프로토콜 문서) |
 | **동작 발산** | Dawn은 엄격히 검증한다 — **지금 도는 코드 중 일부가 거부된다.** 그게 목적이긴 하지만, 문서화된 선택이어야 한다 |

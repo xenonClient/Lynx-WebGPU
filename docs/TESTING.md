@@ -109,6 +109,25 @@ swift build --package-path Examples/ExternalRuntime                      # 컴�
 swift run --package-path Examples/ExternalRuntime external-runtime-check # 28검사 전수 판정 검증
 ```
 
+### Dawn 연동 검증 — `Projects/DawnCheck`
+
+**진짜 Dawn 위의 `WebGPURuntime` 구현**을 같은 스위트에 거는 프로젝트다.
+[Dawn-xcFramework](https://github.com/xenonClient/Dawn-xcFramework) 프리빌트 바이너리를 쓰고,
+데모와 **분리된 자체 Tuist 루트**를 가진다 (Dawn 바이너리 해석을 데모 개발 루프에 끌어들이지
+않기 위해). Dawn.xcframework가 iOS 전용이라 실행은 시뮬레이터 유닛테스트다:
+
+```zsh
+mise exec -- tuist generate --path Projects/DawnCheck --no-open
+arch -arm64 xcodebuild -workspace Projects/DawnCheck/DawnCheck.xcworkspace \
+  -scheme DawnCheck -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' \
+  -derivedDataPath .derivedData-dawncheck test
+```
+
+기준선 (2026-08-08, 시뮬레이터): **적합성 27/28 통과 · 1 건너뜀 · 0 실패.** 건너뜀은
+`indirect-draw-equivalence` — 시뮬레이터의 간접 드로우가 Metal 단언으로 죽는 경로라
+런타임이 기능을 광고하지 않는다 (실기기에서는 광고해도 된다). 렌더 번들 동치성은
+Metal 런타임의 명령 재생과 달리 **진짜 Dawn 렌더 번들**로 통과한다.
+
 ## 3. Metal 컴파일러 하네스
 
 트랜스파일러 테스트에서 **문자열 단언만으로는 부족하다.** 기대한 조각이 다 들어 있어도
