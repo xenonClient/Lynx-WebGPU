@@ -132,7 +132,7 @@ Examples/ExternalRuntime/   — 외부 백엔드 주입 검증 픽스처 (Core+C
 Projects/WebGPUDemo/    — Tuist 데모 호스트 앱 (Sources/) + 데모 번들 rspeedy 소스 (DemoSrc/)
                           Tools/ — 빌드 시점 애셋 변환 (HDR HEIC → GPU가 바로 먹는 바이너리)
 Projects/DawnCheck/     — 진짜 Dawn 위의 WebGPURuntime 시제품 (루트 워크스페이스의 별도 프로젝트,
-                          시뮬레이터 전용). 스킴 둘: DawnCheck(오프스크린 적합성 28검사) ·
+                          시뮬레이터 전용). 스킴 둘: DawnCheck(오프스크린 적합성 29검사) ·
                           DawnDemo(화면 실증 앱 — 데모 씬·브리지·JS 무변경, 런타임만 Dawn)
 Tuist.swift · Workspace.swift — 데모 앱 전용. 라이브러리 자체는 SPM만으로 완결된다
 docs/                   — ARCHITECTURE / WEBGPU-API / WGSL / LYNX-INTEGRATION / JS-AUTHORING / TESTING

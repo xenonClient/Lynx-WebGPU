@@ -38,7 +38,7 @@ let project = Project(
         configurations: [.debug(name: "Debug"), .release(name: "Release")]
     ),
     targets: [
-        // 오프스크린 적합성 검증 (28검사 — docs/TESTING.md §2-1).
+        // 오프스크린 적합성 검증 (29검사 — docs/TESTING.md §2-1).
         .target(
             name: "DawnCheckTests",
             destinations: .iOS,

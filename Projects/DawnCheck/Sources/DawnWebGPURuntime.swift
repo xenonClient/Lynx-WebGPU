@@ -1358,6 +1358,8 @@ final class DawnWebGPURuntime: WebGPURuntime {
     // MARK: - 조회 (WebGPURuntime)
 
     func adapterInfo() -> [String: Any] {
+        executionLock.lock()
+        defer { executionLock.unlock() }
         var limits = WGPULimits()
         _ = wgpuAdapterGetLimits(adapter, &limits)
         var info = WGPUAdapterInfo()
@@ -1850,7 +1852,14 @@ final class DawnWebGPURuntime: WebGPURuntime {
     var isReadyForNextFrame: Bool { frameCoordinator.isReadyForNextFrame }
 
     func processEvents() {
+        // 펌프는 메인 스레드(틱), execute는 JS 스레드다 — Dawn은 기본적으로 스레드 안전하지
+        // 않아서 (implicit sync 기능 없이는) 동시 진입이 Metal 인코더 회계 단언으로 터진다
+        // ("encodeSignalEvent:value: with uncommitted encoder" — 실제로 겪었다).
+        // execute와 같은 락으로 직렬화한다. 디바이스 쪽 2차 방어는 requestDevice의
+        // ImplicitDeviceSynchronization 기능 요청이다.
+        executionLock.lock()
         wgpuInstanceProcessEvents(instance)
+        executionLock.unlock()
     }
 
     func reset() {

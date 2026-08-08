@@ -115,14 +115,14 @@ A를 고르는 이유는 하나다: **커맨드 스트림이 이미 직렬화된
 > | 1 | `WebGPURuntime` 프로토콜 | **완료** — `Sources/LynxWebGPUCore/WebGPURuntime.swift`. 브리지가 `LynxWebGPUCore`만 의존한다 |
 > | 2 | 디코딩 완결 | **완료** — `Sources/LynxWebGPUCore/WGPUCommands.swift`. 해석기의 인라인 필드 읽기 81곳 → 0곳 |
 > | 3 | 커맨드 스트림 문서 | **완료** — `docs/COMMAND-STREAM.md` (51개 op 전수 + §5-1 스레딩·수명 규약 + §5-2 adapterInfo 등급) |
-> | 4 | 적합성 스위트 분리 | **완료** — `Sources/LynxWebGPUConformance`(라이브러리 product). **28개 검사** — 프레임 수명(present:false 생존·만료)·readBuffer·resize·컴파일 진단·msl-optional·decodeImage 포함 |
+> | 4 | 적합성 스위트 분리 | **완료** — `Sources/LynxWebGPUConformance`(라이브러리 product). **29개 검사** — 프레임 수명(present:false 생존·만료)·readBuffer·resize·컴파일 진단·msl-optional·decodeImage 포함 |
 > | 5 | 프레임 정책 분리 | **완료** — `WGPUFrameCoordinator` · `WGPUFrameBoundary`(Core). GPU 없이 검증된다 |
-> | 5+ | 인터페이스 완결 | **완료 (2026-08-08)** — ① 디스패치 표 `WGPUCommand`(51케이스 열거형 — 백엔드는 default 없는 switch만 쓰고, op 추가 누락은 컴파일이 잡는다) ② 와이어 정책의 Core 이관 (`WGPUErrorScopeStack` · `WGPUBatchResult` · `WGPUDeferredErrorQueue`) ③ 비동기 펌프 훅 `processEvents()` ④ `RenderHarness` 런타임 매개변수화 ⑤ 외부 주입 픽스처 `Examples/ExternalRuntime` (Core+Conformance만 링크한 스텁이 28검사를 전부 판정) |
+> | 5+ | 인터페이스 완결 | **완료 (2026-08-08)** — ① 디스패치 표 `WGPUCommand`(51케이스 열거형 — 백엔드는 default 없는 switch만 쓰고, op 추가 누락은 컴파일이 잡는다) ② 와이어 정책의 Core 이관 (`WGPUErrorScopeStack` · `WGPUBatchResult` · `WGPUDeferredErrorQueue`) ③ 비동기 펌프 훅 `processEvents()` ④ `RenderHarness` 런타임 매개변수화 ⑤ 외부 주입 픽스처 `Examples/ExternalRuntime` (Core+Conformance만 링크한 스텁이 29검사를 전부 판정) |
 > | 6 | 빌드·배포 경로 | **시제품 완료 (2026-08-08)** — 프리빌트는 [Dawn-xcFramework](https://github.com/xenonClient/Dawn-xcFramework)(별도 저장소, SPM binaryTarget)가 제공하고, 그 위의 `WebGPURuntime` 구현 시제품이 `Projects/DawnCheck`에 있다. **시뮬레이터 적합성 27/28 통과 · 1 건너뜀(간접 드로우 — 시뮬레이터 제약으로 미광고) · 0 실패.** 화면 표면(`WGPUSurfaceSourceMetalLayer`)까지 배선되어 **DawnDemo 앱이 데모 씬(triangle·cube)을 브리지·JS 무변경으로 그린다** (wgsl 씬은 §4 동작 발산 사례 — uniformity 위반으로 거부되고 오류 오버레이가 뜬다) — in-flight 페이싱은 `WGPUFrameCoordinator`의 `noteCommitted`/`noteCompleted` 그대로다. **24씬 전체 스위프 결과는 `docs/TESTING.md` §2-1** — 15씬 무오류(three.js 기본 씬 16/16 포함), 발산 4건(전부 씬의 명세 위반), **threelab은 시뮬레이터에서 화면 무출력**(Dawn이 family 3 미만에서 비교 샘플러를 꺼서 — Metal 런타임은 같은 시뮬레이터에서 전부 그린다). 남은 것: 시제품을 실제 배포 저장소(Lynx-WebGPU-Dawn)로 옮기고 **실기기 확인**(threelab·gpudriven이 그 관문이다) |
 >
 > Dawn 런타임이 채워야 할 자리는 이제 **`WebGPURuntime`의 14개 멤버**(기본 no-op인
 > `processEvents` 포함)로 닫혀 있고, 지켜야 할 계약은 `docs/COMMAND-STREAM.md`, 증명 수단은
-> `WebGPUConformance.run(on:)`(28검사), 출발점은 `Examples/ExternalRuntime`의 `StubRuntime`
+> `WebGPUConformance.run(on:)`(29검사), 출발점은 `Examples/ExternalRuntime`의 `StubRuntime`
 > (컴파일 가능성)과 `Projects/DawnCheck`의 `DawnWebGPURuntime`(실물 — 27/28)이다.
 
 ### 1) `WebGPURuntime` 프로토콜 추출 · 소 · 위험 낮음

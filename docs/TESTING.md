@@ -74,7 +74,7 @@ arch -arm64 xcodebuild -workspace LynxWebGPUDemo.xcworkspace -scheme WebGPUDemo 
 
 ```swift
 let outcomes = WebGPUConformance.run(on: myRuntime)
-print(WebGPUConformance.summary(outcomes))     // "적합성 28/28 통과"
+print(WebGPUConformance.summary(outcomes))     // "적합성 29/29 통과"
 ```
 
 검사는 **커맨드 스트림 · `readCanvasPixels` · `readBuffer` · `adapterInfo`만** 쓴다.
@@ -95,7 +95,7 @@ msl-optional(성공 또는 깨끗한 `unsupported`)·내장 PNG로 `decodeImage`
 
 `ConformanceTests`가 기본 런타임을 스위트에 걸고, **스위트가 실제로 걸러 내는지도 함께 잰다** —
 응답·페이로드·콜백을 일부러 망가뜨린 런타임(`MisbehavingRuntime`)을 걸어 실패가 나오는지 본다.
-항상 통과하는 적합성 스위트는 "28/28"이라는 문장이 아무것도 보증하지 못하게 만든다.
+항상 통과하는 적합성 스위트는 "29/29"이라는 문장이 아무것도 보증하지 못하게 만든다.
 
 ### 외부 주입 검증 픽스처
 
@@ -106,7 +106,7 @@ msl-optional(성공 또는 깨끗한 `unsupported`)·내장 PNG로 `decodeImage`
 
 ```zsh
 swift build --package-path Examples/ExternalRuntime                      # 컴파일 검증
-swift run --package-path Examples/ExternalRuntime external-runtime-check # 28검사 전수 판정 검증
+swift run --package-path Examples/ExternalRuntime external-runtime-check # 29검사 전수 판정 검증
 ```
 
 ### Dawn 연동 검증 — `Projects/DawnCheck`

@@ -63,7 +63,10 @@ public struct WGPUImageDecodeOptions {
 ///   첫 프레임이 이전 설정으로 나갈 수 있으므로, `getCurrentTexture`는 캐시가 아니라
 ///   **실제 드로어블의 포맷**을 보고해야 한다.
 /// - `isReadyForNextFrame`·`processEvents`는 메인 스레드(프레임 티커)에서 매 틱 불린다 —
-///   저비용·논블로킹이어야 한다.
+///   저비용·논블로킹이어야 한다. **`execute`와 동시에 불린다** — 백엔드 API가 스레드 안전하지
+///   않으면(Dawn) 구현이 execute와 같은 락으로 직렬화해야 한다. 빠뜨리면 검증 오류가 아니라
+///   백엔드 내부 단언(프로세스 종료)으로 터진다 — 적합성 검사 `pump-concurrency`가 이 계약을
+///   판정한다.
 ///
 /// ## 비동기 오류 전달
 ///

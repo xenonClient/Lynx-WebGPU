@@ -247,11 +247,17 @@ enum DawnBootstrap {
         // 디바이스 64KB → 256KB 유니폼 바인딩이 거부됐다). 기능도 같은 이유로 함께 요구한다.
         var adapterLimits = WGPULimits()
         let haveLimits = wgpuAdapterGetLimits(adapter, &adapterLimits) == WGPUStatus_Success
-        let features = supportedFeatures(adapter: adapter)
+        var requestedFeatures = supportedFeatures(adapter: adapter)
+        // Dawn 전용 스레드 안전 기능 — 명세 기능이 아니라 **광고 목록에는 없다** (요청 전용).
+        // 런타임의 락이 1차 방어지만, Dawn 내부 경로(콜백·큐 이벤트)까지 디바이스 차원에서
+        // 직렬화되도록 켠다. 없으면 락만으로 간다.
+        if wgpuAdapterHasFeature(adapter, WGPUFeatureName_ImplicitDeviceSynchronization) != 0 {
+            requestedFeatures.append(WGPUFeatureName_ImplicitDeviceSynchronization)
+        }
         _ = withUnsafePointer(to: adapterLimits) { limitsPointer in
-            features.withUnsafeBufferPointer { featuresPointer in
+            requestedFeatures.withUnsafeBufferPointer { featuresPointer in
                 descriptor.requiredLimits = haveLimits ? limitsPointer : nil
-                descriptor.requiredFeatureCount = features.count
+                descriptor.requiredFeatureCount = requestedFeatures.count
                 descriptor.requiredFeatures = featuresPointer.baseAddress
                 return withUnsafePointer(to: descriptor) { pointer in
                     wgpuAdapterRequestDevice(adapter, pointer, callbackInfo)

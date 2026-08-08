@@ -57,6 +57,7 @@ public extension WebGPUConformance {
             mslOptional,
             decodeImageUpload,
             frameReadiness,
+            pumpConcurrency,
         ]
     }
 

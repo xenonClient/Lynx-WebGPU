@@ -300,6 +300,61 @@ public extension WebGPUConformance {
 
     // MARK: - 프레임 신호
 
+    /// `execute`(JS 스레드)와 `processEvents`(틱 스레드)는 **동시에 불리는 것이 계약**이다
+    /// (`docs/COMMAND-STREAM.md` §5-1). 백엔드 API가 스레드 안전하지 않으면 구현이 직렬화해야
+    /// 하고, 빠뜨린 구현은 여기서 백엔드 내부 단언(프로세스 종료)으로 드러난다 — Dawn 시제품이
+    /// 실제로 Metal 인코더 회계 단언으로 죽었던 자리다. 성공 기준은 **완주**다.
+    static var pumpConcurrency: Check {
+        Check("pump-concurrency") { harness in
+            final class StopFlag {
+                private let lock = NSLock()
+                private var stopped = false
+                var isStopped: Bool {
+                    lock.lock()
+                    defer { lock.unlock() }
+                    return stopped
+                }
+                func stop() {
+                    lock.lock()
+                    stopped = true
+                    lock.unlock()
+                }
+            }
+            let flag = StopFlag()
+            let finished = DispatchSemaphore(value: 0)
+            let runtime = harness.runtime
+            DispatchQueue.global(qos: .userInitiated).async {
+                while !flag.isStopped { runtime.processEvents() }
+                finished.signal()
+            }
+            defer {
+                flag.stop()
+                _ = finished.wait(timeout: .now() + 5)
+            }
+
+            // 펌프가 도는 동안 배치를 몰아친다 — 생성·업로드·파괴가 매 배치 백엔드를 만진다.
+            for index in 0..<200 {
+                try harness.executeExpectingSuccess([
+                    ["op": "createBuffer", "id": 40, "size": 256,
+                     "usage": WebGPUUsage.copyDst | WebGPUUsage.copySrc],
+                    ["op": "writeBuffer", "buffer": 40,
+                     "data": [UInt8](repeating: UInt8(index % 256), count: 4).conformanceBase64],
+                    ["op": "destroy", "id": 40],
+                ], present: false)
+            }
+            // 매핑 경로도 경쟁 아래에서 — 완료 콜백이 펌프에서 오는 구현을 그대로 찌른다.
+            try harness.executeExpectingSuccess([
+                ["op": "createBuffer", "id": 41,
+                 "usage": WebGPUUsage.mapRead | WebGPUUsage.copyDst,
+                 "data": [UInt8]([1, 2, 3, 4]).conformanceBase64],
+            ], present: false)
+            let bytes = try harness.readBufferSync(handle: 41)
+            guard [UInt8](bytes) == [1, 2, 3, 4] else {
+                throw ConformanceFailure("경쟁 중 리드백이 오염됐다 — \([UInt8](bytes))")
+            }
+        }
+    }
+
     /// `isReadyForNextFrame`은 유휴 상태에서 true이고 논블로킹이다. `processEvents`는
     /// 언제 불러도 안전하다 (no-op 허용).
     static var frameReadiness: Check {

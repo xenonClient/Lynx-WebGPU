@@ -303,7 +303,7 @@ occlusion 쿼리는 중첩할 수 없고, 한 패스에서 같은 인덱스를 �
 | `detachCanvas` | **임의** | 엘리먼트 deinit이 부른다 — 표면 등록부는 락 필수 |
 | `reset` | 메인 | `execute`와 동시 진입 가능 |
 | `readBuffer` · `decodeImage` 콜백 | 임의 · **동기 가능** | 이미 끝난 작업이면 호출 스레드에서 즉시 와도 계약 위반이 아니다 |
-| `isReadyForNextFrame` · `processEvents` | 메인 (틱마다) | 저비용·논블로킹. 펌프는 준비 게이트 **앞**에서 불린다 |
+| `isReadyForNextFrame` · `processEvents` | 메인 (틱마다) | 저비용·논블로킹. 펌프는 준비 게이트 **앞**에서 불리고 **`execute`와 동시에** 불린다 — 백엔드가 스레드 안전하지 않으면 구현이 직렬화할 것 (적합성 `pump-concurrency`가 판정) |
 
 - `configureCanvas`의 레이어 반영은 **비동기여도 된다** — 첫 프레임이 이전 설정으로 나갈 수
   있고, 그래서 `getCurrentTexture`는 캐시가 아니라 실제 드로어블의 포맷을 보고해야 한다.
