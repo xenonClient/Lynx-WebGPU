@@ -85,6 +85,51 @@ final class ConformanceTests: XCTestCase {
         }
         let errorOutcomes = WebGPUConformance.run(on: lying, only: ["error-accumulation"])
         XCTAssertEqual(errorOutcomes.first?.status, .failed, "오류를 숨겼는데 통과했다")
+
+        // (3) present:false를 무시하고 항상 프레임을 닫는 런타임 — 중간 제출 계약이 깨진다.
+        let impatient = MisbehavingRuntime(runtime)
+        impatient.corruptPayload = { payload in
+            var broken = payload
+            broken["present"] = true
+            return broken
+        }
+        let frameOutcomes = WebGPUConformance.run(on: impatient, only: ["present-false-preserves-frame"])
+        XCTAssertEqual(frameOutcomes.first?.status, .failed, "프레임을 조기에 닫았는데 통과했다")
+
+        // (4) readBuffer 응답에서 데이터를 빼먹는 런타임
+        let dataless = MisbehavingRuntime(runtime)
+        dataless.corruptReadBuffer = { result in
+            var broken = result
+            broken.removeValue(forKey: "data")
+            return broken
+        }
+        let readOutcomes = WebGPUConformance.run(on: dataless, only: ["read-buffer-contract"])
+        XCTAssertEqual(readOutcomes.first?.status, .failed, "readBuffer 데이터를 뺐는데 통과했다")
+
+        // (5) 진단에서 줄 번호를 빼는 런타임 — GPUCompilationMessage 모양이 깨진다.
+        let vague = MisbehavingRuntime(runtime)
+        vague.corruptCompilationInfo = { result in
+            var broken = result
+            if var messages = broken["messages"] as? [[String: Any]] {
+                for index in messages.indices { messages[index].removeValue(forKey: "lineNum") }
+                broken["messages"] = messages
+            }
+            return broken
+        }
+        let infoOutcomes = WebGPUConformance.run(on: vague, only: ["shader-compilation-info"])
+        XCTAssertEqual(infoOutcomes.first?.status, .failed, "진단 키를 뺐는데 통과했다")
+
+        // (6) resize를 삼키는 런타임
+        let rigid = MisbehavingRuntime(runtime)
+        rigid.swallowResize = true
+        let resizeOutcomes = WebGPUConformance.run(on: rigid, only: ["resize-canvas"])
+        XCTAssertEqual(resizeOutcomes.first?.status, .failed, "resize를 삼켰는데 통과했다")
+
+        // (7) 준비 신호가 꺼진 채 굳은 런타임
+        let stuck = MisbehavingRuntime(runtime)
+        stuck.forcedReadiness = false
+        let readyOutcomes = WebGPUConformance.run(on: stuck, only: ["frame-readiness"])
+        XCTAssertEqual(readyOutcomes.first?.status, .failed, "준비 신호가 false인데 통과했다")
     }
 }
 
@@ -96,19 +141,38 @@ private final class MisbehavingRuntime: WebGPURuntime {
     private let inner: WebGPURuntime
     private let corrupt: ([String: Any]) -> [String: Any]
 
-    init(_ inner: WebGPURuntime, corrupt: @escaping ([String: Any]) -> [String: Any]) {
+    /// execute **전에** 페이로드를 변조한다 — present 강제 같은 프레임 경계 위반용.
+    var corruptPayload: (([String: Any]) -> [String: Any])?
+    /// readBuffer 콜백 결과를 변조한다.
+    var corruptReadBuffer: (([String: Any]) -> [String: Any])?
+    /// shaderCompilationInfo 결과를 변조한다.
+    var corruptCompilationInfo: (([String: Any]) -> [String: Any])?
+    /// resizeCanvas를 조용히 삼킨다.
+    var swallowResize = false
+    /// isReadyForNextFrame을 강제한다.
+    var forcedReadiness: Bool?
+
+    init(_ inner: WebGPURuntime, corrupt: @escaping ([String: Any]) -> [String: Any] = { $0 }) {
         self.inner = inner
         self.corrupt = corrupt
     }
 
-    func execute(_ payload: [String: Any]) -> [String: Any] { corrupt(inner.execute(payload)) }
+    func execute(_ payload: [String: Any]) -> [String: Any] {
+        corrupt(inner.execute(corruptPayload?(payload) ?? payload))
+    }
 
     func adapterInfo() -> [String: Any] { inner.adapterInfo() }
-    func shaderCompilationInfo(handle: Int) -> [String: Any] { inner.shaderCompilationInfo(handle: handle) }
+    func shaderCompilationInfo(handle: Int) -> [String: Any] {
+        let result = inner.shaderCompilationInfo(handle: handle)
+        return corruptCompilationInfo?(result) ?? result
+    }
     func canvasInfo(identifier: String) -> [String: Any] { inner.canvasInfo(identifier: identifier) }
 
     func readBuffer(handle: Int, offset: Int, size: Int?, completion: @escaping ([String: Any]) -> Void) {
-        inner.readBuffer(handle: handle, offset: offset, size: size, completion: completion)
+        let corruptReadBuffer = self.corruptReadBuffer
+        inner.readBuffer(handle: handle, offset: offset, size: size) { result in
+            completion(corruptReadBuffer?(result) ?? result)
+        }
     }
 
     func decodeImage(
@@ -128,6 +192,7 @@ private final class MisbehavingRuntime: WebGPURuntime {
         try inner.attachOffscreenCanvas(identifier: identifier, size: size)
     }
     func resizeCanvas(identifier: String, drawableSize: CGSize) {
+        guard !swallowResize else { return }
         inner.resizeCanvas(identifier: identifier, drawableSize: drawableSize)
     }
     func detachCanvas(identifier: String) { inner.detachCanvas(identifier: identifier) }
@@ -135,7 +200,7 @@ private final class MisbehavingRuntime: WebGPURuntime {
         try inner.readCanvasPixels(identifier: identifier)
     }
 
-    var isReadyForNextFrame: Bool { inner.isReadyForNextFrame }
+    var isReadyForNextFrame: Bool { forcedReadiness ?? inner.isReadyForNextFrame }
     func processEvents() { inner.processEvents() }
     func reset() { inner.reset() }
 }

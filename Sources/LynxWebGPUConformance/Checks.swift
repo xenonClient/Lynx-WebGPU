@@ -47,6 +47,16 @@ public extension WebGPUConformance {
             handleTypeMismatch,
             adapterLimitsSpelling,
             canvasInfoReporting,
+            // 프레임 수명·콜백 API (LifecycleChecks.swift)
+            presentFalsePreservesFrame,
+            presentExpiresFrame,
+            emptyPresentClosesFrame,
+            readBufferContract,
+            resizeCanvasReflects,
+            shaderCompilationInfoShape,
+            mslOptional,
+            decodeImageUpload,
+            frameReadiness,
         ]
     }
 

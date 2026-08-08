@@ -64,9 +64,12 @@ public final class ConformanceHarness {
     }
 
     /// 오류 없이 실행됐는지 확인한다. 실패하면 오류를 그대로 메시지에 담는다.
+    /// `present: false`는 프레임 **중간** 제출이다 — 수명 검사가 이 경계를 직접 몬다.
     @discardableResult
-    public func executeExpectingSuccess(_ commands: [[String: Any]]) throws -> [String: Any] {
-        let result = execute(commands)
+    public func executeExpectingSuccess(
+        _ commands: [[String: Any]], present: Bool = true
+    ) throws -> [String: Any] {
+        let result = execute(commands, present: present)
         guard (result["ok"] as? Bool) == true else {
             throw ConformanceFailure("커맨드 실행 실패 — \(Self.describeErrors(result))")
         }
