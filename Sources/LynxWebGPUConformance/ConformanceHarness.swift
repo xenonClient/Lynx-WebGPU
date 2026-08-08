@@ -169,8 +169,11 @@ public final class ConformanceHarness {
             box.value = result
             semaphore.signal()
         }
-        guard semaphore.wait(timeout: .now() + timeout) == .success else {
-            throw ConformanceFailure("readBuffer가 \(timeout)초 안에 돌아오지 않았다 (handle \(handle))")
+        // 한 번에 기다리지 않고 짧게 쪼개어 사이사이 펌프를 돌린다 — 디스플레이 링크가 없는
+        // 이 환경에서는 하네스가 유일한 펌프 호출자다 (`WebGPURuntime.processEvents`).
+        // 펌프가 필요 없는 런타임(Metal)은 첫 대기에서 바로 통과하므로 동작이 같다.
+        try waitPumping(semaphore, timeout: timeout) {
+            ConformanceFailure("readBuffer가 \(timeout)초 안에 돌아오지 않았다 (handle \(handle))")
         }
         guard (box.value["ok"] as? Bool) == true, let data = box.value["data"] as? Data else {
             throw ConformanceFailure("readBuffer 실패 (handle \(handle)) — \(Self.describeErrors(box.value))")
@@ -181,6 +184,20 @@ public final class ConformanceHarness {
     public func readBufferSync<T>(handle: Int, as type: T.Type, size: Int? = nil) throws -> [T] {
         let data = try readBufferSync(handle: handle, size: size)
         return data.withUnsafeBytes { Array($0.bindMemory(to: T.self)) }
+    }
+
+    /// 세마포어를 조각내어 기다리며 사이사이 `processEvents()`를 돌린다.
+    /// 콜백형 API를 기다리는 검사(`readBufferSync`·이미지 디코딩)가 공유한다.
+    public func waitPumping(
+        _ semaphore: DispatchSemaphore,
+        timeout: TimeInterval,
+        onTimeout: () -> ConformanceFailure
+    ) throws {
+        let deadline = Date(timeIntervalSinceNow: timeout)
+        while semaphore.wait(timeout: .now() + 0.01) != .success {
+            guard Date() < deadline else { throw onTimeout() }
+            runtime.processEvents()
+        }
     }
 
     // MARK: - 기기 기능

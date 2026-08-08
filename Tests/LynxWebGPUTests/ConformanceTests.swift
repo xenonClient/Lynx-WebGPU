@@ -136,5 +136,6 @@ private final class MisbehavingRuntime: WebGPURuntime {
     }
 
     var isReadyForNextFrame: Bool { inner.isReadyForNextFrame }
+    func processEvents() { inner.processEvents() }
     func reset() { inner.reset() }
 }

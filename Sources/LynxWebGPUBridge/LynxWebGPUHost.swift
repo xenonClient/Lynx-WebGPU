@@ -48,6 +48,9 @@ public final class LynxWebGPUHost: NSObject {
         LynxWebGPUHostRegistry.register(self, for: lynxView)
         ticker.onFrame = { [weak self] timestamp, deltaSeconds in
             guard let self else { return }
+            // 펌프는 준비 게이트 **앞**이다 — 완료 통지가 펌프에서 나오는 런타임(Dawn의
+            // processEvents)이라면, 게이트 뒤에 두는 순간 포화가 영영 안 풀린다.
+            self.runtime.processEvents()
             // GPU가 in-flight 한도만큼 밀려 있으면 이 틱을 건너뛴다. 여기서 이벤트를 보내면
             // JS가 프레임을 만들다 nextDrawable()에서 **JS 스레드 전체가** 서기 때문이다 —
             // 프레임을 거르는 쪽이 낫다. 완료가 돌아오면 다음 틱부터 재개된다.

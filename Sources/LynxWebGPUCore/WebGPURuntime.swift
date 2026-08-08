@@ -45,11 +45,32 @@ public struct WGPUImageDecodeOptions {
 /// 브리지(`LynxWebGPUBridge`)는 이 프로토콜만 본다. **JS 번들은 어느 쪽이든 손대지 않는다** —
 /// 그 성질을 지키는 것이 이 경계의 존재 이유다.
 ///
-/// ## 스레딩
+/// ## 스레딩·수명 규약
 ///
-/// `execute`는 Lynx의 **JS 백그라운드 스레드**에서 불린다. 구현이 직렬화 책임을 진다.
-/// 캔버스 붙이기·크기 갱신은 **메인 스레드**에서 온다 (UI 레이아웃). 두 스레드가 만나므로
-/// 구현은 표면 등록부를 잠가야 한다.
+/// 구현이 지켜야 할 계약이다 — 문서로만 있고 컴파일러가 못 잡는 것들이라 여기 못 박는다
+/// (`docs/COMMAND-STREAM.md` §5-1과 같은 내용).
+///
+/// - `execute`는 Lynx의 **JS 백그라운드 스레드**에서 불린다. 구현이 직렬화 책임을 진다.
+/// - `attachCanvas`·`attachOffscreenCanvas`·`resizeCanvas`는 **메인 스레드**에서 온다
+///   (UI 레이아웃). attachCanvas 안에서 레이어 프로퍼티를 동기로 설정해도 안전한 근거다.
+/// - `detachCanvas`는 **임의 스레드**에서 올 수 있다 — 엘리먼트 deinit이 부른다.
+///   표면 등록부는 락으로 보호할 것 (execute와 동시 진입 가능).
+/// - `reset`은 메인 스레드(페이지 이탈·핫 리로드)에서 오며 execute와 동시 진입할 수 있다.
+/// - `readBuffer`·`decodeImage`의 완료 콜백은 **아무 스레드에서, 동기로도** 부를 수 있다 —
+///   이미 끝난 작업이면 호출 스레드에서 즉시 와도 계약 위반이 아니다. 호출자가 그렇게 다룬다.
+/// - 커맨드 스트림 `configureCanvas`의 레이어 반영은 **비동기여도 된다** (CAMetalLayer
+///   프로퍼티는 메인 스레드 전용이라 JS 스레드에서는 넘겨야 한다 — `main.sync`는 교착).
+///   첫 프레임이 이전 설정으로 나갈 수 있으므로, `getCurrentTexture`는 캐시가 아니라
+///   **실제 드로어블의 포맷**을 보고해야 한다.
+/// - `isReadyForNextFrame`·`processEvents`는 메인 스레드(프레임 티커)에서 매 틱 불린다 —
+///   저비용·논블로킹이어야 한다.
+///
+/// ## 비동기 오류 전달
+///
+/// 배치 안에서 잡힌 오류는 그 배치 결과의 `errors`로 (스코프가 잡은 것은 `errorScopes`로)
+/// 돌아간다. **배치가 끝난 뒤에 드러나는 실패**(GPU 실행 실패, Dawn의 uncaptured error)는
+/// 콜백 통로가 없다 — 모아 두었다가 **다음 배치 결과의 `errors`에 실어 보낸다.**
+/// `WGPUDeferredErrorQueue`가 그 자리다.
 public protocol WebGPURuntime: AnyObject {
 
     // MARK: - 커맨드 스트림
@@ -59,8 +80,10 @@ public protocol WebGPURuntime: AnyObject {
     /// - Parameter payload: `{"commands": [{op: …}, …], "present": Bool}`.
     ///   `present`가 false면 프레임 **중간**의 내부 제출이다 — 커밋은 하되 드로어블 present와
     ///   프레임 스코프 핸들 만료는 뒤따라올 진짜 프레임 제출로 미룬다.
-    /// - Returns: `{"ok": Bool, "errors": [...], "canvases": {...}, "errorScopes": [...]}`.
-    ///   JS로 그대로 돌아간다 — 모양은 `docs/COMMAND-STREAM.md` §2가 정한다.
+    /// - Returns: `{"ok", "commandCount", "objects"}` 항상 + 비지 않을 때만
+    ///   `{"errors", "canvases", "errorScopes"}`. JS로 그대로 돌아간다 — 모양은
+    ///   `docs/COMMAND-STREAM.md` §2가 정하고, 조립은 `WGPUBatchResult`를 쓸 것
+    ///   (키 철자·생략 규칙을 백엔드마다 다시 맞추지 않게).
     func execute(_ payload: [String: Any]) -> [String: Any]
 
     // MARK: - 조회
@@ -123,6 +146,18 @@ public protocol WebGPURuntime: AnyObject {
     /// 만들면 드로어블 획득에서 **JS 스레드 전체**가 서기 때문이다.
     var isReadyForNextFrame: Bool { get }
 
+    /// 비동기 완료 펌프 — 명시적 이벤트 처리를 요구하는 백엔드를 위한 자리다
+    /// (Dawn의 `wgpuInstanceProcessEvents`가 여기 들어간다).
+    ///
+    /// 프레임 티커가 **틱을 건너뛸 때도** 디스플레이 주기마다 부른다 — 완료 통지가 펌프에서
+    /// 나오는 런타임이라면 포화 해제 자체가 펌프에 달려 있고, JS가 idle일 때도 `mapAsync`류
+    /// 완료가 굶지 않아야 하기 때문이다. 적합성 하네스도 콜백 대기 중에 주기적으로 부른다.
+    ///
+    /// 정확성을 이 호출에만 의존하면 안 된다 — 프레임 루프가 도는 동안 지연 상한을 좁히는
+    /// 용도다. 티커가 없는 구성(프레임 루프를 켜지 않은 앱)에서도 완료는 도착해야 하므로,
+    /// 펌프가 필요한 런타임은 자체 대기 수단(전용 스레드·spontaneous 콜백)을 갖출 것.
+    func processEvents()
+
     // MARK: - 수명
 
     /// 모든 GPU 객체를 버린다 (페이지 이탈·핫 리로드).
@@ -130,6 +165,11 @@ public protocol WebGPURuntime: AnyObject {
 }
 
 public extension WebGPURuntime {
+    /// 기본은 no-op — 완료가 스스로 도착하는 백엔드(Metal의 완료 핸들러)는 펌프할 것이 없다.
+    /// (프로토콜 요구와 짝이다 — extension에만 두면 프로토콜 타입 경유 호출이 여기 고정되어
+    /// 구현체의 펌프가 불리지 않는다.)
+    func processEvents() {}
+
     /// 편의 오버로드 — 버퍼 전체를 읽는다.
     func readBuffer(handle: Int, completion: @escaping ([String: Any]) -> Void) {
         readBuffer(handle: handle, offset: 0, size: nil, completion: completion)
