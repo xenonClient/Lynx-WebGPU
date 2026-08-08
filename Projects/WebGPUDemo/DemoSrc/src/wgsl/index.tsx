@@ -98,6 +98,15 @@ fn checker(uv: vec2f) -> f32 {
 fn fs_main(in: Out) -> @location(0) vec4f {
   let uv = in.uv;
 
+  // 샘플은 **uniform 제어 흐름**에서만 부를 수 있다 (명세의 uniformity 분석 — 암시적 미분
+  // 때문). 띠 분기의 return이 시작되기 전에 전부 샘플해 두고, 아래에서는 고르기만 한다.
+  // 관대한 자체 트랜스파일러에서는 분기 안 샘플도 돌았지만 Dawn/브라우저는 명세대로 거부한다.
+  let local = vec2f(fract(uv.x * 2.0), (uv.y - 0.40) / 0.36);
+  // 일부러 [0,1] 밖으로 넘긴다 — repeat 샘플러라 클램프가 없으면 반대쪽이 감겨 들어온다.
+  let coord = local * 1.30 - vec2f(0.15, 0.15);
+  let clampedSample = textureSampleBaseClampToEdge(frame, frameSampler, coord);
+  let wrappedSample = textureSample(frame2d, frameSampler, coord);
+
   // 위: 타입 없는 상수식. HUD가 얹히는 자리라 어두운 쪽이 위로 오게 두었다.
   if (uv.y < 0.40) {
     let t = uv.y / 0.40;
@@ -106,19 +115,13 @@ fn fs_main(in: Out) -> @location(0) vec4f {
     return vec4f(mix(base, HIGHLIGHT, 0.06), 1.0);
   }
 
-  // 가운데: 같은 텍스처 · 같은 좌표를 왼쪽만 가장자리 클램프로 샘플한다.
+  // 가운데: 같은 텍스처 · 같은 좌표를 왼쪽만 가장자리 클램프로 샘플한 결과를 고른다.
   if (uv.y < 0.76) {
-    let local = vec2f(fract(uv.x * 2.0), (uv.y - 0.40) / 0.36);
-    // 일부러 [0,1] 밖으로 넘긴다 — repeat 샘플러라 클램프가 없으면 반대쪽이 감겨 들어온다.
-    let coord = local * 1.30 - vec2f(0.15, 0.15);
     // 두 패널 경계에 가는 선을 둬서 좌우 비교임을 분명히 한다.
     if (abs(uv.x - 0.5) < 0.004) {
       return vec4f(0.04, 0.05, 0.08, 1.0);
     }
-    if (uv.x < 0.5) {
-      return textureSampleBaseClampToEdge(frame, frameSampler, coord);
-    }
-    return textureSample(frame2d, frameSampler, coord);
+    return select(wrappedSample, clampedSample, uv.x < 0.5);
   }
 
   // 아래: arrayLength()가 정한 칸 수 — 길이가 틀리면 칸 수가 달라진다.
