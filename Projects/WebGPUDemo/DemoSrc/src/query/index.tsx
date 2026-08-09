@@ -3,20 +3,20 @@ import { DemoScene, type SceneContext } from '../scene.jsx'
 import gpu, { GPUBufferUsage, GPUMapMode, GPUTextureUsage } from '../webgpu.js'
 
 /**
- * GPU에게 되묻는 것들 — occlusion 쿼리 · 타임스탬프 · 오류 스코프.
+ * The things you ask the GPU back about — occlusion queries, timestamps, error scopes.
  *
- * 셋 다 화면에 직접 그려지지 않는다. 그래서 **판정을 HUD에 숫자로 띄운다**:
- * 막대가 원을 가릴수록 살아남은 샘플 수가 줄고, 완전히 가려지면 정확히 0이 된다.
+ * None of the three draw directly to the screen. So **the verdict is shown as numbers on the HUD**:
+ * the more the bar hides the circle, the fewer samples survive, and fully hidden it is exactly 0.
  *
- * 오류 스코프는 버튼 두 개로 대비를 보여 준다. 같은 잘못된 호출을 스코프 안에서 하면
- * 노란 줄에만 뜨고, 밖에서 하면 전역 핸들러를 타고 **빨간 줄**로 내려간다.
+ * Error scopes show the contrast through two buttons. The same bad call made inside a scope shows only on
+ * the yellow line; made outside, it rides the global handler down to **the red line**.
  */
 const SHADER = /* wgsl */ `
 struct Uniforms {
   time: f32,
   aspect: f32,
   depth: f32,
-  center: f32,    // 막대의 가로 중심
+  center: f32,    // the bar's horizontal center
 };
 @group(0) @binding(0) var<uniform> u: Uniforms;
 
@@ -29,13 +29,13 @@ struct Out {
 fn vs_main(@builtin(vertex_index) index: u32) -> Out {
   var corners = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
   var out: Out;
-  // 깊이를 유니폼에서 받는다 — 막대가 앞, 원이 뒤다.
+  // Depth comes from a uniform — the bar in front, the circle behind.
   out.position = vec4f(corners[index], u.depth, 1.0);
   out.uv = corners[index];
   return out;
 }
 
-// 가리개 — 세로 막대가 좌우로 쓸고 지나간다.
+// The occluder — a vertical bar sweeping left and right.
 @fragment
 fn fs_bar(in: Out) -> @location(0) vec4f {
   let half = 0.24;
@@ -47,8 +47,8 @@ fn fs_bar(in: Out) -> @location(0) vec4f {
   return vec4f(shade * 0.85, shade * 0.95, shade * 1.25, 1.0);
 }
 
-// 관측 대상 — 이 드로우가 통과시킨 샘플 수를 occlusion 쿼리가 센다.
-// 좌표는 **짧은 쪽이 ±1이 되도록** 보정한다 (세로 화면에서 원이 좌우로 넘치지 않게).
+// The observed object — the occlusion query counts the samples this draw let through.
+// The coordinates are corrected so that **the short side is ±1** (so the circle does not overflow sideways on a portrait screen).
 @fragment
 fn fs_target(in: Out) -> @location(0) vec4f {
   let p = vec2f(in.uv.x * u.aspect, in.uv.y) / min(u.aspect, 1.0);
@@ -75,7 +75,7 @@ async function setup(
 
   const module = device.createShaderModule({ code: SHADER, label: 'query' })
 
-  // 명세상 auto 파생 레이아웃은 파이프라인 전용 — 공유하려면 명시적 레이아웃이어야 한다.
+  // Per the spec an auto derived layout is pipeline-exclusive — sharing requires an explicit layout.
   const sharedBindLayout = device.createBindGroupLayout({
     entries: [{ binding: 0, visibility: 0x3 /* VERTEX|FRAGMENT */, buffer: {} }],
   })
@@ -108,22 +108,22 @@ async function setup(
   const bar = makeUniforms('query.bar')
   const target = makeUniforms('query.target')
 
-  // occlusion 쿼리 1개 — 결과는 u64 하나(8바이트)다.
+  // One occlusion query — the result is a single u64 (8 bytes).
   const occlusionQuerySet = device.createQuerySet({ type: 'occlusion', count: 1 })
   const occlusionResults = device.createBuffer({
     size: 8,
     usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC,
     label: 'occlusion.results',
   })
-  // 리드백은 **전용 스테이징 버퍼**로 받는다 — MAP_READ는 COPY_DST와만 조합할 수 있고(명세),
-  // 매핑 중인 버퍼는 큐 작업에서 거부되므로 resolve 대상을 직접 매핑하면 다음 프레임이 막힌다.
+  // The readback goes into a **dedicated staging buffer** — MAP_READ can only combine with COPY_DST (spec),
+  // and a buffer being mapped is rejected by queue operations, so mapping the resolve target directly would block the next frame.
   const occlusionStaging = device.createBuffer({
     size: 8,
     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
     label: 'occlusion.staging',
   })
 
-  // 타임스탬프는 기기 조건이 붙는다 — 만들기 전에 adapter.features로 물어본다.
+  // Timestamps come with device conditions — the adapter.features are asked before creating one.
   const timestampQuerySet = hasTimestamp
     ? device.createQuerySet({ type: 'timestamp', count: 2 })
     : null
@@ -142,7 +142,7 @@ async function setup(
       })
     : null
 
-  // 깊이 어태치먼트는 캔버스를 따라간다 — 막대가 원을 실제로 가리려면 깊이 테스트가 필요하다.
+  // The depth attachment follows the canvas — the bar needs a depth test to actually hide the circle.
   let depthTexture: any = null
   let depthView: any = null
   let depthWidth = 0
@@ -162,7 +162,7 @@ async function setup(
     depthHeight = height
   }
 
-  /** 잘못된 파이프라인을 일부러 만든다 — 정점 포맷 철자가 명세에 없다. */
+  /** Deliberately builds a bad pipeline — the vertex format spelling is not in the spec. */
   function makeBadPipeline() {
     device.createRenderPipeline({
       layout: 'auto',
@@ -181,22 +181,22 @@ async function setup(
   actionsRef.current.probe = (inScope: boolean) => {
     if (!inScope) {
       makeBadPipeline()
-      report('스코프 밖에서 실패시켰다 — 다음 제출에서 전역 핸들러(빨간 줄)로 내려간다')
+      report('failed outside a scope — it rides down to the global handler (the red line) on the next submission')
       return
     }
     device.pushErrorScope('validation')
     makeBadPipeline()
-    // popErrorScope는 결과를 받아야 하므로 스스로 제출한다 (mapAsync와 같은 성격).
+    // popErrorScope has to get a result, so it submits itself (the same nature as mapAsync).
     device
       .popErrorScope()
       .then((error: any) => {
         report(
           error
-            ? `스코프가 잡았다 [${error.kind}] ${error.message} — 전역 핸들러로는 가지 않았다`
-            : '스코프에 아무 오류도 잡히지 않았다'
+            ? `the scope caught it [${error.kind}] ${error.message} — it never went to the global handler`
+            : 'the scope caught no error at all'
         )
       })
-      .catch((error: unknown) => report(`스코프 확인 실패: ${String(error)}`))
+      .catch((error: unknown) => report(`scope check failed: ${String(error)}`))
   }
 
   let time = 0
@@ -209,7 +209,7 @@ async function setup(
     ensureDepth(width, height)
 
     const aspect = width / height
-    // 막대는 앞(0.2), 원은 뒤(0.6) — 겹치는 곳에서 원이 깊이 테스트에 진다.
+    // The bar in front (0.2), the circle behind (0.6) — where they overlap the circle loses the depth test.
     bar.data[0] = time
     bar.data[1] = aspect
     bar.data[2] = 0.2
@@ -236,7 +236,7 @@ async function setup(
         depthLoadOp: 'clear',
         depthStoreOp: 'store',
       },
-      // 쿼리는 **패스를 열 때만** 붙일 수 있다.
+      // A query can only be attached **when opening a pass**.
       occlusionQuerySet,
     }
     if (timestampQuerySet) {
@@ -253,7 +253,7 @@ async function setup(
     pass.setBindGroup(0, bar.group)
     pass.draw(3)
 
-    // 이 드로우가 통과시킨 샘플만 센다.
+    // Only the samples this draw let through are counted.
     pass.beginOcclusionQuery(0)
     pass.setPipeline(targetPipeline)
     pass.setBindGroup(0, target.group)
@@ -267,7 +267,7 @@ async function setup(
       encoder.resolveQuerySet(timestampQuerySet, 0, 2, timestampResults, 0)
     }
 
-    // 20프레임에 한 번만 스테이징으로 복사한다 — 리드백은 GPU 완료를 기다리는 경로다.
+    // Copied to staging only once every 20 frames — a readback waits for GPU completion.
     const wantsReadback = ++frame % 20 === 0 && !reading
     if (wantsReadback) {
       encoder.copyBufferToBuffer(occlusionResults, 0, occlusionStaging, 0, 8)
@@ -286,29 +286,29 @@ async function setup(
 
     Promise.all(pending)
       .then(([occlusion, timestamps]: ArrayBuffer[]) => {
-        // u64를 하위 32비트로 읽는다 — 샘플 수가 40억을 넘을 일은 없다.
+        // The u64 is read as its low 32 bits — the sample count will never pass 4 billion.
         const samples = new Uint32Array(occlusion)[0]
         if (samples > peakSamples) peakSamples = samples
         const visible = Math.round((samples / peakSamples) * 100)
 
         let line = samples === 0
-          ? 'occlusion 0 — 원이 완전히 가려졌다'
-          : `occlusion ${samples} 샘플 · 보이는 비율 ${visible}%`
+          ? 'occlusion 0 — the circle is fully hidden'
+          : `occlusion ${samples} samples · ${visible}% visible`
 
         if (timestamps) {
-          // u64 두 개. hi·lo를 double로 합쳐도 2^53 안이라 차이가 정확하다.
+          // Two u64s. Combining hi and lo as a double stays inside 2^53, so the difference is exact.
           const parts = new Uint32Array(timestamps)
           const start = parts[1] * 4294967296 + parts[0]
           const end = parts[3] * 4294967296 + parts[2]
-          line += ` · GPU 패스 ${((end - start) / 1e6).toFixed(3)}ms`
+          line += ` · GPU pass ${((end - start) / 1e6).toFixed(3)}ms`
         } else {
-          line += ' · 타임스탬프 미지원 기기'
+          line += ' · this device does not support timestamps'
         }
         report(line)
       })
-      .catch((error: unknown) => report(`쿼리 리드백 실패: ${String(error)}`))
+      .catch((error: unknown) => report(`query readback failed: ${String(error)}`))
       .finally(() => {
-        // 매핑을 풀어야 다음 주기의 복사가 이 버퍼를 다시 쓸 수 있다.
+        // The mapping must be released for the next cycle's copy to use this buffer again.
         occlusionStaging.unmap()
         if (timestampStaging) timestampStaging.unmap()
         reading = false
@@ -321,8 +321,8 @@ function QueryScene() {
 
   return (
     <DemoScene
-      title="쿼리 · 오류 스코프"
-      subtitle="가려진 샘플 수 · GPU 패스 시간 · 잡은 오류 — 화면이 아니라 숫자로 나오는 것들"
+      title="Queries · error scopes"
+      subtitle="Occluded sample count · GPU pass time · caught errors — the things that come out as numbers, not on screen"
       setup={(scene) => setup(scene, actionsRef)}
       controls={
         <view className="controls">
@@ -330,13 +330,13 @@ function QueryScene() {
             className="control-button"
             bindtap={() => actionsRef.current.probe && actionsRef.current.probe(true)}
           >
-            스코프 안에서 실패
+            Fail inside a scope
           </text>
           <text
             className="control-button"
             bindtap={() => actionsRef.current.probe && actionsRef.current.probe(false)}
           >
-            스코프 밖에서 실패
+            Fail outside a scope
           </text>
         </view>
       }

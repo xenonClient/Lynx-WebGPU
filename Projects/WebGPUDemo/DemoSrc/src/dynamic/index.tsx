@@ -3,13 +3,13 @@ import { DemoScene, type SceneContext } from '../scene.jsx'
 import { GPUTextureUsage } from '../webgpu.js'
 
 /**
- * 동적 텍스처 — CPU가 만든 플라스마를 **매 프레임 writeTexture로** 올린다.
+ * Dynamic texture — a CPU-built plasma uploaded **with writeTexture every frame**.
  *
- * writeTexture가 호출마다 GPU 완주를 기다리던 시절에는 불가능했던 프로파일이다.
- * 지금은 스테이징 + blit으로 큐 순서를 타므로(스테이징도 풀로 재사용) 128×128 RGBA(64KB)를
- * 매 프레임 올려도 프레임이 서지 않는다. 바이트열은 ArrayBuffer로 그대로 건너간다.
+ * It was an impossible profile back when writeTexture waited for the GPU to finish on every call.
+ * Now it rides the queue order via staging plus a blit (the staging is pooled and reused too), so a
+ * 128×128 RGBA (64KB) upload every frame does not stall the frame. The bytes cross as an ArrayBuffer as they are.
  *
- * HUD의 live 객체 수는 submit 응답의 `objects`다 — 프레임을 거듭해도 일정해야 정상이다
+ * The HUD's live object count is the `objects` from the submit response — staying constant across frames is normal
  * (docs/JS-AUTHORING.md §8).
  */
 const SHADER = /* wgsl */ `
@@ -32,14 +32,14 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-  // 업로드가 진짜 매 프레임 도는지는 눈으로 보인다 — 텍셀 자체가 흐른다.
+  // Whether the upload really runs every frame is visible by eye — the texels themselves flow.
   return textureSample(tex, samp, in.uv);
 }
 `
 
 const SIZE = 128
 
-/** 256색 팔레트 — 심해 → 청록 → 호박색으로 도는 그라데이션. */
+/** A 256-color palette — a gradient running deep sea → teal → amber. */
 function makePalette() {
   const palette = new Uint8Array(256 * 4)
   for (let index = 0; index < 256; index++) {
@@ -52,7 +52,7 @@ function makePalette() {
   return palette
 }
 
-/** sin 루프를 픽셀마다 돌리면 PrimJS에서 비싸다 — 파형을 축별로 미리 계산해 조합만 한다. */
+/** A per-pixel sin loop is expensive on PrimJS — the waveforms are precomputed per axis and only combined. */
 function makeWaveTable() {
   const table = new Uint8Array(512)
   for (let index = 0; index < 512; index++) {
@@ -85,7 +85,7 @@ function setup({ device, context, format, report }: SceneContext) {
 
   const palette = makePalette()
   const wave = makeWaveTable()
-  const pixels = new Uint8Array(SIZE * SIZE * 4) // 재사용 — 프레임마다 할당하지 않는다
+  const pixels = new Uint8Array(SIZE * SIZE * 4) // reused — not allocated per frame
   const rowWave = new Uint16Array(SIZE)
   const colWave = new Uint16Array(SIZE)
 
@@ -95,7 +95,7 @@ function setup({ device, context, format, report }: SceneContext) {
   return ({ delta }: { delta: number }) => {
     time += delta
 
-    // 플라스마: 축별 파형을 먼저 만들고 픽셀 루프는 덧셈 + 팔레트 조회만 한다.
+    // The plasma: the per-axis waveforms are built first, and the pixel loop only adds and looks up the palette.
     const t1 = (time * 0.11) | 0
     const t2 = (time * 0.07) | 0
     const t3 = (time * 0.05) | 0
@@ -115,7 +115,7 @@ function setup({ device, context, format, report }: SceneContext) {
       }
     }
 
-    // 이 씬의 핵심 — 매 프레임 64KB 텍스처 업로드.
+    // The heart of this scene — a 64KB texture upload every frame.
     device.queue.writeTexture(
       { texture },
       pixels,
@@ -138,17 +138,17 @@ function setup({ device, context, format, report }: SceneContext) {
     pass.end()
     const result = device.queue.submit([encoder.finish()])
 
-    // live 객체 수가 일정하면 프레임 경로에 destroy 누락이 없다는 뜻이다.
+    // A constant live object count means there is no missing destroy on the frame path.
     if (++frames % 120 === 0 && result && typeof result.objects === 'number') {
-      report(`live GPU 객체 ${result.objects}개 · 프레임당 ${(SIZE * SIZE * 4) / 1024}KB 업로드`)
+      report(`${result.objects} live GPU objects · ${(SIZE * SIZE * 4) / 1024}KB uploaded per frame`)
     }
   }
 }
 
 root.render(
   <DemoScene
-    title="동적 텍스처"
-    subtitle="CPU 플라스마를 매 프레임 writeTexture로 — 큐 순서 업로드 + 스테이징 풀"
+    title="Dynamic texture"
+    subtitle="A CPU plasma through writeTexture every frame — queue-ordered upload + a staging pool"
     setup={setup}
   />
 )

@@ -5,31 +5,31 @@ import '../elements.d.ts'
 import { ChecklistHud, type Check } from '../checklist-hud.jsx'
 
 /**
- * 명세 표면 체크리스트 — 최근에 채운 기능들이 **실제로 도는지 값으로** 확인한다.
+ * The spec surface checklist — it confirms **by value** that the recently filled-in features really run.
  *
- * `three` 씬이 라이브러리 이식 관점의 검증이라면 이쪽은 shim/네이티브 계약 자체를 본다.
- * 단위 테스트가 이미 같은 계약을 걸고 있지만, 여기서는 **진짜 GPU와 진짜 브리지**를 지나며
- * 같은 결과가 나오는지 본다 — 목(mock)이 맞춰 준 계약이 실기에서도 맞는지가 요점이다.
+ * Where the `three` scene verifies from a library-porting angle, this one looks at the shim/native contract itself.
+ * The unit tests already hold the same contract, but here it passes through **a real GPU and a real bridge**
+ * to see whether the same results come out — whether a contract satisfied by mocks holds on real hardware.
  */
 
 const CHECKS = [
-  'adapter.info (명세 GPUAdapterInfo)',
-  'adapter.limits (명세 이름 31종)',
+  'adapter.info (the spec GPUAdapterInfo)',
+  'adapter.limits (the 31 spec names)',
   'device.features / lost',
-  'getCompilationInfo — 깨진 셰이더',
-  'getCompilationInfo — 정상 셰이더',
-  'createRenderPipelineAsync 성공',
-  'createRenderPipelineAsync 실패 → GPUPipelineError',
+  'getCompilationInfo — a broken shader',
+  'getCompilationInfo — a healthy shader',
+  'createRenderPipelineAsync success',
+  'createRenderPipelineAsync failure → GPUPipelineError',
   'onuncapturederror',
-  'clearBuffer (구간만 0으로)',
-  'copyBufferToBuffer 짧은 형태',
+  'clearBuffer (only the range zeroed)',
+  'copyBufferToBuffer, the short form',
   'getMappedRange(offset, size)',
-  '디버그 마커 (패스 안팎 + 번들)',
-  'core 포맷 rgb10a2uint · rgb9e5ufloat',
+  'debug markers (inside and outside a pass + a bundle)',
+  'the core formats rgb10a2uint · rgb9e5ufloat',
   'canvas unconfigure / getConfiguration',
 ]
 
-/** 지난 배치의 오류를 한 번만 모으는 수집기 — 검증마다 갈아 끼운다. */
+/** A collector that gathers the previous batch's errors once — swapped in per check. */
 function makeErrorSink(device: any) {
   /** @type {string[]} */
   const collected: string[] = []
@@ -52,7 +52,7 @@ const TRIANGLE = /* wgsl */ `
 `
 
 function SpecScene() {
-  const [status, setStatus] = useState('준비 중…')
+  const [status, setStatus] = useState('getting ready…')
   const [checks, setChecks] = useState<Check[]>(CHECKS.map((label) => ({ label, state: 'wait' })))
 
   useEffect(() => {
@@ -67,24 +67,24 @@ function SpecScene() {
       )))
     }
 
-    /** 검증 하나가 던져도 나머지는 계속 돈다 — 첫 실패에서 멈추면 정보가 가장 적다. */
+    /** The rest keep running even if one check throws — stopping at the first failure gives the least information. */
     async function check(index: number, run: () => Promise<{ ok: boolean, detail: string }>) {
       try {
         const result = await run()
         mark(index, result.ok, result.detail)
       } catch (error) {
-        mark(index, false, `예외: ${(error && (error as Error).message) || error}`.slice(0, 90))
+        mark(index, false, `exception: ${(error && (error as Error).message) || error}`.slice(0, 90))
       }
     }
 
     async function boot() {
       const adapter = await gpu.requestAdapter()
-      if (!adapter) throw new Error('어댑터 없음')
+      if (!adapter) throw new Error('no adapter')
       device = await adapter.requestDevice()
       const sink = makeErrorSink(device)
       setStatus(`${adapter.info.description || adapter.name} · ${adapter.info.architecture || '?'}`)
 
-      // ① adapter.info — 명세 이름이 채워져 있고, 모르는 자리는 빈 문자열이다.
+      // ① adapter.info — the spec names are filled in and unknown slots are the empty string.
       await check(0, async () => {
         const info = adapter.info
         const ok = info.vendor === 'apple' && typeof info.description === 'string'
@@ -93,7 +93,7 @@ function SpecScene() {
         return { ok, detail: `${info.vendor}/${info.architecture}` }
       })
 
-      // ② limits — 명세 철자로 전 항목이 있고 기본값 이상이다.
+      // ② limits — every item is present under the spec spelling and at or above the default.
       await check(1, async () => {
         const required = [
           'maxTextureDimension2D', 'maxBindGroups', 'maxBufferSize', 'maxVertexBuffers',
@@ -102,37 +102,37 @@ function SpecScene() {
         ]
         const missing = required.filter((key) => typeof adapter.limits[key] !== 'number')
         const ok = missing.length === 0 && adapter.limits.maxTextureDimension2D >= 8192
-        return { ok, detail: ok ? `2D ${adapter.limits.maxTextureDimension2D}` : `없음: ${missing.join(',')}` }
+        return { ok, detail: ok ? `2D ${adapter.limits.maxTextureDimension2D}` : `missing: ${missing.join(',')}` }
       })
 
-      // ③ device.features / lost — 요청한 것만 들어오고, lost는 Promise다.
+      // ③ device.features / lost — only what was requested arrives, and lost is a Promise.
       await check(2, async () => {
         const requested = adapter.features.has('timestamp-query') ? ['timestamp-query'] : []
         const scoped = await adapter.requestDevice({ requiredFeatures: requested })
         const ok = scoped.features.size === requested.length && scoped.lost instanceof Promise
-        return { ok, detail: `요청 ${requested.length}개 · lost ${scoped.lost instanceof Promise}` }
+        return { ok, detail: `${requested.length} requested · lost ${scoped.lost instanceof Promise}` }
       })
 
-      // ④ 깨진 셰이더의 진단 — 모듈은 만들어지고 줄 번호가 온다.
+      // ④ Diagnostics for a broken shader — the module is created and a line number comes back.
       await check(3, async () => {
         const broken = device.createShaderModule({
           code: '@vertex\nfn vs() -> @builtin(position) vec4f {\n  return vec4f(1.0 1.0, 1.0, 1.0);\n}',
         })
         const info = await broken.getCompilationInfo()
-        sink.take()   // 파싱 실패가 전역으로도 보고된다 — 여기서는 기대한 것이라 지운다
+        sink.take()   // the parse failure is reported globally too — expected here, so it is cleared
         const first = info.messages[0]
         const ok = !!first && first.type === 'error' && first.lineNum === 3
-        return { ok, detail: first ? `line ${first.lineNum}` : '진단 없음' }
+        return { ok, detail: first ? `line ${first.lineNum}` : 'no diagnostics' }
       })
 
-      // ⑤ 정상 셰이더는 비어 있다.
+      // ⑤ A healthy shader is empty.
       const goodModule = device.createShaderModule({ code: TRIANGLE })
       await check(4, async () => {
         const info = await goodModule.getCompilationInfo()
-        return { ok: info.messages.length === 0, detail: `${info.messages.length}건` }
+        return { ok: info.messages.length === 0, detail: `${info.messages.length} messages` }
       })
 
-      // ⑥ 비동기 파이프라인 — 성공.
+      // ⑥ An asynchronous pipeline — success.
       const targets = [{ format: gpu.getPreferredCanvasFormat() }]
       await check(5, async () => {
         const pipeline = await device.createRenderPipelineAsync({
@@ -143,7 +143,7 @@ function SpecScene() {
         return { ok: !!pipeline && pipeline.id > 0, detail: `id ${pipeline.id}` }
       })
 
-      // ⑦ 비동기 파이프라인 — 실패는 GPUPipelineError로 거부된다 (오류가 전역으로 새지 않는다).
+      // ⑦ An asynchronous pipeline — failure is rejected as a GPUPipelineError (no error leaks globally).
       await check(6, async () => {
         const bad = device.createShaderModule({
           code: '@vertex fn vs() -> @builtin(position) vec4f { return nonexistent(1.0); }',
@@ -152,38 +152,38 @@ function SpecScene() {
           await device.createRenderPipelineAsync({
             layout: 'auto', vertex: { module: bad, entryPoint: 'vs' },
           })
-          return { ok: false, detail: '거부되지 않았다' }
+          return { ok: false, detail: 'it was not rejected' }
         } catch (error) {
           const failure = /** @type {any} */ (error)
           const leaked = sink.take()
           return {
             ok: failure.name === 'GPUPipelineError' && leaked.length === 0,
-            detail: `${failure.name}/${failure.reason} · 전역 누출 ${leaked.length}`,
+            detail: `${failure.name}/${failure.reason} · global leaks ${leaked.length}`,
           }
         }
       })
 
-      // ⑧ onuncapturederror — 스코프 밖 오류가 명세 통로로 온다.
+      // ⑧ onuncapturederror — an error outside a scope arrives through the spec channel.
       await check(7, async () => {
         /** @type {any[]} */
         const events: any[] = []
         device.onuncapturederror = (event: any) => events.push(event)
         const encoder = device.createCommandEncoder()
-        // 없는 버퍼를 지운다 → validation 오류.
+        // Clearing a buffer that does not exist → a validation error.
         encoder.clearBuffer({ id: 999999, size: 16 })
         device.queue.submit([encoder.finish()])
         device.onuncapturederror = null
         sink.take()
         const first = events[0]
-        // `constructor.name`은 번들 최소화에 눌려 한 글자가 된다 — 이 구현이 함께 싣는
-        // `kind`를 쓴다 (명세에는 없지만 진단에는 이쪽이 쓸모 있다).
+        // `constructor.name` gets squashed to a single letter by bundle minification — the `kind` this
+        // implementation carries alongside is used instead (not in the spec, but more useful for diagnosis).
         return {
           ok: events.length > 0 && typeof first.error.message === 'string',
-          detail: first ? `kind=${first.error.kind}` : '이벤트 없음',
+          detail: first ? `kind=${first.error.kind}` : 'no event',
         }
       })
 
-      // ⑨ clearBuffer — 구간만 0이 되고 나머지는 남는다.
+      // ⑨ clearBuffer — only the range becomes 0 and the rest survives.
       await check(8, async () => {
         const buffer = device.createBuffer({
           size: 32, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
@@ -199,7 +199,7 @@ function SpecScene() {
         return { ok, detail: `[${bytes[0]},${bytes[15]}|${bytes[16]},${bytes[31]}]` }
       })
 
-      // ⑩ copyBufferToBuffer 짧은 형태 — (src, dst)만으로 전체 복사.
+      // ⑩ copyBufferToBuffer, the short form — a whole copy from (src, dst) alone.
       await check(9, async () => {
         const source = device.createBuffer({
           size: 16, usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
@@ -209,7 +209,7 @@ function SpecScene() {
         })
         device.queue.writeBuffer(source, 0, new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]))
         const encoder = device.createCommandEncoder()
-        encoder.copyBufferToBuffer(source, destination)      // 짧은 형태
+        encoder.copyBufferToBuffer(source, destination)      // the short form
         device.queue.submit([encoder.finish()])
         const bytes = new Uint8Array(await destination.mapAsync())
         destination.unmap()
@@ -219,7 +219,7 @@ function SpecScene() {
         return { ok, detail: `[${bytes[0]}…${bytes[15]}]` }
       })
 
-      // ⑪ getMappedRange(offset, size) — 그 구간만 오고, 쓴 내용이 되돌아간다.
+      // ⑪ getMappedRange(offset, size) — only that range comes back, and what was written goes back in.
       await check(10, async () => {
         const readback = device.createBuffer({
           size: 32, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
@@ -233,7 +233,7 @@ function SpecScene() {
         readback.unmap()
         readback.destroy()
 
-        // 쓰기 쪽 — mappedAtCreation으로 뒤쪽만 채우고 되돌아가는지 본다.
+        // The write side — filled at the back with mappedAtCreation, checking that it goes back in.
         const written = device.createBuffer({
           size: 32, usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
           mappedAtCreation: true,
@@ -252,30 +252,30 @@ function SpecScene() {
         staging.destroy()
 
         const ok = middle[0] === 8 && middle[7] === 15 && back[24] === 0xab && back[0] === 0
-        return { ok, detail: `읽기 ${middle[0]}~${middle[7]} · 쓰기 ${back[24]}` }
+        return { ok, detail: `read ${middle[0]}~${middle[7]} · write ${back[24]}` }
       })
 
-      // ⑫ 디버그 마커 — 패스 안팎과 번들에서 모두 받는다 (오류가 없으면 통과).
+      // ⑫ Debug markers — received inside and outside a pass and in a bundle (no error means passed).
       await check(11, async () => {
         const bundleEncoder = device.createRenderBundleEncoder({ colorFormats: [targets[0].format] })
-        bundleEncoder.pushDebugGroup('번들 구간')
+        bundleEncoder.pushDebugGroup('bundle range')
         bundleEncoder.popDebugGroup()
         bundleEncoder.finish()
 
         const encoder = device.createCommandEncoder()
-        encoder.pushDebugGroup('프레임')
-        encoder.insertDebugMarker('표식')
+        encoder.pushDebugGroup('frame')
+        encoder.insertDebugMarker('marker')
         encoder.popDebugGroup()
         device.queue.submit([encoder.finish()])
 
         const leaked = sink.take()
-        return { ok: leaked.length === 0, detail: leaked.length ? leaked[0].slice(0, 60) : '오류 0' }
+        return { ok: leaked.length === 0, detail: leaked.length ? leaked[0].slice(0, 60) : '0 errors' }
       })
 
-      // ⑬ core 포맷 2종 — 만들고 복사까지 된다 (팩된 32비트라 픽셀당 4바이트).
+      // ⑬ Two core formats — they are created and even copied (packed 32-bit, so 4 bytes per pixel).
       //
-      // `bytesPerRow`는 **256의 배수**여야 한다 (명세 요구 — 행이 여럿인 복사라 생략도 안 된다).
-      // 픽셀당 4바이트 × 4픽셀 = 16B짜리 촘촘한 행을 그대로 쓰면 브라우저가 거부한다.
+      // `bytesPerRow` must be **a multiple of 256** (a spec requirement — with several rows it cannot be omitted either).
+      // Using the tight 16B row of 4 bytes per pixel × 4 pixels as is would be rejected by a browser.
       await check(12, async () => {
         const results: string[] = []
         const bytesPerRow = 256
@@ -302,7 +302,7 @@ function SpecScene() {
         return { ok: leaked.length === 0, detail: results.join(' ') }
       })
 
-      // ⑭ 캔버스 unconfigure / getConfiguration.
+      // ⑭ Canvas unconfigure / getConfiguration.
       await check(13, async () => {
         const probe = gpu.getCanvasContext('main')
         const before = probe.getConfiguration()
@@ -316,17 +316,17 @@ function SpecScene() {
         } catch (error) {
           rejected = true
         }
-        // 다시 설정해 두고 끝낸다 — 아래 프레임 루프가 이 컨텍스트로 그린다.
+        // It is reconfigured before finishing — the frame loop below draws through this context.
         probe.configure({ device, format: targets[0].format })
         const ok = before === null && configured?.format === targets[0].format
           && after === null && rejected
-        return { ok, detail: `설정 전 null · 해제 후 ${rejected ? '그리기 거부' : '거부 안 함'}` }
+        return { ok, detail: `null before configuration · ${rejected ? 'drawing rejected' : 'not rejected'} after release` }
       })
 
       if (disposed) return
 
-      // 배경 — 체크가 끝난 뒤에도 화면이 살아 있음을 보여 준다.
-      // `getCanvasContext`는 같은 id에 같은 객체를 주므로 위 ⑭에서 설정한 그대로다.
+      // The background — it shows the screen is still alive after the checks finish.
+      // `getCanvasContext` gives the same object for the same id, so it stays as configured in ⑭ above.
       const context = gpu.getCanvasContext('main')
       context.configure({ device, format: targets[0].format })
       const pipeline = device.createRenderPipeline({
@@ -339,7 +339,7 @@ function SpecScene() {
         const size = context.getSize()
         if (!size.width) return
         const encoder = device.createCommandEncoder()
-        encoder.pushDebugGroup('spec 프레임')   // 실제 프레임에도 마커를 붙여 둔다
+        encoder.pushDebugGroup('spec frame')   // a marker is attached to the real frames too
         const pass = encoder.beginRenderPass({
           colorAttachments: [{
             view: context.getCurrentTexture().createView(),
@@ -356,7 +356,7 @@ function SpecScene() {
     }
 
     boot().catch((error) => {
-      setStatus(`실패: ${(error && error.message) || error}`)
+      setStatus(`failed: ${(error && error.message) || error}`)
     })
 
     return () => {
@@ -369,7 +369,7 @@ function SpecScene() {
   return (
     <view className="page">
       <webgpu-canvas className="canvas" canvas-id="main" />
-      <ChecklistHud title="명세 표면 체크리스트" subtitle={status} checks={checks} />
+      <ChecklistHud title="Spec surface checklist" subtitle={status} checks={checks} />
     </view>
   )
 }

@@ -1,10 +1,10 @@
 /**
- * Hello Triangle — Lynx-WebGPU 최소 예제 (ReactLynx).
+ * Hello Triangle — the minimal Lynx-WebGPU example (ReactLynx).
  *
- * 리소스는 한 번만 만들고 프레임마다 유니폼만 갱신한다. 커맨드는 `queue.submit()`에서
- * 한 번에 네이티브로 넘어가므로, 프레임당 브리지 왕복은 1회다.
+ * Resources are built once and only the uniform is refreshed per frame. The commands cross to native in
+ * one go at `queue.submit()`, so there is one bridge crossing per frame.
  *
- * rspeedy 프로젝트에 `JS/webgpu.js`, `JS/webgpu.d.ts`, `JS/elements.d.ts`를 복사한 뒤 쓴다
+ * Copy `JS/webgpu.js`, `JS/webgpu.d.ts` and `JS/elements.d.ts` into an rspeedy project before using it
  * (docs/JS-AUTHORING.md).
  */
 import { useEffect, useRef } from '@lynx-js/react'
@@ -40,7 +40,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
 }
 `
 
-// 위치(x, y) + 색(r, g, b) 인터리브 — stride 20B
+// Position (x, y) + color (r, g, b) interleaved — stride 20B
 const VERTICES = new Float32Array([
   0.0, 0.6, 1.0, 0.2, 0.2,
   -0.6, -0.5, 0.2, 1.0, 0.2,
@@ -56,7 +56,7 @@ export function HelloTriangle() {
     async function boot() {
       const adapter = await gpu.requestAdapter()
       if (!adapter) {
-        console.error('WebGPU 어댑터를 얻지 못했다')
+        console.error('could not obtain a WebGPU adapter')
         return
       }
       const device = await adapter.requestDevice()
@@ -77,7 +77,7 @@ export function HelloTriangle() {
       vertexBuffer.unmap()
 
       const uniformBuffer = device.createBuffer({
-        size: 16, // f32 2개 + 16바이트 정렬 패딩
+        size: 16, // two f32s + padding to 16-byte alignment
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       })
 

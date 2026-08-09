@@ -7,31 +7,31 @@ export interface SceneContext {
   device: any
   context: any
   format: string
-  /** 씬이 HUD에 한 줄 띄우고 싶을 때 (리드백 결과 등). 프레임마다 부르지 말 것. */
+  /** For when a scene wants to put a line on the HUD (a readback result, say). Do not call it per frame. */
   report: (text: string) => void
   /**
-   * 캔버스를 누르고 있는 지점 (0~1 정규화). 놓으면 null.
+   * The point being pressed on the canvas (normalized 0~1). null when released.
    *
-   * 프레임 루프가 매 프레임 읽는 값이라 state가 아니라 ref다 — state로 두면 손가락이
-   * 움직일 때마다 리렌더가 붙는다 (`interactive` 씬과 같은 이유).
+   * The frame loop reads it every frame, so it is a ref rather than state — as state it would attach a
+   * re-render on every finger movement (the same reason as in the `interactive` scene).
    */
   pointer: { current: { x: number; y: number } | null }
 }
 
-/** 매 프레임 호출되는 렌더 함수. */
+/** The render function called every frame. */
 export type SceneRenderer = (frame: { delta: number; width: number; height: number }) => void
 
 /**
- * 데모 씬들이 공유하는 껍데기 — 어댑터/디바이스/캔버스 준비, 프레임 루프, FPS 표시, 정리.
+ * The shell the demo scenes share — adapter/device/canvas setup, the frame loop, the FPS display, cleanup.
  *
- * 각 씬은 `setup`에서 리소스를 만들고 **매 프레임 호출될 함수 하나**를 돌려주면 된다.
+ * Each scene builds its resources in `setup` and returns **one function to be called every frame**.
  */
 export function DemoScene(props: {
   title: string
   subtitle: string
-  /** 애셋을 받아 와야 하는 씬은 Promise를 돌려줘도 된다 — 준비될 때까지 프레임 루프를 늦춘다. */
+  /** A scene that has to fetch assets may return a Promise — the frame loop waits until it is ready. */
   setup: (scene: SceneContext) => SceneRenderer | Promise<SceneRenderer>
-  /** 캔버스 위에 얹을 조작 UI. 씬이 직접 그려 넘긴다. */
+  /** Control UI laid over the canvas. The scene draws and passes it in itself. */
   controls?: any
 }) {
   const [fps, setFps] = useState(0)
@@ -39,7 +39,7 @@ export function DemoScene(props: {
   const [note, setNote] = useState('')
 
   const pointer = useRef<{ x: number; y: number } | null>(null)
-  /** 터치 좌표는 CSS px 기준이므로 픽셀 크기가 아니라 CSS 크기로 나눠야 한다. */
+  /** Touch coordinates are in CSS px, so they must be divided by the CSS size rather than the pixel size. */
   const canvasCss = useRef({ width: 1, height: 1 })
 
   function normalize(event: any) {
@@ -59,7 +59,7 @@ export function DemoScene(props: {
 
     async function boot() {
       const adapter = await gpu.requestAdapter()
-      if (!adapter) throw new Error('WebGPU 어댑터 없음')
+      if (!adapter) throw new Error('no WebGPU adapter')
       device = await adapter.requestDevice()
       device.onError((_error: any, text: string) => setStatus(text))
 
@@ -70,7 +70,7 @@ export function DemoScene(props: {
       const render = await props.setup({ device, context, format, report: setNote, pointer })
       if (disposed) return
 
-      // 캔버스 크기는 프레임마다 물어보면 브리지 왕복이 늘어난다 — 한 번 읽고 캐시한다.
+      // Asking for the canvas size every frame adds bridge crossings — it is read once and cached.
       let size = context.getSize()
       let sizeCheck = 0
       let frames = 0
@@ -79,7 +79,7 @@ export function DemoScene(props: {
       stop = startFrameLoop(({ delta }: { delta: number }) => {
         if (disposed) return
 
-        // 회전/리사이즈 대응: 30프레임마다 한 번만 확인한다.
+        // Handling rotation and resize: checked only once every 30 frames.
         if (++sizeCheck >= 30) {
           sizeCheck = 0
           size = context.getSize()

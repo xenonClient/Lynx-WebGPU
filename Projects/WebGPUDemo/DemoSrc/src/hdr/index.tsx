@@ -3,42 +3,43 @@ import { DemoScene, type SceneContext } from '../scene.jsx'
 import { GPUBufferUsage, GPUTextureUsage, loadAsset } from '../webgpu.js'
 
 /**
- * HDR 사진(Apple 게인맵 방식)을 되살려 `rgba16float`로 흘려보내고, 그 값을 실제로
- * 화면까지 내보내는 씬.
+ * A scene that restores an HDR photo (Apple's gain map form), pushes it through `rgba16float`, and
+ * actually sends those values all the way to the screen.
  *
- * iPhone이 찍는 HDR HEIC는 "SDR 베이스 + 게인맵 + headroom" 구조다. 원래 밝기는
+ * The HDR HEIC an iPhone shoots has the structure "an SDR base + a gain map + headroom". The original
+ * brightness is restored as
  *
  *     HDR_linear = SDR_linear × pow(headroom, gain)
  *
- * 로 복원되는데, 이 애셋은 headroom 4.89에 게인맵 최대가 248/255라 **4.69배까지 올라간다**.
- * 8비트 UNORM 텍스처로는 담을 수 없는 값이다.
+ * and this asset has headroom 4.89 with a gain map maximum of 248/255, so it **rises to 4.69×**.
+ * A value an 8-bit UNORM texture cannot hold.
  *
- * 화면은 좌우로 갈라 같은 처리를 적용한다 — 왼쪽은 8비트 원본, 오른쪽은 재구성한 값.
- * 손가락으로 경계를 끌어 같은 지점을 양쪽으로 비교한다.
+ * The screen is split left and right with the same processing applied — the 8-bit original on the left,
+ * the reconstructed values on the right. Drag the boundary with a finger to compare the same spot on both sides.
  *
- * 보기 방식이 셋이다:
- *   - **비교**   Reinhard 톤매핑 + sRGB. SDR 화면에 눌러 담으므로 오른쪽이 되레 더
- *                밝고 뭉쳐 보인다 — 이게 톤매핑의 본질적 한계다.
- *   - **클리핑** 원본 선형값이 1.0을 넘는 픽셀만 빨갛게. 왼쪽엔 뜨지 않고 오른쪽에만
- *                뜨면 재구성이 실제로 일어난 것이다 (노출과 무관하게 판정한다).
- *   - **EDR**    캔버스를 `rgba16float` + `toneMapping: 'extended'`로 다시 configure하고
- *                선형값을 그대로 내보낸다. 톤매핑이 필요 없어지고, 디스플레이가 SDR 흰색
- *                위쪽 여유 밝기로 실제로 더 밝게 낸다. **실기기에서만 확인된다.**
+ * There are three view modes:
+ *   - **compare**  Reinhard tone mapping plus sRGB. Squeezed onto an SDR screen, the right side actually
+ *                  looks brighter and more crushed — that is the essential limit of tone mapping.
+ *   - **clipping** Only pixels whose original linear value exceeds 1.0 go red. Nothing on the left with
+ *                  something on the right means the reconstruction really happened (judged independently of exposure).
+ *   - **EDR**      The canvas is reconfigured to `rgba16float` + `toneMapping: 'extended'` and the linear
+ *                  values go out as they are. Tone mapping becomes unnecessary and the display really does
+ *                  render brighter, in the headroom above SDR white. **Only verifiable on a device.**
  */
 
-/** 재구성 패스의 워크그룹 한 변. */
+/** The workgroup edge of the reconstruction pass. */
 const WORKGROUP = 8
 
-/** 보기 방식. 셰이더의 `mode` 유니폼과 같은 값이다. */
+/** The view mode. The same values as the shader's `mode` uniform. */
 const MODE_COMPARE = 0
 const MODE_CLIPPING = 1
 const MODE_EDR = 2
 
 /**
- * 게인맵을 곱해 선형 HDR 값을 만들어 `rgba16float` 스토리지 텍스처에 쓴다.
+ * Multiplies the gain map to make linear HDR values and writes them into an `rgba16float` storage texture.
  *
- * 게인맵은 베이스의 절반 해상도라 `textureLoad`로 최근접을 집으면 블록 경계가 보인다.
- * 샘플러로 보간해 읽는다 — 컴퓨트에서는 LOD를 명시해야 하므로 `textureSampleLevel`이다.
+ * The gain map is half the base's resolution, so picking the nearest with `textureLoad` shows block boundaries.
+ * It is read interpolated through a sampler — a compute shader must state the LOD, hence `textureSampleLevel`.
  */
 const RECONSTRUCT_SHADER = /* wgsl */ `
 struct Params {
@@ -69,24 +70,24 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   let sdr = textureLoad(baseTex, coord, 0).rgb;
   let gain = textureSampleLevel(gainTex, gainSampler, uv, 0.0).r;
 
-  // 게인맵은 0..1로 정규화된 지수다. 1.0이면 headroom 배, 0이면 그대로.
+  // The gain map is an exponent normalized to 0..1. 1.0 means headroom times, 0 means unchanged.
   let scale = pow(params.headroom, gain);
   textureStore(hdrOut, coord, vec4f(srgbToLinear(sdr) * scale, 1.0));
 }
 `
 
 /**
- * 좌우를 같은 조건으로 그린다. 왼쪽/오른쪽의 차이는 **입력이 8비트인가 16비트 float인가**
- * 하나뿐이다.
+ * Draws both sides under identical conditions. The only difference between left and right is **whether the
+ * input is 8-bit or 16-bit float**.
  */
 const PRESENT_SHADER = /* wgsl */ `
 struct Uniforms {
-  exposure: f32,      // stop 단위
-  wipe: f32,          // 0..1, 경계 위치
-  screenAspect: f32,  // 캔버스 가로/세로
-  imageAspect: f32,   // 이미지 가로/세로
-  mode: f32,          // 0 비교 · 1 클리핑 · 2 EDR
-  peak: f32,          // 이 사진의 실측 최대 배율 (클리핑 표시 강도용)
+  exposure: f32,      // in stops
+  wipe: f32,          // 0..1, the boundary position
+  screenAspect: f32,  // the canvas width/height
+  imageAspect: f32,   // the image width/height
+  mode: f32,          // 0 compare · 1 clipping · 2 EDR
+  peak: f32,          // this photo's measured maximum multiplier (for the clipping display intensity)
   pad0: f32,
   pad1: f32,
 };
@@ -107,7 +108,7 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
   let corner = corners[index];
   var out: VertexOutput;
   out.position = vec4f(corner, 0.0, 1.0);
-  // 텍스처 좌표는 위가 0이므로 y를 뒤집는다.
+  // Texture coordinates have 0 at the top, so y is flipped.
   out.uv = vec2f(corner.x * 0.5 + 0.5, 0.5 - corner.y * 0.5);
   return out;
 }
@@ -124,14 +125,14 @@ fn linearToSrgb(c: vec3f) -> vec3f {
   return select(hi, lo, c <= vec3f(0.0031308, 0.0031308, 0.0031308));
 }
 
-/** Reinhard — 1.0을 넘는 값을 0..1로 눌러 담는다. */
+/** Reinhard — squeezes values above 1.0 into 0..1. */
 fn tonemap(c: vec3f) -> vec3f {
   return c / (vec3f(1.0, 1.0, 1.0) + c);
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-  // 이미지 전체가 보이도록 캔버스 안에 맞춘다 (contain).
+  // Fitted inside the canvas so the whole image is visible (contain).
   var coverage = vec2f(1.0, 1.0);
   if (u.screenAspect > u.imageAspect) {
     coverage.x = u.imageAspect / u.screenAspect;
@@ -140,13 +141,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   }
   let uv = (in.uv - vec2f(0.5, 0.5)) / coverage + vec2f(0.5, 0.5);
 
-  // 샘플은 이른 return들 **앞**(균일 제어 흐름)에서 뜬다 — varying 분기·return 뒤의
-  // textureSample은 uniformity 위반이라 명세 검증기(Dawn/브라우저)가 거부한다.
-  // 8비트 원본은 하이라이트가 이미 1.0에서 잘려 있고, 게인맵 쪽은 1.0을 크게 넘는다.
+  // The samples are taken **before** the early returns (in uniform control flow) — a textureSample after a
+  // varying branch or return is a uniformity violation and the spec validator (Dawn/browsers) rejects it.
+  // The 8-bit original already has its highlights clipped at 1.0, while the gain map side goes far past 1.0.
   let baseLinear = srgbToLinear(textureSample(baseTex, samp, uv).rgb);
   let hdrLinear = textureSample(hdrTex, samp, uv).rgb;
 
-  // 여백과 경계선은 인코딩을 거치지 않고 바로 낸다. EDR에서도 튀지 않도록 낮은 값을 쓴다.
+  // The margins and boundary line go out without encoding. Low values are used so they do not blow out under EDR.
   if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
     return vec4f(0.008, 0.010, 0.016, 1.0);
   }
@@ -156,7 +157,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
 
   let linear = select(hdrLinear, baseLinear, in.uv.x < u.wipe);
 
-  // 클리핑 표시 — 노출과 무관하게 "원본 값이 1.0을 넘는가"만 본다.
+  // The clipping display — regardless of exposure, it only asks "does the original value exceed 1.0".
   if (u.mode > 0.5 && u.mode < 1.5) {
     let luma = dot(linear, vec3f(0.2126, 0.7152, 0.0722));
     if (luma > 1.0) {
@@ -169,8 +170,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
 
   let exposed = linear * pow(2.0, u.exposure);
 
-  // EDR — 레이어가 확장 **선형** 색공간이라 인코딩하지 않는다. 1.0을 넘는 값이 그대로
-  // 나가고 디스플레이가 그만큼 밝게 낸다. 톤매핑도 필요 없다.
+  // EDR — the layer is an extended **linear** color space, so nothing is encoded. Values above 1.0 go out
+  // as they are and the display renders them that much brighter. Tone mapping is unnecessary too.
   if (u.mode > 1.5) {
     return vec4f(exposed, 1.0);
   }
@@ -179,13 +180,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
 }
 `
 
-/** `Tools/extract-hdr-asset.swift`가 쓴 헤더. */
+/** The header `Tools/extract-hdr-asset.swift` wrote. */
 function parseHeader(buffer: ArrayBuffer) {
   const view = new DataView(buffer)
   const magic = String.fromCharCode(
     view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3)
   )
-  if (magic !== 'LWGH') throw new Error(`애셋 매직이 다르다: ${magic}`)
+  if (magic !== 'LWGH') throw new Error(`the asset magic differs: ${magic}`)
 
   return {
     version: view.getUint32(4, true),
@@ -208,19 +209,19 @@ async function setup(
 ) {
   const buffer = await loadAsset('hdr-sample.bin')
   const header = parseHeader(buffer)
-  if (header.version !== 1) throw new Error(`모르는 애셋 버전: ${header.version}`)
+  if (header.version !== 1) throw new Error(`unknown asset version: ${header.version}`)
 
   const basePixels = new Uint8Array(buffer, header.baseOffset, header.baseLength)
   const gainPixels = new Uint8Array(buffer, header.gainOffset, header.gainLength)
 
-  // 게인맵의 실제 최대값으로 이 사진이 몇 배까지 올라가는지 계산해 둔다.
+  // The photo's actual maximum multiplier is computed up front from the gain map's real maximum.
   let peakGain = 0
   for (let i = 0; i < gainPixels.length; i++) {
     if (gainPixels[i] > peakGain) peakGain = gainPixels[i]
   }
   const peakScale = Math.pow(header.headroom, peakGain / 255)
 
-  // --- 텍스처 -------------------------------------------------------------
+  // --- Textures ------------------------------------------------------------
 
   const baseTexture = device.createTexture({
     size: { width: header.baseWidth, height: header.baseHeight },
@@ -248,7 +249,7 @@ async function setup(
     { width: header.gainWidth, height: header.gainHeight }
   )
 
-  /** 이 씬의 핵심 — 1.0을 넘는 값을 담는 중간 텍스처. */
+  /** The heart of this scene — the intermediate texture that holds values above 1.0. */
   const hdrTexture = device.createTexture({
     size: { width: header.baseWidth, height: header.baseHeight },
     format: 'rgba16float',
@@ -263,7 +264,7 @@ async function setup(
     addressModeV: 'clamp-to-edge',
   })
 
-  // --- 재구성 패스 ---------------------------------------------------------
+  // --- The reconstruction pass ---------------------------------------------
 
   const reconstructModule = device.createShaderModule({
     code: RECONSTRUCT_SHADER,
@@ -291,7 +292,7 @@ async function setup(
     ],
   })
 
-  // --- 표시 패스 -----------------------------------------------------------
+  // --- The display pass ----------------------------------------------------
 
   const presentModule = device.createShaderModule({ code: PRESENT_SHADER, label: 'hdr.present' })
   const presentUniforms = device.createBuffer({
@@ -301,8 +302,8 @@ async function setup(
   })
 
   /**
-   * 캔버스 포맷이 바뀌면 파이프라인도 그 포맷으로 만들어져 있어야 한다.
-   * EDR을 켜고 끌 때마다 만들지 않도록 둘 다 미리 준비해 둔다.
+   * When the canvas format changes, the pipeline has to have been built for that format too.
+   * Both are prepared up front so nothing is built each time EDR is toggled.
    */
   function makePresent(targetFormat: string) {
     const pipeline = device.createRenderPipeline({
@@ -331,7 +332,7 @@ async function setup(
 
   report(
     `${header.baseWidth}×${header.baseHeight} · headroom ${header.headroom.toFixed(2)} · ` +
-    `실측 최대 ${peakScale.toFixed(2)}× · 드래그로 경계 이동`
+    `measured maximum ${peakScale.toFixed(2)}× · drag to move the boundary`
   )
 
   const workgroupsX = Math.ceil(header.baseWidth / WORKGROUP)
@@ -339,7 +340,7 @@ async function setup(
   const imageAspect = header.baseWidth / header.baseHeight
   const uniforms = new Float32Array(8)
 
-  // 게인맵은 변하지 않으므로 재구성은 첫 프레임에 한 번만 돌린다.
+  // The gain map does not change, so the reconstruction runs once on the first frame only.
   let reconstructed = false
   let wipe = 0.5
   let configuredEdr = false
@@ -357,8 +358,8 @@ async function setup(
         toneMapping: { mode: wantEdr ? 'extended' : 'standard' },
       })
       configuredEdr = wantEdr
-      // CAMetalLayer 설정은 메인 스레드로 비동기로 넘어간다 (`WGPUMetalLayerSurface`).
-      // 드로어블이 새 포맷으로 바뀔 때까지 몇 프레임 쉬어야 파이프라인과 어긋나지 않는다.
+      // CAMetalLayer configuration goes to the main thread asynchronously (`WGPUMetalLayerSurface`).
+      // A few frames of rest are needed until the drawable switches to the new format, so it does not disagree with the pipeline.
       settleFrames = 3
     }
     if (settleFrames > 0) {
@@ -366,7 +367,7 @@ async function setup(
       return
     }
 
-    // 손가락이 닿아 있는 동안만 경계가 따라온다. 놓으면 그 자리에 머문다.
+    // The boundary follows only while a finger is down. Released, it stays where it is.
     const point = pointer.current
     if (point) wipe = point.x
 
@@ -411,7 +412,7 @@ function HdrScene() {
   const [exposure, setExposure] = useState(0)
   const [mode, setMode] = useState(MODE_COMPARE)
 
-  // 프레임 루프는 setup 시점의 클로저를 계속 쓴다 — 최신 값을 ref로 건넨다.
+  // The frame loop keeps using the closure from setup time — the latest value is handed over through a ref.
   const exposureRef = useRef(0)
   const modeRef = useRef(MODE_COMPARE)
   exposureRef.current = exposure
@@ -419,8 +420,8 @@ function HdrScene() {
 
   return (
     <DemoScene
-      title="HDR 게인맵 재구성"
-      subtitle="rgba16float — 8비트로는 못 담는 4.7배 하이라이트"
+      title="HDR gain map reconstruction"
+      subtitle="rgba16float — the 4.7× highlights 8 bits cannot hold"
       setup={(scene) => setup(scene, exposureRef, modeRef)}
       controls={
         <view className="controls">
@@ -443,7 +444,7 @@ function HdrScene() {
             className={mode === MODE_CLIPPING ? 'control-button control-button-on' : 'control-button'}
             bindtap={() => setMode((m) => (m === MODE_CLIPPING ? MODE_COMPARE : MODE_CLIPPING))}
           >
-            클리핑
+            Clipping
           </text>
           <text
             className={mode === MODE_EDR ? 'control-button control-button-on' : 'control-button'}

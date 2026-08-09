@@ -1,4 +1,4 @@
-/* 데모 3종 공통 스타일 — 캔버스가 화면을 채우고 HUD가 그 위에 얹힌다. */
+/* Styles shared by the demos — the canvas fills the screen and the HUD sits on top. */
 page {
   --bg: #0b0e14;
 }
@@ -9,7 +9,7 @@ page {
   background-color: #0b0e14;
 }
 
-/* <webgpu-canvas> 는 flex 축소에 민감하다 — 절대 배치로 크기를 확정해 준다. */
+/* <webgpu-canvas> is sensitive to flex shrinking — absolute positioning fixes its size. */
 .canvas {
   position: absolute;
   left: 0;
@@ -58,7 +58,7 @@ page {
   margin-top: 6px;
 }
 
-/* three 씬 — 기능 체크리스트 카드. 캔버스를 가리지 않게 반투명 + 여백을 좁게 잡는다. */
+/* The three scene — the feature checklist card. Translucent with tight margins so it does not cover the canvas. */
 .three-hud {
   position: absolute;
   left: 16px;
@@ -71,7 +71,7 @@ page {
   flex-direction: column;
 }
 
-/* 머리글 = 접기 버튼. 손가락으로 맞히기 쉽게 카드 폭 전체를 누르게 한다. */
+/* The header doubles as the collapse button. The whole card width is pressable, to be easy to hit with a finger. */
 .hud-header {
   display: flex;
   flex-direction: row;
@@ -90,7 +90,7 @@ page {
   padding: 4px 6px;
 }
 
-/* 접었을 때는 요약 한 줄만 남는다 — 캔버스를 최대한 비워 준다. */
+/* Collapsed, only the one-line summary remains — leaving the canvas as clear as possible. */
 .hud-collapsed {
   padding-bottom: 10px;
 }
@@ -122,9 +122,9 @@ page {
   margin-top: 10px;
 }
 
-/* --- interactive 씬: 캔버스 위에 겹치는 Lynx 컴포넌트들 --- */
+/* --- the interactive scene: Lynx components overlapping the canvas --- */
 
-/* 캔버스 위에 얹힌 카드. Lynx가 히트 테스트에서 캔버스보다 먼저 잡아야 한다. */
+/* A card sitting on the canvas. Lynx has to catch it before the canvas in hit testing. */
 .layer-card {
   position: absolute;
   left: 24px;
@@ -167,7 +167,7 @@ page {
   color: #8aa0c0;
 }
 
-/* --- 씬 하단 조작 바 (hdr 씬) --- */
+/* --- the bottom control bar of a scene (the hdr scene) --- */
 
 .controls {
   position: absolute;
@@ -194,7 +194,7 @@ page {
   text-align: center;
 }
 
-/* 눌려 있는 토글 — 배경과 테두리로 상태를 드러낸다. */
+/* A pressed toggle — the state shows through the background and border. */
 .control-button-on {
   background-color: #3a5a9a;
   border: 1px solid #6d9ae1;
@@ -209,7 +209,7 @@ page {
   text-align: center;
 }
 
-/* --- scrollpass 씬: 스크롤 리스트 위에 캔버스 밴드가 형제로 겹친다 --- */
+/* --- the scrollpass scene: a canvas band overlaps a scroll list as a sibling --- */
 
 .scroll-list {
   position: absolute;
@@ -241,7 +241,7 @@ page {
   color: #c8d4e8;
 }
 
-/* 캔버스 밴드 — 리스트 **위에** 얹힌 형제. passthrough-touches 검증 대상이다. */
+/* The canvas band — a sibling laid **on top of** the list. This is what verifies passthrough-touches. */
 .overlay-canvas {
   position: absolute;
   left: 0;
@@ -250,7 +250,7 @@ page {
   height: 26%;
 }
 
-/* --- bench 씬: 캔버스 없이 결과 표만 그린다 --- */
+/* --- the bench scene: no canvas, only the results table --- */
 
 .bench-page {
   padding: 120px 20px 20px 20px;

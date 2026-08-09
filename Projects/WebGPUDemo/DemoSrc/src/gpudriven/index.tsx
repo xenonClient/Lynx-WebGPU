@@ -3,19 +3,19 @@ import { DemoScene, type SceneContext } from '../scene.jsx'
 import { GPUBufferUsage, GPUMapMode } from '../webgpu.js'
 
 /**
- * GPU-driven 렌더링 — **CPU는 몇 개를 그리는지 모른다.**
+ * GPU-driven rendering — **the CPU does not know how many are drawn.**
  *
- * 컴퓨트가 이번 프레임의 개수를 정해 인자 버퍼에 쓰고, 이어지는 디스패치와 드로우가 그 버퍼를
- * 읽는다. JS는 `dispatchWorkgroupsIndirect` / `drawIndexedIndirect`에 **핸들만** 넘긴다.
+ * A compute pass decides this frame's count and writes it into argument buffers, and the dispatch and draw
+ * that follow read those buffers. JS passes **only handles** to `dispatchWorkgroupsIndirect` / `drawIndexedIndirect`.
  *
- * 직접 모드와 비교하면 차이가 분명하다 — 직접 모드는 개수를 모르니 늘 최대치를 그린다.
- * 개수를 CPU가 알려면 리드백 왕복이 필요한데, 그게 바로 간접 드로우가 없애는 비용이다.
+ * Comparing with direct mode makes the difference clear — direct mode does not know the count, so it always
+ * draws the maximum. For the CPU to know the count would take a readback round trip, and that is exactly the cost indirect draw removes.
  */
 const MAX_PARTICLES = 3072
 const WORKGROUP_SIZE = 64
 const MIN_PARTICLES = 96
 
-/** 워크그룹 하나가 이번 프레임의 개수를 정해 두 인자 버퍼에 쓴다. */
+/** One workgroup decides this frame's count and writes it into the two argument buffers. */
 const PLAN_SHADER = /* wgsl */ `
 struct Control {
   time: f32,
@@ -33,21 +33,21 @@ fn plan() {
   let live = control.minCount + wave * (control.maxCount - control.minCount);
   let count = u32(live);
 
-  // drawIndexedIndirect 인자 5칸 — indexCount, instanceCount, firstIndex, baseVertex, firstInstance
+  // The 5 drawIndexedIndirect argument slots — indexCount, instanceCount, firstIndex, baseVertex, firstInstance
   drawArgs[0] = 6u;
   drawArgs[1] = count;
   drawArgs[2] = 0u;
   drawArgs[3] = 0u;
   drawArgs[4] = 0u;
 
-  // dispatchWorkgroupsIndirect 인자 3칸 — x, y, z
+  // The 3 dispatchWorkgroupsIndirect argument slots — x, y, z
   dispatchArgs[0] = (count + ${WORKGROUP_SIZE}u - 1u) / ${WORKGROUP_SIZE}u;
   dispatchArgs[1] = 1u;
   dispatchArgs[2] = 1u;
 }
 `
 
-/** 위치는 (인덱스, 시간)의 순수 함수다 — 어떤 부분집합만 돌아도 그림이 일관된다. */
+/** The position is a pure function of (index, time) — the picture stays coherent whichever subset runs. */
 const UPDATE_SHADER = /* wgsl */ `
 struct Particle {
   position: vec2f,
@@ -85,7 +85,7 @@ fn update(@builtin(global_invocation_id) id: vec3u) {
 }
 `
 
-/** 인스턴스 하나가 사각형 하나 — 정점 4개를 인덱스 6개로 돈다. */
+/** One instance is one quad — 4 vertices run through 6 indices. */
 const RENDER_SHADER = /* wgsl */ `
 struct Particle {
   position: vec2f,
@@ -148,13 +148,13 @@ function setup({ device, context, format, report }: SceneContext, indirectRef: {
     label: 'particles',
   })
 
-  // 컴퓨트가 쓰고(STORAGE) 커맨드 프로세서가 읽는(INDIRECT) 버퍼.
+  // A buffer the compute pass writes (STORAGE) and the command processor reads (INDIRECT).
   const drawArgs = device.createBuffer({
     size: 20,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_SRC,
     label: 'drawArgs',
   })
-  // HUD가 값을 되짚어 볼 스테이징 버퍼 — MAP_READ는 COPY_DST와만 조합할 수 있다(명세).
+  // The staging buffer the HUD reads the values back through — MAP_READ can only combine with COPY_DST (spec).
   const drawArgsStaging = device.createBuffer({
     size: 20,
     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
@@ -175,7 +175,7 @@ function setup({ device, context, format, report }: SceneContext, indirectRef: {
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   })
 
-  // 사각형 하나 — 정점 4개를 6개 인덱스로 돈다.
+  // One quad — 4 vertices run through 6 indices.
   const indices = device.createBuffer({
     size: 12,
     usage: GPUBufferUsage.INDEX,
@@ -255,12 +255,12 @@ function setup({ device, context, format, report }: SceneContext, indirectRef: {
 
     const compute = encoder.beginComputePass()
     if (indirect) {
-      // 1) 개수를 정한다 — 이 결과를 CPU는 보지 않는다.
+      // 1) Decide the count — the CPU never sees this result.
       compute.setPipeline(planPipeline)
       compute.setBindGroup(0, planGroup)
       compute.dispatchWorkgroups(1)
     }
-    // 2) 정해진 만큼만 갱신한다. 워크그룹 수가 GPU 버퍼에서 온다.
+    // 2) Update only that many. The workgroup count comes from a GPU buffer.
     compute.setPipeline(updatePipeline)
     compute.setBindGroup(0, updateGroup)
     if (indirect) {
@@ -281,7 +281,7 @@ function setup({ device, context, format, report }: SceneContext, indirectRef: {
     pass.setPipeline(renderPipeline)
     pass.setBindGroup(0, renderGroup)
     pass.setIndexBuffer(indices, 'uint16')
-    // 3) 그리는 개수도 같은 버퍼에서 온다.
+    // 3) The number drawn comes from the same buffer.
     if (indirect) {
       pass.drawIndexedIndirect(drawArgs)
     } else {
@@ -289,14 +289,14 @@ function setup({ device, context, format, report }: SceneContext, indirectRef: {
     }
     pass.end()
 
-    // HUD — GPU가 정한 값을 20프레임에 한 번만 되짚는다 (리드백은 GPU 완료를 기다린다).
+    // The HUD — the GPU-decided value is read back only once every 20 frames (a readback waits for GPU completion).
     const wantsReadback = ++frame % 20 === 0 && !reading && indirect
     if (wantsReadback) encoder.copyBufferToBuffer(drawArgs, 0, drawArgsStaging, 0, 20)
 
     device.queue.submit([encoder.finish()])
 
     if (frame % 20 === 0 && !indirect) {
-      report(`직접 드로우 — 개수를 모르니 늘 최대치 ${MAX_PARTICLES}개를 그린다`)
+      report(`direct draw — with no idea of the count it always draws the maximum ${MAX_PARTICLES}`)
       return
     }
     if (wantsReadback) {
@@ -306,11 +306,11 @@ function setup({ device, context, format, report }: SceneContext, indirectRef: {
         .then((buffer: ArrayBuffer) => {
           const values = new Uint32Array(buffer)
           report(
-            `GPU가 정한 인스턴스 ${values[1]}개 / 최대 ${MAX_PARTICLES}개 · ` +
-              `워크그룹 ${Math.ceil(values[1] / WORKGROUP_SIZE)}개 — CPU는 넘기지 않았다`
+            `${values[1]} instances decided by the GPU / max ${MAX_PARTICLES} · ` +
+              `${Math.ceil(values[1] / WORKGROUP_SIZE)} workgroups — the CPU never passed them`
           )
         })
-        .catch((error: unknown) => report(`인자 리드백 실패: ${String(error)}`))
+        .catch((error: unknown) => report(`argument readback failed: ${String(error)}`))
         .finally(() => {
           drawArgsStaging.unmap()
           reading = false
@@ -320,8 +320,8 @@ function setup({ device, context, format, report }: SceneContext, indirectRef: {
 }
 
 function GpuDrivenScene() {
-  // `-altMode 1`이면 직접 드로우로 시작한다 (자동화 캡처용 — `bundle` 씬과 같은 규약).
-  // Lynx가 불리언을 숫자로 옮겨 줄 수 있어 === 대신 truthy로 본다.
+  // With `-altMode 1` it starts in direct draw (for automated capture — the same convention as the `bundle` scene).
+  // Lynx may move a boolean across as a number, so it is read as truthy rather than ===.
   const alt = !!(useInitData() as { altMode?: unknown } | undefined)?.altMode
   const [indirect, setIndirect] = useState(!alt)
 
@@ -330,23 +330,23 @@ function GpuDrivenScene() {
 
   return (
     <DemoScene
-      title="GPU-driven 렌더링"
-      subtitle="컴퓨트가 개수를 정하고 간접 디스패치·드로우가 그 버퍼를 읽는다"
+      title="GPU-driven rendering"
+      subtitle="A compute pass decides the count and indirect dispatch/draw read that buffer"
       setup={(scene) => setup(scene, indirectRef)}
       controls={
         <view className="controls">
-          <text className="control-value">{indirect ? '개수를 GPU가 정함' : '최대치 고정'}</text>
+          <text className="control-value">{indirect ? 'the GPU decides the count' : 'fixed at the maximum'}</text>
           <text
             className={indirect ? 'control-button control-button-on' : 'control-button'}
             bindtap={() => setIndirect(true)}
           >
-            간접
+            Indirect
           </text>
           <text
             className={indirect ? 'control-button' : 'control-button control-button-on'}
             bindtap={() => setIndirect(false)}
           >
-            직접
+            Direct
           </text>
         </view>
       }

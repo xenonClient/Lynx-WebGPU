@@ -1,8 +1,8 @@
 import { defineConfig } from '@lynx-js/rspeedy'
 import { pluginReactLynx } from '@lynx-js/react-rsbuild-plugin'
 
-// 데모 씬 1개당 entry 1개 → dist/<scene>.lynx.bundle 산출.
-// `npm run sync` 가 빌드 후 ../Resources/ 로 복사한다 (호스트 앱이 -demo <name> 으로 고른다).
+// One entry per demo scene → dist/<scene>.lynx.bundle.
+// `npm run sync` copies them to ../Resources/ after the build (the host app picks one with -demo <name>).
 export default defineConfig({
   source: {
     entry: {
@@ -31,11 +31,11 @@ export default defineConfig({
       contracts: './src/contracts/index.tsx',
       threelab: './src/threelab/index.tsx',
     },
-    // PrimJS에는 self/performance/navigator 같은 웹 전역이 없고, `globalThis.X = …` 대입은
-    // bare 식별자 해석에 반영되지 않는다. 그래서 웹 라이브러리(Three.js 등)가 쓰는 이름을
-    // shim(webgpu.js)이 로드 시점에 얹는 lynx* 전역으로 컴파일 타임에 바꿔치기한다.
-    // 선언된 바인딩(shim 자신의 `export const GPUBufferUsage` 등)은 치환되지 않는다.
-    // 전체 조리법: docs/JS-AUTHORING.md §10.
+    // PrimJS has no web globals such as self/performance/navigator, and a `globalThis.X = …` assignment is
+    // not reflected in bare identifier resolution. So the names web libraries (three.js and the like) use
+    // are swapped at compile time for the lynx* globals the shim (webgpu.js) installs at load time.
+    // Declared bindings (the shim's own `export const GPUBufferUsage`, etc.) are not substituted.
+    // The full recipe: docs/JS-AUTHORING.md §10.
     define: {
       self: 'globalThis',
       performance: 'globalThis.lynxPerformance',

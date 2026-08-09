@@ -7,32 +7,32 @@ import '../elements.d.ts'
 import { ChecklistHud, type Check } from '../checklist-hud.jsx'
 
 /**
- * 이미지 경로 체크리스트 — **블록 압축 텍스처**와 **외부 이미지 → 텍스처**.
+ * The image path checklist — **block compressed textures** and **an external image → a texture**.
  *
- * 둘 다 "오류 없이 잘못된 픽셀"이 나오기 쉬운 자리다 (블록 산수, 채널 순서, 상하 방향).
- * 그래서 여기서는 통과/실패가 아니라 **실제 색을 되읽어** 값으로 확인한다.
+ * Both are places where "wrong pixels with no error" comes easily (block arithmetic, channel order, vertical direction).
+ * So the verdict here is not pass/fail but **reading the actual colors back** and checking the values.
  *
- * 압축 계열은 기기마다 갈린다 — iOS 기기는 ASTC·ETC2를 항상 하고 BC는 A14부터다.
- * 없는 계열은 실패가 아니라 `–`로 표시한다 (`adapter.features`가 답이다).
+ * The compressed families differ per device — iOS devices always do ASTC and ETC2, and BC from the A14 on.
+ * A missing family is shown as `–` rather than a failure (`adapter.features` is the answer).
  */
 
 const CHECKS = [
-  'adapter.features — 압축 계열 광고',
-  'ASTC 4x4 — 단색 블록을 샘플링',
-  'ASTC 6x5 — 정사각이 아닌 블록',
-  'BC1 — 8바이트 블록',
-  'bytesPerRow 생략 = 블록 단위 기본값',
-  '블록 경계를 벗어난 origin 거부',
-  '압축 텍스처를 렌더 타깃으로 거부',
-  'createImageBitmap — PNG 크기',
-  'copyExternalImageToTexture — 색과 방향',
-  'flipY — 위아래가 뒤집힌다',
-  '이미지 일부만 잘라 올리기',
-  '4바이트 아닌 포맷 거부',
-  'bitmap.close() — 두 번 불러도 안전',
+  'adapter.features — the advertised compressed families',
+  'ASTC 4x4 — sampling a single-color block',
+  'ASTC 6x5 — a non-square block',
+  'BC1 — an 8-byte block',
+  'omitting bytesPerRow = the per-block default',
+  'rejecting an origin off the block boundary',
+  'rejecting a compressed texture as a render target',
+  'createImageBitmap — the PNG size',
+  'copyExternalImageToTexture — color and orientation',
+  'flipY — top and bottom are flipped',
+  'uploading only part of an image',
+  'rejecting a non-4-byte format',
+  'bitmap.close() — safe to call twice',
 ]
 
-/** 4x4 PNG — 위 절반 빨강, 아래 절반 파랑. 방향을 보려면 비대칭이어야 한다. */
+/** A 4x4 PNG — the top half red, the bottom half blue. It has to be asymmetric to show orientation. */
 const PNG_BASE64
   = 'iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAFUlEQVR42mP4z8DwHxkzYAig8TEFACxQH+FE11LuAAAAAElFTkSuQmCC'
 
@@ -49,7 +49,7 @@ struct Out {
   var p = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
   var out: Out;
   out.position = vec4f(p[i], 0.0, 1.0);
-  // 텍스처 좌표는 위가 0이다 — 이미지 첫 행이 화면 위로 가게 y를 뒤집는다.
+  // Texture coordinates have 0 at the top — y is flipped so the image's first row goes to the top of the screen.
   out.uv = vec2f(p[i].x * 0.5 + 0.5, 0.5 - p[i].y * 0.5);
   return out;
 }
@@ -59,7 +59,7 @@ struct Out {
 }
 `
 
-/** base64 → ArrayBuffer. 번들에 이미지를 박아 두는 통로다 (`loadAsset`이 없어도 된다). */
+/** base64 → ArrayBuffer. The channel for baking an image into the bundle (no `loadAsset` needed). */
 function decodeBase64(text: string): ArrayBuffer {
   const table = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
   const clean = text.replace(/=+$/, '')
@@ -79,8 +79,8 @@ function decodeBase64(text: string): ArrayBuffer {
 }
 
 /**
- * ASTC "void extent" 블록 (16B) — 블록 전체가 한 색이라고 선언하는 형태다.
- * 인코더 없이 결정적인 압축 데이터를 만들 수 있는 유일한 길이고, 블록 크기와 무관하다.
+ * An ASTC "void extent" block (16B) — the form that declares the whole block to be one color.
+ * It is the only way to build deterministic compressed data with no encoder, and it is independent of block size.
  */
 function astcVoidExtent(r: number, g: number, b: number): Uint8Array {
   const block = new Uint8Array(16)
@@ -94,8 +94,8 @@ function astcVoidExtent(r: number, g: number, b: number): Uint8Array {
 }
 
 /**
- * BC1 블록 (8B) — `color0 > color1`이면 4색 모드이고 인덱스 0은 `color0`이다.
- * 인덱스를 전부 0으로 두면 4×4가 통째로 한 색이 된다.
+ * A BC1 block (8B) — with `color0 > color1` it is four-color mode and index 0 is `color0`.
+ * Setting every index to 0 makes the whole 4×4 a single color.
  */
 function bc1Block(rgb565: number): Uint8Array {
   const block = new Uint8Array(8)
@@ -105,7 +105,7 @@ function bc1Block(rgb565: number): Uint8Array {
 }
 
 function ImagesScene() {
-  const [status, setStatus] = useState('준비 중…')
+  const [status, setStatus] = useState('getting ready…')
   const [checks, setChecks] = useState<Check[]>(CHECKS.map((label) => ({ label, state: 'wait' })))
 
   useEffect(() => {
@@ -120,7 +120,7 @@ function ImagesScene() {
       )))
     }
 
-    /** 검증 하나가 던져도 나머지는 계속 돈다 — 첫 실패에서 멈추면 정보가 가장 적다. */
+    /** The rest keep running even if one check throws — stopping at the first failure gives the least information. */
     async function check(
       index: number,
       run: () => Promise<{ ok: boolean, detail: string, skip?: boolean }>
@@ -129,16 +129,16 @@ function ImagesScene() {
         const result = await run()
         mark(index, result.skip ? 'skip' : (result.ok ? 'ok' : 'fail'), result.detail)
       } catch (error) {
-        mark(index, 'fail', `예외: ${(error && (error as Error).message) || error}`.slice(0, 90))
+        mark(index, 'fail', `exception: ${(error && (error as Error).message) || error}`.slice(0, 90))
       }
     }
 
     async function boot() {
       const adapter = await gpu.requestAdapter()
-      if (!adapter) throw new Error('어댑터 없음')
+      if (!adapter) throw new Error('no adapter')
       device = await adapter.requestDevice()
 
-      /** 지난 배치의 오류만 모으는 수집기 — 거부를 기대하는 검증에서 쓴다. */
+      /** A collector that gathers only the previous batch's errors — used by checks that expect a rejection. */
       const collected: string[] = []
       device.onError((_error: any, text: string) => collected.push(text))
       const takeErrors = () => {
@@ -157,16 +157,16 @@ function ImagesScene() {
       const layout = pipeline.getBindGroupLayout(0)
 
       /**
-       * 텍스처를 8×8 오프스크린 타깃에 펼쳐 그리고 가운데 픽셀을 되읽는다.
-       * "만들어졌다"가 아니라 **디코딩된 색**을 확인하는 것이 요점이다.
+       * Draws the texture stretched onto an 8×8 offscreen target and reads the center pixel back.
+       * The point is checking **the decoded color** rather than "it was created".
        */
       async function sampleCenter(texture: any, atRow = 4): Promise<number[]> {
         const target = device.createTexture({
           size: { width: 8, height: 8 }, format: 'rgba8unorm',
           usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
         })
-        // 텍스처→버퍼 복사의 bytesPerRow는 명세상 256의 배수여야 한다 (Metal은 봐 주지만
-        // 브라우저·Dawn은 거부한다). 행 간격만 넓어질 뿐 읽는 픽셀 좌표는 같다.
+        // A texture→buffer copy's bytesPerRow must be a multiple of 256 per the spec (Metal lets it slide
+        // but browsers and Dawn reject it). Only the row stride widens; the pixel coordinates read stay the same.
         const readback = device.createBuffer({
           size: 256 * 8, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
         })
@@ -210,10 +210,10 @@ function ImagesScene() {
       const hasBC = features.has('texture-compression-bc')
       setStatus(
         `${adapter.info.architecture || adapter.name} · `
-        + `ASTC ${hasASTC ? '있음' : '없음'} · BC ${hasBC ? '있음' : '없음'}`
+        + `ASTC ${hasASTC ? 'present' : 'absent'} · BC ${hasBC ? 'present' : 'absent'}`
       )
 
-      // ① 광고된 계열과 실제로 만들 수 있는지가 맞아야 한다.
+      // ① The advertised families and what can actually be created must agree.
       await check(0, async () => {
         const advertised = ['astc', 'etc2', 'bc'].filter(
           (name) => features.has(`texture-compression-${name}`)
@@ -230,13 +230,13 @@ function ImagesScene() {
         }
         return {
           ok: advertised.length > 0 && created,
-          detail: advertised.join(', ') || '광고된 계열 없음',
+          detail: advertised.join(', ') || 'no advertised families',
         }
       })
 
-      // ② ASTC 4x4 — 단색 블록이 그 색으로 디코딩된다.
+      // ② ASTC 4x4 — a single-color block decodes to that color.
       await check(1, async () => {
-        if (!hasASTC) return { ok: true, skip: true, detail: '기기가 ASTC를 지원하지 않는다' }
+        if (!hasASTC) return { ok: true, skip: true, detail: 'this device does not support ASTC' }
         const texture = device.createTexture({
           size: { width: 4, height: 4 }, format: 'astc-4x4-unorm',
           usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
@@ -250,9 +250,9 @@ function ImagesScene() {
         return { ok: near(pixel, [0, 255, 255]), detail: `rgb(${pixel.join(',')})` }
       })
 
-      // ③ ASTC 6x5 — 블록 행을 높이로 세면 여기서 깨진다.
+      // ③ ASTC 6x5 — counting block rows as the height breaks right here.
       await check(2, async () => {
-        if (!hasASTC) return { ok: true, skip: true, detail: '기기가 ASTC를 지원하지 않는다' }
+        if (!hasASTC) return { ok: true, skip: true, detail: 'this device does not support ASTC' }
         const texture = device.createTexture({
           size: { width: 6, height: 5 }, format: 'astc-6x5-unorm',
           usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
@@ -266,9 +266,9 @@ function ImagesScene() {
         return { ok: near(pixel, [255, 128, 0]), detail: `rgb(${pixel.join(',')})` }
       })
 
-      // ④ BC1 — 블록당 8바이트 계열. RGB565의 순수 빨강은 8비트로 255다.
+      // ④ BC1 — the 8-bytes-per-block family. RGB565's pure red is 255 in 8 bits.
       await check(3, async () => {
-        if (!hasBC) return { ok: true, skip: true, detail: 'A14 미만 기기에는 BC가 없다' }
+        if (!hasBC) return { ok: true, skip: true, detail: 'devices below the A14 have no BC' }
         const texture = device.createTexture({
           size: { width: 4, height: 4 }, format: 'bc1-rgba-unorm',
           usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
@@ -281,9 +281,9 @@ function ImagesScene() {
         return { ok: near(pixel, [255, 0, 0]), detail: `rgb(${pixel.join(',')})` }
       })
 
-      // ⑤ bytesPerRow 생략 — 8x8이면 블록 2x2개이므로 행은 32바이트다.
+      // ⑤ Omitting bytesPerRow — an 8x8 is 2x2 blocks, so a row is 32 bytes.
       await check(4, async () => {
-        if (!hasASTC) return { ok: true, skip: true, detail: '기기가 ASTC를 지원하지 않는다' }
+        if (!hasASTC) return { ok: true, skip: true, detail: 'this device does not support ASTC' }
         const texture = device.createTexture({
           size: { width: 8, height: 8 }, format: 'astc-4x4-unorm',
           usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
@@ -298,9 +298,9 @@ function ImagesScene() {
         return { ok: near(pixel, [64, 255, 64]), detail: `rgb(${pixel.join(',')})` }
       })
 
-      // ⑥ 블록 경계를 벗어난 origin — Metal은 단언으로 죽는다. 검증 오류로 와야 한다.
+      // ⑥ An origin off the block boundary — Metal dies on an assertion. It must come back as a validation error.
       await check(5, async () => {
-        if (!hasASTC) return { ok: true, skip: true, detail: '기기가 ASTC를 지원하지 않는다' }
+        if (!hasASTC) return { ok: true, skip: true, detail: 'this device does not support ASTC' }
         const texture = device.createTexture({
           size: { width: 8, height: 8 }, format: 'astc-4x4-unorm',
           usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
@@ -313,14 +313,14 @@ function ImagesScene() {
         const errors = takeErrors()
         texture.destroy()
         return {
-          ok: errors.length > 0 && errors[0].includes('블록'),
-          detail: errors[0] ? errors[0].slice(0, 50) : '거부되지 않았다',
+          ok: errors.length > 0 && errors[0].includes('block boundary'),
+          detail: errors[0] ? errors[0].slice(0, 50) : 'it was not rejected',
         }
       })
 
-      // ⑦ 압축 + RENDER_ATTACHMENT — GPU에 블록 인코더가 없다.
+      // ⑦ Compressed + RENDER_ATTACHMENT — the GPU has no block encoder.
       await check(6, async () => {
-        if (!hasASTC) return { ok: true, skip: true, detail: '기기가 ASTC를 지원하지 않는다' }
+        if (!hasASTC) return { ok: true, skip: true, detail: 'this device does not support ASTC' }
         device.createTexture({
           size: { width: 4, height: 4 }, format: 'astc-4x4-unorm',
           usage: GPUTextureUsage.RENDER_ATTACHMENT,
@@ -329,11 +329,11 @@ function ImagesScene() {
         const errors = takeErrors()
         return {
           ok: errors.length > 0,
-          detail: errors[0] ? errors[0].slice(0, 50) : '거부되지 않았다',
+          detail: errors[0] ? errors[0].slice(0, 50) : 'it was not rejected',
         }
       })
 
-      // ⑧ createImageBitmap — 네이티브가 PNG를 풀고 크기를 돌려준다.
+      // ⑧ createImageBitmap — native unpacks the PNG and returns the size.
       const png = decodeBase64(PNG_BASE64)
       let bitmap: any = null
       await check(7, async () => {
@@ -344,8 +344,8 @@ function ImagesScene() {
         }
       })
 
-      // ⑨ 색과 방향 — 첫 행이 빨강, 마지막 행이 파랑이어야 한다.
-      //    채널 순서가 뒤집혔으면 파랑이, 상하가 뒤집혔으면 자리가 바뀐다.
+      // ⑨ Color and orientation — the first row must be red and the last row blue.
+      //    A flipped channel order turns it blue; a flipped vertical swaps the positions.
       await check(8, async () => {
         const texture = device.createTexture({
           size: [bitmap.width, bitmap.height], format: 'rgba8unorm',
@@ -357,11 +357,11 @@ function ImagesScene() {
         texture.destroy()
         return {
           ok: near(top, [255, 0, 0]) && near(bottom, [0, 0, 255]),
-          detail: `위 rgb(${top.join(',')}) · 아래 rgb(${bottom.join(',')})`,
+          detail: `top rgb(${top.join(',')}) · bottom rgb(${bottom.join(',')})`,
         }
       })
 
-      // ⑩ flipY — 같은 이미지가 뒤집혀 들어온다.
+      // ⑩ flipY — the same image arrives upside down.
       await check(9, async () => {
         const flipped = await createImageBitmap(png, { flipY: true })
         const texture = device.createTexture({
@@ -372,10 +372,10 @@ function ImagesScene() {
         const top = await sampleCenter(texture, 1)
         texture.destroy()
         flipped.close()
-        return { ok: near(top, [0, 0, 255]), detail: `위 rgb(${top.join(',')})` }
+        return { ok: near(top, [0, 0, 255]), detail: `top rgb(${top.join(',')})` }
       })
 
-      // ⑪ 부분 복사 — 아래 절반(파랑)에서 2x2만 잘라 온다.
+      // ⑪ A partial copy — only 2x2 is cut from the bottom half (blue).
       await check(10, async () => {
         const texture = device.createTexture({
           size: [2, 2], format: 'rgba8unorm',
@@ -389,7 +389,7 @@ function ImagesScene() {
         return { ok: near(pixel, [0, 0, 255]), detail: `rgb(${pixel.join(',')})` }
       })
 
-      // ⑫ 디코딩 결과가 RGBA8이므로 4바이트 아닌 포맷은 조용히 어긋나느니 거부한다.
+      // ⑫ The decoded result is RGBA8, so a non-4-byte format is rejected rather than quietly mismatching.
       await check(11, async () => {
         const texture = device.createTexture({
           size: [4, 4], format: 'rgba16float',
@@ -400,23 +400,23 @@ function ImagesScene() {
         const errors = takeErrors()
         texture.destroy()
         return {
-          ok: errors.length > 0 && errors[0].includes('4바이트'),
-          detail: errors[0] ? errors[0].slice(0, 50) : '거부되지 않았다',
+          ok: errors.length > 0 && errors[0].includes('4-byte'),
+          detail: errors[0] ? errors[0].slice(0, 50) : 'it was not rejected',
         }
       })
 
-      // ⑬ close()는 네이티브 픽셀을 놓아 준다. 두 번 불러도 오류가 나면 안 된다.
+      // ⑬ close() releases the native pixels. Calling it twice must raise no error.
       await check(12, async () => {
         bitmap.close()
         bitmap.close()
         device.queue.submit([])
         const errors = takeErrors()
-        return { ok: errors.length === 0, detail: errors[0] ? errors[0].slice(0, 50) : '오류 0' }
+        return { ok: errors.length === 0, detail: errors[0] ? errors[0].slice(0, 50) : '0 errors' }
       })
 
       if (disposed) return
 
-      // 배경 — 체크가 끝난 뒤에도 화면이 살아 있음을 보여 준다.
+      // The background — it shows the screen is still alive after the checks finish.
       const context = gpu.getCanvasContext('main')
       const format = gpu.getPreferredCanvasFormat()
       context.configure({ device, format })
@@ -462,7 +462,7 @@ function ImagesScene() {
     }
 
     boot().catch((error) => {
-      setStatus(`실패: ${(error && error.message) || error}`)
+      setStatus(`failed: ${(error && error.message) || error}`)
     })
 
     return () => {
@@ -475,7 +475,7 @@ function ImagesScene() {
   return (
     <view className="page">
       <webgpu-canvas className="canvas" canvas-id="main" />
-      <ChecklistHud title="이미지 · 압축 텍스처" subtitle={status} checks={checks} />
+      <ChecklistHud title="Images · compressed textures" subtitle={status} checks={checks} />
     </view>
   )
 }

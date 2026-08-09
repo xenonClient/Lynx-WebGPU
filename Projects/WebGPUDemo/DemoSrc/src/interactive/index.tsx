@@ -6,18 +6,18 @@ import '../demo.css'
 import '../elements.d.ts'
 
 /**
- * 홀로그래픽 트레이딩 카드 — 잡고 움직이면 포일 무늬가 각도를 따라 흐른다.
+ * A holographic trading card — grab and move it and the foil pattern flows with the angle.
  *
- * 카드는 화면 중앙에 고정되고 **기울기만** 손가락을 따라간다 (실물 카드를 손에 들고
- * 빛에 비춰 보는 동작). 포일은 눈속임이 아니라 실제 3D 자세에서 계산한다 —
- * 프래그먼트마다 시선 벡터와 법선을 구해 그 각도로 무지개 띠·정반사·반짝임을 만든다.
- * 그래서 기울일 때 무늬가 "따라 도는" 게 아니라 **표면 위를 흐른다**.
+ * The card stays fixed at the center of the screen and **only its tilt** follows the finger (the motion of
+ * holding a real card up to the light). The foil is not a trick but computed from the actual 3D pose —
+ * the view vector and normal are found per fragment and the angle between them makes the rainbow bands,
+ * specular and glitter. So when you tilt it the pattern does not "turn with" the card but **flows across the surface**.
  *
- * 위아래로 겹친 Lynx 컴포넌트는 그대로 두었다 — 입력 라우팅이 웹과 같은지
- * 눈으로 확인하는 장치다 (`docs/LYNX-INTEGRATION.md` §5).
+ * The Lynx components overlapping above and below are left as they are — a device for verifying by eye
+ * that input routing matches the web (`docs/LYNX-INTEGRATION.md` §5).
  */
 
-/** 실물 포켓몬 카드 비율 (63mm × 88mm). */
+/** The real Pokémon card ratio (63mm × 88mm). */
 const CARD_ASPECT = 63 / 88
 
 const CARD_SHADER = /* wgsl */ `
@@ -52,25 +52,25 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
   out.position = u.mvp * local;
   out.uv = corner * 0.5 + vec2f(0.5, 0.5);
   out.worldPosition = (u.model * local).xyz;
-  // 카드는 평면이라 법선이 상수다 — 모델 행렬로 돌리기만 하면 된다.
+  // The card is flat, so the normal is constant — it only needs rotating by the model matrix.
   out.normal = (u.model * vec4f(0.0, 0.0, 1.0, 0.0)).xyz;
   return out;
 }
 
-// ── 보조 ─────────────────────────────────────────────────────────────
+// ── Helpers ──────────────────────────────────────────────────────────
 
-/// 둥근 사각형까지의 부호 있는 거리.
+/// The signed distance to a rounded rectangle.
 fn rounded_box(point: vec2f, half: vec2f, radius: f32) -> f32 {
   let q = abs(point) - half + vec2f(radius, radius);
   return length(max(q, vec2f(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - radius;
 }
 
-/// SDF를 0~1 채움으로 바꾼다 (경계에서 부드럽게).
+/// Turns an SDF into a 0~1 fill (soft at the boundary).
 fn fill(distance: f32, softness: f32) -> f32 {
   return 1.0 - smoothstep(-softness, softness, distance);
 }
 
-/// 코사인 팔레트 무지개 — HSV 변환보다 싸고 이어짐이 매끄럽다.
+/// A cosine-palette rainbow — cheaper than an HSV conversion and smoother in its continuity.
 fn spectrum(t: f32) -> vec3f {
   return 0.5 + 0.5 * cos(6.2831853 * (vec3f(t) + vec3f(0.0, 0.33, 0.67)));
 }
@@ -81,7 +81,7 @@ fn hash21(p: vec2f) -> f32 {
   return fract(q.x * q.y);
 }
 
-/// 아트 창 안에 그리는 절차적 그림 (에너지 코어).
+/// The procedural picture drawn inside the art window (an energy core).
 fn artwork(p: vec2f, time: f32) -> vec3f {
   let radius = length(p);
   let angle = atan2(p.y, p.x);
@@ -94,36 +94,36 @@ fn artwork(p: vec2f, time: f32) -> vec3f {
   return color;
 }
 
-// ── 프래그먼트 ────────────────────────────────────────────────────────
+// ── Fragment ─────────────────────────────────────────────────────────
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   let aspect = u.halfSize.x / u.halfSize.y;
-  // p.y ∈ [-1, 1], p.x ∈ [-aspect, aspect] — 카드 비율을 그대로 쓴다.
+  // p.y ∈ [-1, 1], p.x ∈ [-aspect, aspect] — the card ratio is used as is.
   let p = (in.uv - vec2f(0.5, 0.5)) * vec2f(2.0 * aspect, 2.0);
 
   let normal = normalize(in.normal);
   let viewDirection = normalize(u.cameraPosition - in.worldPosition);
   let lightDirection = normalize(vec3f(-0.30, 0.50, 0.81));
-  // 정면일수록 1, 기울일수록 작아진다. 포일 무늬를 흐르게 하는 핵심 값.
+  // 1 head on, smaller as it tilts. The key value that makes the foil pattern flow.
   let facing = clamp(dot(normal, viewDirection), 0.0, 1.0);
   let halfway = normalize(viewDirection + lightDirection);
 
-  // ── 1) 카드 인쇄면
-  var color = vec3f(0.86, 0.72, 0.30);                       // 금색 테두리
+  // ── 1) The printed face of the card
+  var color = vec3f(0.86, 0.72, 0.30);                       // the gold border
   let borderNoise = hash21(floor(in.uv * 180.0)) * 0.04;
   color = color - vec3f(borderNoise);
 
-  // 안쪽 판
+  // The inner panel
   let innerPlate = fill(rounded_box(p, vec2f(aspect - 0.10, 0.90), 0.05), 0.006);
   color = mix(color, vec3f(0.10, 0.13, 0.22), innerPlate);
 
-  // 아트 창
+  // The art window
   let artBox = rounded_box(p - vec2f(0.0, 0.22), vec2f(aspect - 0.17, 0.42), 0.03);
   let artMask = fill(artBox, 0.005);
   color = mix(color, artwork((p - vec2f(0.0, 0.22)) * vec2f(1.6, 1.9), u.time), artMask);
 
-  // 제목 바 / 설명 바 / 하단 텍스트 줄 — 카드처럼 보이게 하는 최소 요소
+  // The title bar / description bar / bottom text lines — the minimum that makes it read as a card
   let titleBar = fill(rounded_box(p - vec2f(0.0, 0.78), vec2f(aspect - 0.17, 0.09), 0.03), 0.005);
   color = mix(color, vec3f(0.20, 0.26, 0.42), titleBar);
 
@@ -137,36 +137,36 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     color = mix(color, vec3f(0.42, 0.48, 0.62), bar * 0.75);
   }
 
-  // ── 2) 홀로 포일
-  // 포일은 인쇄면 전체가 아니라 아트 창 + 제목 바에만 입힌다 (실물 홀로 카드와 같다).
+  // ── 2) The holo foil
+  // The foil covers only the art window and title bar rather than the whole printed face (as on a real holo card).
   let foilMask = clamp(artMask + titleBar * 0.7, 0.0, 1.0);
 
-  // 시선각(facing)을 무늬 위상에 섞으면, 기울일 때 띠가 표면 위를 흐른다.
+  // Mixing the view angle (facing) into the pattern phase makes the bands flow across the surface as it tilts.
   let bandA = in.uv.x * 1.7 + in.uv.y * 0.9 + facing * 2.8 + u.time * 0.02;
   let bandB = in.uv.x * -3.3 + in.uv.y * 2.6 + facing * 5.2;
   let foil = spectrum(fract(bandA)) * 0.62 + spectrum(fract(bandB)) * 0.38;
-  // 기울일수록 강해진다 — 정면에서는 은은하고, 눕히면 확 산다.
+  // It strengthens as it tilts — subtle head on, vivid laid flat.
   let sheen = pow(1.0 - facing, 1.3);
   color = color + foil * foilMask * (0.38 + sheen * 1.6);
 
-  // ── 3) 반짝이 — 셀 안의 작은 점 하나. 각도가 바뀔 때만 깜빡인다.
+  // ── 3) Glitter — one small dot per cell. It only flickers as the angle changes.
   let grid = in.uv * vec2f(44.0, 62.0);
   let cell = floor(grid);
   let seed = hash21(cell);
-  // 셀마다 점 위치를 흩어 격자로 보이지 않게 한다.
+  // The dot positions are scattered per cell so it does not read as a grid.
   let jitter = (vec2f(hash21(cell + vec2f(3.7, 1.3)), hash21(cell + vec2f(9.1, 5.5))) - vec2f(0.5)) * 0.7;
   let speck = exp(-length(fract(grid) - vec2f(0.5) - jitter) * 22.0);
   let twinkle = pow(max(sin(seed * 44.0 + facing * 26.0 + u.time * 0.7), 0.0), 30.0);
   color = color + speck * twinkle * foilMask * vec3f(1.0, 0.97, 0.88) * 2.2;
 
-  // ── 4) 라미네이트 정반사 — 광원이 표면에 비친 하이라이트
+  // ── 4) The laminate specular — the highlight of the light source on the surface
   let specular = pow(max(dot(normal, halfway), 0.0), 60.0);
   color = color + specular * vec3f(1.0, 0.98, 0.94) * (0.7 + u.held * 0.6);
 
-  // ── 5) 가장자리 프레넬
+  // ── 5) Edge Fresnel
   color = color + pow(1.0 - facing, 3.2) * vec3f(0.45, 0.60, 1.0) * 0.30;
 
-  // 카드 바깥은 잘라 낸다 (둥근 모서리 + 안티에일리어싱).
+  // Everything outside the card is cut away (rounded corners plus antialiasing).
   let alpha = fill(rounded_box(p, vec2f(aspect, 1.0), 0.10), 0.008);
   return vec4f(color, alpha);
 }
@@ -191,11 +191,11 @@ fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f {
 @fragment
 fn fs_main(@builtin(position) fragment: vec4f) -> @location(0) vec4f {
   let uv = fragment.xy / b.resolution;
-  // 바탕 — 가운데가 살짝 밝은 무대 조명
+  // The backdrop — stage lighting, slightly brighter in the middle
   let toCenter = (uv - vec2f(0.5, 0.45)) * vec2f(b.resolution.x / b.resolution.y, 1.0);
   var color = mix(vec3f(0.10, 0.12, 0.19), vec3f(0.030, 0.035, 0.055), clamp(length(toCenter) * 1.1, 0.0, 1.0));
 
-  // 카드 아래 그림자 — 들어 올리면 흐려지고 넓어진다
+  // The shadow beneath the card — it blurs and widens as the card is lifted
   let offset = (uv - b.shadowCenter) / b.shadowScale;
   let shadow = exp(-dot(offset, offset) * (2.6 - b.held * 0.9));
   color = color * (1.0 - shadow * (0.55 - b.held * 0.15));
@@ -214,17 +214,17 @@ interface Tilt {
 function HoloCardScene() {
   const [fps, setFps] = useState(0)
   const [status, setStatus] = useState('')
-  const [routed, setRouted] = useState('카드를 잡고 기울여 보세요')
+  const [routed, setRouted] = useState('grab the card and tilt it')
 
-  // 렌더 루프가 매 프레임 읽는 값 — setState를 쓰면 리렌더가 붙으므로 ref에 둔다.
+  // A value the render loop reads every frame — setState would attach a re-render, so it lives in a ref.
   const pointer = useRef({ x: 0.5, y: 0.5, held: false })
-  // 하네스용 고정 기울기 (`-cardTilt` 런치 인자). 0이면 평소대로 터치를 따른다.
+  // A fixed tilt for the harness (the `-cardTilt` launch argument). 0 follows the touch as usual.
   const initData = useInitData() as { forceTilt?: number } | undefined
   const forcedTilt = useRef(0)
   forcedTilt.current = typeof initData?.forceTilt === 'number' ? initData.forceTilt : 0
   const canvasCss = useRef({ width: 1, height: 1 })
 
-  /** Lynx 터치 이벤트의 엘리먼트 기준 좌표(CSS px)를 0~1로 정규화한다. */
+  /** Normalizes a Lynx touch event's element-relative coordinates (CSS px) to 0~1. */
   function normalize(event: any) {
     const touch = event?.touches?.[0] ?? event?.changedTouches?.[0]
     if (!touch) return null
@@ -239,7 +239,7 @@ function HoloCardScene() {
     const point = normalize(event)
     if (!point) return
     pointer.current = { ...point, held: true }
-    setRouted(`카드 — (${point.x.toFixed(2)}, ${point.y.toFixed(2)})`)
+    setRouted(`card — (${point.x.toFixed(2)}, ${point.y.toFixed(2)})`)
   }
 
   function move(event: any) {
@@ -259,7 +259,7 @@ function HoloCardScene() {
 
     async function boot() {
       const adapter = await gpu.requestAdapter()
-      if (!adapter) throw new Error('WebGPU 어댑터 없음')
+      if (!adapter) throw new Error('no WebGPU adapter')
       device = await adapter.requestDevice()
       device.onError((_error: any, text: string) => setStatus(text))
 
@@ -267,7 +267,7 @@ function HoloCardScene() {
       const format = gpu.getPreferredCanvasFormat()
       context.configure({ device, format })
 
-      // ── 배경 (무대 + 그림자)
+      // ── The background (stage plus shadow)
       const backgroundModule = device.createShaderModule({ code: BACKGROUND_SHADER, label: 'stage' })
       const backgroundBuffer = device.createBuffer({
         size: 32,
@@ -283,7 +283,7 @@ function HoloCardScene() {
         entries: [{ binding: 0, resource: { buffer: backgroundBuffer } }],
       })
 
-      // ── 카드
+      // ── The card
       const cardModule = device.createShaderModule({ code: CARD_SHADER, label: 'holo-card' })
       const cardBuffer = device.createBuffer({
         size: 160,
@@ -297,7 +297,7 @@ function HoloCardScene() {
           entryPoint: 'fs_main',
           targets: [{
             format,
-            // 둥근 모서리를 알파로 깎으므로 일반(비 premultiplied) 알파 합성.
+            // The rounded corners are carved out with alpha, so ordinary (non-premultiplied) alpha compositing.
             blend: {
               color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
               alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
@@ -333,9 +333,9 @@ function HoloCardScene() {
         const step = Math.min(delta, 33) / 1000
         time += step
 
-        // ── 기울기 스프링
-        // 잡고 있으면 손가락 쪽으로 기울고, 놓으면 평평하게 돌아온다.
-        // 놓았을 때도 아주 약하게 흔들려 포일이 죽어 보이지 않게 한다.
+        // ── The tilt spring
+        // Held, it tilts toward the finger; released, it returns flat.
+        // It also sways very faintly when released, so the foil does not look dead.
         const forced = forcedTilt.current
         const targetY = forced !== 0
           ? forced
@@ -355,9 +355,9 @@ function HoloCardScene() {
         tilt.x += tilt.velocityX * step
         tilt.y += tilt.velocityY * step
 
-        // ── 행렬
+        // ── Matrices
         const aspect = size.width / size.height
-        // 카메라에서 본 화면의 실제 크기로 카드를 맞춘다 — 가로/세로 어느 쪽으로도 넘치지 않게.
+        // The card is fitted to the screen's actual size as seen from the camera — so it overflows neither horizontally nor vertically.
         const fovY = Math.PI / 4.4
         const viewHalfHeight = Math.tan(fovY / 2) * cameraZ
         const viewHalfWidth = viewHalfHeight * aspect
@@ -386,7 +386,7 @@ function HoloCardScene() {
         cardUniforms[39] = 0
         device.queue.writeBuffer(cardBuffer, 0, cardUniforms)
 
-        // 그림자: 카드 중심을 화면에 투영해 그 아래에 깐다.
+        // The shadow: the card's center is projected onto the screen and laid beneath it.
         const center = mat.project(mvp, 0, -0.12, 0)
         backgroundUniforms[0] = size.width
         backgroundUniforms[1] = size.height
@@ -450,21 +450,21 @@ function HoloCardScene() {
         bindtouchcancel={release}
       />
 
-      {/* 캔버스 위에 겹친 평범한 Lynx 카드 — 여길 누르면 카드가 기울면 안 된다 */}
-      <view className="layer-card" bindtap={() => setRouted('겹친 Lynx 카드 (캔버스로 안 감)')}>
-        <text className="layer-title">겹친 Lynx 카드</text>
-        <text className="layer-hint">여길 누르면 카드가 안 움직여야 한다</text>
+      {/* An ordinary Lynx card overlapping the canvas — pressing here must not tilt the card */}
+      <view className="layer-card" bindtap={() => setRouted('the overlapping Lynx card (it never reached the canvas)')}>
+        <text className="layer-title">Overlapping Lynx card</text>
+        <text className="layer-hint">pressing here must not move the card</text>
       </view>
 
       <view className="hud">
-        <text className="title">홀로그래픽 카드</text>
-        <text className="subtitle">Lynx 터치 → 3D 기울기 → 포일 · {fps} fps</text>
-        <text className="note">마지막 입력: {routed}</text>
+        <text className="title">Holographic card</text>
+        <text className="subtitle">Lynx touch → 3D tilt → foil · {fps} fps</text>
+        <text className="note">last input: {routed}</text>
         {status ? <text className="status">{status}</text> : null}
       </view>
 
-      <view className="bottom-bar" bindtap={() => setRouted('아래쪽 Lynx 바 (캔버스로 안 감)')}>
-        <text className="bottom-text">아래쪽 Lynx 바 — 탭해 보세요</text>
+      <view className="bottom-bar" bindtap={() => setRouted('the bottom Lynx bar (it never reached the canvas)')}>
+        <text className="bottom-text">The bottom Lynx bar — try tapping it</text>
       </view>
     </view>
   )

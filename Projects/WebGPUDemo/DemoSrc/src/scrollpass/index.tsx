@@ -4,20 +4,20 @@ import '../demo.css'
 import '../elements.d.ts'
 
 /**
- * 스크롤 통과 검증 — `<scroll-view>` **위에** 캔버스가 형제로 겹칠 때,
- * `passthrough-touches` 히트 테스트 처리만으로 스크롤이 되는지 확인하는 화면.
+ * Scroll passthrough verification — a screen for checking whether scrolling works purely through
+ * `passthrough-touches` hit test handling when a canvas overlaps a `<scroll-view>` **above it** as a sibling.
  *
- * 캔버스 밴드를 세로로 드래그해 본다:
- *   - **통과 ON**  → 리스트가 스크롤되고, 캔버스는 `touchstart` 후 스크롤이 이기는 순간
- *                    `touchcancel`을 받는다 (다른 엘리먼트와 같은 경쟁 규칙).
- *   - **통과 OFF** → 웹 기본과 같다. 캔버스가 UIKit 히트 테스트를 막아 스크롤이 죽고,
- *                    캔버스는 `touchmove`를 계속 받는다.
+ * Drag the canvas band vertically:
+ *   - **passthrough ON**  → the list scrolls, and the canvas receives a `touchcancel` the moment scrolling
+ *                           wins after `touchstart` (the same contention rules as any other element).
+ *   - **passthrough OFF** → the same as the web default. The canvas blocks the UIKit hit test so scrolling
+ *                           dies, and the canvas keeps receiving `touchmove`.
  *
- * HUD의 스크롤 오프셋·터치 로그가 그 차이를 숫자로 보여 준다 — 시뮬레이터에는 터치 주입
- * 수단이 없으므로 판정은 실기기/시뮬레이터를 손으로 만져서 한다.
+ * The HUD's scroll offset and touch log show that difference in numbers — the simulator has no way to
+ * inject touches, so the verdict comes from touching a device or the simulator by hand.
  */
 
-/** 흐르는 대각선 띠 — 시간이 보이면 캔버스가 살아 있고, 스크롤과 무관하게 돈다는 뜻. */
+/** A flowing diagonal band — seeing time pass means the canvas is alive and running independently of scrolling. */
 const SHADER = /* wgsl */ `
 struct Uniforms {
   time: f32,
@@ -54,7 +54,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   return vec4f(base + accent * 0.25, 1.0);
 }
 
-/// 밴드 위·아래 가장자리를 밝혀 캔버스 경계를 드러낸다.
+/// Brightens the band's top and bottom edges to reveal the canvas boundary.
 fn fill_edge(y: f32) -> f32 {
   let edge = min(y, 1.0 - y);
   return 1.0 - smoothstep(0.0, 0.08, edge);
@@ -67,12 +67,12 @@ function ScrollPassScene() {
   const [passthrough, setPassthrough] = useState(true)
   const [status, setStatus] = useState('')
   const [scrollTop, setScrollTop] = useState(0)
-  const [touchLog, setTouchLog] = useState('아직 없음')
+  const [touchLog, setTouchLog] = useState('none yet')
   const touchCount = useRef(0)
 
   function logTouch(kind: string) {
     touchCount.current += 1
-    setTouchLog(`${kind} · 누적 ${touchCount.current}건`)
+    setTouchLog(`${kind} · ${touchCount.current} total`)
   }
 
   useEffect(() => {
@@ -82,7 +82,7 @@ function ScrollPassScene() {
 
     async function boot() {
       const adapter = await gpu.requestAdapter()
-      if (!adapter) throw new Error('WebGPU 어댑터 없음')
+      if (!adapter) throw new Error('no WebGPU adapter')
       device = await adapter.requestDevice()
       device.onError((_error: any, text: string) => setStatus(text))
 
@@ -163,7 +163,7 @@ function ScrollPassScene() {
           {ROWS.map((index) => (
             <view className="scroll-row" key={index}>
               <text className="scroll-row-text">
-                {`행 ${index + 1} — 캔버스 밴드 뒤에서도 스크롤이 이어져야 한다`}
+                {`row ${index + 1} — scrolling must continue behind the canvas band too`}
               </text>
             </view>
           ))}
@@ -177,14 +177,14 @@ function ScrollPassScene() {
         bindtouchstart={() => logTouch('touchstart')}
         bindtouchmove={() => logTouch('touchmove')}
         bindtouchend={() => logTouch('touchend')}
-        bindtouchcancel={() => logTouch('touchcancel ← 스크롤이 가져감')}
+        bindtouchcancel={() => logTouch('touchcancel ← scrolling took it')}
       />
 
       <view className="hud">
-        <text className="title">스크롤 통과</text>
-        <text className="subtitle">캔버스 밴드를 세로로 드래그 — 통과 ON이면 리스트가 움직인다</text>
-        <text className="note">{`스크롤 오프셋: ${scrollTop}px`}</text>
-        <text className="note">{`캔버스 Lynx 이벤트: ${touchLog}`}</text>
+        <text className="title">Scroll passthrough</text>
+        <text className="subtitle">Drag the canvas band vertically — with passthrough ON the list moves</text>
+        <text className="note">{`scroll offset: ${scrollTop}px`}</text>
+        <text className="note">{`canvas Lynx events: ${touchLog}`}</text>
         {status ? <text className="status">{status}</text> : null}
       </view>
       <text className="badge">WebGPU on Lynx</text>

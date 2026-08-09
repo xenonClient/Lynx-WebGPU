@@ -3,19 +3,19 @@ import { DemoScene, type SceneContext } from '../scene.jsx'
 import { GPUBufferUsage } from '../webgpu.js'
 
 /**
- * 렌더 번들 — **JS가 매 프레임 같은 커맨드 배열을 다시 만들지 않게 한다.**
+ * Render bundles — **they keep JS from rebuilding the same command array every frame.**
  *
- * 이 구현에서 번들의 이득은 브라우저와 다르다. Metal에는 대응 객체가 없어 네이티브가 명령
- * 목록을 되풀이할 뿐이라 GPU 쪽 비용은 같다. 아끼는 것은 **브리지를 건너는 커맨드 수**다.
+ * A bundle's benefit here differs from a browser's. Metal has no corresponding object, so native merely
+ * replays the command list and the GPU-side cost is the same. What is saved is **the number of commands crossing the bridge**.
  *
- * 그래서 HUD에 `submit()`이 돌려주는 `commandCount`를 그대로 띄운다 — 추정이 아니라
- * 네이티브가 실제로 받은 개수다. 타일이 움직이는 동안에도 번들은 그대로 재사용된다
- * (자세는 유니폼에서 오고 드로우 목록은 고정이기 때문).
+ * So the HUD shows the `commandCount` `submit()` returns as is — not an estimate but the count native
+ * actually received. The bundle is reused unchanged even while the tiles move
+ * (the pose comes from a uniform and the draw list is fixed).
  */
 const COLUMNS = 10
 const ROWS = 12
 const TILES = COLUMNS * ROWS
-/** 격자가 차지하는 NDC 범위 — 타일 크기는 여기서 나온 칸 간격에 비례한다. */
+/** The NDC range the grid occupies — the tile size is proportional to the cell spacing derived from it. */
 const SPAN_X = 1.76
 const SPAN_Y = 1.72
 
@@ -37,7 +37,7 @@ struct Out {
 fn vs_main(@location(0) position: vec2f,
            @location(1) color: vec3f,
            @location(2) seed: f32) -> Out {
-  // 타일마다 다른 위상으로 흔들린다 — 그림은 움직여도 드로우 목록은 그대로다.
+  // Each tile wobbles at a different phase — the picture moves while the draw list stays.
   let sway = sin(params.time * 1.6 + seed * 6.28318) * 0.014;
   let lift = cos(params.time * 1.1 + seed * 3.14159) * 0.030;
   let pulse = 0.72 + 0.28 * sin(params.time * 2.2 + seed * 9.0);
@@ -55,10 +55,10 @@ fn fs_main(in: Out) -> @location(0) vec4f {
 `
 
 /**
- * 타일 하나를 정점 6개로 굽는다 — 위치·색·위상을 정점에 박아 드로우 인자를 없앤다.
+ * Bakes one tile out of 6 vertices — position, color and phase are baked into the vertices, removing draw arguments.
  *
- * 타일 크기는 **칸 간격에 비례**한다. 화면비로 보정하면 세로 화면에서 격자가 좌우로
- * 넘치므로, 화면 모양을 그대로 따라가는 직사각형으로 둔다.
+ * The tile size is **proportional to the cell spacing**. Correcting by aspect would overflow the grid
+ * sideways on a portrait screen, so it is left as a rectangle following the screen shape.
  */
 function buildTiles() {
   const floats = new Float32Array(TILES * 6 * 6)
@@ -133,7 +133,7 @@ function setup({ device, context, format, report }: SceneContext, bundledRef: { 
     entries: [{ binding: 0, resource: { buffer: params } }],
   })
 
-  // 번들은 **한 번만** 기록한다. 이후 프레임은 핸들 하나로 이 전부를 되돌린다.
+  // The bundle is recorded **once only**. Later frames replay all of it through a single handle.
   const bundleEncoder = device.createRenderBundleEncoder({ colorFormats: [format], label: 'tiles' })
   bundleEncoder.setPipeline(pipeline)
   bundleEncoder.setBindGroup(0, bindGroup)
@@ -176,23 +176,23 @@ function setup({ device, context, format, report }: SceneContext, bundledRef: { 
 
     pass.end()
 
-    // submit이 돌려주는 것은 네이티브가 **실제로 받은** 커맨드 수다 (추정이 아니다).
+    // What submit returns is the number of commands native **actually received** (not an estimate).
     const result = device.queue.submit([encoder.finish()])
     const count = result && result.commandCount ? result.commandCount : 0
     if (count !== lastReported) {
       lastReported = count
       report(
-        `타일 ${TILES}개 · 프레임당 커맨드 ${count}개` +
-          (bundled ? ' — 번들 하나로 되돌린다' : ' — 드로우마다 한 줄씩 브리지를 건넌다')
+        `${TILES} tiles · ${count} commands per frame` +
+          (bundled ? ' — replayed from one bundle' : ' — one bridge crossing per draw')
       )
     }
   }
 }
 
 function BundleScene() {
-  // `-altMode 1` 런치 인자로 시작 상태를 뒤집는다 — 시뮬레이터에는 터치 주입이 없어
-  // 버튼을 누른 화면을 캡처하려면 이 경로가 필요하다 (`DemoViewController.initialData`).
-  // Lynx가 불리언을 숫자로 옮겨 줄 수 있어 === 대신 truthy로 본다.
+  // The `-altMode 1` launch argument flips the starting state — the simulator cannot inject touches, so
+  // this path is needed to capture the screen with the button pressed (`DemoViewController.initialData`).
+  // Lynx may move a boolean across as a number, so it is read as truthy rather than ===.
   const alt = !!(useInitData() as { altMode?: unknown } | undefined)?.altMode
   const [bundled, setBundled] = useState(!alt)
 
@@ -201,23 +201,23 @@ function BundleScene() {
 
   return (
     <DemoScene
-      title="렌더 번들"
-      subtitle={`드로우 ${TILES}개를 한 번만 기록해 매 프레임 되돌린다`}
+      title="Render bundle"
+      subtitle={`${TILES} draws recorded once and replayed every frame`}
       setup={(scene) => setup(scene, bundledRef)}
       controls={
         <view className="controls">
-          <text className="control-value">{bundled ? '번들 재사용' : '매 프레임 기록'}</text>
+          <text className="control-value">{bundled ? 'bundle reused' : 'recorded every frame'}</text>
           <text
             className={bundled ? 'control-button control-button-on' : 'control-button'}
             bindtap={() => setBundled(true)}
           >
-            번들
+            Bundle
           </text>
           <text
             className={bundled ? 'control-button' : 'control-button control-button-on'}
             bindtap={() => setBundled(false)}
           >
-            직접
+            Direct
           </text>
         </view>
       }
