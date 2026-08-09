@@ -495,7 +495,10 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
     }
 
     private func createTexture(_ command: WGPUCreateCommand<WGPUTextureDescriptor>) throws {
-        if specValidation { try validateCompressedTexture(command.descriptor) }
+        if specValidation {
+            try validateTextureDescriptor(command.descriptor, path: { command.fieldPath($0) })
+            try validateCompressedTexture(command.descriptor)
+        }
         let raw = try backend.makeTexture(command.descriptor)
         registry.insert(
             WGPUEngineTexture<B>(
@@ -507,6 +510,57 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
             ),
             at: command.id
         )
+    }
+
+    /// `GPUTextureDescriptor`의 수치 제약 (명세 "validating GPUTextureDescriptor").
+    ///
+    /// **음수가 프로세스를 죽인다.** JS는 어떤 정수든 실어 보낼 수 있는데, 음수 `mipLevelCount`가
+    /// Metal 디스크립터의 부호 없는 필드로 넘어가면 `UInt.max`로 접혀
+    /// `MTLTextureDescriptor requests 18446744073709551615 mipmap levels`라는 **단언으로
+    /// 프로세스가 종료된다.** 앱은 이유를 남길 기회조차 없다. 크기·샘플 수도 같은 모양이라
+    /// 함께 막는다 — 전부 명세가 이미 정한 규칙이다.
+    private func validateTextureDescriptor(
+        _ descriptor: WGPUTextureDescriptor,
+        path: (String) -> String
+    ) throws {
+        let size = descriptor.size
+        guard size.width >= 1, size.height >= 1, size.depthOrArrayLayers >= 1 else {
+            throw WGPUError.validation(
+                "텍스처 크기는 각 축이 1 이상이어야 한다 "
+                    + "(\(size.width)x\(size.height)x\(size.depthOrArrayLayers))",
+                path: path("size")
+            )
+        }
+        // 명세: 1 ≤ mipLevelCount ≤ 이 크기가 담을 수 있는 최대 레벨 수.
+        let largest = descriptor.dimension == .threeD
+            ? max(size.width, size.height, size.depthOrArrayLayers)
+            : max(size.width, size.height)
+        let maxLevels = Int(log2(Double(largest))) + 1
+        guard descriptor.mipLevelCount >= 1, descriptor.mipLevelCount <= maxLevels else {
+            throw WGPUError.validation(
+                "mipLevelCount는 1~\(maxLevels) 범위여야 한다 "
+                    + "(받은 값 \(descriptor.mipLevelCount), 크기 \(size.width)x\(size.height))",
+                path: path("mipLevelCount")
+            )
+        }
+        // 명세가 정한 값은 1과 4뿐이다.
+        guard descriptor.sampleCount == 1 || descriptor.sampleCount == 4 else {
+            throw WGPUError.validation(
+                "sampleCount는 1 또는 4여야 한다 (받은 값 \(descriptor.sampleCount))",
+                path: path("sampleCount")
+            )
+        }
+        if descriptor.sampleCount == 4 {
+            guard descriptor.mipLevelCount == 1, descriptor.dimension == .twoD,
+                  size.depthOrArrayLayers == 1 else {
+                throw WGPUError.validation(
+                    "멀티샘플 텍스처는 2d·밉 1단계·레이어 1장이어야 한다 "
+                        + "(mipLevelCount \(descriptor.mipLevelCount), "
+                        + "\(descriptor.dimension.rawValue), 레이어 \(size.depthOrArrayLayers))",
+                    path: path("sampleCount")
+                )
+            }
+        }
     }
 
     /// 블록 압축 텍스처의 제약. **백엔드가 단언으로 죽는 조합**이라 여기서 미리 잡아
