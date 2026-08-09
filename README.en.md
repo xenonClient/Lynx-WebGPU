@@ -105,6 +105,7 @@ the layout with `packed_float3`/padding — **JS fills uniforms by WGSL rules an
 
 **Errors are collected, not thrown** — a bad call never kills the process. Errors carry paths like
 `commands[3].vertex.buffers[0].format`, and shader compile failures include the full generated MSL.
+Messages are **in English** (moved over wholesale in 0.5.0 — check any code that branches on the wording).
 
 **Nothing blocks on the frame path** — canvas size reads a cache refreshed by submit responses, keeping bridge
 round trips at exactly one per frame. `writeBuffer`/`writeTexture` go through pooled staging + blit in queue
@@ -154,6 +155,8 @@ The measurement harness ships in the repo, so the numbers can be re-taken anytim
   command stream, `readCanvasPixels`, `readBuffer` and `adapterInfo`, so a backend built outside this repo
   proves itself with the same checks. Beyond the default Metal runtime at 29/29, a backend on top of real
   Dawn passes the same suite 28/29 (+1 simulator skip) ([docs/TESTING.md](docs/TESTING.md) §2-1).
+  **Both backends also run the same suite on the iOS simulator** (schemes `WebGPUCheck` and `DawnCheck`) —
+  `swift test` is macOS, a different driver and GPU family, and iOS is where this actually ships.
 - The JS shim is verified with node's built-in runner — binary-path types and bytes are asserted, and a mock
   counts that the bridge is crossed exactly once per frame.
 
