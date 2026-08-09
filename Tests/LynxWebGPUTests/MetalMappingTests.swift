@@ -3,43 +3,44 @@ import Metal
 import LynxWebGPUCore
 @testable import LynxWebGPU
 
-/// WebGPU 열거형 → Metal 열거형 매핑. **GPU가 필요 없다.**
+/// WebGPU enum → Metal enum mapping. **No GPU needed.**
 ///
-/// 조합 폭발을 GPU 테스트로 감당하면 느리기만 하고 얻는 것이 없다. 값 대응은 여기서 전수로 보고,
-/// GPU 테스트는 "그 값이 실제로 렌더 결과를 바꾸는가"만 대표 조합으로 확인한다.
+/// Carrying the combinatorial explosion through GPU tests would be slow and gain nothing. Value
+/// correspondence is checked exhaustively here; the GPU tests check only "does that value actually
+/// change the render result" on representative combinations.
 final class MetalMappingTests: XCTestCase {
-    /// **모든** 텍스처 포맷이 Metal 대응을 갖는지 — 케이스를 늘리고 매핑을 빠뜨리면 여기서 걸린다.
+    /// Whether **every** texture format has a Metal counterpart — adding a case and forgetting the mapping is caught here.
     ///
-    /// 빠뜨리면 그 포맷을 쓰는 순간 `unsupported`가 나는데, 열거형에 있으니 지원한다고 믿고
-    /// 쓰게 된다. 전수로 도는 것이 요점이다.
+    /// Forget one and using that format raises `unsupported`, while its presence in the enum makes you
+    /// believe it is supported. Running exhaustively is the point.
     func test_everyTextureFormatHasAMetalCounterpart() throws {
         for format in WGPUTextureFormat.allCases {
             let metal = try WGPUMetalMapping.pixelFormat(format)
-            XCTAssertNotEqual(metal, .invalid, "'\(format.rawValue)'의 Metal 대응이 없다")
+            XCTAssertNotEqual(metal, .invalid, "'\(format.rawValue)' has no Metal counterpart")
         }
     }
 
-    /// 역방향 매핑이 **모든** 포맷을 되돌리는지 — 표를 손으로 적던 시절에는 캔버스에 쓰이는
-    /// 몇 개만 있어서 `stencil8`·`rgba8snorm` 같은 것이 조용히 nil이었다.
+    /// Whether the reverse mapping recovers **every** format — back when the table was written by hand
+    /// it held only the few used by canvases, leaving `stencil8` and `rgba8snorm` silently nil.
     func test_everyTextureFormatSurvivesTheReverseMapping() throws {
         for format in WGPUTextureFormat.allCases {
             let metal = try WGPUMetalMapping.pixelFormat(format)
             XCTAssertNotNil(
                 WGPUMetalMapping.textureFormat(from: metal),
-                "'\(format.rawValue)'을(를) 되돌리지 못한다"
+                "cannot recover '\(format.rawValue)'"
             )
         }
     }
 
-    /// 접히는 자리(`depth24plus`도 `depth32float`도 `.depth32Float`)에서는 **정밀도를
-    /// 그대로 말해 주는 쪽**이 나와야 한다. 약하게 들리는 이름이 나오면 진단이 사람을 속인다.
+    /// Where formats collapse (`depth24plus` and `depth32float` are both `.depth32Float`), the one that
+    /// **states the precision honestly** must come out. A weaker-sounding name deceives the reader.
     func test_depthFormatsCollapsingOntoOneMetalFormatReturnTheHigherPrecisionName() {
         XCTAssertEqual(WGPUMetalMapping.textureFormat(from: .depth32Float), .depth32float)
         XCTAssertEqual(WGPUMetalMapping.textureFormat(from: .depth32Float_stencil8), .depth32floatStencil8)
     }
 
-    /// 픽셀당 바이트 수가 Metal이 실제로 쓰는 크기와 맞는지 — 어긋나면 `writeTexture`의
-    /// 기본 `bytesPerRow`가 틀려 **오류 없이** 어긋난 행을 올린다.
+    /// Whether bytes per pixel match the size Metal actually uses — a mismatch makes `writeTexture`'s
+    /// default `bytesPerRow` wrong and uploads misaligned rows **with no error**.
     func test_packed32BitFormatsAre4BytesPerPixel() {
         for format: WGPUTextureFormat in [.rgb10a2unorm, .rgb10a2uint, .rg11b10ufloat, .rgb9e5ufloat] {
             XCTAssertEqual(format.bytesPerPixel, 4, "\(format.rawValue)")
@@ -57,10 +58,10 @@ final class MetalMappingTests: XCTestCase {
             .incrementWrap: .incrementWrap,
             .decrementWrap: .decrementWrap,
         ]
-        // CaseIterable로 도는 것이 요점이다 — 케이스를 늘리면 이 표를 채우지 않는 한 실패한다.
+        // Running over CaseIterable is the point — add a case and this fails until the table is filled.
         for operation in WGPUStencilOperation.allCases {
             guard let want = expected[operation] else {
-                XCTFail("새 스텐실 연산 '\(operation.rawValue)'의 Metal 대응이 이 표에 없다")
+                XCTFail("the new stencil op '\(operation.rawValue)' has no Metal counterpart in this table")
                 continue
             }
             XCTAssertEqual(WGPUMetalMapping.stencilOperation(operation), want, operation.rawValue)
@@ -80,15 +81,15 @@ final class MetalMappingTests: XCTestCase {
         ]
         for function in WGPUCompareFunction.allCases {
             guard let want = expected[function] else {
-                XCTFail("새 비교 함수 '\(function.rawValue)'의 Metal 대응이 이 표에 없다")
+                XCTFail("the new compare function '\(function.rawValue)' has no Metal counterpart in this table")
                 continue
             }
             XCTAssertEqual(WGPUMetalMapping.compareFunction(function), want, function.rawValue)
         }
     }
 
-    /// 네 연산이 각각 제 슬롯에 들어가는지 — `failOp`와 `depthFailOp`가 바뀌어도
-    /// 같은 값을 쓰면 아무도 모른다. 그래서 넷을 모두 다른 값으로 준다.
+    /// Whether the four ops each land in their own slot — swapping `failOp` and `depthFailOp` would go
+    /// unnoticed if they held the same value. So all four are given different values.
     func test_theStencilDescriptorPutsFourOpsInTheirSlots() {
         let descriptor = WGPUMetalMapping.stencilDescriptor(
             WGPUStencilFaceState(

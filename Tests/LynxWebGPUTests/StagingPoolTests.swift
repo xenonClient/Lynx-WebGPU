@@ -3,13 +3,13 @@ import Metal
 import LynxWebGPUCore
 @testable import LynxWebGPU
 
-/// 업로드 스테이징 풀 — 재사용·크기 클래스·총량 상한 계약.
+/// The upload staging pool — reuse, size classes and the total cap.
 final class StagingPoolTests: XCTestCase {
     private var device: MTLDevice!
 
     override func setUpWithError() throws {
         device = MTLCreateSystemDefaultDevice()
-        try XCTSkipIf(device == nil, "Metal 디바이스 없음")
+        try XCTSkipIf(device == nil, "no Metal device")
     }
 
     func test_sizesRoundUpToPowerOfTwoClassesWithA4KBFloor() {
@@ -26,20 +26,20 @@ final class StagingPoolTests: XCTestCase {
         XCTAssertEqual(pool.pooledBufferCount, 1)
 
         let second = try pool.acquire(Data([5, 6]))
-        XCTAssertTrue(first === second, "크기가 맞는 버퍼는 새로 만들지 않아야 한다")
+        XCTAssertTrue(first === second, "a buffer of the right size must not be rebuilt")
         XCTAssertEqual(pool.pooledBufferCount, 0)
-        // 재사용 버퍼에도 데이터가 새로 채워진다.
+        // A reused buffer is refilled with the new data too.
         XCTAssertEqual(second.contents().load(as: UInt8.self), 5)
     }
 
     func test_choosesTheSmallestBufferThatFits() throws {
         let pool = WGPUStagingPool(device: device)
-        let small = try pool.acquire(Data(count: 100))          // 4096 클래스
-        let large = try pool.acquire(Data(count: 50_000))       // 65536 클래스
+        let small = try pool.acquire(Data(count: 100))          // the 4096 class
+        let large = try pool.acquire(Data(count: 50_000))       // the 65536 class
         pool.recycle([large, small])
 
         let picked = try pool.acquire(Data(count: 10))
-        XCTAssertTrue(picked === small, "작은 업로드가 큰 버퍼를 붙잡으면 안 된다")
+        XCTAssertTrue(picked === small, "a small upload must not tie up a large buffer")
     }
 
     func test_buffersPastTheTotalCapAreNotRecycled() throws {
@@ -47,20 +47,20 @@ final class StagingPoolTests: XCTestCase {
         let buffers = try (0..<3).map { _ in try pool.acquire(Data(count: 4096)) }
         pool.recycle(buffers)
 
-        XCTAssertEqual(pool.pooledBufferCount, 2, "8KB 상한이면 4KB 두 개까지만 남는다")
+        XCTAssertEqual(pool.pooledBufferCount, 2, "an 8KB cap keeps at most two 4KB buffers")
         XCTAssertEqual(pool.pooledByteCount, 8192)
     }
 
-    func test_minimumLength가_데이터보다_크면_그만큼_잡는다() throws {
+    func test_aMinimumLengthLargerThanTheDataReservesThatMuch() throws {
         let pool = WGPUStagingPool(device: device)
         let buffer = try pool.acquire(Data([1]), minimumLength: 10_000)
         XCTAssertGreaterThanOrEqual(buffer.length, 10_000)
         XCTAssertEqual(buffer.contents().load(as: UInt8.self), 1)
     }
 
-    // MARK: - 해석기 통합
+    // MARK: - Interpreter integration
 
-    /// 프레임(execute)마다 스테이징을 새로 만들지 않고, 완료된 프레임의 버퍼가 돌아와 재사용되는지.
+    /// Whether staging is not rebuilt per frame (execute) but returns from a completed frame and is reused.
     func test_theStagingPoolStaysAtOneAcrossFrames() throws {
         let harness = try XCTUnwrap(RenderHarness.make(width: 8, height: 8))
         let payload: [Float] = [1, 2, 3, 4]
@@ -70,21 +70,21 @@ final class StagingPoolTests: XCTestCase {
         ])
 
         for frame in 0..<4 {
-            // 직전 프레임의 완료 핸들러가 돌 때까지 기다린다 — 회수는 GPU 완료 시점이다.
+            // Wait until the previous frame's completion handler runs — recycling happens at GPU completion.
             XCTAssertTrue(
                 waitUntil { harness.context!.stagingPool.pooledBufferCount == 1 },
-                "프레임 \(frame): 완료 후 풀에 버퍼 1개가 있어야 한다"
+                "frame \(frame): after completion the pool must hold 1 buffer"
             )
             harness.executeExpectingSuccess([
                 ["op": "writeBuffer", "buffer": 1, "data": payload.base64],
             ])
             XCTAssertLessThanOrEqual(
                 harness.context!.stagingPool.pooledBufferCount, 1,
-                "프레임 \(frame): 풀이 프레임 수만큼 자라면 재사용이 안 되는 것이다"
+                "frame \(frame): a pool growing with the frame count means reuse is not happening"
             )
         }
         XCTAssertTrue(waitUntil { harness.context!.stagingPool.pooledBufferCount == 1 })
-        XCTAssertEqual(harness.context!.stagingPool.pooledByteCount, 4096, "16B 업로드는 4KB 클래스 하나면 된다")
+        XCTAssertEqual(harness.context!.stagingPool.pooledByteCount, 4096, "a 16B upload needs one 4KB class")
     }
 
     private func waitUntil(timeout: TimeInterval = 2, _ condition: () -> Bool) -> Bool {

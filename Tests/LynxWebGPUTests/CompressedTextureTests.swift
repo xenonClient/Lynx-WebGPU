@@ -3,16 +3,16 @@ import Metal
 import LynxWebGPUCore
 @testable import LynxWebGPU
 
-/// 블록 압축 텍스처를 **실제로 GPU에 올려 샘플링**한다.
+/// **Actually uploads block-compressed textures to the GPU and samples them.**
 ///
-/// 산수만 맞고 Metal 포맷 대응이 틀리면 화면에는 쓰레기가 나오는데 오류는 없다. 그래서
-/// 손으로 인코딩한 블록 하나를 올려 색을 되읽는다 — 블록 레이아웃·포맷 대응·복사 스트라이드가
-/// 한 줄에 다 걸린다.
+/// If the arithmetic is right but the Metal format correspondence is wrong, the screen shows garbage
+/// with no error. So we upload one hand-encoded block and read the color back — block layout, format
+/// correspondence and copy stride all hang on that one line.
 final class CompressedTextureTests: XCTestCase {
     var harness: RenderHarness!
 
     override func setUpWithError() throws {
-        try XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, "Metal 디바이스 없음")
+        try XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, "no Metal device")
         harness = try XCTUnwrap(RenderHarness.make())
     }
 
@@ -21,7 +21,7 @@ final class CompressedTextureTests: XCTestCase {
         super.tearDown()
     }
 
-    /// 상수 색 블록을 그대로 화면에 펼치는 최소 셰이더.
+    /// The smallest shader that spreads a constant-color block across the screen.
     private static let shader = """
     @group(0) @binding(0) var tex: texture_2d<f32>;
     @group(0) @binding(1) var samp: sampler;
@@ -46,15 +46,16 @@ final class CompressedTextureTests: XCTestCase {
     }
     """
 
-    /// BC1 블록 하나 (8B). `color0 > color1`이면 4색 모드이고 인덱스 0은 `color0`이다.
-    /// 인덱스를 전부 0으로 두면 4×4가 통째로 `color0` 한 색이 된다.
+    /// One BC1 block (8B). With `color0 > color1` it is 4-color mode and index 0 is `color0`.
+    /// Setting every index to 0 makes the whole 4×4 a single `color0`.
     private static func bc1Block(rgb565: UInt16) -> [UInt8] {
         [UInt8(rgb565 & 0xFF), UInt8(rgb565 >> 8), 0, 0, 0, 0, 0, 0]
     }
 
-    /// ASTC "void extent" 블록 (16B) — 블록 전체가 한 색이라고 선언하는 형태다.
-    /// 앞 9비트가 서명(`0b111111100`), 이어지는 범위 비트는 전부 1(=무시), 뒤 8바이트가
-    /// UNORM16 RGBA다. 블록 크기와 무관하게 같은 인코딩이라 6x5에도 그대로 쓴다.
+    /// An ASTC "void extent" block (16B) — the form declaring the whole block is one color.
+    /// The first 9 bits are the signature (`0b111111100`), the range bits that follow are all 1
+    /// (= ignored), and the last 8 bytes are UNORM16 RGBA. The encoding is the same regardless of
+    /// block size, so it is used for 6x5 unchanged.
     private static func astcVoidExtent(r: UInt16, g: UInt16, b: UInt16, a: UInt16) -> [UInt8] {
         var block: [UInt8] = [0xFC, 0xFD, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]
         for value in [r, g, b, a] {
@@ -64,7 +65,7 @@ final class CompressedTextureTests: XCTestCase {
         return block
     }
 
-    /// 압축 텍스처를 올려 화면 전체에 펼치고 가운데 픽셀 색을 확인한다.
+    /// Uploads a compressed texture, spreads it across the screen and checks the center pixel's color.
     private func renderCompressed(
         format: String, width: Int, height: Int, block: [UInt8], bytesPerRow: Int
     ) throws -> (r: Int, g: Int, b: Int, a: Int) {
@@ -99,44 +100,44 @@ final class CompressedTextureTests: XCTestCase {
         return try harness.pixel(x: 32, y: 32)
     }
 
-    func test_BC1_텍스처를_샘플링한다() throws {
+    func test_samplesABC1Texture() throws {
         try XCTSkipUnless(
             WGPUDeviceCapability.supportsCompression(.bc1RGBAUnorm, on: harness.context!.device),
-            "이 기기는 BC를 지원하지 않는다"
+            "this device does not support BC"
         )
-        // RGB565의 순수 빨강 = R5 최대(31) → 8비트로 펼치면 255다.
+        // Pure red in RGB565 = R5 at maximum (31) → expanded to 8 bits it is 255.
         let color = try renderCompressed(
             format: "bc1-rgba-unorm", width: 4, height: 4,
             block: Self.bc1Block(rgb565: 0xF800), bytesPerRow: 8
         )
-        XCTAssertEqual(color.r, 255, "빨강 채널")
-        XCTAssertEqual(color.g, 0, "초록이 새면 블록 해석이 틀린 것이다")
+        XCTAssertEqual(color.r, 255, "red channel")
+        XCTAssertEqual(color.g, 0, "green leaking means the block interpretation is wrong")
         XCTAssertEqual(color.b, 0)
     }
 
-    /// 정사각이 아닌 블록(6×5)까지 확인한다 — 행 수를 높이로 세면 여기서 깨진다.
-    func test_ASTC_6x5_텍스처를_샘플링한다() throws {
+    /// Checks a non-square block (6×5) too — counting rows by height breaks right here.
+    func test_samplesAnASTC6x5Texture() throws {
         try XCTSkipUnless(
             WGPUDeviceCapability.supportsCompression(.astc6x5Unorm, on: harness.context!.device),
-            "이 기기는 ASTC를 지원하지 않는다"
+            "this device does not support ASTC"
         )
         let color = try renderCompressed(
             format: "astc-6x5-unorm", width: 6, height: 5,
             block: Self.astcVoidExtent(r: 0, g: 0, b: 0xFFFF, a: 0xFFFF), bytesPerRow: 16
         )
-        XCTAssertEqual(color.b, 255, "파랑 채널")
+        XCTAssertEqual(color.b, 255, "blue channel")
         XCTAssertEqual(color.r, 0)
         XCTAssertEqual(color.g, 0)
     }
 
-    /// `bytesPerRow`를 생략하면 **블록 단위로 올림**한 기본값이 나와야 한다.
-    /// 픽셀로 계산하던 예전 식이면 데이터가 모자라 "부족하다"로 거부된다.
-    func test_bytesPerRow를_생략해도_블록으로_계산한다() throws {
+    /// Omitting `bytesPerRow` must produce a default **rounded up in blocks**.
+    /// With the old pixel-based formula the data falls short and it is rejected as "not enough".
+    func test_omittingBytesPerRowStillComputesInBlocks() throws {
         try XCTSkipUnless(
             WGPUDeviceCapability.supportsCompression(.astc4x4Unorm, on: harness.context!.device),
-            "이 기기는 ASTC를 지원하지 않는다"
+            "this device does not support ASTC"
         )
-        // 8x8 = 4x4 블록이 2x2개 = 64바이트. bytesPerRow는 32여야 한다.
+        // 8x8 = 2x2 blocks of 4x4 = 64 bytes. bytesPerRow must be 32.
         let blocks = (0..<4).flatMap { _ in Self.astcVoidExtent(r: 0xFFFF, g: 0xFFFF, b: 0, a: 0xFFFF) }
         harness.executeExpectingSuccess([
             ["op": "createTexture", "id": 1, "size": ["width": 8, "height": 8],
@@ -146,8 +147,8 @@ final class CompressedTextureTests: XCTestCase {
         ])
     }
 
-    /// 압축 텍스처는 렌더 타깃이 될 수 없다. **Metal은 이것을 단언으로 죽인다** —
-    /// 검증 오류로 돌려주는지가 요점이다.
+    /// A compressed texture cannot be a render target. **Metal kills the process over this** —
+    /// the point is whether it comes back as a validation error.
     func test_rejectsACompressedTextureAsARenderTarget() throws {
         let result = harness.execute([
             ["op": "createTexture", "id": 1, "size": ["width": 4, "height": 4],
@@ -160,13 +161,13 @@ final class CompressedTextureTests: XCTestCase {
     func test_rejectsAMisalignedOriginOnACompressedTexture() throws {
         try XCTSkipUnless(
             WGPUDeviceCapability.supportsCompression(.astc4x4Unorm, on: harness.context!.device),
-            "이 기기는 ASTC를 지원하지 않는다"
+            "this device does not support ASTC"
         )
         let block = Self.astcVoidExtent(r: 0xFFFF, g: 0, b: 0, a: 0xFFFF)
         let result = harness.execute([
             ["op": "createTexture", "id": 1, "size": ["width": 8, "height": 8],
              "format": "astc-4x4-unorm", "usage": TestUsage.textureBinding | TestUsage.textureCopyDst],
-            // origin.x = 2는 4x4 블록 경계가 아니다.
+            // origin.x = 2 is not on a 4x4 block boundary.
             ["op": "writeTexture", "texture": 1, "data": Data(block).base64EncodedString(),
              "origin": ["x": 2, "y": 0], "size": ["width": 4, "height": 4], "bytesPerRow": 16],
         ])
@@ -174,25 +175,25 @@ final class CompressedTextureTests: XCTestCase {
         XCTAssertTrue(harness.describeErrors(result).contains("block boundary"), harness.describeErrors(result))
     }
 
-    /// 가장자리 블록은 잘려 있으므로, **밉 레벨 끝에 닿는** 크기는 블록 배수가 아니어도 된다.
+    /// Edge blocks are cut off, so a size **reaching the end of the mip level** need not be a multiple of the block.
     func test_reachingTheMipLevelEndNeedNotBeAMultipleOfTheBlock() throws {
         try XCTSkipUnless(
             WGPUDeviceCapability.supportsCompression(.astc4x4Unorm, on: harness.context!.device),
-            "이 기기는 ASTC를 지원하지 않는다"
+            "this device does not support ASTC"
         )
         let block = Self.astcVoidExtent(r: 0xFFFF, g: 0, b: 0, a: 0xFFFF)
         harness.executeExpectingSuccess([
             ["op": "createTexture", "id": 1, "size": ["width": 6, "height": 6],
              "format": "astc-4x4-unorm", "usage": TestUsage.textureBinding | TestUsage.textureCopyDst],
-            // 6x6은 4의 배수가 아니지만 텍스처 끝에 닿는다 — 블록은 2x2개 필요하다.
+            // 6x6 is not a multiple of 4 but reaches the texture's end — 2x2 blocks are needed.
             ["op": "writeTexture", "texture": 1,
              "data": Data(block + block + block + block).base64EncodedString(),
              "size": ["width": 6, "height": 6], "bytesPerRow": 32],
         ])
     }
 
-    /// `adapter.features`가 실제 기기 능력과 일치하는지 — 있다고 알리고 못 만들면
-    /// 확인하고 쓴 앱이 오히려 배신당한다.
+    /// Whether `adapter.features` matches actual device capability — advertising support and then
+    /// failing to create betrays the app that checked before using it.
     func test_featureAdvertisementMatchesActualSupport() throws {
         let info = harness.runtime.adapterInfo()
         let features = Set(info["features"] as? [String] ?? [])

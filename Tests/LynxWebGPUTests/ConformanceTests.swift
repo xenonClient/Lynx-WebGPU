@@ -6,43 +6,43 @@ import LynxWebGPUCore
 import LynxWebGPUConformance
 @testable import LynxWebGPU
 
-/// 기본 런타임(`LynxWebGPUContext`)을 적합성 스위트에 건다.
+/// Runs the default runtime (`LynxWebGPUContext`) through the conformance suite.
 ///
-/// **여기서 도는 검사는 하나도 Metal을 모른다** — 커맨드 스트림과 `WebGPURuntime`만 쓴다
-/// (`Sources/LynxWebGPUConformance`). 그래서 다른 런타임을 만들면 같은 파일을 그대로
-/// 걸어 두 구현이 같은 그림을 그리는지 기계로 확인할 수 있다.
+/// **Not one check here knows anything about Metal** — they use only the command stream and
+/// `WebGPURuntime` (`Sources/LynxWebGPUConformance`). So building another runtime lets you point the
+/// same file at it and check mechanically that both implementations draw the same picture.
 ///
-/// 이 저장소의 나머지 GPU 테스트는 두 종류로 갈린다:
-/// - **계약** (`CommandInterpreterTests` `RenderPipelineTests` `ErrorScopeTests` `StencilTests`
+/// The rest of this repository's GPU tests split in two:
+/// - **Contract** (`CommandInterpreterTests`, `RenderPipelineTests`, `ErrorScopeTests`, `StencilTests`,
 ///   `QuerySetTests` `RenderBundleTests` `IndirectDrawTests` `CompressedTextureTests`
-///   `ExternalImageTests` `OffscreenReadbackTests`) — 커맨드 스트림 수준. 다른 런타임에도
-///   그대로 옮길 수 있다. 이 스위트가 그중 **핵심을 추려** 라이브러리로 옮겨 둔 것이다.
-/// - **Metal 내부** (`MetalMappingTests` `StagingPoolTests` `SurfaceInFlightTests`
-///   `RenderHarnessTests`) — 인자 테이블 배정·스테이징 풀·드로어블 회계처럼 이 백엔드에만
-///   있는 것. 다른 런타임으로 옮겨지지 않는다.
+///   `ExternalImageTests`, `OffscreenReadbackTests`) — command stream level. They carry over to another
+///   runtime unchanged, and this suite is **the core of them** moved into a library.
+/// - **Metal internals** (`MetalMappingTests`, `StagingPoolTests`, `SurfaceInFlightTests`,
+///   `RenderHarnessTests`) — argument table assignment, the staging pool, drawable accounting: things
+///   only this backend has. They do not carry over.
 final class ConformanceTests: XCTestCase {
 
     func test_theDefaultRuntimePassesTheConformanceSuite() throws {
-        try XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, "Metal 디바이스 없음")
+        try XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, "no Metal device")
         let runtime = try LynxWebGPUContext()
 
         let outcomes = WebGPUConformance.run(on: runtime)
-        XCTAssertFalse(outcomes.isEmpty, "검사가 하나도 돌지 않았다")
+        XCTAssertFalse(outcomes.isEmpty, "not a single check ran")
 
         for outcome in outcomes where outcome.status == .failed {
             XCTFail("[\(outcome.name)] \(outcome.detail)")
         }
-        // 건너뛴 검사는 실패가 아니지만 **조용히 지나가면 커버리지 착시가 생긴다.**
+        // A skipped check is not a failure, but **passing over it silently creates an illusion of coverage.**
         for outcome in outcomes where outcome.status == .skipped {
-            print("적합성 건너뜀 — [\(outcome.name)] \(outcome.detail)")
+            print("conformance skipped — [\(outcome.name)] \(outcome.detail)")
         }
         print(WebGPUConformance.summary(outcomes))
     }
 
-    /// 스위트가 **런타임을 검사 사이에 초기화**한다 — 앞 검사의 객체가 남으면 뒤 검사의
-    /// 판정이 우연에 기대게 된다.
+    /// The suite **resets the runtime between checks** — objects left by one check would make the next
+    /// one's verdict depend on chance.
     func test_runtimeStateIsResetForEveryCheck() throws {
-        try XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, "Metal 디바이스 없음")
+        try XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, "no Metal device")
         let runtime = try LynxWebGPUContext()
 
         runtime.execute(commands: [
@@ -52,31 +52,31 @@ final class ConformanceTests: XCTestCase {
 
         _ = WebGPUConformance.run(on: runtime, only: ["clear-color"])
 
-        // 스위트가 지나간 뒤 777번이 살아 있으면 초기화가 안 된 것이다.
+        // If handle 777 is still alive after the suite has run, the reset did not happen.
         let result = runtime.execute(commands: [
             ["op": "beginRenderPass", "colorAttachments": [["view": 777]]],
         ])
-        XCTAssertEqual(result["ok"] as? Bool, false, "앞선 배치의 핸들이 스위트 뒤에도 살아 있다")
+        XCTAssertEqual(result["ok"] as? Bool, false, "a handle from an earlier batch survived the suite")
     }
 
-    /// **스위트가 실제로 걸러 내는가.**
+    /// **Does the suite actually filter?**
     ///
-    /// 항상 통과하는 적합성 스위트는 쓸모가 없다 — "Dawn 런타임이 19/19"라는 문장이 아무것도
-    /// 보증하지 못하게 된다. 계약을 일부러 어기는 런타임을 걸어 실패가 나오는지 확인한다.
+    /// An always-passing conformance suite is useless — it would make "the Dawn runtime scores 19/19"
+    /// guarantee nothing. We point it at runtimes that break the contract on purpose and check that failures come out.
     func test_theSuiteCatchesAContractViolation() throws {
-        try XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, "Metal 디바이스 없음")
+        try XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, "no Metal device")
         let runtime = try LynxWebGPUContext()
 
-        // (1) 오류 스코프 결과를 삼키는 런타임
+        // (1) a runtime swallowing error scope results
         let swallowing = MisbehavingRuntime(runtime) { result in
             var broken = result
             broken.removeValue(forKey: "errorScopes")
             return broken
         }
         let scopeOutcomes = WebGPUConformance.run(on: swallowing, only: ["error-scope-capture"])
-        XCTAssertEqual(scopeOutcomes.first?.status, .failed, "스코프 결과를 삼켰는데 통과했다")
+        XCTAssertEqual(scopeOutcomes.first?.status, .failed, "it swallowed the scope result and still passed")
 
-        // (2) 오류를 숨겨 항상 성공했다고 답하는 런타임 — 오류 누적 계약이 깨진다.
+        // (2) a runtime hiding errors and always answering success — the error accumulation contract breaks.
         let lying = MisbehavingRuntime(runtime) { result in
             var broken = result
             broken["ok"] = true
@@ -84,9 +84,9 @@ final class ConformanceTests: XCTestCase {
             return broken
         }
         let errorOutcomes = WebGPUConformance.run(on: lying, only: ["error-accumulation"])
-        XCTAssertEqual(errorOutcomes.first?.status, .failed, "오류를 숨겼는데 통과했다")
+        XCTAssertEqual(errorOutcomes.first?.status, .failed, "it hid the errors and still passed")
 
-        // (3) present:false를 무시하고 항상 프레임을 닫는 런타임 — 중간 제출 계약이 깨진다.
+        // (3) a runtime ignoring present:false and always closing the frame — the mid-frame submit contract breaks.
         let impatient = MisbehavingRuntime(runtime)
         impatient.corruptPayload = { payload in
             var broken = payload
@@ -94,9 +94,9 @@ final class ConformanceTests: XCTestCase {
             return broken
         }
         let frameOutcomes = WebGPUConformance.run(on: impatient, only: ["present-false-preserves-frame"])
-        XCTAssertEqual(frameOutcomes.first?.status, .failed, "프레임을 조기에 닫았는데 통과했다")
+        XCTAssertEqual(frameOutcomes.first?.status, .failed, "it closed the frame early and still passed")
 
-        // (4) readBuffer 응답에서 데이터를 빼먹는 런타임
+        // (4) a runtime dropping the data from the readBuffer response
         let dataless = MisbehavingRuntime(runtime)
         dataless.corruptReadBuffer = { result in
             var broken = result
@@ -104,9 +104,9 @@ final class ConformanceTests: XCTestCase {
             return broken
         }
         let readOutcomes = WebGPUConformance.run(on: dataless, only: ["read-buffer-contract"])
-        XCTAssertEqual(readOutcomes.first?.status, .failed, "readBuffer 데이터를 뺐는데 통과했다")
+        XCTAssertEqual(readOutcomes.first?.status, .failed, "it dropped the readBuffer data and still passed")
 
-        // (5) 진단에서 줄 번호를 빼는 런타임 — GPUCompilationMessage 모양이 깨진다.
+        // (5) a runtime dropping the line number from diagnostics — the GPUCompilationMessage shape breaks.
         let vague = MisbehavingRuntime(runtime)
         vague.corruptCompilationInfo = { result in
             var broken = result
@@ -117,39 +117,39 @@ final class ConformanceTests: XCTestCase {
             return broken
         }
         let infoOutcomes = WebGPUConformance.run(on: vague, only: ["shader-compilation-info"])
-        XCTAssertEqual(infoOutcomes.first?.status, .failed, "진단 키를 뺐는데 통과했다")
+        XCTAssertEqual(infoOutcomes.first?.status, .failed, "it dropped a diagnostic key and still passed")
 
-        // (6) resize를 삼키는 런타임
+        // (6) a runtime swallowing resize
         let rigid = MisbehavingRuntime(runtime)
         rigid.swallowResize = true
         let resizeOutcomes = WebGPUConformance.run(on: rigid, only: ["resize-canvas"])
-        XCTAssertEqual(resizeOutcomes.first?.status, .failed, "resize를 삼켰는데 통과했다")
+        XCTAssertEqual(resizeOutcomes.first?.status, .failed, "it swallowed resize and still passed")
 
-        // (7) 준비 신호가 꺼진 채 굳은 런타임
+        // (7) a runtime frozen with the readiness signal off
         let stuck = MisbehavingRuntime(runtime)
         stuck.forcedReadiness = false
         let readyOutcomes = WebGPUConformance.run(on: stuck, only: ["frame-readiness"])
-        XCTAssertEqual(readyOutcomes.first?.status, .failed, "준비 신호가 false인데 통과했다")
+        XCTAssertEqual(readyOutcomes.first?.status, .failed, "the readiness signal was false and it still passed")
     }
 }
 
-/// 다른 런타임을 감싸 **응답을 일부러 망가뜨린다.** 스위트의 변별력을 재는 데만 쓴다.
+/// Wraps another runtime and **breaks its responses on purpose.** Used only to measure the suite's discrimination.
 ///
-/// 이 클래스가 컴파일된다는 것 자체가 `WebGPURuntime`이 저장소 밖에서도 구현 가능한
-/// 모양임을 보여 준다 — Dawn 런타임이 채워야 할 자리가 정확히 이만큼이다.
+/// That this class compiles at all shows `WebGPURuntime` is implementable from outside the repository —
+/// this is exactly the surface a Dawn runtime has to fill.
 private final class MisbehavingRuntime: WebGPURuntime {
     private let inner: WebGPURuntime
     private let corrupt: ([String: Any]) -> [String: Any]
 
-    /// execute **전에** 페이로드를 변조한다 — present 강제 같은 프레임 경계 위반용.
+    /// Tampers with the payload **before** execute — for frame boundary violations such as forcing present.
     var corruptPayload: (([String: Any]) -> [String: Any])?
-    /// readBuffer 콜백 결과를 변조한다.
+    /// Tampers with the readBuffer callback result.
     var corruptReadBuffer: (([String: Any]) -> [String: Any])?
-    /// shaderCompilationInfo 결과를 변조한다.
+    /// Tampers with the shaderCompilationInfo result.
     var corruptCompilationInfo: (([String: Any]) -> [String: Any])?
-    /// resizeCanvas를 조용히 삼킨다.
+    /// Silently swallows resizeCanvas.
     var swallowResize = false
-    /// isReadyForNextFrame을 강제한다.
+    /// Forces isReadyForNextFrame.
     var forcedReadiness: Bool?
 
     init(_ inner: WebGPURuntime, corrupt: @escaping ([String: Any]) -> [String: Any] = { $0 }) {
