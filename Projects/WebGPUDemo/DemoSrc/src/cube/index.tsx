@@ -27,7 +27,7 @@ fn vs_main(@location(0) position: vec3f,
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-  // 고정 방향광 — 면마다 밝기가 갈려 3D 형태가 눈에 들어온다.
+  // A fixed directional light — the brightness differs per face so the 3D shape reads.
   let light = normalize(vec3f(0.4, 0.8, 0.5));
   let diffuse = max(dot(normalize(in.normal), light), 0.0);
   return vec4f(in.color * (0.35 + 0.65 * diffuse), 1.0);
@@ -35,7 +35,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
 `
 
 // ---------------------------------------------------------------------------
-// 4x4 행렬 (열 우선 — WGSL mat4x4<f32>와 같은 배치)
+// A 4x4 matrix (column-major — the same layout as WGSL's mat4x4<f32>)
 // ---------------------------------------------------------------------------
 
 function multiply(a: Float32Array, b: Float32Array): Float32Array {
@@ -50,7 +50,7 @@ function multiply(a: Float32Array, b: Float32Array): Float32Array {
   return out
 }
 
-/** WebGPU 클립 공간(z 0~1, 오른손 좌표계, -Z를 바라봄). */
+/** WebGPU clip space (z 0~1, right-handed, looking down -Z). */
 function perspective(fovY: number, aspect: number, near: number, far: number): Float32Array {
   const f = 1 / Math.tan(fovY / 2)
   const out = new Float32Array(16)
@@ -86,7 +86,7 @@ function rotationX(angle: number): Float32Array {
 }
 
 // ---------------------------------------------------------------------------
-// 큐브 (면당 정점 4개 = 24개, 인덱스 36개)
+// The cube (4 vertices per face = 24, 36 indices)
 // ---------------------------------------------------------------------------
 
 const FACES: Array<{ normal: number[]; color: number[]; corners: number[][] }> = [
@@ -144,7 +144,7 @@ function setup({ device, context, format }: SceneContext) {
       module,
       entryPoint: 'vs_main',
       buffers: [{
-        arrayStride: 36, // vec3 위치 + vec3 색 + vec3 법선
+        arrayStride: 36, // a vec3 position + a vec3 color + a vec3 normal
         attributes: [
           { format: 'float32x3', offset: 0, shaderLocation: 0 },
           { format: 'float32x3', offset: 12, shaderLocation: 1 },
@@ -162,7 +162,7 @@ function setup({ device, context, format }: SceneContext) {
     entries: [{ binding: 0, resource: { buffer: uniformBuffer } }],
   })
 
-  // 깊이 텍스처는 캔버스 크기가 바뀔 때만 다시 만든다.
+  // The depth texture is only rebuilt when the canvas size changes.
   let depthView: any = null
   let depthWidth = 0
   let depthHeight = 0
@@ -186,7 +186,7 @@ function setup({ device, context, format }: SceneContext) {
 
     const aspect = width / height
     const projection = perspective(Math.PI / 4, aspect, 0.1, 100)
-    // 세로 화면은 수평 화각이 좁아져 물체가 크게 잡힌다 — 짧은 축에 맞춰 카메라를 뒤로 뺀다.
+  // A portrait screen narrows the horizontal field of view and makes the object look larger — the camera is pulled back to fit the short axis.
     const view = translation(0, 0, -4.5 / Math.min(1, aspect))
     const model = multiply(rotationY(angle), rotationX(angle * 0.55))
     const mvp = multiply(projection, multiply(view, model))
@@ -218,5 +218,5 @@ function setup({ device, context, format }: SceneContext) {
 }
 
 root.render(
-  <DemoScene title="3D 큐브" subtitle="인덱스 드로우 + 깊이 테스트 + MVP" setup={setup} />
+  <DemoScene title="3D cube" subtitle="Indexed draw + depth test + MVP" setup={setup} />
 )

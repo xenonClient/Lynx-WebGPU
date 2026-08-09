@@ -3,16 +3,16 @@ import Metal
 import LynxWebGPUCore
 @testable import LynxWebGPU
 
-/// 쿼리셋 — 두 종류를 **다른 방식으로** 검증한다.
+/// Query sets — the two kinds are verified **in different ways**.
 ///
-/// `occlusion`은 "몇 개의 샘플이 살아남았나"라 결정적이다. 값을 그대로 단언한다.
-/// `timestamp`는 GPU 시계라 같은 입력에도 값이 매번 다르다. 값 대신 **구조**만 단언한다 —
-/// 절대 시간 임계를 걸면 CI에서 흔들리기만 하고 잡아 주는 버그는 없다.
+/// `occlusion` ("how many samples survived") is deterministic. Its values are asserted directly.
+/// `timestamp` is a GPU clock whose value differs on identical input. Only its **structure** is
+/// asserted — an absolute time threshold would only wobble in CI and catch no bug.
 final class QuerySetTests: XCTestCase {
     private var harness: RenderHarness!
 
     override func setUpWithError() throws {
-        try XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, "Metal 디바이스 없음")
+        try XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, "no Metal device")
         harness = try XCTUnwrap(RenderHarness.make())
     }
 
@@ -66,11 +66,11 @@ final class QuerySetTests: XCTestCase {
         return command
     }
 
-    // MARK: - occlusion (결정적)
+    // MARK: - occlusion (deterministic)
 
-    /// 최소 조합 — **보이는 드로우와 완전히 잘린 드로우**. 하나만 보면 "0이 나와야 하는데
-    /// 0이 나왔다"인지 "아무것도 안 세고 있어서 0"인지 구분할 수 없다.
-    func test_occlusion_쿼리가_통과한_샘플_수를_센다() throws {
+    /// The smallest combination — **a visible draw and a fully clipped one.** With only one you cannot
+    /// tell "it should be 0 and it is" from "it is 0 because nothing is being counted".
+    func test_anOcclusionQueryCountsTheSamplesThatPassed() throws {
         harness.executeExpectingSuccess(setUpResources() + [
             ["op": "createQuerySet", "id": 3, "type": "occlusion", "count": 2],
             ["op": "createBuffer", "id": 4, "size": 16,
@@ -78,11 +78,11 @@ final class QuerySetTests: XCTestCase {
         ] + acquireDrawable + [
             beginPass(occlusionQuerySet: 3),
             ["op": "setPipeline", "pipeline": 2],
-            // 0번 — 화면 전체를 덮는다.
+            // Query 0 — covers the whole screen.
             ["op": "beginOcclusionQuery", "queryIndex": 0],
             ["op": "draw", "vertexCount": 3],
             ["op": "endOcclusionQuery"],
-            // 1번 — 시저로 완전히 잘라 낸다. 정확히 0이어야 한다.
+            // Query 1 — fully clipped by the scissor. It must be exactly 0.
             ["op": "setScissorRect", "x": 0, "y": 0, "width": 0, "height": 0],
             ["op": "beginOcclusionQuery", "queryIndex": 1],
             ["op": "draw", "vertexCount": 3],
@@ -93,12 +93,12 @@ final class QuerySetTests: XCTestCase {
         ])
 
         let results = try harness.readBufferSync(handle: 4, as: UInt64.self, size: 16)
-        XCTAssertEqual(results.count, 2, "쿼리 하나당 u64 하나")
-        XCTAssertEqual(results[0], 64 * 64, "화면 전체(64×64 샘플)가 통과해야 한다")
-        XCTAssertEqual(results[1], 0, "완전히 잘린 드로우는 정확히 0이다")
+        XCTAssertEqual(results.count, 2, "one u64 per query")
+        XCTAssertEqual(results[0], 64 * 64, "the whole screen (64×64 samples) must pass")
+        XCTAssertEqual(results[1], 0, "a fully clipped draw is exactly 0")
     }
 
-    func test_resolveQuerySet이_구간만_내린다() throws {
+    func test_resolveQuerySetLowersOnlyTheRange() throws {
         harness.executeExpectingSuccess(setUpResources() + [
             ["op": "createQuerySet", "id": 3, "type": "occlusion", "count": 3],
             ["op": "createBuffer", "id": 4, "size": 8,
@@ -106,7 +106,7 @@ final class QuerySetTests: XCTestCase {
         ] + acquireDrawable + [
             beginPass(occlusionQuerySet: 3),
             ["op": "setPipeline", "pipeline": 2],
-            // 2번에만 그린다 — 0·1번은 건드리지 않는다.
+            // Draw only into query 2 — 0 and 1 are untouched.
             ["op": "beginOcclusionQuery", "queryIndex": 2],
             ["op": "draw", "vertexCount": 3],
             ["op": "endOcclusionQuery"],
@@ -117,15 +117,15 @@ final class QuerySetTests: XCTestCase {
 
         XCTAssertEqual(
             try harness.readBufferSync(handle: 4, as: UInt64.self, size: 8), [UInt64(64 * 64)],
-            "firstQuery가 가리키는 칸이 목적지 맨 앞에 와야 한다"
+            "the slot firstQuery points at must come first in the destination"
         )
     }
 
-    // MARK: - timestamp (비결정적 — 구조만)
+    // MARK: - timestamp (non-deterministic — structure only)
 
-    func test_타임스탬프가_패스_경계에서_증가한다() throws {
+    func test_timestampsIncreaseAcrossAPassBoundary() throws {
         try XCTSkipUnless(
-            harness.supports(.timestampQuery), "패스 경계 타임스탬프 샘플링을 지원하지 않는 기기"
+            harness.supports(.timestampQuery), "device without pass-boundary timestamp sampling"
         )
 
         harness.executeExpectingSuccess(setUpResources() + [
@@ -151,29 +151,29 @@ final class QuerySetTests: XCTestCase {
         ])
 
         let stamps = try harness.readBufferSync(handle: 4, as: UInt64.self, size: 16)
-        // 값 자체는 GPU 시계라 단언할 수 없다. 구조만 본다 —
-        // 절대 시간 임계("0.1ms 이상")를 걸면 CI에서 흔들리기만 하고 잡는 버그는 없다.
-        XCTAssertEqual(stamps.count, 2, "쿼리 하나당 8바이트")
-        XCTAssertNotEqual(stamps[0], 0, "초기값 그대로면 샘플링이 안 된 것이다")
-        XCTAssertGreaterThanOrEqual(stamps[1], stamps[0], "끝이 시작보다 앞설 수는 없다")
+        // The values are a GPU clock and cannot be asserted. Only the structure is checked —
+        // an absolute time threshold ("at least 0.1ms") would only wobble in CI and catch no bug.
+        XCTAssertEqual(stamps.count, 2, "8 bytes per query")
+        XCTAssertNotEqual(stamps[0], 0, "still at the initial value means nothing was sampled")
+        XCTAssertGreaterThanOrEqual(stamps[1], stamps[0], "the end cannot precede the start")
     }
 
-    /// 컴퓨트 패스의 타임스탬프는 **값을 단언하지 않는다.**
+    /// A compute pass's timestamps **are not asserted by value.**
     ///
-    /// Apple GPU에서 컴퓨트 인코더가 찍은 샘플은 CPU 쪽 `resolveCounterRange`로는 매번 제대로
-    /// 나오지만, `MTLBlitCommandEncoder.resolveCounters`(= `resolveQuerySet`이 쓰는 GPU 경로)로는
-    /// **같은 코드가 실행마다 0을 내기도 한다** — 커맨드 버퍼를 나눠도 그렇다. 드라이버 쪽
-    /// 사정이라 여기서 고칠 수 없다.
+    /// On Apple GPUs, samples taken by a compute encoder come out correctly every time through the
+    /// CPU-side `resolveCounterRange`, but through `MTLBlitCommandEncoder.resolveCounters` (the GPU path
+    /// `resolveQuerySet` uses) **the same code sometimes yields 0 from run to run** — even with separate
+    /// command buffers. It is a driver matter we cannot fix here.
     ///
-    /// 그래서 흔들리는 단언 대신 "결과가 (0, 0)이거나 제대로 된 값이거나 둘 중 하나"만 본다.
-    /// 쓰레기 값·잘못된 길이·resolve 실패는 여전히 잡히고, CI는 흔들리지 않는다.
-    /// 프레임 계측이 목적이라면 **렌더 패스 타임스탬프**를 쓸 것 (그쪽은 안정적이다).
-    func test_컴퓨트_패스도_타임스탬프를_찍는다() throws {
+    /// So instead of a wobbling assertion we check only "the result is either (0, 0) or a proper value".
+    /// Garbage values, a wrong length and a failed resolve are still caught, and CI does not wobble.
+    /// For frame instrumentation, use **render pass timestamps** (those are stable).
+    func test_aComputePassTakesTimestampsToo() throws {
         try XCTSkipUnless(
-            harness.supports(.timestampQuery), "패스 경계 타임스탬프 샘플링을 지원하지 않는 기기"
+            harness.supports(.timestampQuery), "device without pass-boundary timestamp sampling"
         )
 
-        // 빈 패스는 Metal이 카운터를 찍지 않을 수 있다 — 실제 일을 하나 시킨다.
+        // Metal may not sample counters for an empty pass — give it real work.
         let compute = """
         @group(0) @binding(0) var<storage, read_write> out: array<u32>;
 
@@ -207,15 +207,15 @@ final class QuerySetTests: XCTestCase {
         ])
 
         let stamps = try harness.readBufferSync(handle: 2, as: UInt64.self, size: 16)
-        XCTAssertEqual(stamps.count, 2, "쿼리 하나당 8바이트")
-        if stamps[0] == 0 && stamps[1] == 0 { return }   // 위 주석의 드라이버 사정
-        XCTAssertNotEqual(stamps[0], 0, "한쪽만 0이면 쓰레기 값이다")
-        XCTAssertGreaterThanOrEqual(stamps[1], stamps[0], "끝이 시작보다 앞설 수는 없다")
+        XCTAssertEqual(stamps.count, 2, "8 bytes per query")
+        if stamps[0] == 0 && stamps[1] == 0 { return }   // the driver matter in the comment above
+        XCTAssertNotEqual(stamps[0], 0, "only one being 0 is a garbage value")
+        XCTAssertGreaterThanOrEqual(stamps[1], stamps[0], "the end cannot precede the start")
     }
 
-    /// 지원하지 않는 기기에서 만들려 하면 **명확한 `unsupported`**가 나와야 한다.
-    /// 지원하는 기기에서는 그냥 만들어지는지만 본다 — 양쪽 다 조용히 실패하면 안 된다.
-    func test_타임스탬프_쿼리셋_생성이_기기_지원과_일치한다() {
+    /// Creating one on an unsupported device must give **a clear `unsupported`**.
+    /// On a supporting device we only check it is created — neither side may fail silently.
+    func test_timestampQuerySetCreationMatchesDeviceSupport() {
         let result = harness.execute([
             ["op": "createQuerySet", "id": 1, "type": "timestamp", "count": 2],
         ])
@@ -227,23 +227,23 @@ final class QuerySetTests: XCTestCase {
         }
     }
 
-    func test_어댑터가_타임스탬프_지원을_기능으로_알린다() throws {
-        let info = harness.context.adapterInfo()
+    func test_theAdapterAdvertisesTimestampSupportAsAFeature() throws {
+        let info = harness.runtime.adapterInfo()
         let features = try XCTUnwrap(info["features"] as? [String])
 
         XCTAssertEqual(
             features.contains("timestamp-query"), harness.supports(.timestampQuery),
-            "JS가 만들기 전에 물어볼 수 있어야 한다"
+            "JS must be able to ask before creating"
         )
-        // Metal은 간접 드로우 인자의 firstInstance를 그대로 존중하므로 기기와 무관하게 참이다.
+        // Metal honours the firstInstance of indirect draw arguments as-is, so it is true regardless of device.
         XCTAssertTrue(features.contains("indirect-first-instance"), "\(features)")
     }
 
-    // MARK: - 계약
+    // MARK: - Contract
 
-    func test_쿼리셋_없이_beginOcclusionQuery하면_오류다() {
+    func test_beginOcclusionQueryWithoutAQuerySetIsAnError() {
         let result = harness.execute(setUpResources() + acquireDrawable + [
-            beginPass(),   // occlusionQuerySet 없이
+            beginPass(),   // with no occlusionQuerySet
             ["op": "beginOcclusionQuery", "queryIndex": 0],
             ["op": "endPass"],
         ])
@@ -254,7 +254,7 @@ final class QuerySetTests: XCTestCase {
         )
     }
 
-    func test_occlusion_쿼리는_중첩할_수_없다() {
+    func test_occlusionQueriesCannotNest() {
         let result = harness.execute(setUpResources() + [
             ["op": "createQuerySet", "id": 3, "type": "occlusion", "count": 2],
         ] + acquireDrawable + [
@@ -265,12 +265,12 @@ final class QuerySetTests: XCTestCase {
         ])
 
         XCTAssertTrue(
-            ((errors(result).first?["message"] as? String) ?? "").contains("중첩"),
+            ((errors(result).first?["message"] as? String) ?? "").contains("cannot nest"),
             harness.describeErrors(result)
         )
     }
 
-    func test_쿼리_인덱스가_범위를_넘으면_거부한다() {
+    func test_rejectsAQueryIndexOutOfRange() {
         let result = harness.execute(setUpResources() + [
             ["op": "createQuerySet", "id": 3, "type": "occlusion", "count": 2],
         ] + acquireDrawable + [
@@ -280,10 +280,10 @@ final class QuerySetTests: XCTestCase {
         ])
 
         XCTAssertEqual(errors(result).first?["kind"] as? String, "validation")
-        XCTAssertTrue(((errors(result).first?["message"] as? String) ?? "").contains("범위"))
+        XCTAssertTrue(((errors(result).first?["message"] as? String) ?? "").contains("query range out of bounds"))
     }
 
-    func test_QUERY_RESOLVE_usage가_없는_버퍼에는_내릴_수_없다() {
+    func test_aBufferWithoutQUERY_RESOLVEUsageCannotBeAResolveTarget() {
         let result = harness.execute([
             ["op": "createQuerySet", "id": 1, "type": "occlusion", "count": 1],
             ["op": "createBuffer", "id": 2, "size": 8, "usage": TestUsage.copyDst],
@@ -295,7 +295,7 @@ final class QuerySetTests: XCTestCase {
         XCTAssertTrue(((errors(result).first?["message"] as? String) ?? "").contains("QUERY_RESOLVE"))
     }
 
-    func test_목적지_오프셋은_256의_배수여야_한다() {
+    func test_theDestinationOffsetMustBeAMultipleOf256() {
         let result = harness.execute([
             ["op": "createQuerySet", "id": 1, "type": "occlusion", "count": 1],
             ["op": "createBuffer", "id": 2, "size": 512, "usage": TestUsage.queryResolve],
@@ -307,7 +307,7 @@ final class QuerySetTests: XCTestCase {
         XCTAssertTrue(((errors(result).first?["message"] as? String) ?? "").contains("256"))
     }
 
-    func test_occlusion_쿼리셋을_timestampWrites에_주면_거부한다() {
+    func test_givingAnOcclusionQuerySetToTimestampWritesIsRejected() {
         let result = harness.execute(setUpResources() + [
             ["op": "createQuerySet", "id": 3, "type": "occlusion", "count": 2],
         ] + acquireDrawable + [
@@ -328,15 +328,15 @@ final class QuerySetTests: XCTestCase {
         )
     }
 
-    func test_크기0_쿼리셋은_거부한다() {
+    func test_aZeroSizeQuerySetIsRejected() {
         let result = harness.execute([["op": "createQuerySet", "id": 1, "type": "occlusion", "count": 0]])
         XCTAssertEqual(errors(result).first?["kind"] as? String, "validation")
         XCTAssertEqual(errors(result).first?["path"] as? String, "commands[0].count")
     }
 
-    /// 상한을 넘는 쿼리셋은 여기서 만들어지지만 브라우저에서는 validation 오류다.
-    /// (occlusion이면 `count * 8`바이트를 그대로 할당하기까지 한다.)
-    func test_쿼리_개수_상한을_넘으면_거부한다() {
+    /// A query set past the cap is created here but is a validation error in a browser.
+    /// (For occlusion it even allocates `count * 8` bytes outright.)
+    func test_rejectsAQueryCountPastTheCap() {
         let result = harness.execute([
             ["op": "createQuerySet", "id": 1, "type": "occlusion",
              "count": WGPUQuerySetDescriptor.maxCount + 1],
@@ -350,10 +350,10 @@ final class QuerySetTests: XCTestCase {
         ])
     }
 
-    /// 두 인덱스를 모두 생략하면 Metal 샘플 인덱스가 전부 `MTLCounterDontSample`이 되어
-    /// **오류 없이 아무것도 찍지 않는 패스**가 된다. 앱은 GPU 시간을 0ns로 읽는다.
-    func test_timestampWrites에_인덱스가_하나도_없으면_거부한다() throws {
-        try XCTSkipUnless(harness.supports(.timestampQuery), "타임스탬프 미지원 기기")
+    /// Omitting both indices makes every Metal sample index `MTLCounterDontSample`, producing
+    /// **a pass that samples nothing with no error**. The app reads a GPU time of 0ns.
+    func test_timestampWritesWithNoIndexAtAllIsRejected() throws {
+        try XCTSkipUnless(harness.supports(.timestampQuery), "device without timestamp support")
 
         let result = harness.execute(setUpResources() + [
             ["op": "createQuerySet", "id": 3, "type": "timestamp", "count": 2],
@@ -370,14 +370,14 @@ final class QuerySetTests: XCTestCase {
         ])
 
         XCTAssertTrue(
-            ((errors(result).first?["message"] as? String) ?? "").contains("최소 하나"),
+            ((errors(result).first?["message"] as? String) ?? "").contains("at least one"),
             harness.describeErrors(result)
         )
     }
 
-    /// 같은 슬롯을 가리키면 끝 샘플이 시작 샘플을 덮어 델타가 의미를 잃는다.
-    func test_timestampWrites의_두_인덱스가_같으면_거부한다() throws {
-        try XCTSkipUnless(harness.supports(.timestampQuery), "타임스탬프 미지원 기기")
+    /// Pointing both at the same slot lets the end sample overwrite the start one and the delta loses meaning.
+    func test_twoIdenticalTimestampWritesIndicesAreRejected() throws {
+        try XCTSkipUnless(harness.supports(.timestampQuery), "device without timestamp support")
 
         let result = harness.execute(setUpResources() + [
             ["op": "createQuerySet", "id": 3, "type": "timestamp", "count": 2],
@@ -396,14 +396,14 @@ final class QuerySetTests: XCTestCase {
         ])
 
         XCTAssertTrue(
-            ((errors(result).first?["message"] as? String) ?? "").contains("서로 달라야"),
+            ((errors(result).first?["message"] as? String) ?? "").contains("must differ"),
             harness.describeErrors(result)
         )
     }
 
-    /// Metal은 `endEncoding` 시점에 visibility 결과를 그대로 써 주므로 **값까지 정상으로 보인다.**
-    /// 브라우저에서는 부모 커맨드 인코더가 무효화되어 프레임이 통째로 날아간다.
-    func test_occlusion_쿼리를_닫지_않고_endPass하면_거부한다() {
+    /// Metal writes the visibility result as-is at `endEncoding`, so **even the value looks correct.**
+    /// In a browser the parent command encoder is invalidated and the whole frame is lost.
+    func test_endPassWithAnUnclosedOcclusionQueryIsRejected() {
         let result = harness.execute(setUpResources() + [
             ["op": "createQuerySet", "id": 3, "type": "occlusion", "count": 2],
         ] + acquireDrawable + [
@@ -411,18 +411,18 @@ final class QuerySetTests: XCTestCase {
             ["op": "setPipeline", "pipeline": 2],
             ["op": "beginOcclusionQuery", "queryIndex": 0],
             ["op": "draw", "vertexCount": 3],
-            ["op": "endPass"],   // endOcclusionQuery 없이
+            ["op": "endPass"],   // with no endOcclusionQuery
         ])
 
         XCTAssertTrue(
-            ((errors(result).first?["message"] as? String) ?? "").contains("열린 채로"),
+            ((errors(result).first?["message"] as? String) ?? "").contains("still open"),
             harness.describeErrors(result)
         )
     }
 
-    /// 같은 인덱스를 두 번 쓰면 두 구간이 같은 8바이트 슬롯을 나눠 쓴다 —
-    /// 남는 값이 Metal의 누적/덮어쓰기 동작에 달린 값이 되어 브라우저와 결과가 갈린다.
-    func test_같은_패스에서_occlusion_인덱스를_재사용하면_거부한다() {
+    /// Using the same index twice makes two regions share one 8-byte slot —
+    /// the surviving value depends on Metal's accumulate/overwrite behaviour and diverges from a browser.
+    func test_rejectsReusingAnOcclusionIndexWithinOnePass() {
         let result = harness.execute(setUpResources() + [
             ["op": "createQuerySet", "id": 3, "type": "occlusion", "count": 2],
         ] + acquireDrawable + [
@@ -438,13 +438,13 @@ final class QuerySetTests: XCTestCase {
         ])
 
         XCTAssertTrue(
-            ((errors(result).first?["message"] as? String) ?? "").contains("이미 썼다"),
+            ((errors(result).first?["message"] as? String) ?? "").contains("already used"),
             harness.describeErrors(result)
         )
     }
 
-    /// 반대로 **패스가 다르면** 같은 인덱스를 다시 쓸 수 있어야 한다 (명세는 패스 안에서만 막는다).
-    func test_패스가_다르면_같은_occlusion_인덱스를_다시_쓸_수_있다() {
+    /// Conversely, **in a different pass** the same index must be reusable (the spec forbids it only within a pass).
+    func test_theSameOcclusionIndexCanBeReusedInADifferentPass() {
         let pass: [[String: Any]] = [
             beginPass(occlusionQuerySet: 3),
             ["op": "setPipeline", "pipeline": 2],

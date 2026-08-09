@@ -20,7 +20,7 @@ fn vs_main(@location(0) position: vec2f, @location(1) color: vec3f) -> VertexOut
   let c = cos(uniforms.angle);
   let rotated = vec2f(position.x * c - position.y * s, position.x * s + position.y * c);
 
-  // 종횡비 보정: 짧은 축에 맞춰 줄인다. 긴 축을 기준으로 늘리면 세로 화면에서 화면을 넘어간다.
+  // Aspect correction: shrink to fit the short axis. Stretching against the long axis would run off a portrait screen.
   var scale = vec2f(1.0, 1.0);
   if (uniforms.aspect >= 1.0) {
     scale.x = 1.0 / uniforms.aspect;
@@ -40,7 +40,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
 }
 `
 
-// 위치(x, y) + 색(r, g, b) 인터리브 — stride 20B
+// Position (x, y) + color (r, g, b) interleaved — stride 20B
 const VERTICES = new Float32Array([
   0.0, 0.9, 1.0, 0.35, 0.35,
   -0.85, -0.7, 0.35, 1.0, 0.5,
@@ -58,7 +58,7 @@ function setup({ device, context, format }: SceneContext) {
   new Float32Array(vertexBuffer.getMappedRange()).set(VERTICES)
   vertexBuffer.unmap()
 
-  // f32 2개지만 유니폼 구조체는 16바이트 정렬이다.
+  // Two f32s, but a uniform struct is 16-byte aligned.
   const uniformBuffer = device.createBuffer({
     size: 16,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -114,5 +114,5 @@ function setup({ device, context, format }: SceneContext) {
 }
 
 root.render(
-  <DemoScene title="회전 삼각형" subtitle="정점 버퍼 + 유니폼" setup={setup} />
+  <DemoScene title="Rotating triangle" subtitle="Vertex buffer + uniform" setup={setup} />
 )

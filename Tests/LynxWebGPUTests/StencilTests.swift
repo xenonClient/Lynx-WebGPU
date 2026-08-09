@@ -3,16 +3,16 @@ import Metal
 import LynxWebGPUCore
 @testable import LynxWebGPU
 
-/// 스텐실 테스트 — **컬러로 간접 단언**한다.
+/// Stencil testing — asserted **indirectly through color**.
 ///
-/// `readPixels`는 depth/stencil 표면을 읽을 수 없다 (`docs/TESTING.md` §4-1). 하지만 스텐실이
-/// 정하는 것은 "어느 프래그먼트가 살아남는가"이므로, 살아남은 프래그먼트의 **색이 곧 스텐실
-/// 동작의 증거**다. 스텐실 버퍼를 직접 못 읽는 것이 검증의 제약이 되지 않는다.
+/// `readPixels` cannot read a depth/stencil surface (`docs/TESTING.md` §4-1). But what stencil decides
+/// is "which fragment survives", so the **color of the surviving fragment is itself the evidence** of
+/// stencil behaviour. Not being able to read the stencil buffer directly is no limit on verification.
 final class StencilTests: XCTestCase {
     private var harness: RenderHarness!
 
     override func setUpWithError() throws {
-        try XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, "Metal 디바이스 없음")
+        try XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, "no Metal device")
         harness = try XCTUnwrap(RenderHarness.make())
     }
 
@@ -21,7 +21,7 @@ final class StencilTests: XCTestCase {
         super.tearDown()
     }
 
-    /// 화면을 덮는 삼각형 하나. 색과 깊이를 유니폼으로 받아 파이프라인을 여러 개 만들 필요를 줄인다.
+    /// One screen-covering triangle. Color and depth come from a uniform, reducing the need for many pipelines.
     private static let shader = """
     struct Fill {
         color: vec4f,
@@ -41,7 +41,7 @@ final class StencilTests: XCTestCase {
     }
     """
 
-    /// `Fill` 유니폼 한 벌 — vec4f(16B) + f32, 정렬 규칙에 따라 32B다.
+    /// One set of `Fill` uniforms — vec4f(16B) + f32, which is 32B under the alignment rules.
     private func fill(red: Float, green: Float, blue: Float, depth: Float = 0) -> String {
         [red, green, blue, 1, depth, 0, 0, 0].base64
     }
@@ -53,7 +53,7 @@ final class StencilTests: XCTestCase {
         result["errors"] as? [[String: Any]] ?? []
     }
 
-    /// 색 유니폼 두 개(빨강/초록)와 셰이더를 올린다. 파이프라인은 테스트마다 다르므로 여기 없다.
+    /// Uploads two color uniforms (red/green) and the shader. Pipelines differ per test, so they are not here.
     private func makeCommonResources() -> [[String: Any]] {
         [
             ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
@@ -65,7 +65,7 @@ final class StencilTests: XCTestCase {
         ]
     }
 
-    /// 스텐실 상태만 다른 파이프라인 하나. `colorWriteMask: 0`이면 스텐실만 쓰고 색은 남기지 않는다.
+    /// One pipeline differing only in stencil state. With `colorWriteMask: 0` it writes stencil only and leaves color.
     private func pipeline(
         id: Int,
         format: String = "stencil8",
@@ -88,7 +88,7 @@ final class StencilTests: XCTestCase {
         ]
     }
 
-    /// 앞/뒤 면에 같은 상태를 넣는다 (테스트 도형은 한 방향이라 면을 나눌 이유가 없다).
+    /// Puts the same state on the front and back faces (the test geometry faces one way, so splitting is pointless).
     private func bothFaces(_ state: [String: Any]) -> [String: Any] {
         ["stencilFront": state, "stencilBack": state]
     }
@@ -113,7 +113,7 @@ final class StencilTests: XCTestCase {
         ["op": "createTextureView", "id": 21, "texture": 20],
     ]
 
-    /// read-only로 연 깊이/스텐실 패스. `readOnly`인 쪽은 load/store op을 줄 수 없다.
+    /// A depth/stencil pass opened read-only. The `readOnly` side cannot be given load/store ops.
     private func readOnlyPass(
         view: Int, depthReadOnly: Bool = false, stencilReadOnly: Bool = false
     ) -> [String: Any] {
@@ -142,17 +142,17 @@ final class StencilTests: XCTestCase {
         ]
     }
 
-    // MARK: - 마스킹
+    // MARK: - Masking
 
-    func test_스텐실_마스크가_뒤이은_드로우를_잘라낸다() throws {
+    func test_theStencilMaskClipsTheFollowingDraw() throws {
         harness.executeExpectingSuccess(makeCommonResources() + [
             ["op": "createTexture", "id": 2, "size": ["width": 64, "height": 64],
              "format": "stencil8", "usage": TestUsage.renderAttachment],
             ["op": "createTextureView", "id": 3, "texture": 2],
-            // 마킹 — 그린 곳의 스텐실을 ref로 바꾸고, 색은 남기지 않는다.
+            // Marking — sets the stencil to ref where it drew, leaving color alone.
             pipeline(id: 6, stencil: bothFaces(["compare": "always", "passOp": "replace"]),
                      writesColor: false),
-            // 칠하기 — 스텐실이 ref와 같은 곳만.
+            // Painting — only where the stencil equals ref.
             pipeline(id: 7, stencil: bothFaces(["compare": "equal"])),
             ["op": "getBindGroupLayout", "id": 8, "pipeline": 6, "index": 0],
             ["op": "createBindGroup", "id": 9, "layout": 8,
@@ -163,25 +163,25 @@ final class StencilTests: XCTestCase {
             beginPass(stencilView: 3),
             ["op": "setStencilReference", "reference": 1],
             ["op": "setPipeline", "pipeline": 6],
-            ["op": "setBindGroup", "index": 0, "bindGroup": 10],   // 초록 — writeMask 0이라 보이면 안 된다
+            ["op": "setBindGroup", "index": 0, "bindGroup": 10],   // green — writeMask 0, so it must not show
             ["op": "setScissorRect", "x": 0, "y": 0, "width": 32, "height": 64],
             ["op": "draw", "vertexCount": 3],
             ["op": "setScissorRect", "x": 0, "y": 0, "width": 64, "height": 64],
             ["op": "setPipeline", "pipeline": 7],
-            ["op": "setBindGroup", "index": 0, "bindGroup": 9],    // 빨강
+            ["op": "setBindGroup", "index": 0, "bindGroup": 9],    // red
             ["op": "draw", "vertexCount": 3],
             ["op": "endPass"],
         ])
 
-        try harness.assertPixel(x: 16, y: 32, equals: red, "스텐실 통과 영역")
-        try harness.assertPixel(x: 48, y: 32, equals: clearBlue, "스텐실 실패 → 클리어색")
+        try harness.assertPixel(x: 16, y: 32, equals: red, "the region the stencil passed")
+        try harness.assertPixel(x: 48, y: 32, equals: clearBlue, "stencil failed → the clear color")
     }
 
-    /// 같은 그림을 시저로 만들어 놓고 프레임 전체를 비교한다.
+    /// Builds the same picture with a scissor and compares whole frames.
     ///
-    /// 두 점만 보면 "스텐실이 아니라 다른 이유로 잘린" 경우를 못 거른다. 경계 픽셀까지
-    /// 똑같아야 스텐실이 정확히 그 영역을 잘랐다고 말할 수 있다.
-    func test_스텐실_마스크_결과가_같은_영역의_시저와_일치한다() throws {
+    /// Two points alone cannot rule out "clipped for some reason other than stencil". Only when the
+    /// boundary pixels match too can we say the stencil clipped exactly that region.
+    func test_theStencilMaskResultMatchesAScissorOverTheSameRegion() throws {
         harness.executeExpectingSuccess(makeCommonResources() + [
             ["op": "createTexture", "id": 2, "size": ["width": 64, "height": 64],
              "format": "stencil8", "usage": TestUsage.renderAttachment],
@@ -189,7 +189,7 @@ final class StencilTests: XCTestCase {
             pipeline(id: 6, stencil: bothFaces(["compare": "always", "passOp": "replace"]),
                      writesColor: false),
             pipeline(id: 7, stencil: bothFaces(["compare": "equal"])),
-            // 대조군 — 스텐실 없이 시저만 쓰는 파이프라인.
+            // The control — a pipeline with a scissor and no stencil.
             ["op": "createRenderPipeline", "id": 30, "layout": "auto",
              "vertex": ["module": 1, "entryPoint": "vs_main"],
              "fragment": ["module": 1, "entryPoint": "fs_main",
@@ -199,7 +199,7 @@ final class StencilTests: XCTestCase {
              "entries": [["binding": 0, "resource": ["buffer": 4]]]],
         ])
 
-        // 기준 — 시저로 왼쪽 절반만 빨강.
+        // The baseline — the left half red, by scissor.
         harness.executeExpectingSuccess(acquireDrawable + [
             ["op": "beginRenderPass", "colorAttachments": [[
                 "view": 21, "loadOp": "clear", "storeOp": "store",
@@ -213,7 +213,7 @@ final class StencilTests: XCTestCase {
         ])
         let scissored = try harness.frameBytes()
 
-        // 같은 그림을 스텐실 마스크로.
+        // The same picture, by stencil mask.
         harness.executeExpectingSuccess(acquireDrawable + [
             beginPass(stencilView: 3),
             ["op": "setStencilReference", "reference": 1],
@@ -227,12 +227,12 @@ final class StencilTests: XCTestCase {
             ["op": "endPass"],
         ])
 
-        try harness.assertFrameEquals(scissored, "스텐실이 시저와 정확히 같은 영역을 남겨야 한다")
+        try harness.assertFrameEquals(scissored, "the stencil must leave exactly the region the scissor did")
     }
 
-    // MARK: - 참조값 · 마스크
+    // MARK: - Reference value and masks
 
-    func test_setStencilReference가_쓰기와_비교에_모두_반영된다() throws {
+    func test_setStencilReferenceAffectsBothWritesAndComparisons() throws {
         harness.executeExpectingSuccess(makeCommonResources() + [
             ["op": "createTexture", "id": 2, "size": ["width": 64, "height": 64],
              "format": "stencil8", "usage": TestUsage.renderAttachment],
@@ -247,35 +247,35 @@ final class StencilTests: XCTestCase {
             beginPass(stencilView: 3),
             ["op": "setPipeline", "pipeline": 6],
             ["op": "setBindGroup", "index": 0, "bindGroup": 9],
-            // 왼쪽에는 1, 오른쪽에는 2를 쓴다 — replace가 쓰는 값이 곧 현재 reference다.
+            // Writes 1 on the left and 2 on the right — the value replace writes is the current reference.
             ["op": "setStencilReference", "reference": 1],
             ["op": "setScissorRect", "x": 0, "y": 0, "width": 32, "height": 64],
             ["op": "draw", "vertexCount": 3],
             ["op": "setStencilReference", "reference": 2],
             ["op": "setScissorRect", "x": 32, "y": 0, "width": 32, "height": 64],
             ["op": "draw", "vertexCount": 3],
-            // reference 2로 비교 → 오른쪽만 통과한다.
+            // Comparing with reference 2 → only the right passes.
             ["op": "setScissorRect", "x": 0, "y": 0, "width": 64, "height": 64],
             ["op": "setPipeline", "pipeline": 7],
             ["op": "draw", "vertexCount": 3],
             ["op": "endPass"],
         ])
 
-        try harness.assertPixel(x: 48, y: 32, equals: red, "reference 2를 쓴 영역")
-        try harness.assertPixel(x: 16, y: 32, equals: clearBlue, "reference 1을 쓴 영역 — 2와 다르다")
+        try harness.assertPixel(x: 48, y: 32, equals: red, "the region written with reference 2")
+        try harness.assertPixel(x: 16, y: 32, equals: clearBlue, "the region written with reference 1 — different from 2")
     }
 
-    func test_stencilWriteMask가_0이면_스텐실이_갱신되지_않는다() throws {
+    func test_aStencilWriteMaskOfZeroLeavesTheStencilUnchanged() throws {
         harness.executeExpectingSuccess(makeCommonResources() + [
             ["op": "createTexture", "id": 2, "size": ["width": 64, "height": 64],
              "format": "stencil8", "usage": TestUsage.renderAttachment],
             ["op": "createTextureView", "id": 3, "texture": 2],
-            // 왼쪽 마킹 — writeMask 0이라 replace가 아무 비트도 못 바꾼다.
+            // Marking the left — with writeMask 0, replace cannot change a single bit.
             pipeline(id: 6,
                      stencil: bothFaces(["compare": "always", "passOp": "replace"])
                         .merging(["stencilWriteMask": 0]) { _, new in new },
                      writesColor: false),
-            // 오른쪽 마킹 — 같은 상태에 마스크만 기본값.
+            // Marking the right — the same state with the mask at its default.
             pipeline(id: 7, stencil: bothFaces(["compare": "always", "passOp": "replace"]),
                      writesColor: false),
             pipeline(id: 8, stencil: bothFaces(["compare": "equal"])),
@@ -298,20 +298,20 @@ final class StencilTests: XCTestCase {
             ["op": "endPass"],
         ])
 
-        try harness.assertPixel(x: 16, y: 32, equals: clearBlue, "writeMask 0 — 스텐실이 0으로 남는다")
-        try harness.assertPixel(x: 48, y: 32, equals: red, "기본 마스크 — 스텐실이 1로 바뀐다")
+        try harness.assertPixel(x: 16, y: 32, equals: clearBlue, "writeMask 0 — the stencil stays 0")
+        try harness.assertPixel(x: 48, y: 32, equals: red, "the default mask — the stencil becomes 1")
     }
 
-    func test_stencilReadMask가_비교_전에_값을_가린다() throws {
+    func test_stencilReadMaskHidesBitsBeforeTheComparison() throws {
         harness.executeExpectingSuccess(makeCommonResources() + [
             ["op": "createTexture", "id": 2, "size": ["width": 64, "height": 64],
              "format": "stencil8", "usage": TestUsage.renderAttachment],
             ["op": "createTextureView", "id": 3, "texture": 2],
             pipeline(id: 6, stencil: bothFaces(["compare": "always", "passOp": "replace"]),
                      writesColor: false),
-            // 마스크 없이 비교 — 저장된 3과 reference 1은 다르다.
+            // Comparing with no mask — the stored 3 differs from reference 1.
             pipeline(id: 7, stencil: bothFaces(["compare": "equal"])),
-            // 하위 1비트만 보고 비교 — (1 & 1) == (3 & 1) 이라 통과한다.
+            // Comparing on the low bit only — (1 & 1) == (3 & 1), so it passes.
             pipeline(id: 8,
                      stencil: bothFaces(["compare": "equal"])
                         .merging(["stencilReadMask": 0x1]) { _, new in new }),
@@ -321,7 +321,7 @@ final class StencilTests: XCTestCase {
         ] + acquireDrawable + [
             beginPass(stencilView: 3),
             ["op": "setBindGroup", "index": 0, "bindGroup": 10],
-            // 화면 전체에 스텐실 3.
+            // Stencil 3 across the whole screen.
             ["op": "setStencilReference", "reference": 3],
             ["op": "setPipeline", "pipeline": 6],
             ["op": "draw", "vertexCount": 3],
@@ -335,23 +335,23 @@ final class StencilTests: XCTestCase {
             ["op": "endPass"],
         ])
 
-        try harness.assertPixel(x: 16, y: 32, equals: clearBlue, "마스크 없이 1 ≠ 3 → 실패")
-        try harness.assertPixel(x: 48, y: 32, equals: red, "readMask 0x1이면 1 == 3 → 통과")
+        try harness.assertPixel(x: 16, y: 32, equals: clearBlue, "with no mask 1 != 3 → fails")
+        try harness.assertPixel(x: 48, y: 32, equals: red, "with readMask 0x1, 1 == 3 → passes")
     }
 
-    // MARK: - 깊이와의 조합
+    // MARK: - Combined with depth
 
-    /// 섀도 볼륨이 쓰는 경로 — "깊이 테스트에 **진** 프래그먼트"만 스텐실에 표시한다.
-    /// `passOp`(둘 다 통과)와 `depthFailOp`(스텐실만 통과)가 뒤바뀌면 여기서 드러난다.
-    func test_depthFailOp가_깊이에_진_영역만_스텐실에_표시한다() throws {
+    /// The path shadow volumes use — marking the stencil only where a fragment **lost** the depth test.
+    /// Swapping `passOp` (both passed) and `depthFailOp` (only stencil passed) shows up right here.
+    func test_depthFailOpMarksOnlyWhereDepthWasLost() throws {
         harness.executeExpectingSuccess(makeCommonResources() + [
             ["op": "createTexture", "id": 2, "size": ["width": 64, "height": 64],
              "format": "depth24plus-stencil8", "usage": TestUsage.renderAttachment],
             ["op": "createTextureView", "id": 3, "texture": 2],
-            // 가까운 면(0.2)을 깊이 버퍼에 남긴다.
+            // Leave the near face (0.2) in the depth buffer.
             ["op": "createBuffer", "id": 11, "size": 32, "usage": TestUsage.uniform,
              "data": fill(red: 0, green: 1, blue: 0, depth: 0.2)],
-            // 먼 면(0.8) — 깊이 테스트에서 진다.
+            // The far face (0.8) — it loses the depth test.
             ["op": "createBuffer", "id": 12, "size": 32, "usage": TestUsage.uniform,
              "data": fill(red: 0, green: 1, blue: 0, depth: 0.8)],
             pipeline(id: 6, format: "depth24plus-stencil8", stencil: [:],
@@ -371,17 +371,17 @@ final class StencilTests: XCTestCase {
         ] + acquireDrawable + [
             beginPass(stencilView: 3),
             ["op": "setStencilReference", "reference": 1],
-            // 1) 깊이 0.2를 깔아 둔다.
+            // 1) Lay down depth 0.2.
             ["op": "setPipeline", "pipeline": 6],
             ["op": "setBindGroup", "index": 0, "bindGroup": 13],
             ["op": "draw", "vertexCount": 3],
-            // 2) 깊이 0.8 — 스텐실 테스트는 통과하고 깊이 테스트에 져서 depthFailOp가 돈다.
-            //    왼쪽 절반에만 그려 "표시된 곳/아닌 곳"을 한 화면에 만든다.
+            // 2) Depth 0.8 — the stencil test passes, the depth test loses, so depthFailOp runs.
+            //    Drawn on the left half only, putting "marked" and "unmarked" in one screen.
             ["op": "setPipeline", "pipeline": 7],
             ["op": "setBindGroup", "index": 0, "bindGroup": 14],
             ["op": "setScissorRect", "x": 0, "y": 0, "width": 32, "height": 64],
             ["op": "draw", "vertexCount": 3],
-            // 3) 표시된 곳만 빨강.
+            // 3) Red only where it was marked.
             ["op": "setScissorRect", "x": 0, "y": 0, "width": 64, "height": 64],
             ["op": "setPipeline", "pipeline": 8],
             ["op": "setBindGroup", "index": 0, "bindGroup": 15],
@@ -389,25 +389,25 @@ final class StencilTests: XCTestCase {
             ["op": "endPass"],
         ])
 
-        try harness.assertPixel(x: 16, y: 32, equals: red, "깊이에 진 영역 — depthFailOp가 표시했다")
-        try harness.assertPixel(x: 48, y: 32, equals: clearBlue, "깊이 테스트를 치르지 않은 영역")
+        try harness.assertPixel(x: 16, y: 32, equals: red, "the region that lost on depth — depthFailOp marked it")
+        try harness.assertPixel(x: 48, y: 32, equals: clearBlue, "the region that never took the depth test")
     }
 
-    // MARK: - 회귀
+    // MARK: - Regression
 
-    /// 회귀 — 예전에는 `depthAttachmentPixelFormat`을 무조건 세팅해서, 깊이가 없는 `stencil8`
-    /// 파이프라인이 "있지도 않은 깊이 어태치먼트"를 요구하며 생성 자체에 실패했다.
-    func test_stencil8_단독_포맷_파이프라인이_만들어진다() {
+    /// Regression — `depthAttachmentPixelFormat` used to be set unconditionally, so a depthless
+    /// `stencil8` pipeline demanded a depth attachment that did not exist and failed to be created at all.
+    func test_aStencil8OnlyFormatPipelineIsCreated() {
         harness.executeExpectingSuccess(makeCommonResources() + [
             pipeline(id: 6, stencil: bothFaces(["compare": "equal", "passOp": "replace"])),
         ])
     }
 
-    // MARK: - 계약
+    // MARK: - Contract
 
-    /// 스텐실 성분이 없는 포맷에 스텐실 상태를 붙이면 Metal은 **조용히 무시**한다.
-    /// 그러면 "스텐실 마스킹이 왜 안 먹지"를 오류 하나 없이 디버깅하게 되므로 여기서 막는다.
-    func test_스텐실_없는_깊이_포맷에_스텐실_상태를_주면_거부한다() {
+    /// Attaching stencil state to a format with no stencil aspect makes Metal **ignore it silently**.
+    /// You would then debug "why isn't stencil masking working" with not one error, so it is stopped here.
+    func test_rejectsStencilStateOnADepthFormatWithoutStencil() {
         for format in ["depth32float", "depth24plus", "depth16unorm"] {
             let result = harness.execute(makeCommonResources() + [
                 pipeline(id: 6, format: format,
@@ -415,17 +415,17 @@ final class StencilTests: XCTestCase {
             ])
             let message = (result["errors"] as? [[String: Any]])?.first?["message"] as? String ?? ""
             XCTAssertTrue(
-                message.contains("스텐실 성분"),
-                "\(format) + 비기본 stencilFront는 거부되어야 한다 — 받은 것: \(message)"
+                message.contains("stencil aspect"),
+                "\(format) plus a non-default stencilFront must be rejected — got: \(message)"
             )
         }
     }
 
-    // MARK: - read-only 어태치먼트
+    // MARK: - Read-only attachments
 
-    /// `depthReadOnly: true`는 "이 패스는 깊이를 쓰지 않는다"는 선언이다. Metal은 그냥 써 버리므로
-    /// 여기서 막지 않으면 read-only라고 적어 둔 깊이 버퍼가 실제로 변조된다.
-    func test_depthReadOnly_패스에서_깊이를_쓰는_파이프라인을_거부한다() {
+    /// `depthReadOnly: true` declares "this pass does not write depth". Metal simply writes anyway, so
+    /// unchecked here the depth buffer marked read-only really is modified.
+    func test_aDepthReadOnlyPassRejectsAPipelineThatWritesDepth() {
         let result = harness.execute(makeCommonResources() + [
             ["op": "createTexture", "id": 2, "size": ["width": 64, "height": 64],
              "format": "depth24plus-stencil8", "usage": TestUsage.renderAttachment],
@@ -444,8 +444,8 @@ final class StencilTests: XCTestCase {
         )
     }
 
-    /// 깊이를 읽기만 하는 파이프라인은 같은 패스에서 그대로 통과해야 한다.
-    func test_depthReadOnly_패스에서_읽기만_하는_파이프라인은_통과한다() {
+    /// A pipeline that only reads depth must pass through the same pass unchanged.
+    func test_aDepthReadOnlyPassAcceptsAReadOnlyPipeline() {
         harness.executeExpectingSuccess(makeCommonResources() + [
             ["op": "createTexture", "id": 2, "size": ["width": 64, "height": 64],
              "format": "depth24plus-stencil8", "usage": TestUsage.renderAttachment],
@@ -464,7 +464,7 @@ final class StencilTests: XCTestCase {
         ])
     }
 
-    func test_stencilReadOnly_패스에서_스텐실을_쓰는_파이프라인을_거부한다() {
+    func test_aStencilReadOnlyPassRejectsAPipelineThatWritesStencil() {
         let result = harness.execute(makeCommonResources() + [
             ["op": "createTexture", "id": 2, "size": ["width": 64, "height": 64],
              "format": "depth24plus-stencil8", "usage": TestUsage.renderAttachment],
@@ -483,8 +483,8 @@ final class StencilTests: XCTestCase {
         )
     }
 
-    /// 비교만 하는 스텐실 상태는 "읽기"이므로 통과해야 한다.
-    func test_stencilReadOnly_패스에서_비교만_하는_파이프라인은_통과한다() {
+    /// Stencil state that only compares is "reading" and must pass.
+    func test_aStencilReadOnlyPassAcceptsAComparisonOnlyPipeline() {
         harness.executeExpectingSuccess(makeCommonResources() + [
             ["op": "createTexture", "id": 2, "size": ["width": 64, "height": 64],
              "format": "depth24plus-stencil8", "usage": TestUsage.renderAttachment],
@@ -497,8 +497,8 @@ final class StencilTests: XCTestCase {
         ])
     }
 
-    /// `readOnly`와 load/store op을 함께 주는 것은 모순이라 명세가 금지한다.
-    func test_depthReadOnly와_loadOp을_함께_주면_거부한다() {
+    /// Giving `readOnly` together with load/store ops is contradictory and the spec forbids it.
+    func test_depthReadOnlyTogetherWithLoadOpIsRejected() {
         let result = harness.execute(makeCommonResources() + [
             ["op": "createTexture", "id": 2, "size": ["width": 64, "height": 64],
              "format": "depth24plus-stencil8", "usage": TestUsage.renderAttachment],
@@ -519,14 +519,14 @@ final class StencilTests: XCTestCase {
         ])
 
         XCTAssertTrue(
-            ((errors(result).first?["message"] as? String) ?? "").contains("함께 줄 수 없다"),
+            ((errors(result).first?["message"] as? String) ?? "").contains("cannot be combined"),
             harness.describeErrors(result)
         )
     }
 
-    /// `GPUStencilValue`는 `u32`이고 WebIDL 변환은 modulo다 — 음수는 wrap될 뿐 트랩하지 않는다.
-    /// 비-truncating 이니셜라이저를 쓰면 이 한 줄로 프로세스가 죽는다.
-    func test_음수_스텐실_참조값이_프로세스를_죽이지_않는다() {
+    /// `GPUStencilValue` is `u32` and the WebIDL conversion is modulo — a negative wraps rather than traps.
+    /// With a non-truncating initializer this single line would kill the process.
+    func test_aNegativeStencilReferenceDoesNotKillTheProcess() {
         harness.executeExpectingSuccess(makeCommonResources() + [
             ["op": "createTexture", "id": 2, "size": ["width": 64, "height": 64],
              "format": "stencil8", "usage": TestUsage.renderAttachment],
@@ -549,8 +549,8 @@ final class StencilTests: XCTestCase {
         ])
     }
 
-    /// 반대로 스텐실 상태를 주지 않으면 깊이 전용 포맷도 그대로 통과해야 한다.
-    func test_스텐실_상태가_기본값이면_깊이_전용_포맷이_통과한다() {
+    /// Conversely, with no stencil state given, a depth-only format must pass straight through.
+    func test_aDepthOnlyFormatPassesWhenStencilStateIsDefault() {
         harness.executeExpectingSuccess(makeCommonResources() + [
             pipeline(id: 6, format: "depth32float", stencil: [:], depthCompare: "less", depthWrite: true),
         ])

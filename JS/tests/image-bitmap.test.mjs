@@ -1,15 +1,15 @@
 /**
- * `createImageBitmap()` + `queue.copyExternalImageToTexture()` — 외부 이미지를 텍스처로.
+ * `createImageBitmap()` + `queue.copyExternalImageToTexture()` — an external image into a texture.
  *
- * 웹에서는 브라우저가 디코딩을 맡는다. 여기서는 네이티브(ImageIO)가 하고 **픽셀은
- * 네이티브에 남는다** — 브리지를 건너는 것이 핸들뿐인지가 이 파일의 핵심 계약이다.
+ * On the web the browser does the decoding. Here native (ImageIO) does, and **the pixels stay native** —
+ * whether the handle is all that crosses the bridge is this file's core contract.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { installNativeMock, makeDevice, commandsOf } from './helpers.mjs';
 import { createImageBitmap } from '../webgpu.js';
 
-test('이미지 바이트를 네이티브에 넘기고 크기를 받는다', async () => {
+test('hands the image bytes to native and receives the size', async () => {
   const state = installNativeMock({ decodeImageResult: { ok: true, width: 64, height: 32 } });
   await makeDevice();
 
@@ -19,20 +19,20 @@ test('이미지 바이트를 네이티브에 넘기고 크기를 받는다', asy
   assert.equal(bitmap.height, 32);
   assert.equal(state.decodeImageCalls.length, 1);
   assert.ok(state.decodeImageCalls[0].data instanceof ArrayBuffer);
-  assert.equal(typeof state.decodeImageCalls[0].id, 'number', '핸들은 JS가 발급한다');
+  assert.equal(typeof state.decodeImageCalls[0].id, 'number', 'the handle is issued by JS');
 });
 
-test('문자열은 애셋 이름으로 넘어간다', async () => {
+test('a string goes across as an asset name', async () => {
   const state = installNativeMock();
   await makeDevice();
 
   await createImageBitmap('photo.jpg');
 
   assert.equal(state.decodeImageCalls[0].name, 'photo.jpg');
-  assert.equal(state.decodeImageCalls[0].data, undefined, '이름을 줬으면 바이트를 싣지 않는다');
+  assert.equal(state.decodeImageCalls[0].data, undefined, 'given a name, no bytes are put on');
 });
 
-test('옵션이 네이티브 이름으로 옮겨진다', async () => {
+test('the options are moved across under the native names', async () => {
   const state = installNativeMock();
   await makeDevice();
 
@@ -42,12 +42,12 @@ test('옵션이 네이티브 이름으로 옮겨진다', async () => {
 
   const params = state.decodeImageCalls[0];
   assert.equal(params.flipY, true);
-  assert.equal(params.premultiplyAlpha, true, "'premultiply'만 true다");
+  assert.equal(params.premultiplyAlpha, true, "only 'premultiply' is true");
   assert.equal(params.resizeWidth, 8);
   assert.equal(params.resizeHeight, 4);
 });
 
-test("premultiplyAlpha가 'none'이면 곱하지 않는다", async () => {
+test("premultiplyAlpha of 'none' does not multiply", async () => {
   const state = installNativeMock();
   await makeDevice();
 
@@ -56,23 +56,23 @@ test("premultiplyAlpha가 'none'이면 곱하지 않는다", async () => {
   assert.equal(state.decodeImageCalls[0].premultiplyAlpha, false);
 });
 
-test('디코딩 실패는 던진다 — 조용히 빈 이미지를 주지 않는다', async () => {
+test('a decode failure throws — it does not quietly hand back an empty image', async () => {
   installNativeMock({
-    decodeImageResult: { ok: false, errors: [{ kind: 'validation', message: '손상된 PNG' }] },
+    decodeImageResult: { ok: false, errors: [{ kind: 'validation', message: 'corrupt PNG' }] },
   });
   await makeDevice();
 
-  await assert.rejects(() => createImageBitmap(new ArrayBuffer(4)), /손상된 PNG/);
+  await assert.rejects(() => createImageBitmap(new ArrayBuffer(4)), /corrupt PNG/);
 });
 
-test('디바이스 없이 부르면 분명한 오류를 낸다', async () => {
-  // 핸들은 디바이스의 레코더가 발급한다 — 없으면 번호를 만들 수 없다.
+test('calling it with no device gives a clear error', async () => {
+  // The handle is issued by the device's recorder — without one, no number can be made.
   installNativeMock();
   const { createImageBitmap: fresh } = await import(`../webgpu.js?fresh=${Date.now()}`);
   await assert.rejects(() => fresh(new ArrayBuffer(4)), /requestDevice/);
 });
 
-test('copyExternalImageToTexture는 핸들만 싣는다', async () => {
+test('copyExternalImageToTexture puts only the handle on', async () => {
   const state = installNativeMock({ decodeImageResult: { ok: true, width: 16, height: 16 } });
   const device = await makeDevice();
   const bitmap = await createImageBitmap('a.png');
@@ -86,15 +86,15 @@ test('copyExternalImageToTexture는 핸들만 싣는다', async () => {
   device.queue.submit([]);
 
   const copy = commandsOf(state).find((command) => command.op === 'copyExternalImageToTexture');
-  assert.ok(copy, '명령이 기록되지 않았다');
+  assert.ok(copy, 'the command was not recorded');
   assert.equal(copy.source.source, bitmap.id);
   assert.equal(copy.destination.texture, texture.id);
   assert.deepEqual(copy.copySize, [16, 16]);
-  assert.equal(copy.data, undefined, '픽셀이 브리지를 건너면 안 된다');
+  assert.equal(copy.data, undefined, 'pixels must not cross the bridge');
 });
 
-test('복사 시점 flipY가 실린다 — three.js가 쓰는 자리다', async () => {
-  // `Texture.flipY`가 기본 true라, 안 실어 보내면 웹 라이브러리의 텍스처가 조용히 뒤집힌다.
+test('copy-time flipY rides along — this is what three.js uses', async () => {
+  // `Texture.flipY` defaults to true, so without sending it a web library's textures flip silently.
   const state = installNativeMock({ decodeImageResult: { ok: true, width: 8, height: 8 } });
   const device = await makeDevice();
   const bitmap = await createImageBitmap('a.png');
@@ -106,10 +106,10 @@ test('복사 시점 flipY가 실린다 — three.js가 쓰는 자리다', async 
 
   const copies = commandsOf(state).filter((c) => c.op === 'copyExternalImageToTexture');
   assert.equal(copies[0].source.flipY, true);
-  assert.equal(copies[1].source.flipY, false, '생략하면 뒤집지 않는다');
+  assert.equal(copies[1].source.flipY, false, 'omitted, it does not flip');
 });
 
-test('부분 복사의 origin과 mipLevel이 실린다', async () => {
+test('a partial copy puts its origin and mipLevel on', async () => {
   const state = installNativeMock({ decodeImageResult: { ok: true, width: 16, height: 16 } });
   const device = await makeDevice();
   const bitmap = await createImageBitmap('a.png');
@@ -128,7 +128,7 @@ test('부분 복사의 origin과 mipLevel이 실린다', async () => {
   assert.deepEqual(copy.destination.origin, { x: 2, y: 0 });
 });
 
-test('close()는 네이티브 픽셀을 버린다 — 두 번 불러도 한 번만', async () => {
+test('close() throws away the native pixels — twice still means once', async () => {
   const state = installNativeMock();
   const device = await makeDevice();
   const bitmap = await createImageBitmap('a.png');

@@ -3,8 +3,8 @@ import { DemoScene, type SceneContext } from '../scene.jsx'
 import { GPUBufferUsage } from '../webgpu.js'
 
 /**
- * 같은 셰이더 모듈 하나를 `override` 값만 바꿔 세 파이프라인으로 만든다.
- * 값은 MSL 방출 시점에 상수로 박히므로, 셰이더 안에서 분기하는 것보다 빠르다.
+ * One and the same shader module becomes three pipelines by changing only the `override` values.
+ * The values are baked in as constants when the MSL is emitted, so it is faster than branching inside the shader.
  */
 const SHADER = /* wgsl */ `
 override sides: u32 = 3;
@@ -24,7 +24,7 @@ struct VertexOutput {
   @location(0) tint: vec3f,
 };
 
-/// 다각형을 삼각형 부채꼴로 만든다 — 정점 수는 sides * 3.
+/// Builds a polygon as a triangle fan — the vertex count is sides * 3.
 @vertex
 fn vs_main(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
   let triangle = vertexIndex / 3u;
@@ -38,13 +38,13 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
   }
 
   var out: VertexOutput;
-  // 도형만 종횡비 보정하고 배치 오프셋은 NDC 그대로 둔다 — 섞으면 화면 밖으로 나간다.
+  // Only the shape is aspect-corrected; the placement offset stays in NDC — mixing them runs off screen.
   out.position = vec4f(
     local.x * uniforms.scale / uniforms.aspect + uniforms.offset.x,
     local.y * uniforms.scale + uniforms.offset.y,
     0.0, 1.0
   );
-  // hue를 세 채널로 흩어 색을 만든다 (파이프라인마다 다른 값이 박힌다).
+  // The hue is spread across three channels to make a color (a different value is baked into each pipeline).
   out.tint = vec3f(
     0.5 + 0.5 * cos(hue),
     0.5 + 0.5 * cos(hue + 2.09439510239),
@@ -71,7 +71,7 @@ function setup({ device, context, format, report }: SceneContext) {
   const variants = VARIANTS.map((variant) => {
     const pipeline = device.createRenderPipeline({
       layout: 'auto',
-      // 같은 module, 다른 constants → 별도 MSL로 방출·캐시된다.
+      // The same module with different constants → emitted and cached as separate MSL.
       vertex: { module, entryPoint: 'vs_main', constants: { sides: variant.sides, hue: variant.hue } },
       fragment: { module, entryPoint: 'fs_main', constants: { hue: variant.hue }, targets: [{ format }] },
     })
@@ -86,7 +86,7 @@ function setup({ device, context, format, report }: SceneContext) {
     return { ...variant, pipeline, uniformBuffer, bindGroup, vertexCount: variant.sides * 3 }
   })
 
-  report(`override sides = ${VARIANTS.map((v) => v.sides).join(' / ')} — 셰이더 소스는 하나`)
+  report(`override sides = ${VARIANTS.map((v) => v.sides).join(' / ')} — one shader source`)
 
   const uniforms = new Float32Array(8)
   let spin = 0
@@ -94,7 +94,7 @@ function setup({ device, context, format, report }: SceneContext) {
   return ({ delta, width, height }: { delta: number; width: number; height: number }) => {
     spin += (delta / 1000) * 0.6
     const aspect = Math.max(width / height, 0.001)
-    // 세로 화면이면 세로로, 가로 화면이면 가로로 3개를 늘어놓는다.
+    // Three laid out vertically on a portrait screen, horizontally on a landscape one.
     const portrait = aspect < 1
     const scale = portrait ? 0.26 : 0.26 * Math.min(1, aspect / 1.8)
 
@@ -128,5 +128,5 @@ function setup({ device, context, format, report }: SceneContext) {
 }
 
 root.render(
-  <DemoScene title="파이프라인 상수" subtitle="같은 셰이더 · override 값만 다른 3개 파이프라인" setup={setup} />
+  <DemoScene title="Pipeline constants" subtitle="The same shader · three pipelines differing only in override values" setup={setup} />
 )

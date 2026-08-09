@@ -66,6 +66,7 @@ Full instructions: [docs/LYNX-INTEGRATION.md](docs/LYNX-INTEGRATION.md).
 - [docs/WGSL.md](docs/WGSL.md) — WGSL subset grammar · MSL mapping · constraints
 - [docs/JS-AUTHORING.md](docs/JS-AUTHORING.md) — bundle (JS) authoring guide, performance rules
 - [docs/LYNX-INTEGRATION.md](docs/LYNX-INTEGRATION.md) — host app integration
+- [docs/COMMAND-STREAM.md](docs/COMMAND-STREAM.md) — command-stream wire spec (**the specification for writing another backend**)
 - [docs/TESTING.md](docs/TESTING.md) — test strategy/harnesses/conventions
 - [docs/ROADMAP.md](docs/ROADMAP.md) — what's next (web-library port gaps → image pipeline polish)
 - [Examples/HelloTriangle.tsx](Examples/HelloTriangle.tsx) — minimal ReactLynx example
@@ -76,13 +77,14 @@ All docs except this file are written in Korean — they translate well with any
 
 | Module | Role |
 |---|---|
-| `LynxWebGPUCore` | WebGPU enums · descriptors · errors · handle registry (Metal-free) |
+| `LynxWebGPUCore` | WebGPU enums · descriptors · errors · handle registry + the **command-stream engine** (`WGPUBackendEngine` — decoding, validation, error scopes, frame lifetime) and the backend verb protocol (`WGPUBackend`). Metal-free |
 | `LynxWebGPUShader` | WGSL lexer/parser/reflection/MSL emitter (pure Swift) |
-| `LynxWebGPU` | Metal backend + canvas surfaces + command stream interpreter |
+| `LynxWebGPU` | The **Metal backend** (encoding) on top of the engine + canvas surfaces + the default runtime `LynxWebGPUContext` |
+| `LynxWebGPUConformance` | Runtime-agnostic **conformance suite** (29 checks) — judges, in pixels, whether a backend built outside this repo keeps the same contract ([docs/TESTING.md](docs/TESTING.md) §2-1) |
 | `LynxWebGPUBridge` | Lynx NativeModule + `<webgpu-canvas>` element (iOS only) — **sources, not an SPM target** |
 
-**This package has zero external dependencies.** The only SPM product is the engine (`LynxWebGPU`);
-the Lynx SDK's version and distribution channel are **the app's choice** — SPM, an existing CocoaPods
+**This package has zero external dependencies.** There are three SPM products (`LynxWebGPU` the engine,
+`LynxWebGPUCore` the contract, `LynxWebGPUConformance` the conformance suite); the Lynx SDK's version and distribution channel are **the app's choice** — SPM, an existing CocoaPods
 setup, or an in-house build all work. The Lynx integration layer ships as sources wrapped in
 `#if canImport(Lynx)`, so it switches on wherever Lynx is visible (a dedicated bridge target, or the
 app target itself — see `docs/LYNX-INTEGRATION.md` §2).
@@ -136,7 +138,7 @@ The measurement harness ships in the repo, so the numbers can be re-taken anytim
 
 ## Verification
 
-125 Swift + 20 JS tests run in seconds — no simulator, no device.
+366 Swift + 133 JS tests run in seconds — no simulator, no device.
 
 - Transpiler tests push the generated MSL through the **actual Metal compiler**.
 - Render tests draw into offscreen textures and **assert pixel values** (triangle, uniforms, indexed draw,
@@ -148,6 +150,10 @@ The measurement harness ships in the repo, so the numbers can be re-taken anytim
   counter rises and falls with commit/completion.
 - Values the runtime slips into shaders behind the scenes (like `arrayLength()`) are read back from the GPU
   and **asserted as numbers**.
+- **The conformance suite (`LynxWebGPUConformance`, 29 checks) survives a runtime swap** — it only uses the
+  command stream, `readCanvasPixels`, `readBuffer` and `adapterInfo`, so a backend built outside this repo
+  proves itself with the same checks. Beyond the default Metal runtime at 29/29, a backend on top of real
+  Dawn passes the same suite 28/29 (+1 simulator skip) ([docs/TESTING.md](docs/TESTING.md) §2-1).
 - The JS shim is verified with node's built-in runner — binary-path types and bytes are asserted, and a mock
   counts that the bridge is crossed exactly once per frame.
 
@@ -186,3 +192,15 @@ Xcode 26.2 / Swift 6.2 · iOS 17.0+ · macOS 14.0+ (for the dev loop)
 The demo app links [xenonClient/Lynx-XCFramework](https://github.com/xenonClient/Lynx-XCFramework)
 directly (device + simulator slices included); that is the **demo's** choice, not a library requirement.
 Point it at a different repo or version by editing `Projects/WebGPUDemo/Project.swift`.
+
+## Acknowledgements
+
+- [Dawn](https://dawn.googlesource.com/dawn) (Google's WebGPU implementation, BSD-3-Clause) — consulted as
+  the reference for reading the spec; `Projects/DawnCheck` links its prebuilt binary to **cross-check this
+  implementation against the same conformance suite**. The library products do not link Dawn.
+- [react-native-webgpu](https://github.com/wcandillon/react-native-webgpu) (MIT) — its layering informed
+  ours (`docs/extra/RN-WEBGPU-LAYERING.md`). No code was ported.
+
+The open-source notices to ship with the demo/verification apps are collected in
+[Projects/NOTICES.md](Projects/NOTICES.md) (not applicable if you only use the library products —
+zero external dependencies).

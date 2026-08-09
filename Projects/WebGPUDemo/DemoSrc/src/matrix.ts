@@ -1,8 +1,8 @@
 /**
- * 4×4 행렬 — **열 우선**(column-major)으로 담는다. WGSL `mat4x4<f32>`와 배치가 같아
- * `Float32Array`를 그대로 유니폼 버퍼에 써 넣을 수 있다.
+ * A 4×4 matrix — stored **column-major**. The layout matches WGSL's `mat4x4<f32>`, so a
+ * `Float32Array` can be written straight into a uniform buffer.
  *
- * 원소 (row r, col c)는 `m[c * 4 + r]`에 있다.
+ * Element (row r, col c) lives at `m[c * 4 + r]`.
  */
 export type Mat4 = Float32Array
 
@@ -27,12 +27,12 @@ export function multiply(a: Mat4, b: Mat4): Mat4 {
   return out
 }
 
-/** 여러 개를 왼쪽부터 곱한다 — `multiplyAll(P, V, M)` = P·V·M. */
+/** Multiplies several from the left — `multiplyAll(P, V, M)` = P·V·M. */
 export function multiplyAll(...matrices: Mat4[]): Mat4 {
   return matrices.reduce((accumulated, next) => multiply(accumulated, next))
 }
 
-/** WebGPU 클립 공간(z 0~1, 오른손 좌표계, -Z를 바라봄). */
+/** WebGPU clip space (z 0~1, right-handed, looking down -Z). */
 export function perspective(fovY: number, aspect: number, near: number, far: number): Mat4 {
   const f = 1 / Math.tan(fovY / 2)
   const out = new Float32Array(16)
@@ -83,7 +83,7 @@ export function rotationY(angle: number): Mat4 {
   return out
 }
 
-/** 점 하나를 행렬로 변환하고 원근 나눗셈까지 한다 (그림자 위치 계산용). */
+/** Transforms one point by a matrix, perspective divide included (for shadow position math). */
 export function project(matrix: Mat4, x: number, y: number, z: number) {
   const clip = [0, 0, 0, 0]
   for (let row = 0; row < 4; row++) {

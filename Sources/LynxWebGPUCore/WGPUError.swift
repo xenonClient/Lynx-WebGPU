@@ -1,31 +1,31 @@
 import Foundation
 
-/// WebGPU 호출이 실패한 이유.
+/// Why a WebGPU call failed.
 ///
-/// WebGPU는 **안전한 API**다 — 잘못된 인자로 프로세스를 죽이지 않고 오류를 돌려준다.
-/// 이 라이브러리도 같은 계약을 지킨다: 커맨드 해석 중 발생하는 모든 실패는
-/// `WGPUError`로 수집되어 JS에 배열로 돌아가며, 네이티브에서 트랩하지 않는다.
+/// WebGPU is a **safe API** — bad arguments return an error instead of killing the process.
+/// This library keeps the same contract: every failure raised while interpreting commands is
+/// collected as a `WGPUError` and returned to JS as an array; nothing traps natively.
 public struct WGPUError: Error, Equatable, CustomStringConvertible {
-    /// WebGPU `GPUError` 계열에 대응하는 분류.
+    /// Classification matching the WebGPU `GPUError` family.
     public enum Kind: String, Sendable {
-        /// 잘못된 인자·상태 (WebGPU `GPUValidationError`). 대부분 호출 측 버그다.
+        /// Bad argument or state (WebGPU `GPUValidationError`). Usually a caller-side bug.
         case validation
-        /// 리소스 생성 실패 (WebGPU `GPUOutOfMemoryError`).
+        /// Resource creation failed (WebGPU `GPUOutOfMemoryError`).
         case outOfMemory = "out-of-memory"
-        /// 이 구현이 아직 지원하지 않는 WebGPU 기능. 명세상 유효한 요청이다.
+        /// A WebGPU feature this implementation does not support yet. The request is valid per spec.
         case unsupported
-        /// 백엔드(Metal/셰이더 컴파일) 내부 오류.
+        /// Internal backend error (Metal, shader compilation).
         case backend
     }
 
     public let kind: Kind
     public let message: String
-    /// 커맨드 스트림 상 위치 (`commands[3].vertex.buffers[0].format`). 디버깅 단서.
+    /// Position within the command stream (`commands[3].vertex.buffers[0].format`). A debugging clue.
     public let path: String?
-    /// 셰이더 소스의 줄 번호 (1부터). 셰이더 오류에만 붙는다.
+    /// Line number in the shader source (1-based). Present on shader errors only.
     ///
-    /// 메시지 문자열에도 적히지만, 편집기가 그 줄로 점프하려면 **숫자로** 있어야 한다
-    /// (`getCompilationInfo()`의 `lineNum`이 이 값을 그대로 쓴다).
+    /// It also appears in the message text, but an editor can only jump to that line if the value
+    /// is available **as a number** (`getCompilationInfo()`'s `lineNum` passes it straight through).
     public let line: Int?
 
     public init(kind: Kind, message: String, path: String? = nil, line: Int? = nil) {
@@ -40,7 +40,7 @@ public struct WGPUError: Error, Equatable, CustomStringConvertible {
         return "[\(kind.rawValue)] \(path): \(message)"
     }
 
-    /// JS로 되돌릴 직렬화 형태.
+    /// Serialized form returned to JS.
     public var payload: [String: Any] {
         var result: [String: Any] = ["kind": kind.rawValue, "message": message]
         if let path, !path.isEmpty { result["path"] = path }
@@ -65,16 +65,16 @@ public struct WGPUError: Error, Equatable, CustomStringConvertible {
     }
 }
 
-/// `device.pushErrorScope(filter)`가 받는 필터 (`GPUErrorFilter`).
+/// The filter accepted by `device.pushErrorScope(filter)` (`GPUErrorFilter`).
 ///
-/// 명세는 세 가지만 정의하는데 이 구현의 오류 분류는 넷이다. 남는 둘을 어디에 붙일지는
-/// **JS 작성자가 브라우저에서 보게 될 것**을 기준으로 정한다:
+/// The spec defines only three, while this implementation classifies errors four ways. Where the
+/// two extras land is decided by **what a JS author would see in a browser**:
 ///
-/// - `unsupported`는 "명세상 유효하지만 이 구현이 아직 안 하는 것"이다. 브라우저에서
-///   같은 코드를 돌리면 그 호출은 유효하므로 오류가 안 나거나 validation으로 난다.
-///   그래서 `validation` 스코프가 잡는다 — 못 잡으면 대응할 방법이 없다.
-/// - `backend`(Metal/셰이더 컴파일 실패)는 호출이 유효한데 시스템 쪽 사정으로 실패한
-///   경우이므로 명세의 `internal`에 해당한다.
+/// - `unsupported` means "valid per spec, but this implementation doesn't do it yet". Running the
+///   same code in a browser, that call is valid, so it either raises nothing or raises a validation
+///   error. Hence the `validation` scope catches it — if it didn't, there would be no way to react.
+/// - `backend` (Metal or shader compilation failure) is a valid call that failed for system-side
+///   reasons, which is exactly the spec's `internal`.
 public enum WGPUErrorFilter: String, CaseIterable, Sendable {
     case validation
     case outOfMemory = "out-of-memory"

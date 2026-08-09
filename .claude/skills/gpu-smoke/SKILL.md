@@ -13,7 +13,7 @@ description: Lynx-WebGPU의 렌더 결과를 오프스크린으로 실행해 픽
 ```zsh
 swift test --filter RenderPipelineTests      # 렌더 파이프라인 전체
 swift test --filter CommandInterpreterTests  # 해석기 계약(오류·핸들 수명)
-swift test --filter test_삼각형이_그려지고    # 개별
+swift test --filter test_theTriangleIsDrawn  # 개별
 ```
 
 ## 2. 새 렌더 검증 쓰기
@@ -21,7 +21,7 @@ swift test --filter test_삼각형이_그려지고    # 개별
 `Tests/LynxWebGPUTests/RenderPipelineTests.swift`에 추가한다.
 
 ```swift
-func test_무엇이_어떻게_보인다() throws {
+func test_whatLooksHow() throws {
     harness.executeExpectingSuccess([
         ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
         ["op": "createShaderModule", "id": 1, "code": shader],
@@ -41,8 +41,8 @@ func test_무엇이_어떻게_보인다() throws {
         ["op": "endPass"],
     ])
 
-    try harness.assertPixel(x: 32, y: 32, equals: (255, 0, 0, 255), "삼각형 내부")
-    try harness.assertPixel(x: 1, y: 1, equals: (0, 0, 255, 255), "삼각형 외부(클리어색)")
+    try harness.assertPixel(x: 32, y: 32, equals: (255, 0, 0, 255), "inside the triangle")
+    try harness.assertPixel(x: 1, y: 1, equals: (0, 0, 255, 255), "outside the triangle (the clear color)")
 }
 ```
 

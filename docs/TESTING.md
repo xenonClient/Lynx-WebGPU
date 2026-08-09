@@ -7,8 +7,9 @@ GPU 코드는 "돌려 보고 눈으로 확인"에 기대기 쉽다. 이 저장�
 
 | 계층 | 어떻게 검증하나 | 도구 |
 |---|---|---|
-| Core (디스크립터·핸들) | 순수 단위 테스트 | XCTest |
+| Core (디스크립터·커맨드 디코딩·핸들) | 순수 단위 테스트 | XCTest |
 | Shader (WGSL → MSL) | 문자열 단언 **+ 실제 Metal 컴파일러 통과** | `MetalCompilerHarness` |
+| **커맨드 스트림 계약** (런타임 무관) | 오프스크린 렌더 후 **픽셀 값 단언** — 어느 `WebGPURuntime`에든 건다 | `LynxWebGPUConformance` |
 | Metal 백엔드 | 오프스크린 렌더 후 **픽셀 값 단언** | `RenderHarness` |
 | 커맨드 해석기 | 오류 누적·경로·핸들 수명 계약 | `RenderHarness` |
 | Lynx 브리지 | 컴파일 검증 + 호스트 앱 수동 확인 (**데모 앱 빌드로만** — SPM 타깃이 아니다) | `xcodebuild` |
@@ -20,11 +21,11 @@ GPU 코드는 "돌려 보고 눈으로 확인"에 기대기 쉽다. 이 저장�
 ## 2. 실행
 
 ```zsh
-swift test                                      # 전체 (301개, 약 5초)
+swift test                                      # 전체 (366개, 약 8초)
 swift test --filter LynxWebGPUCoreTests         # 디스크립터/핸들
 swift test --filter LynxWebGPUShaderTests       # 트랜스파일러 (+ Metal 컴파일 검증)
 swift test --filter LynxWebGPUTests             # GPU 렌더 + 해석기
-swift test --filter test_삼각형이_그려지고        # 개별 테스트
+swift test --filter test_theTriangleIsDrawn      # 개별 테스트
 ```
 
 JS 클라이언트(shim) 테스트 — 의존성 없이 node 내장 러너로 돈다.
@@ -65,6 +66,139 @@ arch -arm64 xcodebuild -workspace LynxWebGPUDemo.xcworkspace -scheme WebGPUDemo 
   -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' -derivedDataPath .derivedData-cli build
 ```
 
+## 2-1. 적합성 스위트 — 런타임을 갈아끼워도 도는 검사
+
+`Sources/LynxWebGPUConformance`는 **테스트 타깃이 아니라 라이브러리**다. SPM의 테스트 타깃은
+다른 패키지가 가져다 쓸 수 없으므로, 저장소 밖에서 만든 런타임(예: Dawn 위에 얹은 구현)이
+같은 스위트로 자신을 증명할 수 있게 하려면 라이브러리여야 한다.
+
+```swift
+let outcomes = WebGPUConformance.run(on: myRuntime)
+print(WebGPUConformance.summary(outcomes))     // "conformance 29/29 passed"
+```
+
+검사는 **커맨드 스트림 · `readCanvasPixels` · `readBuffer` · `adapterInfo`만** 쓴다.
+백엔드 내부를 들여다보는 검사는 여기 들어올 수 없다 — 그러면 다른 런타임에서 돌지 않는다.
+
+기존 GPU 테스트는 이 기준으로 두 종류로 갈린다:
+
+| 종류 | 파일 | 다른 런타임에서 |
+|---|---|---|
+| **계약** — 커맨드 스트림 수준 | `CommandInterpreterTests` `RenderPipelineTests` `ErrorScopeTests` `StencilTests` `QuerySetTests` `RenderBundleTests` `IndirectDrawTests` `CompressedTextureTests` `ExternalImageTests` `OffscreenReadbackTests` | 그대로 옮길 수 있다. 스위트가 그중 **핵심을 추려** 라이브러리로 옮겨 둔 것이다 |
+| **Metal 내부** | `MetalMappingTests` `StagingPoolTests` `SurfaceInFlightTests` `RenderHarnessTests` | 옮겨지지 않는다 — 인자 테이블 배정·스테이징 풀·드로어블 회계는 이 백엔드에만 있다 |
+
+검사는 렌더 기초·동치성·오류 모델(19개 — `Checks.swift`)에 더해 **경계 계약**(10개 —
+`LifecycleChecks.swift`)을 본다 — present:false의 프레임 스코프 핸들 생존(Three.js 회귀)·
+present 후 만료·빈 present 배치의 프레임 닫기, `readBuffer`(매핑 재진입 거부 포함)·
+`resizeCanvas`·`shaderCompilationInfo`의 6키·msl-optional(성공 또는 깨끗한 `unsupported`)·
+내장 PNG로 `decodeImage`→업로드 픽셀 왕복·`isReadyForNextFrame`·**펌프 동시성**
+(`processEvents`가 `execute`와 동시에 불려도 견디는가).
+단순한 씬에서는 어긋나도 티가 안 나는 자리들이라 스위트가 직접 몬다.
+
+`ConformanceTests`가 기본 런타임을 스위트에 걸고, **스위트가 실제로 걸러 내는지도 함께 잰다** —
+응답·페이로드·콜백을 일부러 망가뜨린 런타임(`MisbehavingRuntime`)을 걸어 실패가 나오는지 본다.
+항상 통과하는 적합성 스위트는 "29/29"이라는 문장이 아무것도 보증하지 못하게 만든다.
+
+### 스위트를 거는 자리 셋 — 백엔드 × 플랫폼
+
+같은 29검사를 **세 곳**에서 돌린다. 빠진 칸이 생기면 그 조합만 검증 없이 배포된다:
+
+| 자리 | 백엔드 | 플랫폼 | 실행 |
+|---|---|---|---|
+| `Tests/LynxWebGPUTests/ConformanceTests` | Metal | **macOS** | `swift test` (회귀 훅에 포함) |
+| `Projects/WebGPUDemo/Tests` (스킴 `WebGPUCheck`) | Metal | **iOS** | 아래 xcodebuild |
+| `Projects/DawnCheck/Tests` (스킴 `DawnCheck`) | Dawn | **iOS** | 아래 xcodebuild |
+
+`swift test`는 macOS다 — 드라이버도 GPU 패밀리도 iOS와 다르다. **정작 실려 나가는 곳은
+iOS**이므로 기본 백엔드(Metal)도 거기서 재야 한다. 이 칸이 비어 있던 동안에는 실험
+백엔드(Dawn)만 iOS 검증을 받는 뒤집힌 모양이었다.
+
+두 iOS 검증은 적합성 외에 **크래시 하드닝**(`*HardeningTests`)도 같은 적대 입력으로 돌린다 —
+음수·거대값·NaN이 트랩이 아니라 validation 오류가 되는지 본다. Metal 쪽이 특히 중요하다:
+Metal 검증 레이어는 잘못된 인자에 `assert`로 프로세스를 죽이지만 Dawn은 오류를 돌려준다.
+
+```zsh
+mise exec -- tuist generate --no-open   # 스킴: WebGPUDemo · WebGPUCheck · DawnCheck · DawnDemo
+arch -arm64 xcodebuild -workspace LynxWebGPUDemo.xcworkspace -scheme WebGPUCheck \
+  -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' -derivedDataPath .derivedData-cli test
+```
+
+### 외부 주입 검증 픽스처
+
+`Examples/ExternalRuntime`은 저장소 **밖** 백엔드의 시야 — `LynxWebGPUCore`와
+`LynxWebGPUConformance` product만 링크하고 Metal 엔진은 못 보는 — 를 흉내 내는 중첩
+패키지다. **Core의 public 표면을 바꾼 뒤에는 이것도 돌려 본다** (회귀 훅에는 없다 — 빌드
+비용 때문). 여기서 깨지면 외부 구현자가 깨진다:
+
+```zsh
+swift build --package-path Examples/ExternalRuntime                      # 컴파일 검증
+swift run --package-path Examples/ExternalRuntime external-runtime-check # 29검사 전수 판정 검증
+```
+
+### Dawn 연동 검증 — `Projects/DawnCheck`
+
+**진짜 Dawn 위의 `WebGPURuntime` 구현**을 같은 스위트에 거는, **루트 워크스페이스의 별도
+프로젝트**다 (`Workspace.swift` — 데모 로직과는 완전히 분리, 스킴만 추가된다).
+[Dawn-xcFramework](https://github.com/xenonClient/Dawn-xcFramework) 프리빌트 바이너리를 쓰고,
+iOS 전용이라 실행은 시뮬레이터 유닛테스트다:
+
+```zsh
+mise exec -- tuist generate --no-open        # 스킴 셋: WebGPUDemo · DawnCheck · DawnDemo
+arch -arm64 xcodebuild -workspace LynxWebGPUDemo.xcworkspace \
+  -scheme DawnCheck -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' \
+  -derivedDataPath .derivedData-cli test
+```
+
+기준선 (2026-08-09, 시뮬레이터): **적합성 28/29 통과 · 1 건너뜀 · 0 실패.** 건너뜀은
+`indirect-draw-equivalence` — 시뮬레이터의 간접 드로우가 Metal 단언으로 죽는 경로라
+런타임이 기능을 광고하지 않는다 (실기기에서는 광고해도 된다). 렌더 번들 동치성은
+Metal 백엔드의 엔진 record/replay와 달리 **진짜 Dawn 렌더 번들**로 통과한다.
+Dawn 쪽은 `DawnBackend`(인코딩 동사)만 있고 오케스트레이션은 Metal과 같은
+`WGPUBackendEngine`(Core)이라, 와이어 정책·프레임 수명·펌프 직렬화는 검증할 것도
+공유된다 — 이 스위트가 재는 것은 인코딩 차이뿐이다.
+
+**화면 연동은 같은 프로젝트의 DawnDemo 앱**이 실증한다 — 데모의 씬 목록·런처·`.lynx.bundle`을
+그대로 쓰고, 다른 것은 런타임 주입 한 줄뿐이다 (`LynxWebGPUHost(runtime: try
+DawnWebGPURuntime())` — Metal 백엔드 `LynxWebGPU`는 링크하지 않는다). 화면 표면은
+`WGPUSurfaceSourceMetalLayer`, in-flight 페이싱은 Core의 `WGPUFrameCoordinator` 그대로다:
+
+```zsh
+arch -arm64 xcodebuild -workspace LynxWebGPUDemo.xcworkspace \
+  -scheme DawnDemo -configuration Debug -sdk iphonesimulator \
+  -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' \
+  -derivedDataPath .derivedData-cli build
+xcrun simctl install <device> .derivedData-cli/Build/Products/Debug-iphonesimulator/DawnDemo.app
+xcrun simctl launch <device> org.lynxwebgpu.dawndemo -demo triangle
+```
+
+**전체 씬 스위프 (2026-08-08, 시뮬레이터 · 24씬)** — 씬마다 8초 구동해 런타임 오류 로그와
+화면을 수집한 결과다. 씬·브리지·JS는 전부 무변경이다:
+
+| 분류 | 씬 |
+|---|---|
+| 무오류 구동 (20) | arraybuffer · bench · blending · bundle · constants · **contracts(10/10)** · cube · dynamic · **hdr** · **images** · interactive · particles · readback · scrollpass · **stencil** · **query** · texture · triangle · **wgsl** · **three** (three.js WebGPURenderer r185 — 자체 검증 16/16 · 60fps). 굵은 씬들은 명세 위반을 고쳐 합류했다 (2026-08-09): stencil·query는 auto 파생 레이아웃 공유 → **명시적 공유 레이아웃**으로, wgsl·hdr은 varying 분기 안 `textureSample` → **균일 흐름으로 끌어올려 select**로, images·contracts는 리드백 `bytesPerRow` 32 → **256**으로. contracts의 번들·역방향 검사는 백엔드 무관 판정으로 바꿨다 (Metal은 실행 시점에 `setIndexBuffer` 문구, Dawn은 명세대로 finish 시점에 `Index buffer` 문구 — 둘 다 격리 성립) |
+| 의도된 오류 수신 (1) | spec — 씬 자체가 validation 오류를 유발해 수신 경로를 검증한다 (3건 수신, 정상) |
+| 의도된 거부 (2) | gpudriven — 간접 드로우를 시뮬레이터 가드가 `unsupported`로 막는다 (실기기 대상 씬) · msl — 선택 기능 거부 (`docs/COMMAND-STREAM.md` §4-1 계약) |
+
+> **정적 씬의 mapAsync 굶주림 (2026-08-09 발견·해소).** 처음 스위프에서 contracts는
+> "무오류 구동"으로 분류됐지만, 실제로는 **통과 0/10인 채 조용히 멈춰** 있었다 — 오류가
+> 아니라 영원한 대기라서 오류 로그 기준 분류가 놓쳤다. 원인: 호스트 프레임 티커는 JS가
+> 프레임 루프를 켠 씬에서만 돌므로, 애니메이션 없는 씬에서 `mapAsync` 완료를 실어 나를
+> `processEvents` 펌프를 아무도 밟지 않았다 (Metal은 완료 핸들러가 스스로 도착해 무관).
+> 해소: 엔진이 **미결 리드백이 있는 동안 자가 펌프**를 돌린다
+> (`WGPUBackendCapabilities.needsEventPump` — `WGPUBackendEngine` 참고). 이 수정과
+> 씬 명세 위반 수정을 거쳐 contracts는 양쪽 백엔드에서 10/10이다.
+| **시뮬레이터에서 실패 (1)** | threelab (three.js 고난도 조합) — **캔버스 출력이 아예 없다.** 뿌리 하나: Dawn이 비교 샘플러를 거부하고("Compare functions are disabled with the Metal backend" — Dawn은 Metal family 3 미만에서 비교 샘플러를 끄는데 시뮬레이터가 family 2로 보고된다), three.js의 객체 바인드 그룹이 그림자용 비교 샘플러를 포함해 통째로 무효 → 모든 드로우 실패 → 합성까지 빈 화면 (오프스크린 검증 항목만 ✓). **Metal 런타임은 같은 시뮬레이터에서 씬 전체(그림자 포함 11/11)를 그린다.** 간접 드로우와 같은 계열의 시뮬레이터 family 가드로 보이며 실기기(A12+)에서 동작할 것으로 추정 — 확인 전까지 미해결로 둔다 |
+
+발산 4건은 전부 **브라우저에서도 같은 이유로 깨질 코드**다 — Dawn의 엄격 검증이 데모의
+이식성 버그를 찾아 준 것이고, 오류는 와이어 경로를 타고 씬 오버레이에 그대로 표시된다.
+씬 수정 여부는 별도 결정으로 남겨 두었다.
+
+스위프가 잡아 준 런타임 쪽 교훈 셋 (전부 반영됨): **광고와 실제가 어긋나면 안 된다** —
+adapterInfo가 광고한 한계·기능을 `requestDevice`에서 **그대로 요구**해야 하고(안 하면
+디바이스는 명세 기본값에 묶인다 — threelab의 256KB 유니폼이 실제로 밟았다), 기능을
+광고하면 그 기능이 여는 경로(압축 텍스처 포맷 전체)까지 매핑이 닫혀 있어야 한다.
+
 ## 3. Metal 컴파일러 하네스
 
 트랜스파일러 테스트에서 **문자열 단언만으로는 부족하다.** 기대한 조각이 다 들어 있어도
@@ -99,8 +233,8 @@ harness.executeExpectingSuccess([
     ["op": "endPass"],
 ])
 
-try harness.assertPixel(x: 32, y: 32, equals: (255, 0, 0, 255), "삼각형 내부")
-try harness.assertPixel(x: 1, y: 1, equals: (0, 0, 255, 255), "삼각형 외부(클리어색)")
+try harness.assertPixel(x: 32, y: 32, equals: (255, 0, 0, 255), "inside the triangle")
+try harness.assertPixel(x: 1, y: 1, equals: (0, 0, 255, 255), "outside the triangle (the clear color)")
 ```
 
 - `executeExpectingSuccess`는 실패 시 오류를 **경로와 함께** 그대로 보여 준다.
@@ -159,7 +293,7 @@ harness.executeExpectingSuccess(직접경로)
 let reference = try harness.frameBytes()
 
 harness.executeExpectingSuccess(간접경로)
-try harness.assertFrameEquals(reference, "간접 드로우는 직접 드로우와 같아야 한다")
+try harness.assertFrameEquals(reference, "an indirect draw must match a direct draw")
 ```
 
 실패하면 **처음 어긋난 픽셀의 좌표와 두 값**이 나온다 ("N바이트 다름"만으로는 못 고친다).
@@ -176,15 +310,15 @@ let values = try harness.readBufferSync(handle: 3, as: Float.self, size: 32)
 기기마다 갈리는 기능은 `supports(_:)`로 나눠 건너뛴다 — GPU 유무만 보던 조건의 확장이다:
 
 ```swift
-try XCTSkipUnless(harness.supports(.timestampQuery), "타임스탬프 카운터를 지원하지 않는 기기")
-try XCTSkipUnless(harness.supports(.indirectArguments), "간접 인자를 지원하지 않는 기기")
+try XCTSkipUnless(harness.supports(.timestampQuery), "this device does not support timestamp counters")
+try XCTSkipUnless(harness.supports(.indirectArguments), "this device does not support indirect arguments")
 ```
 
 ## 5. 컨벤션
 
 - 테스트 파일은 대상 타입/영역당 1개, 각 모듈 `Tests/` 아래.
-- 메서드 명명: `test_<대상동작>_<조건>_<기대결과>` — 한국어.
-  예: `test_vec3뒤_스칼라는_packed벡터와_패딩으로_WGSL배치를_맞춘다`
+- 메서드 명명: `test_<대상동작>_<조건>_<기대결과>` — **영문 lowerCamelCase**.
+  예: `test_aScalarAfterVec3UsesAPackedVectorAndPaddingToMatchTheWGSLLayout`
 - GPU가 필요한 테스트는 `setUpWithError`에서 `XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, …)`.
 - 비동기 경로(`readBuffer`)는 `XCTestExpectation`으로 검증한다.
 - 테스트 더블은 손으로 만든다 (모킹 라이브러리 없음).
@@ -247,17 +381,19 @@ LYNXWEBGPU_WGSL_CORPUS=/tmp/webgpu-samples/sample swift test --filter SampleCorp
 통과율과 실패 원인을 한 화면에 출력한다. 리포트가 목적이므로 실패해도 테스트를 깨지 않는다.
 
 ```
-│ 파일 68개 → 완성 모듈 66개
-│ 통과: 61/66  (92%)  — 그대로 60 + 조립 1
+│ 파일 69개 → 완성 모듈 67개
+│ 통과: 61/67  (91%)  — 그대로 60 + 조립 1
 ├─ 같은 폴더 조각을 붙여 통과 1건 ──────────
 │ ✓ cornell/rasterizer.wgsl (+common.wgsl)
 ├─ 분모에서 뺀 것 ───────────────────────────────
 │ 조각 파일(진입점 없음) 1개: cornell/common.wgsl
 │ 템플릿(호스트 치환 전) 1개: cornell/tonemapper.wgsl {OUTPUT_FORMAT}
 │ constants를 줘야 하는 것 4개: …
-├─ 실패 1건 ───────────────────────────────
+├─ 실패 2건 ───────────────────────────────
 │ ✗ skinnedMesh/gltf.wgsl
-│     번역[vertexMain]: 진입점 매개변수 'input'의 타입 'VertexInput'을(를) 찾을 수 없다
+│     translate[vertexMain]: could not find type 'VertexInput' of entry point parameter 'input' …
+│ ✗ wireframe/wireframeBufferView.wgsl
+│     parse: WGSL parse failed (line 31)
 ```
 
 **분모는 "완성된 모듈"이다.** 코퍼스의 `.wgsl`이 모두 그대로 컴파일되는 것은 아니다 —
@@ -271,8 +407,13 @@ LYNXWEBGPU_WGSL_CORPUS=/tmp/webgpu-samples/sample swift test --filter SampleCorp
 
 분모에서 뺀 것은 **전부 이름까지 찍는다**. 숫자를 좋게 만들려고 조용히 뺄 수 없게 하기 위해서다.
 
-남은 실패 1건(`skinnedMesh/gltf.wgsl`)은 호스트가 glTF 접근자를 보고 `VertexInput` 구조체를
+남은 실패 2건 중 `skinnedMesh/gltf.wgsl`은 호스트가 glTF 접근자를 보고 `VertexInput` 구조체를
 **런타임에 만들어 붙이는** 셰이더다 — 파일만으로는 완성될 수 없다.
+`wireframe/wireframeBufferView.wgsl`은 파서의 빈틈이다 (코퍼스에 나중에 들어온 샘플).
+
+> **트랜스파일러를 고쳤으면 이 수치를 반드시 다시 잰다.** 로컬 테스트는 통과하는데 코퍼스가
+> 내려간 변경이 실제로 있었다 — 안전 변환(`docs/WGSL.md` §3-2)을 넣을 때도 벡터 인덱싱과
+> 벡터 변환에서 4건이 깨졌다가 되돌렸다. **고치기 전 수치를 먼저 재 두는 것**이 요령이다.
 
 번역 결과를 눈으로 보려면 덤프를 켠다:
 

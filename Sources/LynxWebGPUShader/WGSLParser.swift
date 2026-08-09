@@ -1,19 +1,19 @@
 import Foundation
 import LynxWebGPUCore
 
-/// WGSL 재귀 하강 파서.
+/// Recursive-descent WGSL parser.
 ///
-/// WGSL은 `<`가 제네릭 인자인지 비교 연산자인지 문맥으로 갈린다. 완전한 템플릿 판별
-/// 알고리즘 대신, **템플릿을 받는 이름 집합**(`vec3`, `array`, `bitcast` …)을 알고 있는 것으로
-/// 대신한다 — 실제 셰이더에서 사용자 타입이 제네릭을 받는 경우는 없으므로 충분하다.
+/// In WGSL, whether `<` opens a generic argument or is a comparison operator depends on context.
+/// Instead of the full template-disambiguation algorithm, we stand in **a set of names that take
+/// templates** (`vec3`, `array`, `bitcast`, …) — enough in practice, since user types never take generics.
 struct WGSLParser {
     private var tokens: [WGSLToken]
     private var index = 0
-    /// 제네릭 인자 안에서 표현식을 파싱 중인 깊이 (`array<f32, 64>`의 길이 식).
-    /// 0보다 크면 `>`를 비교 연산자가 아니라 **템플릿 닫기**로 본다.
+    /// Depth of expression parsing inside a generic argument (the length expression of `array<f32, 64>`).
+    /// Above zero, `>` is read as **closing a template** rather than as a comparison.
     private var templateDepth = 0
 
-    /// `<`를 제네릭 시작으로 해석해야 하는 이름들.
+    /// Names whose `<` must be read as opening a generic.
     private static let templateNames: Set<String> = [
         "vec2", "vec3", "vec4",
         "mat2x2", "mat2x3", "mat2x4",
@@ -25,10 +25,10 @@ struct WGSLParser {
         "texture_storage_1d", "texture_storage_2d", "texture_storage_2d_array", "texture_storage_3d",
     ]
 
-    /// 제네릭 인자 안에서는 이 토큰들이 이항 연산자가 아니라 템플릿 닫기다.
+    /// Inside a generic argument these tokens close the template rather than acting as binary operators.
     private static let templateClosers: Set<String> = ["<", ">", "<=", ">=", ">>"]
 
-    /// MSL로 옮길 것이 없는 모듈 스코프 지시자.
+    /// Module-scope directives with nothing to carry into MSL.
     private static let moduleDirectives: Set<String> = ["enable", "requires", "diagnostic"]
 
     private static let statementKeywords: Set<String> = [
@@ -45,7 +45,7 @@ struct WGSLParser {
         self.tokens = tokens
     }
 
-    // MARK: - 토큰 조작
+    // MARK: - Token handling
 
     private var current: WGSLToken { tokens[index] }
     private var isAtEnd: Bool { current.kind == .endOfFile }
@@ -73,19 +73,19 @@ struct WGSLParser {
     @discardableResult
     private mutating func expect(_ text: String, _ context: String) throws -> WGSLToken {
         guard check(text) else {
-            throw error("'\(text)' 이(가) 필요하다 (\(context)) — 실제: '\(current.text)'")
+            throw error("expected '\(text)' (\(context)) — got: '\(current.text)'")
         }
         return advance()
     }
 
     private mutating func expectIdentifier(_ context: String) throws -> String {
         guard current.kind == .identifier else {
-            throw error("식별자가 필요하다 (\(context)) — 실제: '\(current.text)'")
+            throw error("expected an identifier (\(context)) — got: '\(current.text)'")
         }
         return advance().text
     }
 
-    /// 제네릭 닫기. `array<vec4<f32>,3>` 처럼 중첩되면 렉서가 `>>`로 붙여 놓으므로 하나만 떼어낸다.
+    /// Closes a generic. When nested, as in `array<vec4<f32>,3>`, the lexer glues them into `>>`, so we peel off one.
     private mutating func expectGenericClose(_ context: String) throws {
         if check(">") {
             advance()
@@ -94,20 +94,20 @@ struct WGSLParser {
         } else if check(">=") {
             tokens[index] = .punctuation("=", line: current.line)
         } else {
-            throw error("'>' 이(가) 필요하다 (\(context)) — 실제: '\(current.text)'")
+            throw error("expected '>' (\(context)) — got: '\(current.text)'")
         }
     }
 
     private func error(_ message: String) -> WGPUError {
-        // 줄 번호를 **숫자로도** 싣는다 — `getCompilationInfo()`가 편집기에 넘길 값이다.
+        // Carry the line number **as a number too** — this is the value `getCompilationInfo()` hands the editor.
         WGPUError(
             kind: .validation,
-            message: "WGSL 파싱 실패 (line \(current.line)): \(message)",
+            message: "WGSL parse failed (line \(current.line)): \(message)",
             line: current.line
         )
     }
 
-    // MARK: - 모듈
+    // MARK: - Module
 
     private mutating func parseModule() throws -> WGSLModule {
         var module = WGSLModule()
@@ -130,22 +130,22 @@ struct WGSLParser {
                 module.constants.append(try parseModuleConstant(isOverride: isOverride))
             } else if check("alias") || check("type") {
                 advance()
-                let name = try expectIdentifier("alias 이름")
+                let name = try expectIdentifier("alias name")
                 try expect("=", "alias")
                 let type = try parseType()
                 try expect(";", "alias")
                 module.aliases.append((name, type))
             } else if check("const_assert") {
-                // 컴파일 타임 단언은 번역 대상이 아니다 — 세미콜론까지 건너뛴다.
+                // A compile-time assertion is not translated — skip to the semicolon.
                 while !isAtEnd, !check(";") { advance() }
                 try expect(";", "const_assert")
             } else if Self.moduleDirectives.contains(current.text) {
                 // `enable f16;` `requires readonly_and_readwrite_storage_textures;` `diagnostic(off, …);`
-                // 확장 선언은 MSL로 옮길 것이 없다 — 세미콜론까지 건너뛴다.
+                // An enable declaration has nothing to carry into MSL — skip to the semicolon.
                 while !isAtEnd, !check(";") { advance() }
-                try expect(";", "확장 선언")
+                try expect(";", "an enable declaration")
             } else {
-                throw error("모듈 스코프에 올 수 없는 토큰 '\(current.text)'")
+                throw error("token '\(current.text)' cannot appear at module scope")
             }
         }
         return module
@@ -155,7 +155,7 @@ struct WGSLParser {
         var attributes: [WGSLAttribute] = []
         while check("@") {
             advance()
-            let name = try expectIdentifier("속성 이름")
+            let name = try expectIdentifier("attribute name")
             var arguments: [String] = []
             if match("(") {
                 repeat {
@@ -170,7 +170,7 @@ struct WGSLParser {
                     }
                     arguments.append(text)
                 } while match(",")
-                try expect(")", "속성 인자")
+                try expect(")", "attribute arguments")
             }
             attributes.append(WGSLAttribute(name: name, arguments: arguments))
         }
@@ -178,18 +178,18 @@ struct WGSLParser {
     }
 
     private mutating func parseStruct() throws -> WGSLStruct {
-        let name = try expectIdentifier("구조체 이름")
-        try expect("{", "구조체 본문")
+        let name = try expectIdentifier("struct name")
+        try expect("{", "struct body")
         var members: [WGSLStructMember] = []
         while !check("}"), !isAtEnd {
             let attributes = try parseAttributes()
-            let memberName = try expectIdentifier("멤버 이름")
-            try expect(":", "멤버 타입")
+            let memberName = try expectIdentifier("member name")
+            try expect(":", "member type")
             let type = try parseType()
             members.append(WGSLStructMember(attributes: attributes, name: memberName, type: type))
             if !match(",") { break }
         }
-        try expect("}", "구조체 끝")
+        try expect("}", "end of struct")
         _ = match(";")
         return WGSLStruct(name: name, members: members)
     }
@@ -198,16 +198,16 @@ struct WGSLParser {
         var addressSpace: String?
         var access: String?
         if match("<") {
-            addressSpace = try expectIdentifier("주소 공간")
-            if match(",") { access = try expectIdentifier("접근 모드") }
-            try expectGenericClose("var 주소 공간")
+            addressSpace = try expectIdentifier("address space")
+            if match(",") { access = try expectIdentifier("access mode") }
+            try expectGenericClose("var address space")
         }
-        let name = try expectIdentifier("변수 이름")
+        let name = try expectIdentifier("variable name")
         var type: WGSLType = .void
         if match(":") { type = try parseType() }
         var initializer: WGSLExpression?
         if match("=") { initializer = try parseExpression() }
-        try expect(";", "전역 변수")
+        try expect(";", "global variable")
         return WGSLGlobalVariable(
             attributes: attributes,
             name: name,
@@ -219,32 +219,32 @@ struct WGSLParser {
     }
 
     private mutating func parseModuleConstant(isOverride: Bool) throws -> WGSLModuleConstant {
-        let name = try expectIdentifier("상수 이름")
+        let name = try expectIdentifier("constant name")
         var type: WGSLType?
         if match(":") { type = try parseType() }
         var value: WGSLExpression?
         if match("=") {
             value = try parseExpression()
         } else if !isOverride {
-            throw error("'=' 이(가) 필요하다 (상수 초기값) — 실제: '\(current.text)'")
+            throw error("expected '=' (constant initializer) — got: '\(current.text)'")
         }
-        try expect(";", "상수")
+        try expect(";", "constant")
         return WGSLModuleConstant(name: name, type: type, value: value, isOverride: isOverride)
     }
 
     private mutating func parseFunction(attributes: [WGSLAttribute]) throws -> WGSLFunction {
-        let name = try expectIdentifier("함수 이름")
-        try expect("(", "매개변수 목록")
+        let name = try expectIdentifier("function name")
+        try expect("(", "parameter list")
         var parameters: [WGSLParameter] = []
         while !check(")"), !isAtEnd {
             let parameterAttributes = try parseAttributes()
-            let parameterName = try expectIdentifier("매개변수 이름")
-            try expect(":", "매개변수 타입")
+            let parameterName = try expectIdentifier("parameter name")
+            try expect(":", "parameter type")
             let type = try parseType()
             parameters.append(WGSLParameter(attributes: parameterAttributes, name: parameterName, type: type))
             if !match(",") { break }
         }
-        try expect(")", "매개변수 목록 끝")
+        try expect(")", "end of parameter list")
 
         var returnAttributes: [WGSLAttribute] = []
         var returnType: WGSLType?
@@ -263,10 +263,10 @@ struct WGSLParser {
         )
     }
 
-    // MARK: - 타입
+    // MARK: - Types
 
     private mutating func parseType() throws -> WGSLType {
-        let name = try expectIdentifier("타입 이름")
+        let name = try expectIdentifier("type name")
 
         switch name {
         case "f32", "i32", "u32", "bool", "f16":
@@ -275,12 +275,12 @@ struct WGSLParser {
             return .void
         case "vec2", "vec3", "vec4":
             let size = Int(name.dropFirst(3))!
-            try expect("<", "벡터 성분 타입")
+            try expect("<", "vector component type")
             let element = try parseType()
-            try expectGenericClose("벡터")
+            try expectGenericClose("vector")
             return .vector(size: size, element: element)
         case "array":
-            try expect("<", "배열 원소 타입")
+            try expect("<", "array element type")
             let element = try parseType()
             var count: WGSLExpression?
             if match(",") {
@@ -288,21 +288,21 @@ struct WGSLParser {
                 defer { templateDepth -= 1 }
                 count = try parseExpression()
             }
-            try expectGenericClose("배열")
+            try expectGenericClose("array")
             return .array(element: element, count: count)
         case "atomic":
-            try expect("<", "atomic 성분 타입")
+            try expect("<", "atomic component type")
             let element = try parseType()
             try expectGenericClose("atomic")
             return .atomic(element)
         case "ptr":
-            try expect("<", "포인터 주소 공간")
-            let space = try expectIdentifier("주소 공간")
-            try expect(",", "포인터 대상 타입")
+            try expect("<", "pointer address space")
+            let space = try expectIdentifier("address space")
+            try expect(",", "pointer target type")
             let element = try parseType()
             var access: String?
-            if match(",") { access = try expectIdentifier("접근 모드") }
-            try expectGenericClose("포인터")
+            if match(",") { access = try expectIdentifier("access mode") }
+            try expectGenericClose("pointer")
             return .pointer(space: space, element: element, access: access)
         case "sampler":
             return .sampler(comparison: false)
@@ -318,8 +318,8 @@ struct WGSLParser {
         return .named(name)
     }
 
-    /// `vec4f` / `vec2u` / `mat4x4f` 같은 축약형 (WGSL 1.0 predeclared alias).
-    /// 방출기도 생성자 이름(`vec3f(…)`)을 풀 때 쓴다.
+    /// Shorthands such as `vec4f` / `vec2u` / `mat4x4f` (WGSL 1.0 predeclared aliases).
+    /// The emitter uses this too when resolving constructor names (`vec3f(…)`).
     static func shorthandType(_ name: String) -> WGSLType? {
         let suffixes: [Character: String] = ["f": "f32", "i": "i32", "u": "u32", "h": "f16"]
         guard let last = name.last, let scalar = suffixes[last] else { return nil }
@@ -341,9 +341,9 @@ struct WGSLParser {
         guard dimensions.count == 2, let columns = Int(dimensions[0]), let rows = Int(dimensions[1]) else {
             return .named(name)
         }
-        try expect("<", "행렬 성분 타입")
+        try expect("<", "matrix component type")
         let element = try parseType()
-        try expectGenericClose("행렬")
+        try expectGenericClose("matrix")
         return .matrix(columns: columns, rows: rows, element: element)
     }
 
@@ -364,44 +364,44 @@ struct WGSLParser {
         }
         if body.hasPrefix("storage_") {
             let dimension = String(body.dropFirst("storage_".count))
-            try expect("<", "storage 텍스처 포맷")
-            let format = try expectIdentifier("포맷")
-            try expect(",", "storage 텍스처 접근 모드")
-            let access = try expectIdentifier("접근 모드")
-            try expectGenericClose("storage 텍스처")
+            try expect("<", "storage texture format")
+            let format = try expectIdentifier("format")
+            try expect(",", "storage texture access mode")
+            let access = try expectIdentifier("access mode")
+            try expectGenericClose("storage texture")
             return .texture(WGSLTextureType(
                 kind: .storage, dimension: dimension, sampleType: nil, format: format, access: access
             ))
         }
         if body.hasPrefix("multisampled_") {
             let dimension = String(body.dropFirst("multisampled_".count))
-            try expect("<", "멀티샘플 텍스처 성분 타입")
+            try expect("<", "multisampled texture component type")
             let sampleType = try parseType()
-            try expectGenericClose("멀티샘플 텍스처")
+            try expectGenericClose("multisampled texture")
             return .texture(WGSLTextureType(
                 kind: .multisampled, dimension: dimension, sampleType: sampleType, format: nil, access: nil
             ))
         }
-        try expect("<", "텍스처 성분 타입")
+        try expect("<", "texture component type")
         let sampleType = try parseType()
-        try expectGenericClose("텍스처")
+        try expectGenericClose("texture")
         return .texture(WGSLTextureType(kind: .sampled, dimension: body, sampleType: sampleType, format: nil, access: nil))
     }
 
-    // MARK: - 문장
+    // MARK: - Statements
 
     private mutating func parseBlock() throws -> [WGSLStatement] {
-        try expect("{", "블록 시작")
+        try expect("{", "start of block")
         var statements: [WGSLStatement] = []
         while !check("}"), !isAtEnd {
             statements.append(try parseStatement())
         }
-        try expect("}", "블록 끝")
+        try expect("}", "end of block")
         return statements
     }
 
     private mutating func parseStatement() throws -> WGSLStatement {
-        // 문장에 붙는 속성(@diagnostic 등)은 번역에 영향이 없다.
+        // Attributes on a statement (@diagnostic and the like) do not affect translation.
         _ = try parseAttributes()
 
         if check("{") { return .block(try parseBlock()) }
@@ -411,12 +411,12 @@ struct WGSLParser {
         case "let", "const":
             let isConst = current.text == "const"
             advance()
-            let name = try expectIdentifier("바인딩 이름")
+            let name = try expectIdentifier("binding name")
             var type: WGSLType?
             if match(":") { type = try parseType() }
-            try expect("=", "바인딩 초기값")
+            try expect("=", "binding initializer")
             let value = try parseExpression()
-            try expect(";", "바인딩")
+            try expect(";", "binding")
             return isConst
                 ? .constDeclaration(name: name, type: type, value: value)
                 : .letDeclaration(name: name, type: type, value: value)
@@ -424,16 +424,16 @@ struct WGSLParser {
         case "var":
             advance()
             if match("<") {
-                // 함수 스코프의 `var<function>` — MSL에는 대응 개념이 없어 무시한다.
+                // Function-scope `var<function>` — MSL has no counterpart, so it is ignored.
                 while !isAtEnd, !check(">"), !check(">>") { advance() }
-                try expectGenericClose("var 주소 공간")
+                try expectGenericClose("var address space")
             }
-            let name = try expectIdentifier("변수 이름")
+            let name = try expectIdentifier("variable name")
             var type: WGSLType?
             if match(":") { type = try parseType() }
             var value: WGSLExpression?
             if match("=") { value = try parseExpression() }
-            try expect(";", "변수 선언")
+            try expect(";", "variable declaration")
             return .varDeclaration(name: name, type: type, value: value)
 
         case "if":
@@ -466,9 +466,9 @@ struct WGSLParser {
 
         case "break":
             advance()
-            // `break if cond;` (continuing 블록 전용) — 조건을 무시하면 의미가 바뀌므로 거부한다.
+            // `break if cond;` (continuing blocks only) — ignoring the condition changes meaning, so it is rejected.
             if check("if") {
-                throw error("`break if`는 지원하지 않는다 (docs/WGSL.md §4)")
+                throw error("`break if` is not supported (docs/WGSL.md §4)")
             }
             try expect(";", "break")
             return .breakStatement
@@ -511,24 +511,24 @@ struct WGSLParser {
     }
 
     private mutating func parseForStatement() throws -> WGSLStatement {
-        try expect("(", "for 헤더")
+        try expect("(", "for header")
         var initializer: WGSLStatement?
         if !check(";") {
-            initializer = try parseStatement()   // 세미콜론까지 소비한다
+            initializer = try parseStatement()   // consumes through the semicolon
         } else {
             advance()
         }
         var condition: WGSLExpression?
         if !check(";") { condition = try parseExpression() }
-        try expect(";", "for 조건")
+        try expect(";", "for condition")
         var update: WGSLStatement?
         if !check(")") { update = try parseSimpleAssignment() }
-        try expect(")", "for 헤더 끝")
+        try expect(")", "end of for header")
         return .forStatement(initializer: initializer, condition: condition, update: update, body: try parseBlock())
     }
 
     private mutating func parseLoopStatement() throws -> WGSLStatement {
-        try expect("{", "loop 본문")
+        try expect("{", "loop body")
         var body: [WGSLStatement] = []
         var continuing: [WGSLStatement]?
         while !check("}"), !isAtEnd {
@@ -539,13 +539,13 @@ struct WGSLParser {
             }
             body.append(try parseStatement())
         }
-        try expect("}", "loop 끝")
+        try expect("}", "end of loop")
         return .loopStatement(body: body, continuing: continuing)
     }
 
     private mutating func parseSwitchStatement() throws -> WGSLStatement {
         let subject = try parseExpression()
-        try expect("{", "switch 본문")
+        try expect("{", "switch body")
         var cases: [WGSLSwitchCase] = []
         while !check("}"), !isAtEnd {
             if match("case") {
@@ -565,21 +565,21 @@ struct WGSLParser {
                 _ = match(":")
                 cases.append(WGSLSwitchCase(selectors: [], isDefault: true, body: try parseBlock()))
             } else {
-                throw error("switch 안에는 case/default만 올 수 있다 — 실제: '\(current.text)'")
+                throw error("only case/default may appear inside a switch — got: '\(current.text)'")
             }
         }
-        try expect("}", "switch 끝")
+        try expect("}", "end of switch")
         return .switchStatement(subject: subject, cases: cases)
     }
 
-    /// 대입 또는 호출 문장. 세미콜론까지 소비한다.
+    /// An assignment or call statement. Consumes through the semicolon.
     private mutating func parseAssignmentOrCall() throws -> WGSLStatement {
         let statement = try parseSimpleAssignment()
-        try expect(";", "문장")
+        try expect(";", "statement")
         return statement
     }
 
-    /// 세미콜론을 소비하지 않는 대입/증감/호출 (for의 update 절에서도 쓴다).
+    /// An assignment/increment/call that does not consume the semicolon (also used in a for update clause).
     private mutating func parseSimpleAssignment() throws -> WGSLStatement {
         if check("_"), peek(1).text == "=" {
             advance()
@@ -598,7 +598,7 @@ struct WGSLParser {
         return .expressionStatement(target)
     }
 
-    // MARK: - 표현식 (우선순위 등반)
+    // MARK: - Expressions (precedence climbing)
 
     private static let precedence: [[String]] = [
         ["||"],
@@ -649,10 +649,10 @@ struct WGSLParser {
         var expression = try parsePrimary()
         while true {
             if match(".") {
-                expression = .member(expression, try expectIdentifier("멤버 이름"))
+                expression = .member(expression, try expectIdentifier("member name"))
             } else if match("[") {
                 let subscriptExpression = try parseExpression()
-                try expect("]", "인덱스")
+                try expect("]", "index")
                 expression = .index(expression, subscriptExpression)
             } else {
                 return expression
@@ -663,14 +663,14 @@ struct WGSLParser {
     private mutating func parsePrimary() throws -> WGSLExpression {
         if match("(") {
             let inner = try parseExpression()
-            try expect(")", "괄호 표현식")
+            try expect(")", "parenthesized expression")
             return .paren(inner)
         }
         if current.kind == .intLiteral { return .intLiteral(advance().text) }
         if current.kind == .floatLiteral { return .floatLiteral(advance().text) }
 
         guard current.kind == .identifier else {
-            throw error("표현식이 필요하다 — 실제: '\(current.text)'")
+            throw error("expected an expression — got: '\(current.text)'")
         }
         let name = advance().text
         if name == "true" { return .boolLiteral(true) }
@@ -679,8 +679,8 @@ struct WGSLParser {
         var typeArguments: [WGSLType] = []
         if check("<"), Self.templateNames.contains(name) {
             if name == "array" {
-                // `array<f32, 3>(…)`의 두 번째 인자는 타입이 아니라 길이 식이다.
-                // 타입 파서가 이미 그 형태를 알고 있으므로 이름 토큰까지 되감아 재사용한다.
+                // The second argument of `array<f32, 3>(…)` is a length expression, not a type.
+                // The type parser already knows that shape, so we rewind to the name token and reuse it.
                 index -= 1
                 if case .array(let element, _) = try parseType() {
                     typeArguments = [element]
@@ -690,7 +690,7 @@ struct WGSLParser {
                 repeat {
                     typeArguments.append(try parseType())
                 } while match(",")
-                try expectGenericClose("제네릭 인자")
+                try expectGenericClose("generic argument")
             }
         }
 
@@ -700,13 +700,13 @@ struct WGSLParser {
                 arguments.append(try parseExpression())
                 if !match(",") { break }
             }
-            try expect(")", "호출 인자")
+            try expect(")", "call arguments")
             return .call(callee: name, typeArguments: typeArguments, arguments: arguments)
         }
 
-        // 인자 없는 제네릭 이름(`array<f32>` 같은 타입 위치)은 표현식으로 올 수 없다.
+        // A generic name with no arguments (a type position such as `array<f32>`) cannot appear as an expression.
         guard typeArguments.isEmpty else {
-            throw error("'\(name)' 뒤에 호출 인자가 필요하다")
+            throw error("call arguments are required after '\(name)'")
         }
         return .identifier(name)
     }

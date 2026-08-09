@@ -4,33 +4,59 @@ import XCTest
 import LynxWebGPUCore
 @testable import LynxWebGPU
 
-/// 오프스크린 렌더 검증 하네스.
+/// The offscreen render verification harness.
 ///
-/// GPU 결과를 "눈으로 보는" 대신 **픽셀 값으로 단언**한다. 시뮬레이터 스크린샷과 달리
-/// 결정적이고 CI에서도 돌아간다 (`docs/TESTING.md` §4).
+/// Instead of "looking at" GPU results, it **asserts on pixel values.** Unlike a simulator screenshot
+/// this is deterministic and runs in CI (`docs/TESTING.md` §4).
+///
+/// **It sees only the `WebGPURuntime` protocol** — so that contract tests cannot reach the default
+/// implementation's non-protocol API through the harness. A verification the harness cannot express
+/// is a signal that the protocol has a hole (`docs/extra/DAWN-BACKEND-REVIEW.md` §3-4).
 struct RenderHarness {
-    let context: LynxWebGPUContext
-    let surface: WGPUOffscreenSurface
+    let runtime: WebGPURuntime
+    let canvasId = "test"
     let width: Int
     let height: Int
 
-    /// Metal을 쓸 수 없는 환경이면 nil — 호출 측이 테스트를 건너뛴다.
+    /// An escape hatch for observing Metal internals only (device feature gates, the staging pool).
+    /// Do not use it for contract verification — an assertion resting on it does not carry to another runtime.
+    var context: LynxWebGPUContext? { runtime as? LynxWebGPUContext }
+
+    /// Nil where Metal is unavailable — the caller skips the test.
     static func make(width: Int = 64, height: Int = 64) -> RenderHarness? {
         guard let device = MTLCreateSystemDefaultDevice(),
               let context = try? LynxWebGPUContext(device: device) else { return nil }
-        let surface = WGPUOffscreenSurface(
-            identifier: "test", size: CGSize(width: width, height: height), device: device
-        )
-        context.registerSurface(surface)
-        return RenderHarness(context: context, surface: surface, width: width, height: height)
+        return make(runtime: context, width: width, height: height)
+    }
+
+    /// The injection point — the same contract tests can run on another `WebGPURuntime` implementation.
+    static func make(runtime: WebGPURuntime, width: Int, height: Int) -> RenderHarness? {
+        do {
+            try runtime.attachOffscreenCanvas(
+                identifier: "test", size: CGSize(width: width, height: height)
+            )
+        } catch {
+            return nil
+        }
+        return RenderHarness(runtime: runtime, width: width, height: height)
     }
 
     @discardableResult
-    func execute(_ commands: [[String: Any]]) -> [String: Any] {
-        context.execute(commands: commands)
+    func execute(_ commands: [[String: Any]], present: Bool = true) -> [String: Any] {
+        runtime.execute(commands: commands, present: present)
     }
 
-    /// 오류 없이 실행됐는지 확인하고, 아니면 오류를 그대로 보여 준다.
+    /// The live native object count as seen through the protocol — the batch result's `objects` field
+    /// (`docs/COMMAND-STREAM.md` §2).
+    ///
+    /// The probe is **an empty present:false batch**: it touches neither frame-scoped handles, error
+    /// scopes nor drawable state, and creates no command buffer. Its only side effect is draining the
+    /// previous batch's GPU failures one batch early — do not use it in tests that check GPU failures.
+    var liveObjects: Int {
+        execute([], present: false)["objects"] as? Int ?? -1
+    }
+
+    /// Checks it ran without errors, and otherwise shows the errors as they are.
     @discardableResult
     func executeExpectingSuccess(
         _ commands: [[String: Any]],
@@ -39,37 +65,37 @@ struct RenderHarness {
     ) -> [String: Any] {
         let result = execute(commands)
         if (result["ok"] as? Bool) != true {
-            XCTFail("커맨드 실행 실패: \(describeErrors(result))", file: file, line: line)
+            XCTFail("command execution failed: \(describeErrors(result))", file: file, line: line)
         }
         return result
     }
 
     func describeErrors(_ result: [String: Any]) -> String {
-        guard let errors = result["errors"] as? [[String: Any]] else { return "(오류 정보 없음)" }
+        guard let errors = result["errors"] as? [[String: Any]] else { return "(no error information)" }
         return errors.map { error in
             let path = error["path"].map { " @\($0)" } ?? ""
             return "[\(error["kind"] ?? "?")]\(path) \(error["message"] ?? "")"
         }.joined(separator: "\n")
     }
 
-    /// 렌더 결과를 포맷·행 간격과 함께 되읽는다.
+    /// Reads the render result back together with its format and row stride.
     func readback() throws -> WGPUPixelReadback {
-        try surface.readPixels(queue: context.queue)
+        try runtime.readCanvasPixels(identifier: canvasId)
     }
 
-    /// 렌더 결과 픽셀을 채널 값 그대로 읽는다. float 표면이면 **1.0 초과·음수도 그대로** 나온다.
+    /// Reads render result pixels as raw channel values. On a float surface **values above 1.0 and negatives survive.**
     func pixelFloat(x: Int, y: Int) throws -> SIMD4<Float> {
         try readback().rgba(x: x, y: y)
     }
 
-    /// 렌더 결과 픽셀 (RGBA, 0~255). 8비트 표면용 — float 표면에는 `pixelFloat`를 쓴다.
+    /// A render result pixel (RGBA, 0...255). For 8-bit surfaces — use `pixelFloat` on float surfaces.
     func pixel(x: Int, y: Int) throws -> (r: Int, g: Int, b: Int, a: Int) {
         let color = try pixelFloat(x: x, y: y)
         let byte = { (value: Float) in Int((value * 255).rounded()) }
         return (byte(color.x), byte(color.y), byte(color.z), byte(color.w))
     }
 
-    /// 픽셀 색을 허용 오차와 함께 단언한다 (sRGB 변환·래스터화 오차 흡수).
+    /// Asserts a pixel color within a tolerance (absorbing sRGB conversion and rasterization error).
     func assertPixel(
         x: Int,
         y: Int,
@@ -86,12 +112,12 @@ struct RenderHarness {
             && abs(actual.a - expected.a) <= tolerance
         XCTAssertTrue(
             matches,
-            "픽셀 (\(x), \(y)) = \(actual), 기대 \(expected)\(message.isEmpty ? "" : " — \(message)")",
+            "pixel (\(x), \(y)) = \(actual), expected \(expected)\(message.isEmpty ? "" : " — \(message)")",
             file: file, line: line
         )
     }
 
-    /// float 채널 값을 허용 오차와 함께 단언한다. SDR 범위 밖(1.0 초과·음수)도 그대로 비교한다.
+    /// Asserts float channel values within a tolerance. Values outside SDR (above 1.0, negative) compare as they are.
     func assertPixelFloat(
         x: Int,
         y: Int,
@@ -105,25 +131,25 @@ struct RenderHarness {
         let matches = (0..<4).allSatisfy { abs(actual[$0] - expected[$0]) <= tolerance }
         XCTAssertTrue(
             matches,
-            "픽셀 (\(x), \(y)) = \(actual), 기대 \(expected)\(message.isEmpty ? "" : " — \(message)")",
+            "pixel (\(x), \(y)) = \(actual), expected \(expected)\(message.isEmpty ? "" : " — \(message)")",
             file: file, line: line
         )
     }
 
-    // MARK: - 프레임 동치성
+    // MARK: - Frame equivalence
 
-    /// 지금 프레임 전체를 바이트로 뜬다 — 동치성 비교의 기준값.
+    /// Captures the whole current frame as bytes — the baseline for an equivalence comparison.
     func frameBytes() throws -> Data {
         try readback().data
     }
 
-    /// 프레임 전체가 기준값과 **바이트 단위로** 같은지 단언한다.
+    /// Asserts the whole frame matches the baseline **byte for byte**.
     ///
-    /// 점 단언은 "같은 결과를 내야 하는 두 경로"를 비교하기에 약하다 — 고른 두 점만 우연히
-    /// 맞아도 통과하기 때문이다. 직접 드로우 ↔ 간접 드로우, 직접 인코딩 ↔ 렌더 번들처럼
-    /// **계약 자체가 "결과가 같다"**인 경우에는 프레임 전체를 비교한다.
+    /// Point assertions are weak for comparing "two paths that must produce the same result" — two chosen
+    /// points can match by chance. Where **the contract itself is "the results are equal"** — direct draw
+    /// vs indirect draw, direct encoding vs render bundle — the whole frame is compared.
     ///
-    /// 다르면 처음 어긋난 픽셀의 좌표와 두 값을 함께 보여 준다 — "N바이트 다름"만으로는 못 고친다.
+    /// On a mismatch it shows the first differing pixel's coordinate and both values — "N bytes differ" alone cannot be fixed.
     func assertFrameEquals(
         _ expected: Data,
         _ message: String = "",
@@ -134,35 +160,35 @@ struct RenderHarness {
         let actual = try readback()
         guard actual.data.count == expected.count else {
             return XCTFail(
-                "프레임 길이가 다르다 — 기준 \(expected.count)B, 실제 \(actual.data.count)B\(suffix)",
+                "frame lengths differ — baseline \(expected.count)B, actual \(actual.data.count)B\(suffix)",
                 file: file, line: line
             )
         }
         let differences = zip(expected, actual.data).enumerated().filter { $0.element.0 != $0.element.1 }
         guard let first = differences.first else { return }
 
-        // 바이트 오프셋을 픽셀 좌표로 되돌린다.
+        // Turn the byte offset back into a pixel coordinate.
         let bytesPerPixel = max(actual.bytesPerRow / max(actual.width, 1), 1)
         let y = first.offset / max(actual.bytesPerRow, 1)
         let x = (first.offset % max(actual.bytesPerRow, 1)) / bytesPerPixel
-        // 이미 확보한 `actual`로 계산한다 — `readback()`을 다시 부르면 스테이징 버퍼 신규 할당 +
-        // 커맨드 버퍼 커밋 + `waitUntilCompleted()`(전체 GPU 동기 대기)가 한 번 더 돈다.
-        let detail = (try? actual.rgba(x: x, y: y)).map { " (실제 픽셀 \($0))" } ?? ""
+        // Compute from the `actual` we already have — calling `readback()` again would mean another
+        // staging buffer allocation, command buffer commit and `waitUntilCompleted()` (a full GPU wait).
+        let detail = (try? actual.rgba(x: x, y: y)).map { " (actual pixel \($0))" } ?? ""
         XCTFail(
-            "프레임이 기준과 다르다 — \(differences.count)/\(expected.count)B 불일치, "
-                + "처음 어긋난 곳 (\(x), \(y)) 바이트 \(first.offset): "
-                + "기준 \(first.element.0) ≠ 실제 \(first.element.1)\(detail)\(suffix)",
+            "the frame differs from the baseline — \(differences.count)/\(expected.count)B mismatched, "
+                + "first divergence at (\(x), \(y)), byte \(first.offset): "
+                + "baseline \(first.element.0) != actual \(first.element.1)\(detail)\(suffix)",
             file: file, line: line
         )
     }
 
-    // MARK: - 버퍼 되읽기
+    // MARK: - Buffer readback
 
-    /// 버퍼를 **동기로** 읽는다.
+    /// Reads a buffer **synchronously**.
     ///
-    /// `LynxWebGPUContext.readBuffer`는 직전 커맨드 버퍼의 GPU 완료를 기다려야 하므로 콜백형이다.
-    /// 테스트는 그 뒤에 할 일이 없으니 여기서 기다린다 — `XCTestExpectation` 보일러플레이트가
-    /// 리드백 테스트마다 반복되던 것을 없앤다.
+    /// `LynxWebGPUContext.readBuffer` must wait on the previous command buffer's GPU completion, so it
+    /// is callback-based. A test has nothing to do afterwards, so it waits here — removing the
+    /// `XCTestExpectation` boilerplate that used to repeat in every readback test.
     func readBufferSync(
         handle: Int,
         offset: Int = 0,
@@ -171,23 +197,23 @@ struct RenderHarness {
     ) throws -> Data {
         let box = ReadbackBox()
         let semaphore = DispatchSemaphore(value: 0)
-        // 이미 완료된 커맨드 버퍼면 콜백이 **이 스레드에서 동기로** 온다 — signal이 wait보다
-        // 앞서지만 세마포어가 값을 세므로 그대로 통과한다 (교착 없음).
-        context.readBuffer(handle: handle, offset: offset, size: size) { result in
+        // For an already-completed command buffer the callback arrives **synchronously on this thread**
+        // — signal precedes wait, but the semaphore counts so it passes through (no deadlock).
+        runtime.readBuffer(handle: handle, offset: offset, size: size) { result in
             box.result = result
             semaphore.signal()
         }
         guard semaphore.wait(timeout: .now() + timeout) == .success else {
-            throw HarnessError("readBuffer가 \(timeout)초 안에 돌아오지 않았다 (handle \(handle))")
+            throw HarnessError("readBuffer did not return within \(timeout)s (handle \(handle))")
         }
         let result = box.result
         guard (result["ok"] as? Bool) == true, let data = result["data"] as? Data else {
-            throw HarnessError("readBuffer 실패 (handle \(handle)): \(describeErrors(result))")
+            throw HarnessError("readBuffer failed (handle \(handle)): \(describeErrors(result))")
         }
         return data
     }
 
-    /// 버퍼를 원소 타입으로 읽는다 (`try harness.readBufferSync(handle: 3, as: Float.self)`).
+    /// Reads a buffer as an element type (`try harness.readBufferSync(handle: 3, as: Float.self)`).
     func readBufferSync<T>(
         handle: Int,
         as type: T.Type,
@@ -199,31 +225,34 @@ struct RenderHarness {
         return data.withUnsafeBytes { Array($0.bindMemory(to: T.self)) }
     }
 
-    // MARK: - 기기 조건
+    // MARK: - Device conditions
 
-    /// 기기마다 갈리는 기능. GPU 유무만 보던 스킵 조건을 기능별로 나눈다.
+    /// Features that vary per device. Splits the old "is there a GPU" skip condition per feature.
     enum Capability {
-        /// 타임스탬프 쿼리 — 패스 경계에서 GPU 카운터를 샘플링할 수 있는가.
+        /// Timestamp queries — can GPU counters be sampled at pass boundaries?
         case timestampQuery
-        /// 간접 드로우·디스패치 인자 — Metal이 Apple family 3 이상을 요구한다.
-        /// **iOS 시뮬레이터는 family 2로 보고해 빠진다** (실기기 A12 이상은 지원한다).
+        /// Indirect draw/dispatch arguments — Metal requires Apple family 3 or above.
+        /// **The iOS simulator reports family 2 and drops out** (real devices, A12 and up, support it).
         case indirectArguments
     }
 
     func supports(_ capability: Capability) -> Bool {
+        // The feature gate has to consult the Metal device — another runtime announces it through
+        // adapterInfo's features (which is the path the conformance suite uses).
+        guard let device = context?.device else { return false }
         switch capability {
         case .timestampQuery:
-            guard context.device.supportsCounterSampling(.atStageBoundary) else { return false }
-            return context.device.counterSets?.contains {
+            guard device.supportsCounterSampling(.atStageBoundary) else { return false }
+            return device.counterSets?.contains {
                 $0.name == MTLCommonCounterSet.timestamp.rawValue
             } ?? false
         case .indirectArguments:
-            return WGPUDeviceCapability.supportsIndirectArguments(context.device)
+            return WGPUDeviceCapability.supportsIndirectArguments(device)
         }
     }
 
-    /// 디버깅용 — 렌더 결과를 PNG로 떨군다 (`.tmp/` 아래).
-    /// float 표면은 0~1로 잘라서 8비트로 굽는다 (눈으로 볼 용도이므로 HDR 범위는 버린다).
+    /// For debugging — dumps the render result as a PNG (under `.tmp/`).
+    /// A float surface is clipped to 0...1 and baked to 8 bits (this is for the eye, so the HDR range is discarded).
     @discardableResult
     func dumpPNG(named name: String) -> URL? {
         guard let readback = try? readback() else { return nil }
@@ -246,24 +275,24 @@ struct RenderHarness {
     }
 }
 
-/// 하네스 자체가 내는 오류 (GPU 오류가 아니라 "테스트를 진행할 수 없다").
+/// An error from the harness itself (not a GPU error but "the test cannot proceed").
 struct HarnessError: LocalizedError {
     let message: String
     init(_ message: String) { self.message = message }
     var errorDescription: String? { message }
 }
 
-/// 콜백이 다른 스레드에서 올 수 있으므로 값을 참조 타입에 담는다 (세마포어가 가시성을 보장한다).
+/// The callback can come from another thread, so the value lives in a reference type (the semaphore guarantees visibility).
 private final class ReadbackBox {
     var result: [String: Any] = [:]
 }
 
-/// 의존성 없이 RGBA8 버퍼를 PNG로 인코딩한다 (렌더 결과를 눈으로 확인할 때만 쓴다).
+/// Encodes an RGBA8 buffer as a PNG with no dependencies (used only to eyeball render results).
 enum PNGWriter {
     static func encode(rgba: Data, width: Int, height: Int) -> Data? {
         var raw = Data()
         for row in 0..<height {
-            raw.append(0)   // 필터 타입: None
+            raw.append(0)   // filter type: None
             let start = row * width * 4
             raw.append(rgba.subdata(in: start..<(start + width * 4)))
         }
@@ -286,7 +315,7 @@ enum PNGWriter {
         return data
     }
 
-    /// 압축하지 않는 deflate(stored) 스트림 — 인코딩이 단순하고 뷰어 호환성은 동일하다.
+    /// An uncompressed deflate (stored) stream — simple to encode with identical viewer compatibility.
     private static func zlibStored(_ payload: Data) -> Data {
         var data = Data([0x78, 0x01])
         var offset = 0
@@ -336,7 +365,7 @@ enum PNGWriter {
     }
 }
 
-/// JS가 쓰는 `GPUBufferUsage` / `GPUTextureUsage` 상수 (테스트에서 그대로 재현).
+/// The `GPUBufferUsage` / `GPUTextureUsage` constants JS uses (reproduced here for tests).
 enum TestUsage {
     static let mapRead = 0x0001
     static let copySrc = 0x0004
@@ -355,7 +384,7 @@ enum TestUsage {
 }
 
 extension Array where Element == Float {
-    /// 커맨드 스트림에 실어 보내는 base64 바이트열.
+    /// The base64 byte string carried in the command stream.
     var base64: String {
         withUnsafeBufferPointer { Data(buffer: $0).base64EncodedString() }
     }

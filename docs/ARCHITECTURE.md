@@ -35,6 +35,10 @@ Lynx 위에 제공한다 — 웹에서 쓰던 셰이더와 렌더 코드를 거�
 | `GPUCanvasContext` | `WGPUSurface` | `CAMetalLayer` / 오프스크린 `MTLTexture` |
 | WGSL | `LynxWebGPUShader` | MSL |
 
+이 표는 **이 저장소가 주는 기본 구현**(`LynxWebGPUContext`)의 것이다. 오른쪽 열이 Metal이
+아닌 다른 것이 될 수 있다 — 커맨드 스트림의 반대편은 `WebGPURuntime` 프로토콜이고, 구현체는
+앱이 넣는다 (§3-1).
+
 ## 3. 커맨드 스트림 — 이 설계의 중심
 
 ### 문제
@@ -82,6 +86,36 @@ queue.submit([cb])          ────── execute({commands}) ────�
 직렬화하는 것과 같은 계약이다 — 호출 뒤 디스크립터 객체를 재사용·리셋하는 코드(three.js의
 싱글턴 디스크립터 패턴)가 flush를 기다리는 명령을 오염시키지 못한다. 이 고정이 없으면
 `copySize`가 flush 전에 0으로 리셋되어 **폭 0짜리 복사가 오류 없이** 나가는 식으로 조용히 깨진다.
+
+### 3-1. 커맨드 스트림은 곧 백엔드 경계다
+
+스트림이 **순수 데이터**라는 것에는 따라오는 성질이 하나 더 있다: 반대편에서 무엇이 도는지가
+계약에 없다. 그래서 그 자리를 프로토콜로 열어 두었다 — `WebGPURuntime`(`LynxWebGPUCore`).
+
+```
+JS/webgpu.js  ──{op:…}──▶  LynxWebGPUBridge  ──▶  WebGPURuntime  ──▶  ?
+                            (프로토콜만 안다)         │
+                                          ┌──────────┴──────────┐
+                                  LynxWebGPUContext        앱이 넣는 다른 구현
+                                  (Metal — 이 저장소)      (예: Dawn 위의 런타임)
+```
+
+**런타임 구현체는 앱이 만들어 넣는다** (`LynxWebGPUHost(runtime:)`) — Lynx SDK를 이 패키지가
+가져오지 않는 것과 같은 이유다(§1과 `docs/LYNX-INTEGRATION.md` §1): 버전·배포처·바이너리
+크기를 앱이 정하게 한다. 브리지는 `LynxWebGPUCore`만 의존하므로 **GPU 백엔드를 링크하지 않고도
+컴파일된다.**
+
+두 구현이 지켜야 할 계약은 `docs/COMMAND-STREAM.md`에 있다. 그 계약의 **실행 자체도
+`LynxWebGPUCore`가 공유한다**: `WGPUBackendEngine`이 디코딩·디스패치(51케이스 exhaustive
+switch)·명세 검증·오류 스코프·프레임 수명·매핑 게이트·직렬화 락을 전부 이행하고, 백엔드는
+**`WGPUBackend` 동사 프로토콜**(해석이 끝난 값으로 GPU API를 부르는 좁은 함수들)만 구현한다.
+`LynxWebGPUContext`는 그 엔진에 Metal 백엔드(`WGPUMetalBackend`)를 얹은 조합이고, Dawn
+백엔드(`Projects/DawnCheck`의 `DawnBackend`)도 같은 엔진 위에서 돈다 — 백엔드가 다시 쓰는
+것은 정말로 "인코딩"뿐이고, op을 더하면 프로토콜 요구가 늘어 컴파일러가 모든 백엔드의
+누락을 잡는다. 같은 그림을 그리는지는 적합성 스위트
+(`Sources/LynxWebGPUConformance` — 라이브러리 product)가 픽셀로 확인하고, 외부에서 이
+경계로 런타임을 만들 수 있다는 사실은 `Examples/ExternalRuntime`이 컴파일로 증명한다.
+대체 가능 범위와 경계 재설계 경위는 `docs/extra/DAWN-BACKEND-REVIEW.md`.
 
 ### 스레딩
 
@@ -177,7 +211,7 @@ false면 `popErrorScope`·`mapAsync`가 결과를 받으려고 흘려보낸 **�
 커밋만 하고 present와 핸들 회수를 뒤따라올 `queue.submit()` 배치로 미룬다. 이 구분이 없으면
 내부 배치가 `writeBuffer` 하나로라도 커맨드 버퍼를 만든 순간, 획득해 둔 드로어블이 그리기도
 전에 present되어 그 프레임의 남은 패스가 통째로 거부된다 (Three.js의 지연 파이프라인 생성이
-정확히 이 모양이었다 — `WGPUCommandInterpreter.finish(present:)` 참고).
+정확히 이 모양이었다 — `WGPUBackendEngine.finish(_:)` 참고).
 
 ## 6. 프레임 루프
 
@@ -191,14 +225,21 @@ GPU가 프레임을 소화하지 못하고 밀리면 `CAMetalLayer`의 드로어
 `nextDrawable()`이 **JS 스레드 전체를 최대 1초까지 세운다** — 캔버스뿐 아니라 그 페이지의
 터치 핸들러·타이머·네트워크 콜백까지 함께 멈추는 최악의 백프레셔다.
 
-그래서 표면마다 in-flight 카운터를 둔다. 드로어블을 실은 커맨드 버퍼가 커밋될 때 올리고
-완료 핸들러에서 내린다 (`WGPUMetalLayerSurface.maxFramesInFlight = 3`). 카운터가 상한에
-닿은 표면이 있으면 **프레임 티커가 그 틱을 통째로 건너뛴다** — JS는 깨어나지도 않으므로
+그래서 캔버스마다 in-flight 카운터를 둔다. 드로어블을 실은 커맨드 버퍼가 커밋될 때 올리고
+완료 핸들러에서 내린다 (`WGPUFrameCoordinator.defaultMaxFramesInFlight = 3`). 카운터가 상한에
+닿은 캔버스가 있으면 **프레임 티커가 그 틱을 통째로 건너뛴다** — JS는 깨어나지도 않으므로
 블록될 일이 없고, GPU가 완료를 돌려주면 다음 틱부터 자연히 재개된다. 화면에는 프레임 드랍으로
 보인다 (밀린 프레임을 기다렸다 몰아서 그리는 것보다 낫다).
 
 티커 없이 직접 프레임을 만드는 코드는 이 게이트를 지나지 않는다 — 그 경우의 백프레셔는
 이전과 같이 `nextDrawable()` 블로킹이다.
+
+**이 회계와 present 시점은 백엔드 밖(`LynxWebGPUCore`)에 있다.** `WGPUFrameCoordinator`(캔버스별
+in-flight)와 `WGPUFrameBoundary`(이 배치가 present하는가)에는 GPU 타입이 하나도 없다 — Dawn을
+쓰든 Metal을 쓰든 **같은 정책이 필요한데 Dawn이 대신해 주지 않기** 때문이다
+(`wgpuSurfacePresent`에는 "지금 내보내면 블록되는가"를 묻는 통로가 없다). 새 런타임은 커밋할 때
+`noteCommitted(canvas:)`, 완료 핸들러에서 `noteCompleted(canvas:)`만 부르면 된다.
+정책 자체는 GPU 없이 `WGPUFrameCoordinatorTests`가 검증한다.
 
 ## 7. 동시성
 
@@ -211,6 +252,7 @@ JS 스레드와 메인 스레드가 공유하므로, 컴파일러 격리 대신 
 | `LynxWebGPUContext.surfaces` | `NSLock` | JS(조회), 메인(등록/해제) |
 | 커맨드 실행 | `executionLock` — 한 번에 하나 | JS |
 | `WGPUMetalLayerSurface.cachedSize` | `NSLock` | 메인(쓰기), JS(읽기) |
+| `WGPUFrameCoordinator` (캔버스별 in-flight) | `NSLock` | JS(커밋), GPU 완료 핸들러(완료), 메인(조회) |
 | `WGPUShaderModuleObject.libraryCache` | `NSLock` | JS |
 
 락 구간에서는 딕셔너리 조작만 하고 GPU 작업은 하지 않는다.

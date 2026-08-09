@@ -1,8 +1,8 @@
 /**
- * 캔버스 크기 캐시 — "프레임당 브리지 왕복 1회" 계약 검증.
+ * The canvas size cache — verifying the "one bridge crossing per frame" contract.
  *
- * `getCurrentTexture()`/`getSize()`가 매 프레임 동기 `canvasInfo`를 부르지 않고,
- * `execute` 응답의 `canvases`로 갱신되는 캐시를 읽는지 단언한다.
+ * It asserts that `getCurrentTexture()`/`getSize()` do not call a synchronous `canvasInfo` every frame but
+ * read a cache refreshed by `execute`'s `canvases` response.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -20,13 +20,13 @@ function mockWithCanvas(canvasId, size) {
   });
 }
 
-test('정상 프레임 루프에서 동기 canvasInfo는 configure 때 1회뿐이다', async () => {
+test('in a normal frame loop the synchronous canvasInfo happens once, at configure', async () => {
   const size = { width: 300, height: 150 };
   const state = mockWithCanvas('steady', size);
   const device = await makeDevice();
   const context = gpu.getCanvasContext('steady');
   context.configure({ device, format: 'bgra8unorm' });
-  assert.equal(state.canvasInfoCalls, 1, 'configure가 캐시를 씨딩한다');
+  assert.equal(state.canvasInfoCalls, 1, 'configure seeds the cache');
 
   for (let frame = 0; frame < 5; frame += 1) {
     const texture = context.getCurrentTexture();
@@ -35,12 +35,12 @@ test('정상 프레임 루프에서 동기 canvasInfo는 configure 때 1회뿐�
     device.queue.submit([]);
   }
 
-  assert.equal(state.canvasInfoCalls, 1, '프레임 안에서는 추가 동기 호출이 없어야 한다');
-  // configure는 기록만 하고 첫 submit에 합쳐지므로 execute는 프레임 수만큼이다.
-  assert.equal(state.executeCalls.length, 5, '프레임당 execute 1회');
+  assert.equal(state.canvasInfoCalls, 1, 'there must be no extra synchronous calls inside a frame');
+  // configure only records and merges into the first submit, so execute runs once per frame.
+  assert.equal(state.executeCalls.length, 5, 'one execute per frame');
 });
 
-test('execute 응답의 canvases가 캐시를 갱신한다 (리사이즈 반영)', async () => {
+test('the canvases in the execute response refresh the cache (a resize lands)', async () => {
   const size = { width: 320, height: 240 };
   const state = mockWithCanvas('resize', size);
   const device = await makeDevice();
@@ -51,17 +51,17 @@ test('execute 응답의 canvases가 캐시를 갱신한다 (리사이즈 반영)
   device.queue.submit([]);
   assert.deepEqual(context.getSize(), { width: 320, height: 240 });
 
-  // 네이티브 쪽에서 레이아웃이 바뀌었다 — 다음 제출 응답에 새 크기가 실린다.
+  // The layout changed on the native side — the next submission response carries the new size.
   size.width = 640;
   size.height = 480;
   context.getCurrentTexture();
   device.queue.submit([]);
 
   assert.deepEqual(context.getSize(), { width: 640, height: 480 });
-  assert.equal(state.canvasInfoCalls, 1, '리사이즈 반영에 동기 호출이 필요 없다');
+  assert.equal(state.canvasInfoCalls, 1, 'landing a resize needs no synchronous call');
 });
 
-test('캐시가 비어 있으면 getSize가 1회 동기 조회 후 캐시한다', async () => {
+test('with an empty cache getSize queries synchronously once and caches', async () => {
   const state = mockWithCanvas('fallback', { width: 100, height: 50 });
   await makeDevice();
   const context = gpu.getCanvasContext('fallback');
@@ -69,22 +69,22 @@ test('캐시가 비어 있으면 getSize가 1회 동기 조회 후 캐시한다'
   assert.deepEqual(context.getSize(), { width: 100, height: 50 });
   assert.equal(state.canvasInfoCalls, 1);
   context.getSize();
-  assert.equal(state.canvasInfoCalls, 1, '두 번째부터는 캐시를 읽는다');
+  assert.equal(state.canvasInfoCalls, 1, 'from the second on it reads the cache');
 });
 
-test('표면 등록 전(크기 0)은 캐시하지 않고 다음 조회가 다시 시도한다', async () => {
+test('before the surface is registered (size 0) nothing is cached and the next query retries', async () => {
   const state = installNativeMock({
-    canvasInfoResult: { ok: false, errors: [{ kind: 'validation', message: '없음' }] },
+    canvasInfoResult: { ok: false, errors: [{ kind: 'validation', message: 'none' }] },
   });
   await makeDevice();
   const context = gpu.getCanvasContext('unregistered');
 
   assert.deepEqual(context.getSize(), { width: 0, height: 0 });
   context.getSize();
-  assert.equal(state.canvasInfoCalls, 2, '실패한 조회는 캐시되지 않는다');
+  assert.equal(state.canvasInfoCalls, 2, 'a failed query is not cached');
 });
 
-test('getCurrentTexture의 텍스처 크기가 캐시에서 온다', async () => {
+test('the texture size from getCurrentTexture comes from the cache', async () => {
   mockWithCanvas('dims', { width: 128, height: 64 });
   const device = await makeDevice();
   const context = gpu.getCanvasContext('dims');
@@ -95,7 +95,7 @@ test('getCurrentTexture의 텍스처 크기가 캐시에서 온다', async () =>
   assert.equal(texture.height, 64);
 });
 
-test('device.destroy가 캐시를 비운다', async () => {
+test('device.destroy empties the cache', async () => {
   const state = mockWithCanvas('destroyed', { width: 10, height: 10 });
   const device = await makeDevice();
   const context = gpu.getCanvasContext('destroyed');
@@ -105,15 +105,15 @@ test('device.destroy가 캐시를 비운다', async () => {
   device.destroy();
   assert.equal(state.resetCalls, 1);
   context.getSize();
-  assert.equal(state.canvasInfoCalls, 2, '캐시가 비워졌으므로 다시 동기 조회한다');
+  assert.equal(state.canvasInfoCalls, 2, 'the cache was emptied, so it queries synchronously again');
 });
 
-test('unconfigure 뒤에는 그릴 수 없고 getConfiguration이 null이다', async () => {
+test('after unconfigure nothing can be drawn and getConfiguration is null', async () => {
   installNativeMock();
   const device = await makeDevice();
   const context = gpu.getCanvasContext('main');
 
-  assert.equal(context.getConfiguration(), null, '설정 전에는 null이다');
+  assert.equal(context.getConfiguration(), null, 'it is null before configuration');
 
   context.configure({ device, format: 'rgba8unorm' });
   const configuration = context.getConfiguration();
@@ -122,28 +122,28 @@ test('unconfigure 뒤에는 그릴 수 없고 getConfiguration이 null이다', a
 
   context.unconfigure();
   assert.equal(context.getConfiguration(), null);
-  assert.throws(() => context.getCurrentTexture(), /configure/, '설정을 푼 뒤에는 그릴 수 없다');
+  assert.throws(() => context.getCurrentTexture(), /configure/, 'nothing can be drawn once unconfigured');
 
-  // 다시 설정하면 살아난다 — 포맷을 바꿔 재구성하는 경로가 이것이다.
+  // Configuring again brings it back — this is the path for reconfiguring with a different format.
   context.configure({ device, format: 'rgba16float' });
   assert.equal(context.getConfiguration().format, 'rgba16float');
   assert.doesNotThrow(() => context.getCurrentTexture());
 });
 
-test('같은 canvasId에는 같은 컨텍스트를 준다', async () => {
+test('the same canvasId gives the same context', async () => {
   installNativeMock();
   const device = await makeDevice();
 
   const first = gpu.getCanvasContext('shared');
   const second = gpu.getCanvasContext('shared');
-  assert.equal(first, second, '브라우저의 getContext와 같다');
+  assert.equal(first, second, 'the same as a browser getContext');
 
-  // 매번 새로 만들면 여기서 갈라진다 — 한 핸들로 설정하고 다른 핸들로 그리면
-  // "configure()를 먼저"가 나거나, 반대로 해제가 안 먹는다.
+  // Making a new one each time would split things here — configuring on one handle and drawing on
+  // another would raise "call configure() first", or conversely unconfiguring would not take.
   first.configure({ device, format: 'rgba8unorm' });
   assert.equal(second.getConfiguration().format, 'rgba8unorm');
   second.unconfigure();
   assert.equal(first.getConfiguration(), null);
 
-  assert.notEqual(gpu.getCanvasContext('other'), first, '다른 캔버스는 다른 객체다');
+  assert.notEqual(gpu.getCanvasContext('other'), first, 'a different canvas is a different object');
 });

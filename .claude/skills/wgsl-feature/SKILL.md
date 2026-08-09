@@ -88,7 +88,7 @@ XCTAssertEqual(placement.size, 80)
 - 바인드 그룹: 그룹 → 바인딩 오름차순으로 종류별 카운터 0부터.
 - 정점 버퍼: `30 - slot` (테이블 위쪽부터 역순).
 
-이 규칙을 바꾸면 `WGPUCommandInterpreter.setVertexBuffer` / `apply(_:at:dynamicOffsets:layout:)`와
+이 규칙을 바꾸면 `WGPUMetalBackend.applyVertexBuffer` / `applyBindGroup(_:at:dynamicOffsets:)`와
 `WGPURenderPipelineObject.vertexDescriptor`도 **함께** 고친다.
 
 ## 6. 테스트 (필수)
@@ -97,9 +97,9 @@ XCTAssertEqual(placement.size, 80)
 **반드시 `translate` 헬퍼를 거칠 것** — 그 안에 `MetalCompilerHarness.assertCompiles`가 들어 있다.
 
 ```swift
-func test_새기능이_MSL로_번역된다() throws {
+func test_theNewFeatureIsTranslatedToMSL() throws {
     let msl = try translate(source, entryPoints: ["main"])   // ← Metal 컴파일까지 검증된다
-    XCTAssertTrue(msl.contains("기대하는 조각"))
+    XCTAssertTrue(msl.contains("the expected fragment"))
 }
 ```
 

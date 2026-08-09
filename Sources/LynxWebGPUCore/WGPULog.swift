@@ -1,10 +1,10 @@
 import Foundation
 import os
 
-/// 라이브러리 공통 로거.
+/// Shared logger for the library.
 ///
-/// 프레임 루프 안에서는 로그를 남기지 않는다 — 60fps에서 os_log 한 줄도 누적되면 무시할 수 없다.
-/// 생성/해제/오류처럼 빈도가 낮은 경로에만 쓴다.
+/// Nothing logs from inside the frame loop — at 60fps even a single os_log line adds up until it
+/// can no longer be ignored. Use these only on low-frequency paths: creation, teardown, errors.
 public enum WGPULog {
     public static let subsystem = "org.lynxwebgpu"
 
@@ -17,4 +17,6 @@ public enum WGPULog {
     public static let bridge = logger(category: "Bridge")
     public static let canvas = logger(category: "Canvas")
     public static let registry = logger(category: "Registry")
+    /// Rare engine-level events — the self-pump giving up, and the like. Never on the frame path.
+    public static let runtime = logger(category: "Runtime")
 }

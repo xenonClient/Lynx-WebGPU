@@ -1,21 +1,23 @@
 import Foundation
 
-/// GPU에서 되읽은 2D 픽셀 블록.
+/// A 2D block of pixels read back from the GPU.
 ///
-/// **바이트만 돌려주지 않는다.** 되읽기 결과를 `Data`로만 넘기면 호출 측이 "RGBA8일 것"을
-/// 암묵적으로 가정하게 되고, `rgba16float` 표면에서는 오류 없이 조용히 틀린 값을 읽는다.
-/// 그래서 포맷·크기·행 간격을 값과 함께 묶어 둔다 — 해석에 필요한 것이 전부 여기 있다.
+/// **It does not hand back bare bytes.** Returning a readback as plain `Data` makes the caller
+/// implicitly assume "this is RGBA8", and on an `rgba16float` surface it then reads silently wrong
+/// values with no error. So format, size and row stride travel with the values — everything needed
+/// to interpret them is here.
 ///
-/// 채널 값이 필요하면 `rgba(x:y:)`를 쓴다. 포맷을 직접 다루고 싶으면 `data`를 그대로 읽되
-/// **행 간격은 `bytesPerRow`를 봐야 한다** (`width * bytesPerPixel`과 다를 수 있다).
+/// Use `rgba(x:y:)` when you want channel values. To handle the format yourself, read `data`
+/// directly but **take the row stride from `bytesPerRow`** (it may differ from
+/// `width * bytesPerPixel`).
 public struct WGPUPixelReadback: Sendable, Equatable {
-    /// 픽셀 바이트. 행 하나가 `bytesPerRow` 바이트, 행이 `height`개다.
+    /// Pixel bytes. One row is `bytesPerRow` bytes, and there are `height` rows.
     public let data: Data
-    /// `data`가 어떤 포맷인지. 이것을 보지 않고 해석하면 안 된다.
+    /// What format `data` is in. Never interpret the bytes without consulting this.
     public let format: WGPUTextureFormat
     public let width: Int
     public let height: Int
-    /// 행 간격. 패딩이 있으면 `width * format.bytesPerPixel`보다 크다.
+    /// Row stride. With padding it exceeds `width * format.bytesPerPixel`.
     public let bytesPerRow: Int
 
     public init(data: Data, format: WGPUTextureFormat, width: Int, height: Int, bytesPerRow: Int) {
@@ -26,34 +28,36 @@ public struct WGPUPixelReadback: Sendable, Equatable {
         self.bytesPerRow = bytesPerRow
     }
 
-    /// 픽셀 1개의 바이트 수.
+    /// Bytes per pixel.
     public var bytesPerPixel: Int { format.bytesPerPixel }
 
-    /// 픽셀 하나를 RGBA float으로 편다.
+    /// Expands one pixel into RGBA floats.
     ///
-    /// 없는 채널은 RGB가 0, A가 1로 채워진다 (WebGPU가 셰이더에서 텍스처를 읽을 때와 같은 규칙).
-    /// `bgra8unorm` 계열은 RGBA 순서로 바꿔 돌려준다.
+    /// Missing channels are filled with 0 for RGB and 1 for A (the same rule WebGPU uses when a
+    /// shader reads a texture). `bgra8unorm` and friends are reordered into RGBA.
     ///
-    /// **색공간 변환은 하지 않는다.** `-srgb` 포맷도 저장된 값을 그대로 0~1로 정규화할 뿐이라,
-    /// 선형 값이 필요하면 호출 측이 변환한다. float 포맷은 정규화하지 않으므로
-    /// **1.0을 넘는 값과 음수가 그대로 살아서 나온다** — HDR 결과를 검증하는 근거가 이것이다.
+    /// **No color-space conversion happens.** Even a `-srgb` format is merely normalized to 0...1
+    /// as stored, so a caller who needs linear values converts them. Float formats are not
+    /// normalized at all, so **values above 1.0 and negative values survive intact** — that is what
+    /// makes verifying HDR results possible.
     ///
-    /// - Throws: 좌표가 범위를 벗어나거나, 채널로 풀 수 없는 포맷(팩된 포맷·정수 포맷 등)이면
-    ///           `WGPUError.validation`. 그런 포맷은 `data`를 직접 해석해야 한다.
+    /// - Throws: `WGPUError.validation` if the coordinate is out of range, or if the format cannot
+    ///           be expanded into channels (packed or integer formats). Interpret `data` directly
+    ///           for those.
     public func rgba(x: Int, y: Int) throws -> SIMD4<Float> {
         guard x >= 0, y >= 0, x < width, y < height else {
-            throw WGPUError.validation("픽셀 (\(x), \(y))이 \(width)×\(height) 범위를 벗어났다")
+            throw WGPUError.validation("pixel (\(x), \(y)) is outside the \(width)×\(height) bounds")
         }
         guard let layout = Self.channelLayout(of: format) else {
             throw WGPUError.validation(
-                "\(format.rawValue)은 rgba(x:y:)로 풀 수 없는 포맷이다 — data를 직접 해석할 것"
+                "\(format.rawValue) cannot be expanded by rgba(x:y:) — interpret data directly"
             )
         }
         let stride = bytesPerPixel
         let offset = y * bytesPerRow + x * stride
         guard offset >= 0, offset + stride <= data.count else {
             throw WGPUError.validation(
-                "픽셀 (\(x), \(y))의 바이트가 버퍼(\(data.count)B) 밖이다 — bytesPerRow(\(bytesPerRow))를 확인할 것"
+                "bytes for pixel (\(x), \(y)) fall outside the buffer (\(data.count)B) — check bytesPerRow (\(bytesPerRow))"
             )
         }
 
@@ -65,7 +69,7 @@ public struct WGPUPixelReadback: Sendable, Equatable {
                     let byte = raw.load(fromByteOffset: offset + channel, as: UInt8.self)
                     result[channel] = Float(byte) / 255
                 case .snorm8:
-                    // snorm은 -128과 -127이 모두 -1.0이다 (WebGPU 명세의 클램프 규칙).
+                    // In snorm both -128 and -127 are -1.0 (the spec's clamping rule).
                     let byte = raw.load(fromByteOffset: offset + channel, as: Int8.self)
                     result[channel] = max(Float(byte) / 127, -1)
                 case .float16:
@@ -83,7 +87,7 @@ public struct WGPUPixelReadback: Sendable, Equatable {
         return result
     }
 
-    // MARK: - 채널 배치
+    // MARK: - Channel layout
 
     private enum ChannelKind {
         case unorm8, snorm8, float16, float32
@@ -101,10 +105,10 @@ public struct WGPUPixelReadback: Sendable, Equatable {
         }
     }
 
-    /// 채널이 균일한 크기로 늘어서 있는 포맷만 다룬다.
-    /// `rgb10a2unorm`·`rgb10a2uint`·`rg11b10ufloat`·`rgb9e5ufloat`처럼 비트가 채널 경계를
-    /// 넘어 팩된 것과 정수 포맷은 nil —
-    /// 정규화된 float으로 펴는 것이 오히려 값을 왜곡하므로 호출 측에 넘긴다.
+    /// Handles only formats whose channels sit in uniform-width slots.
+    /// Formats that pack bits across channel boundaries (`rgb10a2unorm`, `rgb10a2uint`,
+    /// `rg11b10ufloat`, `rgb9e5ufloat`) and integer formats return nil — expanding those into
+    /// normalized floats would distort the values, so we leave them to the caller.
     private static func channelLayout(of format: WGPUTextureFormat) -> ChannelLayout? {
         switch format {
         case .r8unorm: return ChannelLayout(.unorm8, 1)
@@ -126,25 +130,25 @@ public struct WGPUPixelReadback: Sendable, Equatable {
 
     // MARK: - half → float
 
-    /// IEEE 754 binary16 비트를 `Float`으로 편다.
+    /// Expands IEEE 754 binary16 bits into a `Float`.
     ///
-    /// 표준 `Float16`을 쓰지 않는 것은 그 타입이 x86_64 macOS에서 빠지기 때문이다.
-    /// 되읽기는 CI를 포함해 어디서든 돌아야 하므로 비트 조작으로 직접 편다.
+    /// We avoid the standard `Float16` because that type is unavailable on x86_64 macOS. Readback
+    /// has to work everywhere, CI included, so we expand it by hand with bit manipulation.
     static func float(fromHalf bits: UInt16) -> Float {
         let sign = UInt32(bits & 0x8000) << 16
         let exponent = Int((bits >> 10) & 0x1F)
         let mantissa = UInt32(bits & 0x03FF)
 
-        // half의 지수 바이어스는 15, float은 127이다.
+        // half's exponent bias is 15; float's is 127.
         let bias = 127 - 15
 
         if exponent == 0x1F {
-            // Inf / NaN — 지수를 전부 1로 채우고 가수는 그대로 옮긴다.
+            // Inf / NaN — fill the exponent with ones and carry the mantissa across.
             return Float(bitPattern: sign | 0x7F80_0000 | (mantissa << 13))
         }
         if exponent == 0 {
             if mantissa == 0 { return Float(bitPattern: sign) }   // ±0
-            // 서브노멀 — float에서는 정규수가 되므로, 암묵 1이 제자리에 올 때까지 밀어 올린다.
+            // Subnormal — normal in float, so shift up until the implicit 1 lands in place.
             var shiftedExponent = 0
             var shiftedMantissa = mantissa
             while shiftedMantissa & 0x0400 == 0 {

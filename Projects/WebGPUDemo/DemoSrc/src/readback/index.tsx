@@ -5,7 +5,7 @@ import { GPUBufferUsage, GPUMapMode } from '../webgpu.js'
 const BARS = 64
 const WORKGROUP_SIZE = 32
 
-/** 막대 높이를 GPU에서 계산해 스토리지 버퍼에 쓴다. */
+/** Computes the bar heights on the GPU and writes them into a storage buffer. */
 const COMPUTE_SHADER = /* wgsl */ `
 struct Params {
   time: f32,
@@ -26,10 +26,10 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
 }
 `
 
-/** 같은 스토리지 버퍼를 정점 셰이더가 읽어 막대를 그린다. */
+/** The vertex shader reads the same storage buffer and draws the bars. */
 const RENDER_SHADER = /* wgsl */ `
 @group(0) @binding(0) var<storage, read> heights: array<f32>;
-@group(0) @binding(1) var<uniform> count: vec4f;   // x = 막대 수
+@group(0) @binding(1) var<uniform> count: vec4f;   // x = the bar count
 
 struct VertexOutput {
   @builtin(position) position: vec4f,
@@ -73,8 +73,8 @@ function setup({ device, context, format, report }: SceneContext) {
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
     label: 'heights',
   })
-  // 리드백은 **전용 스테이징 버퍼**로 받는다. MAP_READ는 COPY_DST와만 조합할 수 있고(명세),
-  // 매핑 중인 버퍼는 큐 작업에서 거부되므로 계산 버퍼를 직접 매핑하면 다음 프레임이 막힌다.
+  // The readback goes into a **dedicated staging buffer**. MAP_READ can only combine with COPY_DST (spec),
+  // and a buffer being mapped is rejected by queue operations, so mapping the compute buffer directly would block the next frame.
   const staging = device.createBuffer({
     size: BARS * 4,
     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
@@ -151,7 +151,7 @@ function setup({ device, context, format, report }: SceneContext) {
     pass.draw(6, BARS)
     pass.end()
 
-    // 30프레임에 한 번만 CPU로 읽는다 — GPU 완료를 기다리는 경로라 프레임마다 하면 안 된다.
+    // Only read to the CPU once every 30 frames — it waits for GPU completion, so it must not be per frame.
     const wantsReadback = ++frame % 30 === 0 && !reading
     if (wantsReadback) encoder.copyBufferToBuffer(heights, 0, staging, 0, BARS * 4)
 
@@ -170,12 +170,12 @@ function setup({ device, context, format, report }: SceneContext) {
             sum += value
           }
           report(
-            `CPU가 읽은 값 ${values.length}개 · 최대 ${max.toFixed(3)} · 평균 ${(sum / values.length).toFixed(3)}`
+            `${values.length} values read by the CPU · max ${max.toFixed(3)} · mean ${(sum / values.length).toFixed(3)}`
           )
         })
-        .catch((error: unknown) => report(`리드백 실패: ${String(error)}`))
+        .catch((error: unknown) => report(`readback failed: ${String(error)}`))
         .finally(() => {
-          // 매핑을 풀어야 다음 프레임의 copyBufferToBuffer가 이 버퍼를 다시 쓸 수 있다.
+          // The mapping must be released for the next frame's copyBufferToBuffer to use this buffer again.
           staging.unmap()
           reading = false
         })
@@ -184,5 +184,5 @@ function setup({ device, context, format, report }: SceneContext) {
 }
 
 root.render(
-  <DemoScene title="컴퓨트 · 리드백" subtitle="GPU가 계산한 값을 mapAsync로 CPU가 확인" setup={setup} />
+  <DemoScene title="Compute · readback" subtitle="The CPU checks GPU-computed values with mapAsync" setup={setup} />
 )

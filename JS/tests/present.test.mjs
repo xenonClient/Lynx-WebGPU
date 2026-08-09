@@ -1,15 +1,15 @@
 /**
- * flush의 `present` 표시 — 어떤 배치가 프레임 제출이고 어떤 배치가 내부 제출인가.
+ * flush's `present` marker — which batches are frame submissions and which are internal ones.
  *
- * `popErrorScope`·`mapAsync`는 결과를 받으려고 프레임 중간에 제출한다. 이 배치가 프레임
- * 제출로 취급되면, 획득해 둔 캔버스 텍스처가 그리기도 전에 present되고 핸들이 만료되어
- * 뒤따르는 출력 패스가 통째로 거부된다 (Three.js 지연 파이프라인 생성에서 실제로 난 사고).
+ * `popErrorScope` and `mapAsync` submit mid-frame to get a result. If such a batch were treated as a frame
+ * submission, an acquired canvas texture would be presented before it is drawn and its handle expired, so
+ * the following output pass would be rejected wholesale (a real incident with three.js's deferred pipeline creation).
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { installNativeMock, makeDevice } from './helpers.mjs';
 
-test('queue.submit은 프레임 제출(present: true)로 나간다', async () => {
+test('queue.submit goes out as a frame submission (present: true)', async () => {
   const state = installNativeMock();
   const device = await makeDevice();
 
@@ -20,7 +20,7 @@ test('queue.submit은 프레임 제출(present: true)로 나간다', async () =>
   assert.equal(state.executeCalls[0].present, true);
 });
 
-test('popErrorScope의 즉시 제출은 내부 제출(present: false)이다', async () => {
+test('popErrorScope\'s immediate submission is an internal one (present: false)', async () => {
   const state = installNativeMock();
   const device = await makeDevice();
 
@@ -30,13 +30,13 @@ test('popErrorScope의 즉시 제출은 내부 제출(present: false)이다', as
   assert.equal(state.executeCalls.length, 1);
   assert.equal(state.executeCalls[0].present, false);
 
-  // 뒤따르는 진짜 프레임 제출은 여전히 present: true다.
+  // The real frame submission that follows is still present: true.
   device.createBuffer({ size: 16, usage: 0x40 });
   device.queue.submit([]);
   assert.equal(state.executeCalls[1].present, true);
 });
 
-test('mapAsync의 즉시 제출도 내부 제출이다', async () => {
+test('mapAsync\'s immediate submission is internal too', async () => {
   const state = installNativeMock({ readBufferResult: { ok: true, data: new ArrayBuffer(16) } });
   const device = await makeDevice();
 

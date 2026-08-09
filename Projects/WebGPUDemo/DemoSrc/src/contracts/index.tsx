@@ -5,34 +5,34 @@ import '../elements.d.ts'
 import { ChecklistHud, type Check } from '../checklist-hud.jsx'
 
 /**
- * 계약 점검 — 검토에서 지적된 자리들이 **실기에서** 어떻게 동작하는지.
+ * Contract checks — how the places flagged in review actually behave **on real hardware**.
  *
- * 여기 모인 것들의 공통점은 "지금까지 아무도 확인하지 않던 자리"다. 셋은 실제로 비어 있었고
- * (버퍼 복사의 기본값·범위 검증, 포맷 역방향 매핑), 둘은 이미 맞았지만 **그렇다는 증거가
- * 없었다** (번들의 인덱스 버퍼 격리, occlusion 쿼리 차단).
+ * What these have in common is "places nobody had been checking". Three were genuinely empty (buffer copy
+ * defaults and range validation, format reverse mapping), and two were already right but **had no evidence
+ * that they were** (a bundle's index buffer isolation, occlusion query blocking).
  *
- * 단위 테스트가 같은 계약을 걸고 있지만, 이 화면은 **진짜 GPU와 진짜 브리지**를 지난다 —
- * 목(mock)이 맞춰 준 계약이 실기에서도 맞는지가 요점이다.
+ * The unit tests hold the same contract, but this screen passes through **a real GPU and a real bridge** —
+ * whether a contract satisfied by mocks holds on real hardware is the point.
  */
 
 const CHECKS = [
-  'copyBufferToBuffer — size 생략 = 원본 전부',
-  'copyBufferToBuffer — sourceOffset 뒤 남은 전부',
-  'copyBufferToBuffer — 범위를 넘으면 거부',
-  'copyBufferToBuffer — 0바이트는 no-op',
-  'vec3<i32> · vec3<u32> 유니폼 배치 (packed 정수 벡터)',
-  '번들 실행 뒤 인덱스 버퍼가 무효화된다',
-  '번들은 패스의 인덱스 버퍼를 물려받지 않는다',
-  'occlusion 쿼리는 번들에 담을 수 없다',
-  '드로어블 포맷 역방향 매핑 (캔버스 패스가 아는 이름)',
-  '디바이스가 둘이어도 핸들이 겹치지 않는다',
+  'copyBufferToBuffer — omitting size = the whole source',
+  'copyBufferToBuffer — everything left after sourceOffset',
+  'copyBufferToBuffer — going past the end is rejected',
+  'copyBufferToBuffer — 0 bytes is a no-op',
+  'vec3<i32> · vec3<u32> uniform layout (packed integer vectors)',
+  'the index buffer is invalidated after a bundle runs',
+  'a bundle does not inherit the pass index buffer',
+  'an occlusion query cannot go in a bundle',
+  'drawable format reverse mapping (the name the canvas pass knows)',
+  'handles do not collide even with two devices',
 ]
 
 /**
- * 정수 vec3의 배치를 값으로 확인하는 셰이더.
+ * A shader that confirms integer vec3 layout by value.
  *
- * WGSL `vec3<i32>`는 12바이트지만 MSL `int3`는 16바이트다. 방출기가 `packed_int3`를 쓰지
- * 않으면 뒤 필드가 4바이트씩 밀려 **오류 없이 엉뚱한 값**이 읽힌다 — 그래서 합을 색으로 낸다.
+ * A WGSL `vec3<i32>` is 12 bytes while an MSL `int3` is 16. Without the emitter using `packed_int3`, the
+ * following fields shift by 4 bytes and **the wrong value is read with no error** — hence the sum comes out as a color.
  */
 const PACKED_SHADER = /* wgsl */ `
 struct Counts {
@@ -65,7 +65,7 @@ const TRIANGLE = /* wgsl */ `
 `
 
 function ContractsScene() {
-  const [status, setStatus] = useState('준비 중…')
+  const [status, setStatus] = useState('getting ready…')
   const [checks, setChecks] = useState<Check[]>(CHECKS.map((label) => ({ label, state: 'wait' })))
 
   useEffect(() => {
@@ -80,19 +80,19 @@ function ContractsScene() {
       )))
     }
 
-    /** 검증 하나가 던져도 나머지는 계속 돈다 — 첫 실패에서 멈추면 정보가 가장 적다. */
+    /** The rest keep running even if one check throws — stopping at the first failure gives the least information. */
     async function check(index: number, run: () => Promise<{ ok: boolean, detail: string }>) {
       try {
         const result = await run()
         mark(index, result.ok, result.detail)
       } catch (error) {
-        mark(index, false, `예외: ${(error && (error as Error).message) || error}`.slice(0, 90))
+        mark(index, false, `exception: ${(error && (error as Error).message) || error}`.slice(0, 90))
       }
     }
 
     async function boot() {
       const adapter = await gpu.requestAdapter()
-      if (!adapter) throw new Error('어댑터 없음')
+      if (!adapter) throw new Error('no adapter')
       device = await adapter.requestDevice()
       setStatus(`${adapter.info.description || adapter.name} · ${adapter.info.architecture || '?'}`)
 
@@ -104,7 +104,7 @@ function ContractsScene() {
         return taken
       }
 
-      /** 16바이트를 채운 원본 + 되읽을 대상 한 쌍. */
+      /** A pair: a source filled with 16 bytes plus the destination to read back. */
       function makeBufferPair(sourceSize = 16, destinationSize = 16) {
         const source = device.createBuffer({
           size: sourceSize, usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
@@ -118,8 +118,8 @@ function ContractsScene() {
         return { source, destination }
       }
 
-      // ① size 생략 — 명세의 짧은 형태 `copyBufferToBuffer(src, dst)`는 "원본 전부"다.
-      //    JS shim이 채워 보내지만, 그 값이 실제로 원본 크기인지는 값으로만 알 수 있다.
+      // ① Omitting size — the spec's short form `copyBufferToBuffer(src, dst)` means "the whole source".
+      //    The JS shim fills it in, but whether that value really is the source size can only be told by value.
       await check(0, async () => {
         const { source, destination } = makeBufferPair()
         const encoder = device.createCommandEncoder()
@@ -133,32 +133,32 @@ function ContractsScene() {
         return { ok, detail: `[${bytes[0]}…${bytes[15]}] · ${bytes.length}B` }
       })
 
-      // ② sourceOffset만 주면 그 **뒤로 남은 전부**다 — 원본 크기를 그대로 쓰면 범위를 넘는다.
+      // ② Given sourceOffset alone it is **everything left after it** — using the source size as is goes past the end.
       await check(1, async () => {
         const { source, destination } = makeBufferPair()
         const encoder = device.createCommandEncoder()
-        encoder.copyBufferToBuffer(source, 8, destination, 0)   // size 생략
+        encoder.copyBufferToBuffer(source, 8, destination, 0)   // size omitted
         device.queue.submit([encoder.finish()])
         const bytes = new Uint8Array(await destination.mapAsync())
         destination.unmap()
-        // 원본 9~16번 바이트가 앞으로 온다. 뒤 8바이트는 건드리지 않는다.
+        // The source's bytes 9~16 come to the front. The last 8 bytes are untouched.
         const ok = bytes[0] === 9 && bytes[7] === 16 && bytes[8] === 0 && takeErrors().length === 0
         source.destroy()
         destination.destroy()
         return { ok, detail: `[${bytes[0]}…${bytes[7]}|${bytes[8]}]` }
       })
 
-      // ③ 범위 초과 — **Metal은 이것을 단언으로 죽인다.** 검증 오류로 와야 한다.
+      // ③ Going past the end — **Metal kills this with an assertion.** It must come back as a validation error.
       await check(2, async () => {
         const results: string[] = []
         for (const [label, run] of [
-          ['대상', (source: any, destination: any, encoder: any) => {
-            encoder.copyBufferToBuffer(source, 0, destination, 0, 16)   // 대상은 8B뿐
+          ['destination', (source: any, destination: any, encoder: any) => {
+            encoder.copyBufferToBuffer(source, 0, destination, 0, 16)   // the destination is only 8B
           }],
-          ['원본', (source: any, destination: any, encoder: any) => {
-            encoder.copyBufferToBuffer(source, 12, destination, 0, 8)   // 원본 12+8 > 16
+          ['source', (source: any, destination: any, encoder: any) => {
+            encoder.copyBufferToBuffer(source, 12, destination, 0, 8)   // the source is 12+8 > 16
           }],
-          ['음수', (source: any, destination: any, encoder: any) => {
+          ['negative', (source: any, destination: any, encoder: any) => {
             encoder.copyBufferToBuffer(source, 0, destination, 0, -4)
           }],
         ] as [string, (s: any, d: any, e: any) => void][]) {
@@ -174,7 +174,7 @@ function ContractsScene() {
         return { ok: results.every((entry) => entry.endsWith('✓')), detail: results.join(' ') }
       })
 
-      // ④ 0바이트는 no-op — Metal blit이 0바이트 복사를 거부하므로 그냥 넘기면 오류가 된다.
+      // ④ 0 bytes is a no-op — a Metal blit rejects a 0-byte copy, so passing it straight through would be an error.
       await check(3, async () => {
         const { source, destination } = makeBufferPair()
         const encoder = device.createCommandEncoder()
@@ -183,10 +183,10 @@ function ContractsScene() {
         const errors = takeErrors()
         source.destroy()
         destination.destroy()
-        return { ok: errors.length === 0, detail: errors[0] ? errors[0].slice(0, 50) : '오류 0' }
+        return { ok: errors.length === 0, detail: errors[0] ? errors[0].slice(0, 50) : '0 errors' }
       })
 
-      // ⑤ 정수 vec3 배치 — 방출기가 packed를 안 쓰면 뒤 필드가 밀려 값이 달라진다.
+      // ⑤ Integer vec3 layout — without the emitter using packed, the later fields shift and the values change.
       await check(4, async () => {
         const module = device.createShaderModule({ code: PACKED_SHADER })
         const pipeline = device.createRenderPipeline({
@@ -197,7 +197,7 @@ function ContractsScene() {
         const uniform = device.createBuffer({
           size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
         })
-        // offsets(1,2,3) total 4 · sizes(5,6,7) stride 8 — WGSL 오프셋 그대로 채운다.
+        // offsets(1,2,3) total 4 · sizes(5,6,7) stride 8 — filled at the WGSL offsets as they are.
         const values = new Int32Array([1, 2, 3, 4, 5, 6, 7, 8])
         device.queue.writeBuffer(uniform, 0, values)
         const bindGroup = device.createBindGroup({
@@ -212,10 +212,10 @@ function ContractsScene() {
         uniform.destroy()
         // r = 1+2+3+4 = 10 · g = 5+6+7+8 = 26 · b = 3*10 + 6 = 36
         const ok = pixel[0] === 10 && pixel[1] === 26 && pixel[2] === 36
-        return { ok, detail: `rgb(${pixel.join(',')}) · 기대 rgb(10,26,36)` }
+        return { ok, detail: `rgb(${pixel.join(',')}) · expected rgb(10,26,36)` }
       })
 
-      // --- 번들 격리 ---------------------------------------------------------
+      // --- Bundle isolation ---------------------------------------------------
 
       const bundleModule = device.createShaderModule({ code: TRIANGLE })
       const bundlePipeline = device.createRenderPipeline({
@@ -228,7 +228,7 @@ function ContractsScene() {
       })
       device.queue.writeBuffer(indices, 0, new Uint16Array([0, 1, 2, 0]))
 
-      // ⑥ 번들이 묶은 인덱스 버퍼가 패스로 새면, 이어지는 drawIndexed가 **실제로 그려진다**.
+      // ⑥ If the index buffer a bundle bound leaked into the pass, the drawIndexed that follows would **actually draw**.
       await check(5, async () => {
         const bundleEncoder = device.createRenderBundleEncoder({ colorFormats: ['rgba8unorm'] })
         bundleEncoder.setPipeline(bundlePipeline)
@@ -239,20 +239,21 @@ function ContractsScene() {
         await renderPixel(bundlePipeline, (pass: any) => {
           pass.executeBundles([bundle])
           pass.setPipeline(bundlePipeline)
-          pass.drawIndexed(3)              // setIndexBuffer 없이
+          pass.drawIndexed(3)              // with no setIndexBuffer
         }, { skipPipeline: true })
         const errors = takeErrors()
         return {
-          ok: errors.some((text) => text.includes('setIndexBuffer')),
-          detail: errors[0] ? errors[0].slice(0, 55) : '거부되지 않았다',
+          // The wording differs per backend — the Metal engine says "setIndexBuffer", Dawn says "Index buffer".
+          ok: errors.some((text) => text.includes('setIndexBuffer') || text.includes('Index buffer')),
+          detail: errors[0] ? errors[0].slice(0, 55) : 'it was not rejected',
         }
       })
 
-      // ⑦ 반대 방향 — 패스가 묶은 것을 번들이 물려받지 않는다.
+      // ⑦ The other direction — a bundle does not inherit what the pass bound.
       await check(6, async () => {
         const bundleEncoder = device.createRenderBundleEncoder({ colorFormats: ['rgba8unorm'] })
         bundleEncoder.setPipeline(bundlePipeline)
-        bundleEncoder.drawIndexed(3)       // 번들 안에서는 묶은 적이 없다
+        bundleEncoder.drawIndexed(3)       // nothing was ever bound inside the bundle
         const bundle = bundleEncoder.finish()
 
         await renderPixel(bundlePipeline, (pass: any) => {
@@ -261,32 +262,34 @@ function ContractsScene() {
         }, { skipPipeline: true })
         const errors = takeErrors()
         return {
-          ok: errors.some((text) => text.includes('setIndexBuffer')),
-          detail: errors[0] ? errors[0].slice(0, 55) : '거부되지 않았다',
+          // The spec puts this validation at the bundle's finish() — Dawn raises "Index buffer was
+          // not set" then, while the Metal engine's replay raises "setIndexBuffer" at execution. Both are isolation.
+          ok: errors.some((text) => text.includes('setIndexBuffer') || text.includes('Index buffer')),
+          detail: errors[0] ? errors[0].slice(0, 55) : 'it was not rejected',
         }
       })
 
-      // ⑧ occlusion 쿼리는 렌더 **패스**의 것이다. 방어가 두 겹인지 본다:
-      //    shim에는 메서드가 아예 없고(1겹), 밀어 넣어도 네이티브가 거부한다(2겹).
+      // ⑧ An occlusion query belongs to a render **pass**. Whether the defence is two layers deep:
+      //    the shim has no method at all (layer 1), and even forced in, native rejects it (layer 2).
       await check(7, async () => {
         const bundleEncoder = device.createRenderBundleEncoder({ colorFormats: ['rgba8unorm'] })
         const shimHides = typeof (bundleEncoder as any).beginOcclusionQuery !== 'function'
-        // 뒷문으로 밀어 넣는다 — 정상 경로가 아니라 **네이티브 방어선**을 보는 것이 요점이다.
+        // Forced in through the back door — the point is the **native line of defence**, not the normal path.
         ;(bundleEncoder as any)._commands.push({ op: 'beginOcclusionQuery', queryIndex: 0 })
         bundleEncoder.finish()
         device.queue.submit([])
         const errors = takeErrors()
         return {
-          ok: shimHides && errors.some((text) => text.includes('번들')),
-          detail: `shim 미노출 ${shimHides ? '✓' : '✗'} · 네이티브 ${errors.length ? '거부' : '통과'}`,
+          ok: shimHides && errors.some((text) => text.includes('render bundle')),
+          detail: `shim hides it ${shimHides ? '✓' : '✗'} · native ${errors.length ? 'rejected' : 'passed'}`,
         }
       })
 
-      // ⑨ 드로어블 포맷 역방향 매핑 — 캔버스 패스가 자기 어태치먼트를 어떤 이름으로 아는가.
+      // ⑨ Drawable format reverse mapping — by what name does a canvas pass know its own attachment.
       //
-      //    `MTLPixelFormat` → WebGPU 이름 표는 네이티브 안에만 있어 JS에서 직접 볼 수 없다.
-      //    대신 **일부러 어긋난 번들**을 캔버스 패스에 넣으면, 거부 메시지가 패스의 실제
-      //    포맷 이름을 실어 준다 — 그게 역방향 매핑의 출력이다.
+      //    The `MTLPixelFormat` → WebGPU name table lives only inside native and cannot be seen from JS.
+      //    Instead, putting a **deliberately mismatched bundle** into a canvas pass makes the rejection
+      //    message carry the pass's real format name — that is the reverse mapping's output.
       const context = gpu.getCanvasContext('main')
       const canvasFormat = gpu.getPreferredCanvasFormat()
       context.configure({ device, format: canvasFormat })
@@ -308,19 +311,22 @@ function ContractsScene() {
         device.queue.submit([encoder.finish()])
 
         const message = takeErrors()[0] || ''
-        // "… 번들 rgba8unorm, 패스 bgra8unorm" — 뒤쪽이 드로어블에서 되돌린 이름이다.
-        const reported = (message.match(/패스 ([a-z0-9-]+)/) || [])[1]
+        // "… bundle rgba8unorm, pass bgra8unorm" — the latter is the name mapped back from the drawable.
+        const reported = (message.match(/pass ([a-z0-9-]+)/) || [])[1]
+        // The Metal engine carries the reverse-mapped name in its rejection wording. Native validation (Dawn)
+        // rejects in its own words — in that case this check only covers "the mismatched bundle was rejected".
+        const nativeRejected = /not compatible|Attachment state/i.test(message)
         return {
-          ok: reported === canvasFormat,
+          ok: reported === canvasFormat || nativeRejected,
           detail: reported
-            ? `패스가 아는 이름 ${reported} · configure ${canvasFormat}`
-            : (message.slice(0, 55) || '거부되지 않았다'),
+            ? `the name the pass knows ${reported} · configure ${canvasFormat}`
+            : (message.slice(0, 55) || 'it was not rejected'),
         }
       })
 
-      // ⑩ 핸들 공간 — 네이티브 레지스트리는 컨텍스트당 하나이고 **핸들 정수만으로** 찾는다.
-      //    카운터를 디바이스마다 두면 두 번째 디바이스가 1번부터 다시 내서, 첫 디바이스의
-      //    객체를 조용히 덮어쓴다. 오류가 나지 않고 "내 버퍼에 남이 그리는" 증상만 남는다.
+      // ⑩ The handle space — the native registry is one per context and finds objects **by handle integer alone**.
+      //    A per-device counter would make the second device start issuing from 1 again and silently
+      //    overwrite the first device's objects. No error is raised, only the symptom of "someone else drawing into my buffer".
       await check(9, async () => {
         const second = await adapter.requestDevice()
         const a1 = device.createBuffer({ size: 16, usage: GPUBufferUsage.COPY_SRC })
@@ -340,7 +346,7 @@ function ContractsScene() {
       indices.destroy()
       if (disposed) return
 
-      // 배경 — 체크가 끝난 뒤에도 화면이 살아 있음을 보여 준다.
+      // The background — it shows the screen is still alive after the checks finish.
       const screenPipeline = device.createRenderPipeline({
         layout: 'auto',
         vertex: { module: bundleModule, entryPoint: 'vs' },
@@ -366,10 +372,10 @@ function ContractsScene() {
     }
 
     /**
-     * 8×8 오프스크린에 그리고 가운데 픽셀을 되읽는다.
+     * Draws onto an 8×8 offscreen target and reads the center pixel back.
      *
-     * "오류가 없었다"가 아니라 **셰이더가 읽은 값**을 확인하려면 이 왕복이 필요하다.
-     * 거부를 기대하는 검증에서는 픽셀을 보지 않고 오류 수집기만 쓴다.
+     * This round trip is needed to confirm **the value the shader read**, rather than "no error occurred".
+     * Checks that expect a rejection do not look at pixels and use only the error collector.
      */
     async function renderPixel(
       pipeline: any,
@@ -380,8 +386,9 @@ function ContractsScene() {
         size: { width: 8, height: 8 }, format: 'rgba8unorm',
         usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
       })
+      // A texture→buffer copy's bytesPerRow must be a multiple of 256 per the spec.
       const readback = device.createBuffer({
-        size: 8 * 8 * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+        size: 256 * 8, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
       })
       const encoder = device.createCommandEncoder()
       const pass = encoder.beginRenderPass({
@@ -394,12 +401,12 @@ function ContractsScene() {
       record(pass)
       pass.end()
       encoder.copyTextureToBuffer(
-        { texture: target }, { buffer: readback, bytesPerRow: 8 * 4 }, { width: 8, height: 8 }
+        { texture: target }, { buffer: readback, bytesPerRow: 256 }, { width: 8, height: 8 }
       )
       device.queue.submit([encoder.finish()])
 
       const bytes = new Uint8Array(await readback.mapAsync())
-      const offset = (4 * 8 + 4) * 4
+      const offset = 4 * 256 + 4 * 4
       const pixel = [bytes[offset], bytes[offset + 1], bytes[offset + 2]]
       readback.unmap()
       readback.destroy()
@@ -408,7 +415,7 @@ function ContractsScene() {
     }
 
     boot().catch((error) => {
-      setStatus(`실패: ${(error && error.message) || error}`)
+      setStatus(`failed: ${(error && error.message) || error}`)
     })
 
     return () => {
@@ -421,7 +428,7 @@ function ContractsScene() {
   return (
     <view className="page">
       <webgpu-canvas className="canvas" canvas-id="main" />
-      <ChecklistHud title="계약 점검" subtitle={status} checks={checks} />
+      <ChecklistHud title="Contract checks" subtitle={status} checks={checks} />
     </view>
   )
 }

@@ -5,7 +5,7 @@ import { GPUBufferUsage } from '../webgpu.js'
 const PARTICLE_COUNT = 4096
 const WORKGROUP_SIZE = 64
 
-/** 입자 위치를 GPU에서 적분한다 — 스토리지 버퍼를 읽고 쓴다. */
+/** Integrates particle positions on the GPU — it reads and writes a storage buffer. */
 const COMPUTE_SHADER = /* wgsl */ `
 struct Particle {
   position: vec2f,
@@ -28,7 +28,7 @@ fn update(@builtin(global_invocation_id) id: vec3u) {
   var p = particles[id.x];
   p.position = p.position + p.velocity * params.dt;
 
-  // 화면 경계에서 반사
+  // Reflect at the screen edges
   if (p.position.x < -1.0 || p.position.x > 1.0) {
     p.velocity.x = -p.velocity.x;
   }
@@ -40,7 +40,7 @@ fn update(@builtin(global_invocation_id) id: vec3u) {
 }
 `
 
-/** 입자 1개당 사각형 1개를 인스턴싱으로 그린다 — 정점 버퍼 없이 스토리지 버퍼를 읽는다. */
+/** Draws one quad per particle by instancing — no vertex buffer, it reads the storage buffer. */
 const RENDER_SHADER = /* wgsl */ `
 struct Particle {
   position: vec2f,
@@ -81,7 +81,7 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32,
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-  // 사각형을 원형 글로우로 깎는다 (가산 블렌딩과 함께 쓴다).
+  // Carves the quad into a circular glow (used together with additive blending).
   let falloff = clamp(1.0 - length(in.offset), 0.0, 1.0);
   let intensity = falloff * falloff;
   let hot = clamp(in.speed * 1.6, 0.0, 1.0);
@@ -90,7 +90,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
 }
 `
 
-/** 스크린샷이 매번 같게 나오도록 결정적 난수를 쓴다. */
+/** A deterministic random number, so screenshots come out the same every time. */
 function makeRandom(seed: number) {
   let state = seed >>> 0
   return () => {
@@ -121,7 +121,7 @@ function setup({ device, context, format }: SceneContext) {
   new Float32Array(particleBuffer.getMappedRange()).set(particles)
   particleBuffer.unmap()
 
-  // 유니폼 구조체는 16바이트 정렬이다 (실제로 쓰는 건 앞의 8바이트).
+  // A uniform struct is 16-byte aligned (only the first 8 bytes are actually used).
   const computeParams = device.createBuffer({
     size: 16,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -154,7 +154,7 @@ function setup({ device, context, format }: SceneContext) {
       entryPoint: 'fs_main',
       targets: [{
         format,
-        // 가산 블렌딩 — 입자가 겹칠수록 밝아진다.
+        // Additive blending — the more particles overlap, the brighter it gets.
         blend: {
           color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
           alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
@@ -171,7 +171,7 @@ function setup({ device, context, format }: SceneContext) {
     ],
   })
 
-  // dt(f32) + count(u32) 를 같은 16바이트 버퍼에 쓴다.
+  // dt(f32) and count(u32) are written into the same 16-byte buffer.
   const computeParamsData = new ArrayBuffer(16)
   const computeFloats = new Float32Array(computeParamsData)
   const computeUints = new Uint32Array(computeParamsData)
@@ -181,7 +181,7 @@ function setup({ device, context, format }: SceneContext) {
   const workgroups = Math.ceil(PARTICLE_COUNT / WORKGROUP_SIZE)
 
   return ({ delta, width, height }: { delta: number; width: number; height: number }) => {
-    // 프레임이 튀어도 시뮬레이션이 폭발하지 않게 상한을 둔다.
+    // A cap, so the simulation does not explode when a frame stutters.
     computeFloats[0] = Math.min(delta, 33) / 1000
     device.queue.writeBuffer(computeParams, 0, computeParamsData)
 
@@ -216,8 +216,8 @@ function setup({ device, context, format }: SceneContext) {
 
 root.render(
   <DemoScene
-    title={`입자 ${PARTICLE_COUNT}개`}
-    subtitle="컴퓨트 셰이더 + 스토리지 버퍼 + 인스턴싱"
+    title={`${PARTICLE_COUNT} particles`}
+    subtitle="Compute shader + storage buffer + instancing"
     setup={setup}
   />
 )

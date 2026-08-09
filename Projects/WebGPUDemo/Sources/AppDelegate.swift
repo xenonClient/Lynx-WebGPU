@@ -7,7 +7,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
-        // Lynx 런타임 초기화 — 앱 시작 시 1회.
+        // Lynx runtime initialization — once at app start.
         LynxEnv.sharedInstance()
         return true
     }

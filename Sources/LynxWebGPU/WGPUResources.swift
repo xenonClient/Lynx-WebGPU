@@ -10,21 +10,21 @@ public final class WGPUBufferObject {
     public let usage: WGPUBufferUsage
     public let label: String?
 
-    /// 지금 CPU에 매핑되어 있는가 (`mapAsync` ~ `unmap` 사이).
+    /// Whether it is currently mapped to the CPU (between `mapAsync` and `unmap`).
     ///
-    /// 명세는 매핑 중인 버퍼를 "unavailable"로 두어 **큐 작업에 쓰지 못하게** 한다. 이 구현은
-    /// `.storageModeShared` 버퍼를 스테이징 없이 그대로 읽으므로, 이 상태가 없으면 리드백이
-    /// GPU 완료를 기다리는 동안 다음 프레임의 쓰기가 같은 메모리에 겹칠 수 있다 — JS가 받는
-    /// 값이 기다린 프레임의 것이라는 보장이 사라진다.
+    /// The spec marks a mapped buffer "unavailable" so it **cannot be used in queue work**. This
+    /// implementation reads a `.storageModeShared` buffer directly without staging, so without this
+    /// state a write from the next frame could overlap the same memory while a readback waits on GPU
+    /// completion — and the guarantee that JS receives the frame it waited for disappears.
     ///
-    /// 읽기·쓰기 모두 `LynxWebGPUContext.executionLock` 아래에서만 일어난다.
+    /// Both reads and writes happen only under `LynxWebGPUContext.executionLock`.
     public var isMapped = false
 
     init(device: MTLDevice, descriptor: WGPUBufferDescriptor) throws {
-        // 통합 메모리(Apple GPU)에서는 shared가 CPU/GPU 양쪽에서 보이며 복사가 없다.
-        // writeBuffer / readBuffer 가 blit 없이 바로 memcpy로 끝나는 이유다.
+        // On unified memory (Apple GPUs) shared is visible to both CPU and GPU with no copy.
+        // That is why writeBuffer / readBuffer finish with a plain memcpy and no blit.
         guard let buffer = device.makeBuffer(length: max(descriptor.size, 1), options: .storageModeShared) else {
-            throw WGPUError.outOfMemory("버퍼 \(descriptor.size)B 생성 실패")
+            throw WGPUError.outOfMemory("failed to create a \(descriptor.size)B buffer")
         }
         self.buffer = buffer
         self.size = descriptor.size
@@ -40,11 +40,11 @@ public final class WGPUBufferObject {
         }
     }
 
-    /// CPU에서 버퍼에 쓴다. 범위를 벗어나면 validation 오류.
+    /// Writes into the buffer from the CPU. Out of range is a validation error.
     func write(_ data: Data, offset: Int) throws {
         guard offset >= 0, offset + data.count <= size else {
             throw WGPUError.validation(
-                "writeBuffer 범위 초과 — offset \(offset) + \(data.count)B > 버퍼 크기 \(size)B"
+                "writeBuffer out of range — offset \(offset) + \(data.count)B > buffer size \(size)B"
             )
         }
         data.withUnsafeBytes { raw in
@@ -55,7 +55,7 @@ public final class WGPUBufferObject {
 
     func read(offset: Int, length: Int) throws -> Data {
         guard offset >= 0, length >= 0, offset + length <= size else {
-            throw WGPUError.validation("readBuffer 범위 초과 — offset \(offset) + \(length)B > 버퍼 크기 \(size)B")
+            throw WGPUError.validation("readBuffer out of range — offset \(offset) + \(length)B > buffer size \(size)B")
         }
         return Data(bytes: buffer.contents().advanced(by: offset), count: length)
     }
@@ -63,22 +63,22 @@ public final class WGPUBufferObject {
 
 /// `GPUQuerySet`.
 ///
-/// 두 종류가 Metal에서 전혀 다른 물건으로 내려간다:
-/// - `occlusion` — 평범한 `MTLBuffer`다. 렌더 패스가 `visibilityResultBuffer`로 물고,
-///   드로우가 통과시킨 샘플 수를 쿼리 인덱스마다 8바이트로 쌓는다.
-/// - `timestamp` — `MTLCounterSampleBuffer`다. 버퍼가 아니라 카운터 샘플 저장소라
-///   blit의 `resolveCounters`로만 꺼낼 수 있다.
+/// The two kinds land as completely different things in Metal:
+/// - `occlusion` — an ordinary `MTLBuffer`. The render pass holds it as `visibilityResultBuffer` and
+///   accumulates the samples a draw passed, 8 bytes per query index.
+/// - `timestamp` — an `MTLCounterSampleBuffer`. Not a buffer but a counter sample store, extractable
+///   only through a blit's `resolveCounters`.
 ///
-/// 그래서 `resolveQuerySet`도 종류에 따라 다른 blit 명령을 쓴다.
+/// So `resolveQuerySet` uses a different blit command per kind too.
 public final class WGPUQuerySetObject {
-    /// 결과 하나의 크기 — 두 종류 다 `u64`다 (명세와 Metal이 일치한다).
+    /// Size of one result — both kinds are `u64` (spec and Metal agree).
     static let resultStride = 8
 
     public let type: WGPUQueryType
     public let count: Int
-    /// `occlusion`일 때의 결과 버퍼.
+    /// The result buffer when this is an `occlusion` set.
     let visibilityBuffer: MTLBuffer?
-    /// `timestamp`일 때의 카운터 샘플 버퍼.
+    /// The counter sample buffer when this is a `timestamp` set.
     let counterBuffer: MTLCounterSampleBuffer?
 
     init(device: MTLDevice, descriptor: WGPUQuerySetDescriptor) throws {
@@ -89,9 +89,9 @@ public final class WGPUQuerySetObject {
         case .occlusion:
             let length = descriptor.count * Self.resultStride
             guard let buffer = device.makeBuffer(length: length, options: .storageModeShared) else {
-                throw WGPUError.outOfMemory("occlusion 쿼리 버퍼 \(length)B 생성 실패")
+                throw WGPUError.outOfMemory("failed to create a \(length)B occlusion query buffer")
             }
-            // 쓰이지 않은 쿼리 슬롯이 쓰레기 값을 돌려주지 않도록 0으로 깐다.
+            // Zero it so unused query slots do not hand back garbage.
             memset(buffer.contents(), 0, length)
             if let label = descriptor.label { buffer.label = label }
             visibilityBuffer = buffer
@@ -103,8 +103,8 @@ public final class WGPUQuerySetObject {
                     where: { $0.name == MTLCommonCounterSet.timestamp.rawValue }
                   ) else {
                 throw WGPUError.unsupported(
-                    "이 기기는 패스 경계 타임스탬프 샘플링을 지원하지 않는다 "
-                        + "(adapter.features.has('timestamp-query')로 미리 확인할 것)"
+                    "this device does not support pass-boundary timestamp sampling "
+                        + "(check adapter.features.has('timestamp-query') first)"
                 )
             }
             let counterDescriptor = MTLCounterSampleBufferDescriptor()
@@ -115,17 +115,17 @@ public final class WGPUQuerySetObject {
             do {
                 counterBuffer = try device.makeCounterSampleBuffer(descriptor: counterDescriptor)
             } catch {
-                throw WGPUError.backend("타임스탬프 샘플 버퍼 생성 실패: \(error.localizedDescription)")
+                throw WGPUError.backend("timestamp sample buffer creation failed: \(error.localizedDescription)")
             }
             visibilityBuffer = nil
         }
     }
 
-    /// 쿼리 구간이 이 셋 안에 들어오는지. 넘으면 Metal이 단언으로 죽는다.
+    /// Whether a query range fits this set. Overrun kills Metal with an assertion.
     func checkRange(first: Int, count queryCount: Int, path: String?) throws {
         guard first >= 0, queryCount >= 0, first + queryCount <= count else {
             throw WGPUError.validation(
-                "쿼리 범위를 벗어났다 — \(first)부터 \(queryCount)개, 쿼리셋 크기 \(count)",
+                "query range out of bounds — \(queryCount) queries from \(first), query set holds \(count)",
                 path: path
             )
         }
@@ -138,7 +138,7 @@ public final class WGPUTextureObject {
     public let format: WGPUTextureFormat
     public let size: WGPUExtent3D
     public let sampleCount: Int
-    /// 스왑체인 드로어블에서 온 텍스처인가 (직접 파괴하면 안 된다).
+    /// Whether the texture came from a swapchain drawable (it must not be destroyed directly).
     let isDrawable: Bool
 
     init(device: MTLDevice, descriptor: WGPUTextureDescriptor) throws {
@@ -160,13 +160,13 @@ public final class WGPUTextureObject {
         metalDescriptor.mipmapLevelCount = descriptor.mipLevelCount
         metalDescriptor.sampleCount = descriptor.sampleCount
         metalDescriptor.usage = WGPUMetalMapping.textureUsage(descriptor.usage)
-        // 렌더 타깃/멀티샘플은 CPU가 접근할 수 없는 private 저장소가 훨씬 빠르다.
-        // readback이 필요하면 blit으로 shared 버퍼에 내린다 (`copyTextureToBuffer`).
+        // Render targets and multisample textures are far faster in private storage the CPU cannot reach.
+        // When readback is needed we blit down into a shared buffer (`copyTextureToBuffer`).
         metalDescriptor.storageMode = descriptor.sampleCount > 1 ? .private : .private
 
         guard let texture = device.makeTexture(descriptor: metalDescriptor) else {
             throw WGPUError.outOfMemory(
-                "텍스처 생성 실패 (\(descriptor.size.width)x\(descriptor.size.height) \(descriptor.format.rawValue))"
+                "texture creation failed (\(descriptor.size.width)x\(descriptor.size.height) \(descriptor.format.rawValue))"
             )
         }
         if let label = descriptor.label { texture.label = label }
@@ -177,33 +177,33 @@ public final class WGPUTextureObject {
         self.isDrawable = false
     }
 
-    /// 블록 압축 텍스처의 제약. **Metal은 이것들을 단언으로 처리해 프로세스를 죽인다** —
-    /// 여기서 미리 잡아 명세대로 검증 오류로 돌려준다.
+    /// Limits on block-compressed textures. **Metal handles these with an assertion and kills the
+    /// process** — we catch them first and return the spec's validation error instead.
     private static func validateCompressed(_ descriptor: WGPUTextureDescriptor, on device: MTLDevice) throws {
         let format = descriptor.format
         guard format.isCompressed else { return }
         guard WGPUDeviceCapability.supportsCompression(format, on: device) else {
             let feature = WGPUDeviceCapability.compressionFamily(format).featureName ?? "?"
             throw WGPUError.validation(
-                "이 기기는 \(format.rawValue)를 지원하지 않는다 — adapter.features의 '\(feature)'를 먼저 확인할 것"
+                "this device does not support \(format.rawValue) — check adapter.features for '\(feature)' first"
             )
         }
-        // 압축 포맷은 샘플링·복사만 된다 (명세: RENDER_ATTACHMENT·STORAGE_BINDING 금지).
+        // Compressed formats can only be sampled and copied (spec: no RENDER_ATTACHMENT or STORAGE_BINDING).
         let forbidden: WGPUTextureUsage = [.renderAttachment, .storageBinding]
         guard descriptor.usage.isDisjoint(with: forbidden) else {
             throw WGPUError.validation(
-                "압축 텍스처(\(format.rawValue))는 렌더 타깃이나 스토리지로 쓸 수 없다 (usage \(descriptor.usage))"
+                "a compressed texture (\(format.rawValue)) cannot be a render target or storage (usage \(descriptor.usage))"
             )
         }
         guard descriptor.dimension == .twoD else {
-            throw WGPUError.validation("압축 텍스처는 2d만 된다 (\(descriptor.dimension.rawValue) 요청)")
+            throw WGPUError.validation("compressed textures must be 2d (\(descriptor.dimension.rawValue) requested)")
         }
         guard descriptor.sampleCount == 1 else {
-            throw WGPUError.validation("압축 텍스처는 멀티샘플이 될 수 없다 (sampleCount \(descriptor.sampleCount))")
+            throw WGPUError.validation("a compressed texture cannot be multisampled (sampleCount \(descriptor.sampleCount))")
         }
     }
 
-    /// 캔버스 드로어블 텍스처를 감싼다.
+    /// Wraps a canvas drawable texture.
     init(drawableTexture: MTLTexture, format: WGPUTextureFormat) {
         self.texture = drawableTexture
         self.format = format
@@ -212,11 +212,12 @@ public final class WGPUTextureObject {
         self.isDrawable = true
     }
 
-    /// staging 버퍼의 CPU 데이터를 텍스처로 복사하는 blit을 **프레임 커맨드 버퍼에** 인코딩한다.
+    /// Encodes the blit copying staging buffer CPU data into a texture **onto the frame command buffer**.
     ///
-    /// 자체 커맨드 버퍼를 만들어 완주를 기다리던 방식은 (1) 호출마다 GPU가 빌 때까지 JS 스레드를
-    /// 세웠고 (2) 아직 커밋되지 않은 프레임 버퍼보다 **먼저** 실행되어 스트림 순서를 깼다.
-    /// 같은 큐의 커밋 순서가 곧 실행 순서이므로, 프레임 blit에 태우면 둘 다 해결된다.
+    /// The old approach of making its own command buffer and waiting for it to finish (1) stalled the
+    /// JS thread until the GPU drained on every call and (2) ran **before** the not-yet-committed frame
+    /// buffer, breaking stream order. Commit order on one queue is execution order, so riding the frame
+    /// blit solves both.
     func encodeWrite(
         from staging: MTLBuffer,
         origin: WGPUOrigin3D,
@@ -226,7 +227,7 @@ public final class WGPUTextureObject {
         rowsPerImage: Int,
         blit: MTLBlitCommandEncoder
     ) {
-        // rowsPerImage는 **블록 행** 단위다 (명세 GPUTexelCopyBufferLayout). 비압축은 픽셀 행과 같다.
+        // rowsPerImage is measured in **block rows** (spec GPUTexelCopyBufferLayout). Uncompressed formats match pixel rows.
         let bytesPerImage = bytesPerRow * max(rowsPerImage, format.blockRows(height: size.height))
         if texture.textureType == .type3D {
             blit.copy(
@@ -241,7 +242,7 @@ public final class WGPUTextureObject {
                 destinationOrigin: MTLOrigin(x: origin.x, y: origin.y, z: origin.z)
             )
         } else {
-            // 배열 텍스처는 한 번에 한 슬라이스만 복사할 수 있다 (Metal 규칙 — depth는 3D 전용).
+            // An array texture can only copy one slice at a time (a Metal rule — depth is 3D only).
             for layer in 0..<max(size.depthOrArrayLayers, 1) {
                 blit.copy(
                     from: staging,
@@ -264,7 +265,7 @@ public final class WGPUTextureViewObject {
     public let texture: MTLTexture
     public let format: WGPUTextureFormat
     public let sampleCount: Int
-    /// 이 뷰가 캔버스 드로어블에서 왔다면 present 대상이다.
+    /// If this view came from a canvas drawable, it is a present target.
     let drawable: WGPUDrawable?
 
     init(source: WGPUTextureObject, descriptor: WGPUTextureViewDescriptor, drawable: WGPUDrawable?) throws {
@@ -286,7 +287,7 @@ public final class WGPUTextureViewObject {
                 levels: descriptor.baseMipLevel..<(descriptor.baseMipLevel + max(levels, 1)),
                 slices: descriptor.baseArrayLayer..<(descriptor.baseArrayLayer + max(layers, 1))
             ) else {
-                throw WGPUError.validation("createTextureView 실패 — 포맷/차원이 원본 텍스처와 호환되지 않는다")
+                throw WGPUError.validation("createTextureView failed — the format/dimension is not compatible with the source texture")
             }
             self.texture = view
         }
@@ -316,31 +317,32 @@ public final class WGPUSamplerObject {
             metalDescriptor.compareFunction = WGPUMetalMapping.compareFunction(compare)
         }
         guard let sampler = device.makeSamplerState(descriptor: metalDescriptor) else {
-            throw WGPUError.backend("샘플러 생성 실패")
+            throw WGPUError.backend("sampler creation failed")
         }
         self.sampler = sampler
     }
 }
 
-/// `GPUShaderModule` — WGSL을 파싱해 두고, MSL 방출·컴파일은 파이프라인 생성 시점에 한다.
+/// `GPUShaderModule` — parses WGSL up front; MSL emission and compilation happen at pipeline creation.
 public final class WGPUShaderModuleObject {
     public let language: WGPUShaderLanguage
     public let label: String?
-    /// WGSL일 때만 존재한다.
+    /// Present only for WGSL.
     public let wgsl: WGSLShaderModule?
     private let rawSource: String
-    /// (진입점 조합 + 바인딩 배정) → 컴파일된 라이브러리.
+    /// (entry point combination + binding assignment) → the compiled library.
     private var libraryCache: [String: MTLLibrary] = [:]
     private let lock = NSLock()
 
-    /// 컴파일 진단 (`getCompilationInfo()`가 돌려준다).
+    /// Compilation diagnostics (returned by `getCompilationInfo()`).
     ///
-    /// 명세에서 **셰이더 모듈은 컴파일에 실패해도 만들어진다** — 오류는 이 목록과 파이프라인
-    /// 생성 실패로 드러난다. 그래서 파싱이 깨져도 객체를 등록하고 여기에 이유를 담는다.
-    /// (핸들이 아예 없으면 이후 명령이 "존재하지 않는다"로만 깨져 원인을 알 수 없다.)
+    /// In the spec **a shader module is created even when compilation fails** — the error surfaces
+    /// through this list and a pipeline creation failure. So we register the object even on a broken
+    /// parse and carry the reason here. (With no handle at all, later commands break only with "does
+    /// not exist" and the cause is unknowable.)
     public private(set) var compilationMessages: [WGPUError] = []
 
-    /// 이 모듈이 쓸 수 있는 상태인가 (WGSL 파싱이 성공했는가).
+    /// Whether this module is usable (whether WGSL parsing succeeded).
     public var isValid: Bool { language != .wgsl || wgsl != nil }
 
     init(descriptor: WGPUShaderModuleDescriptor) {
@@ -358,32 +360,32 @@ public final class WGPUShaderModuleObject {
             self.compilationMessages = [error]
         } catch {
             self.wgsl = nil
-            self.compilationMessages = [.validation("WGSL 파싱 실패: \(error.localizedDescription)")]
+            self.compilationMessages = [.validation("WGSL parse failed: \(error.localizedDescription)")]
         }
     }
 
-    /// 파이프라인 생성에서 나온 진단을 덧붙인다 (MSL 컴파일 실패 등).
+    /// Appends diagnostics produced by pipeline creation (MSL compilation failure, and the like).
     func record(_ error: WGPUError) {
         lock.lock()
         defer { lock.unlock() }
-        // 같은 셰이더로 파이프라인을 여러 개 만들면 같은 오류가 되풀이된다 — 중복은 걸러 낸다.
+        // Building several pipelines from one shader repeats the same error — duplicates are filtered.
         if !compilationMessages.contains(error) { compilationMessages.append(error) }
     }
 
-    /// 명세의 **"get the entry point"** — 이름을 생략하면 그 스테이지의 **유일한** 진입점을 쓴다.
+    /// The spec's **"get the entry point"** — omitting the name uses the stage's **only** entry point.
     ///
-    /// `entryPoint`는 명세에서 필수 멤버가 아니다. 넘겨짚어 `"main"`을 쓰면 진입점 이름이 다른
-    /// 셰이더가 통째로 거부된다 — three.js의 밉맵 셰이더(`mainVS` + `main_2d` …)가 그렇게 깨졌다.
+    /// `entryPoint` is not a required member in the spec. Guessing `"main"` would reject entire shaders
+    /// whose entry points are named otherwise — three.js's mipmap shaders (`mainVS` + `main_2d`, …) broke that way.
     ///
-    /// MSL 모듈은 리플렉션이 없어 스테이지를 셀 수 없다. 그쪽은 `"main"`을 관례로 삼되,
-    /// **함수가 실제로 없으면 Metal이 그 자리에서 잡는다** (`makeFunction`이 nil을 준다).
+    /// An MSL module has no reflection, so stages cannot be counted. There `"main"` is the convention,
+    /// and **if the function really is absent Metal catches it on the spot** (`makeFunction` returns nil).
     func resolveEntryPoint(_ requested: String?, stage: WGSLStage, path: String? = nil) throws -> String {
-        // 파싱에 실패한 모듈이면 진짜 원인을 다시 알려 준다 — "진입점이 없다"로 바꿔 말하면
-        // 사용자가 셰이더 이름을 의심하며 엉뚱한 곳을 고친다.
+        // For a module that failed to parse, report the real cause again — restating it as "no entry
+        // point" sends the user off suspecting the shader name and fixing the wrong thing.
         if !isValid, let failure = compilationMessages.first {
             throw WGPUError(
                 kind: failure.kind,
-                message: "이 셰이더 모듈은 컴파일에 실패했다 — \(failure.message)",
+                message: "this shader module failed to compile — \(failure.message)",
                 path: path, line: failure.line
             )
         }
@@ -395,14 +397,14 @@ public final class WGPUShaderModuleObject {
         }
     }
 
-    /// 진입점 목록과 바인딩 배정에 맞는 `MTLLibrary`를 얻는다 (같은 조합은 재사용).
+    /// Obtains the `MTLLibrary` matching an entry point list and binding assignment (identical combinations are reused).
     func library(
         entryPoints: [String],
         bindings: WGSLBindingAssignment,
         constants: [String: Double] = [:],
         device: MTLDevice
     ) throws -> MTLLibrary {
-        // 파이프라인 상수까지 캐시 키에 넣는다 — 같은 셰이더라도 상수가 다르면 다른 MSL이 나온다.
+        // Pipeline constants go into the cache key too — the same shader with different constants yields different MSL.
         let constantsKey = constants.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")
         let key = "\(entryPoints.sorted().joined(separator: "|"))#\(bindings.signature)#\(constantsKey)"
         lock.lock()
@@ -422,7 +424,7 @@ public final class WGPUShaderModuleObject {
             library = try device.makeLibrary(source: source, options: nil)
         } catch {
             throw WGPUError.backend(
-                "MSL 컴파일 실패: \(error.localizedDescription)\n--- 생성된 MSL ---\n\(numbered(source))"
+                "MSL compilation failed: \(error.localizedDescription)\n--- generated MSL ---\n\(numbered(source))"
             )
         }
         lock.lock()
@@ -431,7 +433,7 @@ public final class WGPUShaderModuleObject {
         return library
     }
 
-    /// WGSL 진입점 이름 → MSL 함수 이름 (`main`처럼 MSL이 거부하는 이름은 바뀐다).
+    /// WGSL entry point name → MSL function name (names MSL rejects, such as `main`, are changed).
     func metalFunctionName(for entryPoint: String) -> String {
         language == .wgsl ? WGSLShaderModule.mslFunctionName(for: entryPoint) : entryPoint
     }

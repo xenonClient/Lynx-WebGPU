@@ -27,7 +27,7 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-  // UV를 회전 + 확대해서 샘플러의 repeat 모드와 필터링을 눈으로 확인한다.
+  // The UV is rotated and scaled up, to see the sampler's repeat mode and filtering by eye.
   let centered = (in.uv - vec2f(0.5, 0.5)) * vec2f(uniforms.aspect, 1.0);
   let s = sin(uniforms.time * 0.25);
   let c = cos(uniforms.time * 0.25);
@@ -37,7 +37,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
 }
 `
 
-/** 8×8 체커보드를 CPU에서 만들어 writeTexture로 올린다. */
+/** Builds an 8×8 checkerboard on the CPU and uploads it with writeTexture. */
 function makeCheckerboard(size: number) {
   const pixels = new Uint8Array(size * size * 4)
   for (let y = 0; y < size; y++) {
@@ -125,5 +125,5 @@ function setup({ device, context, format }: SceneContext) {
 }
 
 root.render(
-  <DemoScene title="텍스처 · 샘플러" subtitle="writeTexture + repeat 샘플러 + textureSample" setup={setup} />
+  <DemoScene title="Texture · sampler" subtitle="writeTexture + a repeat sampler + textureSample" setup={setup} />
 )

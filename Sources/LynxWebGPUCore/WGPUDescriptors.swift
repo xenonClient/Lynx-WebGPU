@@ -1,18 +1,19 @@
 import Foundation
 
-// WebGPU 명세의 dictionary(descriptor)를 Swift 값 타입으로 옮긴 것.
-// 각 타입은 `init(from:)`으로 커맨드 스트림의 `[String: Any]`에서 직접 만들어지며,
-// 기본값은 명세의 default를 따른다 (명세에 default가 없는 필드만 required).
+// The WebGPU spec's dictionaries (descriptors) carried over as Swift value types.
+// Each type is built straight from the command stream's `[String: Any]` via `init(from:)`, and
+// defaults follow the spec (only fields the spec gives no default are required).
 
-// MARK: - 리소스
+// MARK: - Resources
 
 public struct WGPUBufferDescriptor {
     public var size: Int
     public var usage: WGPUBufferUsage
     public var mappedAtCreation: Bool
     public var label: String?
-    /// 명세 밖 확장: 생성과 동시에 채울 초기 데이터. `mappedAtCreation` + `getMappedRange` 왕복을
-    /// 커맨드 하나로 줄인다 (JS shim의 `mappedAtCreation`이 이 필드로 내려온다).
+    /// Extension beyond the spec: initial data to fill at creation. Collapses the
+    /// `mappedAtCreation` + `getMappedRange` round trip into one command (the JS shim's
+    /// `mappedAtCreation` arrives through this field).
     public var initialData: Data?
 
     public init(size: Int, usage: WGPUBufferUsage, mappedAtCreation: Bool = false, label: String? = nil, initialData: Data? = nil) {
@@ -25,26 +26,26 @@ public struct WGPUBufferDescriptor {
 
     public init(from reader: WGPUValueReader) throws {
         let initialData = try reader.optionalData("data")
-        // size 생략 시 초기 데이터 길이로 유추한다.
+        // With size omitted, infer it from the initial data length.
         size = reader.optionalInt("size") ?? (initialData?.count ?? 0)
         usage = try reader.requiredFlags("usage", WGPUBufferUsage.self)
         mappedAtCreation = reader.bool("mappedAtCreation", default: false)
         label = reader.optionalString("label")
         self.initialData = initialData
         guard size > 0 else {
-            throw WGPUError.validation("버퍼 크기는 1 이상이어야 한다", path: reader.path)
+            throw WGPUError.validation("buffer size must be at least 1", path: reader.path)
         }
         if let initialData, initialData.count > size {
             throw WGPUError.validation(
-                "초기 데이터(\(initialData.count)B)가 버퍼 크기(\(size)B)를 넘는다", path: reader.path
+                "initial data (\(initialData.count)B) exceeds the buffer size (\(size)B)", path: reader.path
             )
         }
-        // 매핑 usage는 복사와만 조합할 수 있다. Metal은 `.storageModeShared` 하나로 전부 되지만,
-        // 여기서 안 막으면 `QUERY_RESOLVE | MAP_READ` 같은 조합이 브라우저에서만 거부된다.
+        // Mapping usage may combine only with copies. Metal covers everything with `.storageModeShared`,
+        // but unchecked here a combination like `QUERY_RESOLVE | MAP_READ` is rejected only in a browser.
         try Self.validateMapUsage(usage, path: reader.path)
     }
 
-    /// 명세의 매핑 usage 배타 규칙 — `MAP_READ`는 `COPY_DST`와만, `MAP_WRITE`는 `COPY_SRC`와만.
+    /// The spec's mapping-usage exclusivity — `MAP_READ` only with `COPY_DST`, `MAP_WRITE` only with `COPY_SRC`.
     static func validateMapUsage(_ usage: WGPUBufferUsage, path: String?) throws {
         let rules: [(flag: WGPUBufferUsage, name: String, allowed: WGPUBufferUsage, allowedName: String)] = [
             (.mapRead, "MAP_READ", .copyDst, "COPY_DST"),
@@ -54,8 +55,8 @@ public struct WGPUBufferDescriptor {
             let extra = usage.subtracting([rule.flag, rule.allowed])
             guard extra.isEmpty else {
                 throw WGPUError.validation(
-                    "\(rule.name)는 \(rule.allowedName) 외의 usage와 함께 쓸 수 없다 "
-                        + "— 리드백은 \(rule.allowedName) 버퍼로 copyBufferToBuffer한 뒤 매핑할 것",
+                    "\(rule.name) cannot combine with usages other than \(rule.allowedName) "
+                        + "— for readback, copyBufferToBuffer into a \(rule.allowedName) buffer and map that",
                     path: path
                 )
             }
@@ -81,7 +82,7 @@ public struct WGPUTextureDescriptor {
         sampleCount = reader.int("sampleCount", default: 1)
         label = reader.optionalString("label")
         guard size.width > 0, size.height > 0, size.depthOrArrayLayers > 0 else {
-            throw WGPUError.validation("텍스처 크기의 모든 성분은 1 이상이어야 한다", path: reader.path)
+            throw WGPUError.validation("every component of a texture size must be at least 1", path: reader.path)
         }
     }
 }
@@ -154,7 +155,7 @@ public struct WGPUShaderModuleDescriptor {
     }
 }
 
-// MARK: - 바인딩
+// MARK: - Bindings
 
 public struct WGPUBufferBindingLayout: Equatable {
     public var type: WGPUBufferBindingType
@@ -206,14 +207,14 @@ public struct WGPUStorageTextureBindingLayout: Equatable {
     }
 }
 
-/// 바인딩 슬롯 하나가 받는 리소스 종류. 명세상 `buffer`/`sampler`/`texture`/`storageTexture` 중 정확히 하나다.
+/// The resource kind one binding slot takes. Per spec exactly one of `buffer`/`sampler`/`texture`/`storageTexture`.
 public enum WGPUBindingLayout: Equatable {
     case buffer(WGPUBufferBindingLayout)
     case sampler(WGPUSamplerBindingLayout)
     case texture(WGPUTextureBindingLayout)
     case storageTexture(WGPUStorageTextureBindingLayout)
 
-    /// Metal 인자 테이블 중 어디에 들어가는가 — 바인딩 인덱스 배정에 쓴다.
+    /// Which Metal argument table it lands in — used when assigning binding indices.
     public var metalSlotKind: WGPUMetalSlotKind {
         switch self {
         case .buffer: return .buffer
@@ -223,7 +224,7 @@ public enum WGPUBindingLayout: Equatable {
     }
 }
 
-/// Metal은 버퍼·텍스처·샘플러가 각각 독립된 인덱스 공간을 쓴다.
+/// Metal gives buffers, textures and samplers independent index spaces.
 public enum WGPUMetalSlotKind: String, Equatable, Sendable {
     case buffer, texture, sampler
 }
@@ -267,7 +268,7 @@ public struct WGPUBindGroupLayoutEntry: Equatable {
             ))
         } else {
             throw WGPUError.validation(
-                "buffer / sampler / texture / storageTexture 중 하나를 지정해야 한다", path: reader.path
+                "specify exactly one of buffer / sampler / texture / storageTexture", path: reader.path
             )
         }
     }
@@ -288,7 +289,7 @@ public struct WGPUBindGroupLayoutDescriptor {
     }
 }
 
-/// 바인드 그룹이 실제로 꽂는 리소스.
+/// The resource a bind group actually plugs in.
 public enum WGPUBindingResource {
     case buffer(handle: WGPUHandle, offset: Int, size: Int?)
     case sampler(WGPUHandle)
@@ -305,11 +306,12 @@ public struct WGPUBindGroupEntry {
         if let buffer = resourceReader.optionalHandle("buffer") {
             let offset = resourceReader.int("offset", default: 0)
             let size = resourceReader.optionalInt("size")
-            // 음수가 들어오면 `arrayLength()`용 크기 표를 채울 때 UInt32 변환이 트랩한다 —
-            // 잘못된 인자로 프로세스를 죽이지 않는다는 계약을 지키려면 여기서 거른다.
+            // A negative value traps the UInt32 conversion when filling the size table for
+            // `arrayLength()` — filtering here is what keeps the "bad arguments never kill the
+            // process" contract.
             guard offset >= 0, size.map({ $0 > 0 }) ?? true else {
                 throw WGPUError.validation(
-                    "바인딩의 offset은 0 이상, size는 1 이상이어야 한다", path: resourceReader.path
+                    "a binding's offset must be >= 0 and its size >= 1", path: resourceReader.path
                 )
             }
             resource = .buffer(handle: buffer, offset: offset, size: size)
@@ -319,7 +321,7 @@ public struct WGPUBindGroupEntry {
             resource = .textureView(view)
         } else {
             throw WGPUError.validation(
-                "buffer / sampler / textureView 중 하나의 핸들이 필요하다", path: resourceReader.path
+                "a handle for one of buffer / sampler / textureView is required", path: resourceReader.path
             )
         }
     }
@@ -337,7 +339,7 @@ public struct WGPUBindGroupDescriptor {
     }
 }
 
-/// 파이프라인이 쓰는 레이아웃. `"auto"`면 셰이더 리플렉션에서 유도한다.
+/// The layout a pipeline uses. `"auto"` derives it from shader reflection.
 public enum WGPUPipelineLayoutRef {
     case auto
     case explicit(WGPUHandle)
@@ -347,7 +349,7 @@ public enum WGPUPipelineLayoutRef {
             self = .explicit(handle)
         } else if let string = reader.optionalString(key) {
             guard string == "auto" else {
-                throw WGPUError.validation("layout은 \"auto\" 또는 GPUPipelineLayout 핸들이어야 한다", path: reader.path)
+                throw WGPUError.validation("layout must be \"auto\" or a GPUPipelineLayout handle", path: reader.path)
             }
             self = .auto
         } else {
@@ -366,7 +368,7 @@ public struct WGPUPipelineLayoutDescriptor {
     }
 }
 
-// MARK: - 파이프라인
+// MARK: - Pipelines
 
 public struct WGPUVertexAttribute: Equatable {
     public var format: WGPUVertexFormat
@@ -394,10 +396,10 @@ public struct WGPUVertexBufferLayout: Equatable {
 
 public struct WGPUVertexState {
     public var module: WGPUHandle
-    /// 생략할 수 있다 — 그때는 **그 스테이지의 유일한 진입점**을 쓴다 (명세의 "get the entry point").
+    /// May be omitted — then **the stage's only entry point** is used (the spec's "get the entry point").
     public var entryPoint: String?
     public var buffers: [WGPUVertexBufferLayout]
-    /// 파이프라인 상수 (`override`) 값.
+    /// Pipeline constant (`override`) values.
     public var constants: [String: Double]
 
     public init(from reader: WGPUValueReader) throws {
@@ -450,10 +452,10 @@ public struct WGPUColorTargetState {
 
 public struct WGPUFragmentState {
     public var module: WGPUHandle
-    /// 생략할 수 있다 — `WGPUVertexState.entryPoint`와 같은 규칙.
+    /// May be omitted — same rule as `WGPUVertexState.entryPoint`.
     public var entryPoint: String?
     public var targets: [WGPUColorTargetState]
-    /// 파이프라인 상수 (`override`) 값.
+    /// Pipeline constant (`override`) values.
     public var constants: [String: Double]
 
     public init(from reader: WGPUValueReader) throws {
@@ -485,10 +487,10 @@ public struct WGPUPrimitiveState {
     }
 }
 
-/// 앞면/뒷면 각각의 스텐실 동작 (`GPUStencilFaceState`).
+/// Per-face stencil behaviour (`GPUStencilFaceState`).
 ///
-/// 명세 기본값은 "아무것도 하지 않음"이다 — 비교는 `always`(항상 통과), 세 연산은 모두 `keep`.
-/// 그래서 `stencilFront`/`stencilBack`을 주지 않으면 스텐실이 결과에 영향을 주지 않는다.
+/// The spec default is "do nothing" — compare `always` (always passes) and all three ops `keep`.
+/// So omitting `stencilFront`/`stencilBack` leaves stencil with no effect on the result.
 public struct WGPUStencilFaceState: Equatable {
     public var compare: WGPUCompareFunction
     public var failOp: WGPUStencilOperation
@@ -520,13 +522,13 @@ public struct WGPUStencilFaceState: Equatable {
         )
     }
 
-    /// 스텐실 값을 **쓰지** 않는 상태인가 — `stencilReadOnly` 패스에서 허용되는 조건이다.
-    /// (비교만 하는 것은 읽기이므로 `compare`는 보지 않는다.)
+    /// Whether this state never **writes** stencil — the condition a `stencilReadOnly` pass allows.
+    /// (Comparing is reading, so `compare` is not consulted.)
     public var isWriteFree: Bool {
         failOp == .keep && depthFailOp == .keep && passOp == .keep
     }
 
-    /// 스텐실 값을 건드리지도 읽지도 않는 상태인가 — 기본값이면 상태를 만들 필요가 없다.
+    /// Whether it neither touches nor reads stencil — at the default there is no state to build.
     public var isNoOp: Bool { self == WGPUStencilFaceState() }
 }
 
@@ -554,21 +556,21 @@ public struct WGPUDepthStencilState {
         stencilReadMask = reader.int("stencilReadMask", default: 0xFFFF_FFFF)
         stencilWriteMask = reader.int("stencilWriteMask", default: 0xFFFF_FFFF)
         guard format.isDepthOrStencil else {
-            throw WGPUError.validation("depthStencil.format은 깊이/스텐실 포맷이어야 한다", path: reader.path)
+            throw WGPUError.validation("depthStencil.format must be a depth/stencil format", path: reader.path)
         }
-        // 스텐실 상태를 줬는데 포맷에 스텐실 성분이 없으면 Metal은 조용히 무시한다 —
-        // 스텐실 어태치먼트 없는 파이프라인에 스텐실 테스트만 붙은 물건이 오류 없이 생성되어
-        // "스텐실 마스킹이 왜 안 먹지"를 단서 없이 디버깅하게 된다.
+        // Give stencil state on a format with no stencil aspect and Metal ignores it silently — a
+        // pipeline with a stencil test but no stencil attachment is created without error, leaving
+        // you to debug "why isn't stencil masking working" with no clue at all.
         guard !usesStencil || format.hasStencil else {
             throw WGPUError.validation(
-                "stencilFront/stencilBack을 기본값 밖으로 주려면 format에 스텐실 성분이 있어야 한다 "
-                    + "(받은 것: \(format.rawValue))",
+                "to give stencilFront/stencilBack beyond their defaults, format must have a stencil aspect "
+                    + "(got: \(format.rawValue))",
                 path: reader.path
             )
         }
     }
 
-    /// 스텐실 테스트를 실제로 쓰는가 — 어느 면이든 기본값이 아니면 스텐실 상태를 만든다.
+    /// Whether stencil testing is actually used — any non-default face means we build stencil state.
     public var usesStencil: Bool { !stencilFront.isNoOp || !stencilBack.isNoOp }
 }
 
@@ -607,9 +609,9 @@ public struct WGPURenderPipelineDescriptor {
 public struct WGPUComputePipelineDescriptor {
     public var layout: WGPUPipelineLayoutRef
     public var module: WGPUHandle
-    /// 생략할 수 있다 — `WGPUVertexState.entryPoint`와 같은 규칙.
+    /// May be omitted — same rule as `WGPUVertexState.entryPoint`.
     public var entryPoint: String?
-    /// 파이프라인 상수 (`override`) 값.
+    /// Pipeline constant (`override`) values.
     public var constants: [String: Double]
     public var label: String?
 
@@ -623,7 +625,7 @@ public struct WGPUComputePipelineDescriptor {
     }
 }
 
-// MARK: - 렌더 패스
+// MARK: - Render pass
 
 public struct WGPURenderPassColorAttachment {
     public var view: WGPUHandle
@@ -662,24 +664,24 @@ public struct WGPURenderPassDepthStencilAttachment {
         stencilLoadOp = try reader.optionalEnum("stencilLoadOp", WGPULoadOp.self)
         stencilStoreOp = try reader.optionalEnum("stencilStoreOp", WGPUStoreOp.self)
         stencilReadOnly = reader.bool("stencilReadOnly", default: false)
-        // 명세는 readOnly와 load/store op을 함께 주는 것을 금지한다 — 둘이 모순이기 때문이다
-        // ("쓰지 않겠다"면서 저장 방식을 정하는 셈).
+        // The spec forbids giving readOnly together with load/store ops — they contradict each other
+        // (declaring "I will not write" while specifying how to store).
         guard !depthReadOnly || (depthLoadOp == nil && depthStoreOp == nil) else {
             throw WGPUError.validation(
-                "depthReadOnly와 depthLoadOp/depthStoreOp는 함께 줄 수 없다", path: reader.path
+                "depthReadOnly cannot be combined with depthLoadOp/depthStoreOp", path: reader.path
             )
         }
         guard !stencilReadOnly || (stencilLoadOp == nil && stencilStoreOp == nil) else {
             throw WGPUError.validation(
-                "stencilReadOnly와 stencilLoadOp/stencilStoreOp는 함께 줄 수 없다", path: reader.path
+                "stencilReadOnly cannot be combined with stencilLoadOp/stencilStoreOp", path: reader.path
             )
         }
     }
 }
 
-/// 패스 경계에서 타임스탬프를 찍을 자리 (`GPURenderPassTimestampWrites`).
+/// Where timestamps are taken at pass boundaries (`GPURenderPassTimestampWrites`).
 ///
-/// 두 인덱스는 각각 생략할 수 있다 — 시작만, 끝만 찍는 것도 명세상 유효하다.
+/// Either index may be omitted — sampling only the start or only the end is valid per spec.
 public struct WGPUPassTimestampWrites {
     public var querySet: WGPUHandle
     public var beginningOfPassWriteIndex: Int?
@@ -720,10 +722,10 @@ public struct WGPUComputePassDescriptor {
     }
 }
 
-// MARK: - 쿼리
+// MARK: - Queries
 
 public struct WGPUQuerySetDescriptor {
-    /// 명세가 정한 쿼리셋 크기 상한 (`GPUQuerySetDescriptor.count` ≤ 4096).
+    /// The spec's cap on query set size (`GPUQuerySetDescriptor.count` <= 4096).
     public static let maxCount = 4096
 
     public var type: WGPUQueryType
@@ -734,31 +736,31 @@ public struct WGPUQuerySetDescriptor {
         type = try reader.requiredEnum("type", WGPUQueryType.self)
         count = try reader.requiredInt("count")
         label = reader.optionalString("label")
-        // 상한은 명세가 정한 값이다. Metal은 훨씬 큰 쿼리셋도 받아 주지만, 여기서 막지 않으면
-        // 브라우저에서만 깨지는 코드가 나간다 (`INDIRECT`/`QUERY_RESOLVE` usage와 같은 기준).
+        // The cap comes from the spec. Metal accepts far larger query sets, but unchecked here
+        // code ships that breaks only in a browser (same standard as `INDIRECT`/`QUERY_RESOLVE` usage).
         guard count > 0, count <= WGPUQuerySetDescriptor.maxCount else {
             throw WGPUError.validation(
-                "쿼리 개수는 1 이상 \(WGPUQuerySetDescriptor.maxCount) 이하여야 한다 (받은 값 \(count))",
+                "query count must be between 1 and \(WGPUQuerySetDescriptor.maxCount) (got \(count))",
                 path: reader.fieldPath("count")
             )
         }
     }
 }
 
-// MARK: - 렌더 번들
+// MARK: - Render bundles
 
-/// `GPURenderBundleEncoder`의 디스크립터.
+/// Descriptor for `GPURenderBundleEncoder`.
 ///
-/// 번들은 **어떤 모양의 패스에서 실행될지**를 미리 선언한다. 그 선언이 실제 패스와 어긋나면
-/// 명세상 오류다 — 이 구현은 번들을 명령 목록으로 되풀이하므로 Metal이 대신 잡아 주지 않아
-/// `executeBundles`에서 직접 확인한다.
+/// A bundle declares up front **what shape of pass it will run in**. A mismatch with the actual pass
+/// is a spec error — and since this implementation replays a bundle as a command list, Metal will
+/// not catch it, so `executeBundles` checks directly.
 public struct WGPURenderBundleDescriptor {
-    /// 컬러 어태치먼트별 포맷. `null`은 "그 슬롯은 비어 있다"는 뜻이다.
+    /// Format per color attachment. `null` means "that slot is empty".
     public var colorFormats: [WGPUTextureFormat?]
     public var depthStencilFormat: WGPUTextureFormat?
     public var sampleCount: Int
-    /// 이 번들이 깊이/스텐실을 **쓰지 않겠다**고 선언했는가.
-    /// read-only 패스에서 실행하려면 번들도 read-only여야 한다 (명세 요구).
+    /// Whether this bundle declared it will **not write** depth/stencil.
+    /// Running in a read-only pass requires the bundle to be read-only too (spec requirement).
     public var depthReadOnly: Bool
     public var stencilReadOnly: Bool
     public var label: String?
@@ -768,7 +770,7 @@ public struct WGPURenderBundleDescriptor {
             guard let raw else { return nil }
             guard let format = WGPUTextureFormat(rawValue: raw) else {
                 throw WGPUError.validation(
-                    "알 수 없는 컬러 포맷 \"\(raw)\"", path: reader.fieldPath("colorFormats")
+                    "unknown color format \"\(raw)\"", path: reader.fieldPath("colorFormats")
                 )
             }
             return format
@@ -778,19 +780,19 @@ public struct WGPURenderBundleDescriptor {
         depthReadOnly = reader.bool("depthReadOnly", default: false)
         stencilReadOnly = reader.bool("stencilReadOnly", default: false)
         label = reader.optionalString("label")
-        // 명세는 어태치먼트가 최소 하나 있기를 요구한다. 없으면 이 구현에서도 결국
-        // `makeRenderCommandEncoder`가 실패하지만, 오류가 몇 프레임 뒤 엉뚱한 자리에서 난다.
+        // The spec requires at least one attachment. Without one this implementation eventually fails
+        // in `makeRenderCommandEncoder` too, but the error lands frames later somewhere unrelated.
         guard colorFormats.contains(where: { $0 != nil }) || depthStencilFormat != nil else {
             throw WGPUError.validation(
-                "번들에는 어태치먼트가 최소 하나 있어야 한다 "
-                    + "(colorFormats에 non-null 하나 또는 depthStencilFormat)",
+                "a bundle needs at least one attachment "
+                    + "(one non-null entry in colorFormats, or depthStencilFormat)",
                 path: reader.path
             )
         }
     }
 }
 
-/// `<webgpu-canvas>` 표면 설정 (`GPUCanvasContext.configure`).
+/// `<webgpu-canvas>` surface configuration (`GPUCanvasContext.configure`).
 public struct WGPUCanvasConfiguration {
     public var canvasId: String
     public var format: WGPUTextureFormat
@@ -805,7 +807,7 @@ public struct WGPUCanvasConfiguration {
         usage = reader.flags("usage", WGPUTextureUsage.self, default: .renderAttachment)
         alphaMode = try reader.enumValue("alphaMode", default: WGPUCanvasAlphaMode.opaque)
         colorSpace = try reader.enumValue("colorSpace", default: WGPUPredefinedColorSpace.srgb)
-        // 명세에서 toneMapping은 `{mode: …}` 형태의 중첩 객체다.
+        // In the spec toneMapping is a nested object of the form `{mode: …}`.
         if let toneMapping = reader.object("toneMapping") {
             toneMappingMode = try toneMapping.enumValue(
                 "mode", default: WGPUCanvasToneMappingMode.standard

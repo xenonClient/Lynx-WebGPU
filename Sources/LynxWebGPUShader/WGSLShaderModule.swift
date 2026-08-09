@@ -1,15 +1,15 @@
 import Foundation
 import LynxWebGPUCore
 
-/// 파싱된 WGSL 셰이더 모듈.
+/// A parsed WGSL shader module.
 ///
-/// `createShaderModule` 시점에는 **파싱과 리플렉션만** 한다. MSL 방출은
-/// 파이프라인 레이아웃이 정해져야 바인딩 인덱스를 붙일 수 있으므로 파이프라인 생성 시점으로 미룬다
+/// At `createShaderModule` time it does **parsing and reflection only.** MSL emission is deferred to
+/// pipeline creation, because binding indices can only be assigned once the pipeline layout is known
 /// (`translateToMSL(entryPoints:bindings:)`).
 public final class WGSLShaderModule {
-    /// 원본 WGSL.
+    /// The original WGSL.
     public let source: String
-    /// 파이프라인 생성에 필요한 진입점·바인딩 정보.
+    /// Entry point and binding information needed to create a pipeline.
     public let reflection: WGSLShaderReflection
 
     private let ast: WGSLModule
@@ -20,12 +20,12 @@ public final class WGSLShaderModule {
         self.reflection = WGSLReflectionBuilder.build(ast)
     }
 
-    /// 지정한 진입점들을 담은 MSL 소스를 만든다.
+    /// Builds MSL source containing the requested entry points.
     ///
     /// - Parameters:
-    ///   - entryPoints: 이 파이프라인이 쓰는 진입점 이름 (버텍스/프래그먼트 또는 컴퓨트 1개).
-    ///   - bindings: `@group/@binding` → Metal 인덱스 배정.
-    ///   - constants: 파이프라인 상수(`override`) 값. 셰이더의 기본값을 덮어쓴다.
+    ///   - entryPoints: the entry point names this pipeline uses (vertex/fragment, or one compute).
+    ///   - bindings: `@group/@binding` → Metal index assignment.
+    ///   - constants: pipeline constant (`override`) values. They override the shader's defaults.
     public func translateToMSL(
         entryPoints: [String],
         bindings: WGSLBindingAssignment,
@@ -37,10 +37,11 @@ public final class WGSLShaderModule {
         return try emitter.emit(entryPoints: entryPoints)
     }
 
-    /// 파이프라인 상수를 AST에 미리 반영한다.
+    /// Folds pipeline constants into the AST up front.
     ///
-    /// 방출기와 배치 계산기가 같은 상수 테이블을 보게 하려면, 값을 따로 들고 다니는 것보다
-    /// **AST에 심어 두는 편**이 안전하다 (배열 길이가 override에 걸린 경우까지 자연히 풀린다).
+    /// To make the emitter and the layout calculator read the same constant table, **planting the
+    /// values in the AST** is safer than carrying them separately (it naturally covers the case where
+    /// an array length depends on an override).
     private static func applying(_ constants: [String: Double], to module: WGSLModule) -> WGSLModule {
         guard !constants.isEmpty else { return module }
         var updated = module
@@ -62,10 +63,10 @@ public final class WGSLShaderModule {
         return .floatLiteral(String(value))
     }
 
-    /// `layout: "auto"` 파이프라인이 쓸 바인드 그룹 레이아웃을 셰이더 선언에서 유도한다.
+    /// Derives the bind group layouts a `layout: "auto"` pipeline uses from the shader declarations.
     ///
-    /// 그룹 인덱스 순서의 배열을 돌려주며, 쓰이지 않는 그룹 자리는 빈 배열이다
-    /// (Metal 인덱스 배정이 그룹 순서에 의존하므로 자리를 비워 둬야 한다).
+    /// Returns an array in group index order, with an empty array where a group is unused (Metal index
+    /// assignment depends on group order, so the slot has to stay).
     public func autoBindGroupLayouts(entryPoints: [String]) -> [[WGPUBindGroupLayoutEntry]] {
         let used = reflection.resources(usedBy: entryPoints)
         guard let maximumGroup = used.map(\.group).max() else { return [] }
@@ -81,33 +82,37 @@ public final class WGSLShaderModule {
         return groups.map { $0.sorted { $0.binding < $1.binding } }
     }
 
-    /// WGSL 진입점 이름에 대응하는 **MSL 함수 이름**.
+    /// The **MSL function name** corresponding to a WGSL entry point name.
     ///
-    /// `main`처럼 MSL이 거부하는 이름은 방출 시 바뀌므로, `MTLLibrary.makeFunction(name:)`에는
-    /// 반드시 이 값을 넘겨야 한다.
+    /// Names MSL rejects, such as `main`, are renamed during emission, so this value is what must be
+    /// passed to `MTLLibrary.makeFunction(name:)`.
     public static func mslFunctionName(for entryPoint: String) -> String {
         MSLTypeMapping.functionName(entryPoint)
     }
 
-    /// 이 진입점들이 `arrayLength()`를 (전이적으로) 쓰는가.
+    /// Whether these entry points need the buffer size table.
     ///
-    /// 쓰면 런타임이 예약 인덱스에 버퍼 크기 표를 꽂아 줘야 한다
-    /// (`WGSLMetalLimits.bufferSizesIndex`).
+    /// Needed when they use `arrayLength()` or **index a runtime-sized array** — the latter because
+    /// clamping a range requires knowing the bound (robustness). When needed, the runtime must plug
+    /// the table into the reserved index (`WGSLMetalLimits.bufferSizesIndex`).
+    ///
+    /// **This must compute the same thing as the emitter** — a mismatch makes the shader read an unbound buffer.
     public func usesArrayLength(entryPoints: [String]) -> Bool {
-        let users = WGSLReflectionBuilder.functionsCalling("arrayLength", in: ast)
+        let users = WGSLReflectionBuilder.functionsNeedingBufferSizes(in: ast)
         return entryPoints.contains(where: users.contains)
     }
 
-    /// 진입점의 `@workgroup_size` — 컴퓨트 디스패치에서 threadsPerThreadgroup으로 쓴다.
+    /// The entry point's `@workgroup_size` — used as threadsPerThreadgroup in a compute dispatch.
     public func workgroupSize(of entryPoint: String) -> (x: Int, y: Int, z: Int)? {
         reflection.entryPoint(named: entryPoint)?.workgroupSize
     }
 
-    /// 명세의 **"get the entry point"** — 이름이 없으면 그 스테이지의 **유일한** 진입점을 쓴다.
+    /// The spec's **"get the entry point"** — with no name, use the stage's **only** entry point.
     ///
-    /// `entryPoint`는 명세에서 필수가 아니다. 생략하면 스테이지가 같은 진입점이 정확히 하나일 때
-    /// 그것을 쓰고, 없거나 둘 이상이면 오류다. `"main"`으로 넘겨짚으면 진입점 이름이 다른 셰이더가
-    /// 통째로 거부된다 — three.js의 밉맵 셰이더(`mainVS` + `main_2d` …)가 실제로 그렇게 깨졌다.
+    /// `entryPoint` is not required by the spec. Omitted, it uses the entry point when exactly one
+    /// exists for that stage, and is an error when there is none or more than one. Guessing `"main"`
+    /// would reject entire shaders whose entry points are named differently — three.js's mipmap
+    /// shaders (`mainVS` + `main_2d`, …) really did break that way.
     public func resolveEntryPoint(_ requested: String?, stage: WGSLStage) throws -> String {
         if let requested {
             _ = try requireEntryPoint(requested, stage: stage)
@@ -118,25 +123,25 @@ public final class WGSLShaderModule {
             let available = reflection.entryPoints.map { "\($0.name)(\($0.stage.rawValue))" }
             throw WGPUError.validation(
                 candidates.isEmpty
-                    ? "셰이더에 \(stage.rawValue) 진입점이 없다 (있는 것: \(available.joined(separator: ", ")))"
-                    : "\(stage.rawValue) 진입점이 \(candidates.count)개라 하나를 고를 수 없다 — "
-                        + "entryPoint를 지정할 것 (\(candidates.map(\.name).joined(separator: ", ")))"
+                    ? "the shader has no \(stage.rawValue) entry point (available: \(available.joined(separator: ", ")))"
+                    : "the shader has \(candidates.count) \(stage.rawValue) entry points, so one cannot be chosen — "
+                        + "specify entryPoint (\(candidates.map(\.name).joined(separator: ", ")))"
             )
         }
         return only.name
     }
 
-    /// 진입점이 존재하고 기대한 스테이지인지 확인한다.
+    /// Checks the entry point exists and belongs to the expected stage.
     public func requireEntryPoint(_ name: String, stage: WGSLStage) throws -> WGSLEntryPointInfo {
         guard let entryPoint = reflection.entryPoint(named: name) else {
             let available = reflection.entryPoints.map { "\($0.name)(\($0.stage.rawValue))" }
             throw WGPUError.validation(
-                "셰이더에 진입점 '\(name)'이(가) 없다 (있는 것: \(available.joined(separator: ", ")))"
+                "the shader has no entry point '\(name)' (available: \(available.joined(separator: ", ")))"
             )
         }
         guard entryPoint.stage == stage else {
             throw WGPUError.validation(
-                "진입점 '\(name)'은(는) \(entryPoint.stage.rawValue) 셰이더인데 \(stage.rawValue)로 쓰였다"
+                "entry point '\(name)' is a \(entryPoint.stage.rawValue) shader but was used as \(stage.rawValue)"
             )
         }
         return entryPoint

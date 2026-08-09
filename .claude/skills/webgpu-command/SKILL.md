@@ -6,7 +6,9 @@ description: Lynx-WebGPU에 새 WebGPU API(커맨드 스트림 op)를 끝에서 
 # WebGPU 커맨드 추가
 
 WebGPU API 하나를 늘리는 일은 **여섯 지점**을 순서대로 건드리는 일이다. 하나라도 빠지면
-"JS에서 부르면 아무 일도 안 일어남" 또는 "알 수 없는 명령" 오류가 난다.
+"JS에서 부르면 아무 일도 안 일어남" 또는 "알 수 없는 명령" 오류가 난다. 디스패치 표
+(`WGPUCommand`)에 케이스를 더한 뒤부터는 Swift 쪽 누락을 컴파일러가 잡아 준다 —
+**JS ↔ Swift 필드 이름과 디코더의 문자열 분기만은 여전히 사람이 맞춰야 한다.**
 
 ## 0. 먼저 확인
 
@@ -37,6 +39,10 @@ public struct WGPUFooDescriptor {
 - 명세에 기본값이 있는 필드는 `enumValue(_:default:)` / `int(_:default:)`를 쓴다. required는 명세가 required인 것만.
 - 검증(범위·조합)은 `init`에서 던진다. 여기서 막아야 Metal 검증 레이어의 단언(=크래시)까지 안 간다.
 
+**op 자체의 인자**(핸들·오프셋·개수)는 `WGPUCommands.swift`에 `WGPUFooBarCommand` 구조체로 —
+필드 이름의 출처를 Core 한 곳에 둔다. 생성 op이면 제네릭 `WGPUCreateCommand<Descriptor>`가
+`id` 처리를 대신하므로 디스크립터만 있으면 된다.
+
 ## 2. Metal 백엔드 (`Sources/LynxWebGPU/`)
 
 - 열거형 → Metal 변환은 `WGPUMetalMapping.swift`. **대응이 없으면 던진다.**
@@ -44,45 +50,65 @@ public struct WGPUFooDescriptor {
   `final class`로. 생성자에서 Metal 객체를 만들고 실패하면 `.outOfMemory` / `.backend`.
 - **디스크립터 `label`은 `if let`으로 감쌀 것** — Metal 검증 레이어는 nil label에 단언으로 죽는다.
 
-## 3. 해석기 (`WGPUCommandInterpreter.swift`)
+## 3. 디스패치 표 (`LynxWebGPUCore/WGPUCommand.swift`) + 엔진 (`WGPUBackendEngine.swift`) + 백엔드 동사
+
+먼저 **Core의 디스패치 표**에 세 줄 — 케이스, 디코더 분기, `opName` 분기:
 
 ```swift
-private func perform(_ command: WGPUValueReader, at index: Int) throws {
-    let op = try command.requiredString("op")
-    switch op {
-    // …
-    case "fooBar": try fooBar(command)      // ← 여기에 한 줄
+case fooBar(WGPUFooBarCommand)                                        // 케이스
+case "fooBar": self = .fooBar(try WGPUFooBarCommand(from: reader))    // init(from:)
+case .fooBar: return "fooBar"                                         // opName
+```
+
+여기까지 하면 **컴파일러가 나머지를 안내한다** — 케이스가 늘어난 순간 엔진의 default 없는
+switch가 깨져서, 분기 누락이 런타임 오류가 아니라 컴파일 오류가 된다.
+`Tests/LynxWebGPUCoreTests/WGPUCommandDecodeTests.swift`의 픽스처 표에도 한 줄 더한다
+(픽스처 수 단언이 op 수에 걸려 있다 — 함께 올린다).
+
+**엔진**(`LynxWebGPUCore/WGPUBackendEngine.swift`)의 `dispatch`에 케이스 한 줄과 op 함수를
+더한다 — 핸들 해석과 **명세 검증은 전부 여기서** 끝내고, 백엔드에는 해석이 끝난 값만 내린다:
+
+```swift
+case .fooBar(let c): try fooBar(c)      // dispatch — op 함수는 디코딩된 값만 받는다
 ```
 
 ```swift
-private func fooBar(_ command: WGPUValueReader) throws {
-    let encoder = try requireRenderEncoder()          // 패스가 필요한 명령이면
-    let target = try registry.lookup(
-        try command.requiredHandle("target"), as: WGPUFooObject.self, kind: "GPUFoo"
-    )
-    let buffer = try unmappedBuffer(command, field: "buffer")   // 버퍼를 쓰는 명령이면 반드시
+private func fooBar(_ command: WGPUFooBarCommand) throws {
+    try requireRenderPass()                           // 패스가 필요한 명령이면
+    let target = try texture(command.target, path: command.fieldPath("target"))
+    // 버퍼를 쓰는 명령이면 반드시 이 경로로 — 매핑 검사를 건너뛰면 mapAsync와 경쟁이 샌다
+    let buffer = try unmappedBuffer(command.buffer, path: command.fieldPath("buffer"))
     try applyDrawState()                              // draw/dispatch 계열이면 반드시
-    encoder.doSomething(target.metalThing)
+    try backend.fooBar(target.raw, buffer: buffer.raw, mode: command.mode)
 }
 ```
 
+그리고 **`WGPUBackend`(프로토콜)에 동사를** 더한다 — 여기부터 다시 컴파일러가 안내한다:
+동사가 늘면 **모든 백엔드가 컴파일에서 깨진다.** `WGPUMetalBackend`(Metal 인코딩)와
+`Projects/DawnCheck/Sources/DawnBackend.swift`(Dawn 인코딩 — JS 유래 정수는 `dawnU32` 계열로
+변환)를 함께 채운다.
+
 지켜야 할 것:
-- **버퍼는 `unmappedBuffer(_:field:)`로 꺼낸다.** `registry.lookup(..., as: WGPUBufferObject.self, …)`을
-  직접 부르면 매핑 검사를 건너뛰어, `mapAsync` 중인 버퍼에 GPU가 쓰는 경쟁이 그 경로로 샌다.
-- **드로우·디스패치 전 상태 확인은 `applyDrawState()` 하나다.** 바인드 그룹·정점 버퍼 완전성과
-  번들 격리 계약이 전부 여기 걸려 있다 — 새 드로우 op이 이걸 빠뜨리면 계약이 조용히 뚫린다.
-- **던지기만 한다.** 오류 수집·경로 부착은 `execute`가 한다.
-- **Metal이 봐 주지 않는 명세 제약은 직접 막는다.** 판단 기준은 둘이다:
-  - *Metal이 단언(=프로세스 종료)으로 처리하는가* → 막는다. 오류로 돌려주는 것이 이 구현의 계약이다
-    (예: `indirectOffset` 4바이트 정렬, 쿼리 인덱스 범위).
-  - *Metal에 그 개념이 아예 없는가* → 막는다. 여기서는 돌고 **브라우저에서만 깨지는** 코드가 나간다
-    (예: `INDIRECT`/`QUERY_RESOLVE` usage, 렌더 번들의 `colorFormats` 일치, `resolveQuerySet`의 256 정렬).
-  - 둘 다 아니면 Metal에 맡긴다 — 검증을 두 곳에 두면 어긋난다.
+- **버퍼는 엔진의 `unmappedBuffer(_:path:)`로 꺼낸다.** 레지스트리 lookup을 직접 부르면 매핑
+  검사를 건너뛰어, `mapAsync` 중인 버퍼에 GPU가 쓰는 경쟁이 그 경로로 샌다.
+- **드로우·디스패치 전 상태 확인은 엔진의 `applyDrawState()` 하나다.** 바인드 그룹·정점 버퍼
+  완전성과 번들 격리 계약이 전부 여기 걸려 있다 — 새 드로우 op이 이걸 빠뜨리면 계약이 조용히 뚫린다.
+- **던지기만 한다.** 오류 수집·경로 부착은 엔진의 `run`이 한다.
+- **백엔드가 봐 주지 않는 명세 제약은 엔진에서 막는다.** 판단 기준은 둘이다:
+  - *백엔드가 단언(=프로세스 종료)으로 처리할 수 있는가* → 엔진에서 막는다. 오류로 돌려주는
+    것이 이 구현의 계약이다 (예: `indirectOffset` 4바이트 정렬, 쿼리 인덱스 범위).
+  - *백엔드에 그 개념이 아예 없는가* → 엔진에서 막는다. 여기서는 돌고 **브라우저에서만
+    깨지는** 코드가 나간다 (예: `INDIRECT`/`QUERY_RESOLVE` usage, 렌더 번들의 `colorFormats`
+    일치, `resolveQuerySet`의 256 정렬).
+  - 둘 다 아니면 백엔드(GPU API의 네이티브 검증)에 맡긴다 — 검증을 두 곳에 두면 어긋난다.
+  - 백엔드 **기기 능력**(간접 인자, 압축 계열)은 동사/능력 질의로 백엔드가 답한다
+    (`ensureIndirectSupported()` · `supportsTextureCompression(_:)`).
 - 검증은 **부수효과보다 앞에** 둔다. 오류는 프레임을 죽이지 않고 누적되므로, 거부할 명령이
   인코더 상태를 이미 바꿔 놓으면 뒤의 정상 명령이 엉뚱한 상태에서 돈다
   (`applyDrawState()`보다 인자 검증이 먼저인 이유).
-- 리소스 생성 명령이면 `id`를 `requiredHandle("id")`로 받아 `registry.insert(_:at:)`.
-- blit(복사·업로드)이 필요하면 `activeBlitEncoder()` — 렌더/컴퓨트 패스 안에서는 알아서 거부된다.
+- 리소스 생성 명령이면 백엔드 동사가 돌려준 핸들을 엔진 래퍼(`WGPUEngineObjects.swift`)에
+  담아 `registry.insert(_:at:)` — 검증에 필요한 메타데이터(크기·usage·포맷)를 래퍼에 새긴다.
+- 복사·업로드 명령이면 엔진의 `requireNoOpenPass()`를 먼저 — 패스 안에서는 거부된다.
 - 프레임 안에서만 유효한 핸들이면 `frameScopedHandles`에 넣는다.
 
 ## 4. JS shim (`JS/webgpu.js` + `webgpu.d.ts`)
@@ -111,8 +137,8 @@ class GPURenderPassEncoder extends GPUPassEncoderBase {
 ```swift
 // (1) 동작 — 렌더 결과를 픽셀로 단언 (RenderPipelineTests)
 harness.executeExpectingSuccess([ …, ["op": "fooBar", "target": 3], … ])
-try harness.assertPixel(x: 32, y: 32, equals: (255, 0, 0, 255), "안쪽")
-try harness.assertPixel(x: 1, y: 1, equals: (0, 0, 255, 255), "바깥쪽")
+try harness.assertPixel(x: 32, y: 32, equals: (255, 0, 0, 255), "inside")
+try harness.assertPixel(x: 1, y: 1, equals: (0, 0, 255, 255), "outside")
 
 // (2) 계약 — 잘못 쓰면 크래시가 아니라 오류가 나는가 (CommandInterpreterTests)
 let result = harness.execute([["op": "fooBar", "target": 999]])
@@ -127,11 +153,11 @@ XCTAssertEqual(errors(result).first?["kind"] as? String, "validation")
 
 ```swift
 harness.executeExpectingSuccess(기존경로)
-try harness.assertPixel(x: 32, y: 32, equals: (255, 0, 0, 255), "실제로 그렸는지")
+try harness.assertPixel(x: 32, y: 32, equals: (255, 0, 0, 255), "it really drew")
 let reference = try harness.frameBytes()
 
 harness.executeExpectingSuccess(새경로)
-try harness.assertFrameEquals(reference, "계약은 같은 결과다")
+try harness.assertFrameEquals(reference, "the contract is the same result")
 ```
 
 **구현을 임시로 되돌려 테스트가 실제로 실패하는지 확인할 것.** 통과만 보고 넘어가면
@@ -160,7 +186,7 @@ arch -arm64 xcodebuild -workspace LynxWebGPUDemo.xcworkspace -scheme WebGPUDemo 
 
 | 증상 | 원인 |
 |---|---|
-| "알 수 없는 명령 'fooBar'" | 3번(해석기 switch) 누락 |
+| "알 수 없는 명령 'fooBar'" | 3번의 **디코더 분기**(`WGPUCommand.init(from:)`) 누락 — 케이스·`opName`·해석기 누락은 컴파일이 잡지만 문자열 분기만은 못 잡는다 (`WGPUCommandDecodeTests` 픽스처가 그물이다) |
 | JS에서 불러도 아무 일 없음 | 4번에서 `_commands` 대신 다른 배열에 push |
 | 바인딩이 안 꽂힌 채 draw | `applyDrawState()` 호출 누락 |
 | Metal 단언으로 크래시 | label nil, 또는 검증을 1번에서 안 했다 |

@@ -1,8 +1,8 @@
 /**
- * 리소스 수명 — GC 자동 해제(FinalizationRegistry)와 objects 카운트 전달.
+ * Resource lifetime — automatic release via GC (FinalizationRegistry) and the objects count coming through.
  *
- * GC 테스트는 `node --expose-gc`가 필요하다 (`npm test`가 켜 준다). 엔진이 조건을
- * 만족하지 않으면 건너뛴다 — 자동 해제 자체가 "지원되면 켜지는 안전망"이기 때문이다.
+ * The GC tests need `node --expose-gc` (`npm test` turns it on). If the engine does not meet the
+ * conditions they are skipped — automatic release is itself "a safety net that turns on where supported".
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -12,7 +12,7 @@ import { installNativeMock, makeDevice } from './helpers.mjs';
 const canAutoRelease =
   typeof globalThis.gc === 'function' && typeof FinalizationRegistry === 'function';
 
-/** gc → 파이널라이저 태스크 양보 → 제출을 반복하며 조건을 기다린다. */
+/** Repeats gc → yielding to the finalizer task → submitting, waiting for a condition. */
 async function collectUntil(device, predicate, rounds = 50) {
   for (let round = 0; round < rounds; round += 1) {
     globalThis.gc();
@@ -27,7 +27,7 @@ function destroyOps(state) {
   return state.executeCalls.flatMap((call) => call.commands.filter((c) => c.op === 'destroy'));
 }
 
-test('GC로 사라진 래퍼가 destroy 명령을 만든다', { skip: !canAutoRelease }, async () => {
+test('a wrapper lost to GC produces a destroy command', { skip: !canAutoRelease }, async () => {
   const state = installNativeMock();
   const device = await makeDevice();
 
@@ -37,15 +37,15 @@ test('GC로 사라진 래퍼가 destroy 명령을 만든다', { skip: !canAutoRe
       droppedIds.push(device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM }).id);
     }
   })();
-  device.queue.submit([]); // 생성 명령을 먼저 내보낸다
+  device.queue.submit([]); // send the creation command out first
 
   const sawDestroy = await collectUntil(device, () =>
     destroyOps(state).some((c) => droppedIds.includes(c.id))
   );
-  assert.ok(sawDestroy, '도달 불가가 된 버퍼의 destroy가 제출에 실려야 한다');
+  assert.ok(sawDestroy, 'the destroy of an unreachable buffer must ride out on a submission');
 });
 
-test('명시적 destroy 후에는 GC가 중복 destroy를 만들지 않는다', { skip: !canAutoRelease }, async () => {
+test('after an explicit destroy, GC does not produce a duplicate', { skip: !canAutoRelease }, async () => {
   const state = installNativeMock();
   const device = await makeDevice();
 
@@ -57,12 +57,12 @@ test('명시적 destroy 후에는 GC가 중복 destroy를 만들지 않는다', 
   })();
   device.queue.submit([]);
 
-  await collectUntil(device, () => false, 10); // gc를 여러 번 돌려도
+  await collectUntil(device, () => false, 10); // even running gc many times
   const count = destroyOps(state).filter((c) => c.id === id).length;
-  assert.equal(count, 1, 'destroy는 명시적 1회여야 한다 (unregister 확인)');
+  assert.equal(count, 1, 'destroy must be the one explicit call (unregister confirmed)');
 });
 
-test('스왑체인 텍스처와 그 뷰는 GC 자동 해제 대상이 아니다', { skip: !canAutoRelease }, async () => {
+test('a swapchain texture and its views are not targets for automatic GC release', { skip: !canAutoRelease }, async () => {
   const state = installNativeMock({
     executeResult: (payload) => ({
       ok: true,
@@ -84,10 +84,10 @@ test('스왑체인 텍스처와 그 뷰는 GC 자동 해제 대상이 아니다'
 
   await collectUntil(device, () => false, 10);
   const leaked = destroyOps(state).filter((c) => frameIds.includes(c.id));
-  assert.deepEqual(leaked, [], '프레임 스코프 핸들은 네이티브가 회수한다 — destroy를 보내면 안 된다');
+  assert.deepEqual(leaked, [], 'native reclaims frame-scoped handles — no destroy may be sent');
 });
 
-test('submit 결과에 네이티브 live 객체 수(objects)가 그대로 온다', async () => {
+test('the native live object count (objects) comes through on the submit result', async () => {
   installNativeMock({ executeResult: { ok: true, commandCount: 1, objects: 7 } });
   const device = await makeDevice();
   device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM });

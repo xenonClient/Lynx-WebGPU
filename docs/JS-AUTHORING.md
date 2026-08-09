@@ -211,13 +211,13 @@ function buildBundle(device, format) {
 
 **명시적 `destroy()`는 여전히 별개다.** 번들이 붙잡는 것은 JS 래퍼의 수명일 뿐이라,
 번들이 살아 있는 동안 그 리소스를 직접 `destroy()`하면 `executeBundles`가
-*"GPUBuffer #N 이 존재하지 않는다"*로 거부된다 (브라우저도 같다).
+*"GPUBuffer #N does not exist (already destroyed, or never created)"*로 거부된다 (브라우저도 같다).
 
 ## 9. 디버깅
 
 ```js
 device.onError((error, text) => {
-  console.error(text)      // "[WebGPU:validation] commands[3].vertex.buffers[0].format — 알 수 없는 값 …"
+  console.error(text)      // "[WebGPU:validation] commands[3].vertex.buffers[0].format — unknown value …"
 })
 ```
 

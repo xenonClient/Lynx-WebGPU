@@ -1,25 +1,35 @@
 #if canImport(Lynx)
 import Foundation
 import UIKit
+import QuartzCore
 import Lynx
 import LynxWebGPUCore
-import LynxWebGPU
 
-/// LynxView 하나에 붙는 WebGPU 런타임.
+/// The WebGPU runtime attached to one LynxView.
 ///
-/// 네이티브 모듈(`NativeModules.WebGPU`)과 `<webgpu-canvas>` 엘리먼트가 공유하는 접점이다.
-/// Lynx는 커스텀 UI를 `[[cls alloc] init]`으로 직접 만들기 때문에 생성자 주입을 할 수 없다 —
-/// 대신 호스트가 LynxView(= UI 트리의 rootView)에 자신을 등록해 두고 엘리먼트가 되찾는다
-/// (`LynxUIContext.rootView`, 양쪽 모두 약한 참조).
+/// It is the shared seam between the native module (`NativeModules.WebGPU`) and the
+/// `<webgpu-canvas>` element. Lynx builds custom UI with `[[cls alloc] init]` directly, so
+/// constructor injection is impossible — instead the host registers itself on the LynxView (the UI
+/// tree's rootView) and the element retrieves it (`LynxUIContext.rootView`, weak on both sides).
+///
+/// **The app supplies the runtime.** This bridge knows only the `WebGPURuntime` protocol and does not
+/// import the Metal engine (`LynxWebGPU`) — the same reason this package does not pull in the Lynx
+/// SDK (`docs/LYNX-INTEGRATION.md` §1). So swapping to another backend such as Dawn leaves **both the
+/// bridge and the JS bundle untouched.**
+///
+/// ```swift
+/// import LynxWebGPU                                            // only when using the default engine
+/// let host = LynxWebGPUHost(runtime: try LynxWebGPUContext())
+/// ```
 public final class LynxWebGPUHost: NSObject {
-    public let context: LynxWebGPUContext
+    public let runtime: WebGPURuntime
     private weak var lynxView: LynxView?
     private let ticker = WebGPUFrameTicker()
 
-    /// JS `loadAsset(name)`의 이름을 바이트로 해석하는 곳. 갈아끼워서 해석 규칙과
-    /// 접근 범위를 앱이 정한다 (`WGPUAssetProvider` 문서 참고).
+    /// Where the name from JS's `loadAsset(name)` is resolved into bytes. Swap it and the app decides
+    /// the resolution rules and the access scope (see `WGPUAssetProvider`).
     ///
-    /// 기본은 전체 경로 허용이다 — **번들(JS)을 신뢰할 수 없으면 반드시 좁힐 것**:
+    /// The default allows any path — **narrow it whenever the bundle (JS) cannot be trusted**:
     /// ```swift
     /// host.assetProvider = WGPUFileAssetProvider(
     ///     allowedRoots: [FileManager.default.temporaryDirectory]
@@ -27,25 +37,24 @@ public final class LynxWebGPUHost: NSObject {
     /// ```
     public var assetProvider: WGPUAssetProvider = WGPUFileAssetProvider()
 
-    public init(context: LynxWebGPUContext) {
-        self.context = context
+    public init(runtime: WebGPURuntime) {
+        self.runtime = runtime
         super.init()
     }
 
-    public convenience init(device: MTLDevice? = nil) throws {
-        self.init(context: try LynxWebGPUContext(device: device))
-    }
-
-    /// LynxView가 만들어진 뒤 1회 호출한다. 프레임 이벤트 전송과 `<webgpu-canvas>` 연결에 필요하다.
+    /// Call once after the LynxView is created. Needed for frame events and `<webgpu-canvas>` wiring.
     public func attach(to lynxView: LynxView) {
         self.lynxView = lynxView
         LynxWebGPUHostRegistry.register(self, for: lynxView)
         ticker.onFrame = { [weak self] timestamp, deltaSeconds in
             guard let self else { return }
-            // GPU가 in-flight 한도만큼 밀려 있으면 이 틱을 건너뛴다. 여기서 이벤트를 보내면
-            // JS가 프레임을 만들다 nextDrawable()에서 **JS 스레드 전체가** 서기 때문이다 —
-            // 프레임을 거르는 쪽이 낫다. 완료가 돌아오면 다음 틱부터 재개된다.
-            guard self.context.isReadyForNextFrame else { return }
+            // The pump goes **before** the readiness gate — on a runtime whose completion notices come
+            // from the pump (Dawn's processEvents), putting it after the gate means saturation never clears.
+            self.runtime.processEvents()
+            // When the GPU is behind by the in-flight limit, skip this tick. Sending the event here
+            // would have JS build a frame and stall **the entire JS thread** at nextDrawable() —
+            // dropping the frame is better. Once a completion returns it resumes from the next tick.
+            guard self.runtime.isReadyForNextFrame else { return }
             self.lynxView?.sendGlobalEvent("webgpu:frame", withParams: [[
                 "timestamp": timestamp * 1000,
                 "delta": deltaSeconds * 1000,
@@ -53,39 +62,55 @@ public final class LynxWebGPUHost: NSObject {
         }
     }
 
-    /// 페이지를 떠날 때 호출한다 — 디스플레이 링크를 멈추고 GPU 객체를 버린다.
+    /// Call when leaving the page — stops the display link and discards GPU objects.
     public func detach() {
         ticker.stop()
-        context.reset()
+        runtime.reset()
         lynxView = nil
     }
 
-    // MARK: - 프레임 루프
+    // MARK: - Frame loop
 
-    /// 화면 갱신 주기에 맞춰 `webgpu:frame` 전역 이벤트를 보낸다.
+    /// Sends the `webgpu:frame` global event in step with the display refresh.
     ///
-    /// JS의 `setInterval`로 프레임을 돌리면 화면 갱신과 어긋나 프레임이 뭉치거나 버려진다.
-    /// CADisplayLink로 몰아 주는 편이 훨씬 고르다 (`docs/JS-AUTHORING.md` §4).
-    func startFrameLoop(preferredFramesPerSecond: Int) {
+    /// Driving frames from JS's `setInterval` drifts out of step with refresh and frames bunch up or
+    /// get dropped. A CADisplayLink drives them far more evenly (`docs/JS-AUTHORING.md` §4).
+    ///
+    /// **The normal path is JS** — when a bundle calls `startFrameLoop(handler)`, the shim routes
+    /// through `NativeModules.WebGPU.startFrameLoop` to here. `attach(to:)` only wires the tick
+    /// callback and **does not start the loop** (so the display link does not spin on a page that
+    /// never draws frames — `docs/LYNX-INTEGRATION.md` §3).
+    ///
+    /// It is left open for the host to call directly to support **driving frames from outside JS**
+    /// (native code building the command stream itself, or diagnosing the JS path). Using both paths
+    /// does not double the ticks — there is one link, and `start` replaces the existing one.
+    public func startFrameLoop(preferredFramesPerSecond: Int = 60) {
         ticker.start(preferredFramesPerSecond: preferredFramesPerSecond)
     }
 
-    func stopFrameLoop() {
+    /// Stops the frame loop. `detach()` already calls it, so leaving a page needs no separate call.
+    public func stopFrameLoop() {
         ticker.stop()
     }
 
-    // MARK: - 캔버스 등록
+    // MARK: - Canvas registration
 
-    func registerCanvas(_ surface: WGPUSurface) {
-        context.registerSurface(surface)
+    /// `<webgpu-canvas>` hands over **only the layer** — the runtime picks the surface type.
+    /// That is what leaves the element code unchanged when the backend is swapped.
+    func attachCanvas(identifier: String, layer: CAMetalLayer) {
+        runtime.attachCanvas(identifier: identifier, layer: layer)
     }
 
-    func unregisterCanvas(identifier: String) {
-        context.unregisterSurface(identifier: identifier)
+    func resizeCanvas(identifier: String, drawableSize: CGSize) {
+        runtime.resizeCanvas(identifier: identifier, drawableSize: drawableSize)
+    }
+
+    func detachCanvas(identifier: String) {
+        runtime.detachCanvas(identifier: identifier)
     }
 }
 
-/// rootView → 호스트 매핑. 뷰가 사라지면 항목도 사라진다.
+/// rootView → host mapping. The entry disappears with the view.
 enum LynxWebGPUHostRegistry {
     private static let table = NSMapTable<UIView, LynxWebGPUHost>.weakToWeakObjects()
     private static let lock = NSLock()
@@ -104,27 +129,27 @@ enum LynxWebGPUHostRegistry {
     }
 }
 
-/// 이 패키지가 Lynx에 등록하는 것들.
+/// What this package registers with Lynx.
 public enum LynxWebGPU {
-    /// 네이티브 모듈과 커스텀 엘리먼트를 LynxConfig에 등록한다.
+    /// Registers the native module and the custom element with LynxConfig.
     ///
     /// ```swift
-    /// let host = try LynxWebGPUHost()
+    /// let host = LynxWebGPUHost(runtime: try LynxWebGPUContext())   // the app picks the runtime
     /// let lynxView = LynxView { builder in
     ///     let config = LynxConfig(provider: provider)
     ///     LynxWebGPU.register(in: config, host: host)
     ///     builder.config = config
     /// }
-    /// host.attach(to: lynxView)   // 전역 이벤트/캔버스 연결에 필요
+    /// host.attach(to: lynxView)   // needed for global events and canvas wiring
     /// ```
     public static func register(in config: LynxConfig, host: LynxWebGPUHost) {
         config.register(WebGPUNativeModule.self, param: host)
         config.registerUI(WebGPUCanvasUI.self, withName: elementName)
     }
 
-    /// JS에서 쓰는 태그 이름.
+    /// The tag name used from JS.
     public static let elementName = "webgpu-canvas"
-    /// JS에서 쓰는 모듈 이름 (`NativeModules.WebGPU`).
+    /// The module name used from JS (`NativeModules.WebGPU`).
     public static let moduleName = WebGPUNativeModule.name
 }
 #endif

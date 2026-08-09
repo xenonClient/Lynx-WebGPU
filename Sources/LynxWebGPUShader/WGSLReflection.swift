@@ -1,23 +1,23 @@
 import Foundation
 import LynxWebGPUCore
 
-/// 셰이더가 선언한 바인딩 슬롯 하나.
+/// One binding slot the shader declares.
 public struct WGSLResourceInfo: Equatable {
     public let name: String
     public let group: Int
     public let binding: Int
     public let slotKind: WGPUMetalSlotKind
-    /// `layout: "auto"` 파이프라인이 쓸 바인드 그룹 레이아웃 항목.
+    /// The bind group layout entry a `layout: "auto"` pipeline uses.
     public let bindingLayout: WGPUBindingLayout
 }
 
-/// 진입점 하나.
+/// One entry point.
 public struct WGSLEntryPointInfo: Equatable {
     public let name: String
     public let stage: WGSLStage
-    /// 컴퓨트 진입점의 `@workgroup_size`.
+    /// A compute entry point's `@workgroup_size`.
     public let workgroupSize: (x: Int, y: Int, z: Int)?
-    /// 이 진입점이 (호출 그래프를 따라) 실제로 쓰는 모듈 스코프 변수 이름들.
+    /// Names of module-scope variables this entry point actually uses (following the call graph).
     public let usedGlobals: Set<String>
 
     public static func == (lhs: WGSLEntryPointInfo, rhs: WGSLEntryPointInfo) -> Bool {
@@ -28,7 +28,7 @@ public struct WGSLEntryPointInfo: Equatable {
     }
 }
 
-/// 파싱된 WGSL 모듈에서 뽑아낸 파이프라인 생성용 정보.
+/// Pipeline-creation information extracted from a parsed WGSL module.
 public struct WGSLShaderReflection {
     public let entryPoints: [WGSLEntryPointInfo]
     public let resources: [WGSLResourceInfo]
@@ -41,8 +41,8 @@ public struct WGSLShaderReflection {
         resources.first { $0.name == name }
     }
 
-    /// 주어진 진입점들이 실제로 쓰는 리소스만 그룹/바인딩 순으로 돌려준다.
-    /// `layout: "auto"`의 바인드 그룹 레이아웃은 여기서 유도된다.
+    /// Returns only the resources the given entry points actually use, in group/binding order.
+    /// The bind group layout for `layout: "auto"` is derived here.
     public func resources(usedBy entryPointNames: [String]) -> [WGSLResourceInfo] {
         var used = Set<String>()
         for name in entryPointNames {
@@ -54,7 +54,7 @@ public struct WGSLShaderReflection {
             .sorted { ($0.group, $0.binding) < ($1.group, $1.binding) }
     }
 
-    /// 리소스를 쓰는 진입점의 스테이지를 합쳐 visibility를 만든다.
+    /// Builds visibility by unioning the stages of the entry points that use the resource.
     public func visibility(of resourceName: String) -> WGPUShaderStage {
         var visibility: WGPUShaderStage = []
         for entryPoint in entryPoints where entryPoint.usedGlobals.contains(resourceName) {
@@ -99,14 +99,14 @@ enum WGSLReflectionBuilder {
         return WGSLShaderReflection(entryPoints: entryPoints, resources: resources)
     }
 
-    /// 함수별로 "직접 참조하는 전역 + 호출한 함수" 를 모은 뒤 고정점까지 전파한다.
-    /// 헬퍼 함수가 유니폼을 읽으면 진입점이 그 유니폼을 인자로 넘겨야 하므로 (MSL에는
-    /// 가변 전역이 없다) 이 집합이 MSL 파라미터 스레딩의 입력이 된다.
+    /// Gathers "globals referenced directly + functions called" per function, then propagates to a fixed point.
+    /// If a helper reads a uniform, the entry point has to pass that uniform as an argument (MSL has
+    /// no mutable globals), so this set is the input to MSL parameter threading.
     ///
-    /// 수집은 **스코프를 따진다** — 매개변수나 지역 선언(`var`/`let`/`const`)에 가려진
-    /// 이름은 전역 사용이 아니다. 기계 생성 셰이더(Three.js 노드 시스템 등)는 같은 이름을
-    /// 모듈 스코프와 함수 지역에 일상적으로 함께 쓰므로, 이를 무시하면 쓰지도 않는 전역이
-    /// 인자로 주입되어 지역 선언과 재정의 충돌을 일으킨다.
+    /// Collection is **scope-aware** — a name shadowed by a parameter or a local declaration
+    /// (`var`/`let`/`const`) is not a global use. Machine-generated shaders (Three.js's node system and
+    /// the like) routinely reuse one name at module scope and function scope, and ignoring that would
+    /// inject globals that are never used as arguments, colliding with the local declarations.
     static func transitiveGlobalUsage(_ module: WGSLModule) -> [String: Set<String>] {
         var direct: [String: Set<String>] = [:]
         var callees: [String: Set<String>] = [:]
@@ -142,14 +142,15 @@ enum WGSLReflectionBuilder {
         return result
     }
 
-    /// 주어진 진입점들에서 **호출로 닿는** 함수 이름들 (진입점 자신 포함).
+    /// Function names **reachable by calls** from the given entry points (including the entry points themselves).
     ///
-    /// 방출기가 이 집합만 내보낸다. 모듈의 함수를 전부 내보내면, 그 진입점이 부르지도 않는
-    /// 함수가 참조하는 리소스까지 필요해진다 — `layout: "auto"`의 바인드 그룹은 **쓰는 것만**
-    /// 담으므로 그런 함수는 없는 바인딩을 찾다 실패한다. 실제로 `common.wgsl`을 여럿이
-    /// 나눠 쓰는 셰이더(webgpu-samples의 cornell)가 이 경로로 깨졌다.
+    /// The emitter emits only this set. Emitting every function in the module would also require the
+    /// resources referenced by functions that entry point never calls — and a `layout: "auto"` bind
+    /// group contains **only what is used**, so such a function fails looking for a binding that does
+    /// not exist. A shader sharing one `common.wgsl` across several entry points (webgpu-samples'
+    /// cornell) really did break this way.
     ///
-    /// 죽은 코드를 빼면 Metal 컴파일도 그만큼 빨라진다.
+    /// Dropping dead code speeds up the Metal compile by the same amount.
     static func functionsReachable(from entryPoints: [String], in module: WGSLModule) -> Set<String> {
         var callees: [String: Set<String>] = [:]
         let functionNames = Set(module.functions.map(\.name))
@@ -173,11 +174,163 @@ enum WGSLReflectionBuilder {
         return reachable
     }
 
-    /// 특정 내장 함수를 (전이적으로) 호출하는 함수 이름들.
+    /// Names of functions that must take the buffer size table as an argument (transitively).
     ///
-    /// `arrayLength`처럼 **추가 인자가 필요한** 내장 함수를 위해 쓴다 —
-    /// 그 인자를 진입점에서 받아 호출 그래프를 따라 내려보내야 하기 때문이다.
+    /// Needed for two reasons:
+    /// 1. `arrayLength()` — the element count is read from the table.
+    /// 2. **Indexing a runtime-sized array** — the bound is needed to clamp the range (robustness).
+    ///
+    /// **The emitter and the pipeline must reach the same answer.** If the emitter asks for the table
+    /// and the pipeline does not bind it, the shader reads an unbound buffer — hence one calculation, here.
+    static func functionsNeedingBufferSizes(in module: WGSLModule) -> Set<String> {
+        let runtimeArrays = runtimeArrayGlobalNames(in: module)
+        return functionsMatching(in: module) { identifiers, calls in
+            calls.contains("arrayLength") || !identifiers.isDisjoint(with: runtimeArrays)
+        }
+    }
+
+    /// Names of globals holding a runtime-sized array (`array<T>`), directly or as a struct member.
+    private static func runtimeArrayGlobalNames(in module: WGSLModule) -> Set<String> {
+        var names = Set<String>()
+        for global in module.globals {
+            switch global.type {
+            case .array(_, nil):
+                names.insert(global.name)
+            case .named(let structName):
+                guard let structure = module.structNamed(structName) else { continue }
+                if structure.members.contains(where: {
+                    if case .array(_, nil) = $0.type { return true } else { return false }
+                }) {
+                    names.insert(global.name)
+                }
+            default:
+                break
+            }
+        }
+        return names
+    }
+
+    /// Functions that must take the flag suppressing writes after `discard` (transitively).
+    ///
+    /// MSL's `discard_fragment()` is **not** an immediate return — it only marks "this fragment is
+    /// discarded" while the code after it keeps running, so a discarded fragment corrupts storage
+    /// buffers and textures. The spec forbids that, so `discard` becomes a flag and writes are masked by it.
+    ///
+    /// The flag is declared at the entry point and threaded down the call graph, so we need **the
+    /// functions that raise discard**, **the functions with writes to mask**, and everything that
+    /// calls them. With no `discard` in the module the set is empty — it must cost nothing.
+    static func functionsNeedingDiscardFlag(in module: WGSLModule) -> Set<String> {
+        let discardsAnywhere = module.functions.contains { bodyDiscards($0.body) }
+        guard discardsAnywhere else { return [] }
+
+        let storageGlobals = Set(module.globals.filter { $0.addressSpace == "storage" }.map(\.name))
+        let seed = Set(module.functions
+            .filter { bodyDiscards($0.body) || bodyWritesResources($0.body, storage: storageGlobals) }
+            .map(\.name))
+        return closure(seed: seed, in: module)
+    }
+
+    /// The seed functions plus everything that calls them (transitively).
+    private static func closure(seed: Set<String>, in module: WGSLModule) -> Set<String> {
+        let functionNames = Set(module.functions.map(\.name))
+        var callees: [String: Set<String>] = [:]
+        for function in module.functions {
+            var identifiers = Set<String>()
+            var calls = Set<String>()
+            collect(
+                function.body, locals: Set(function.parameters.map(\.name)),
+                identifiers: &identifiers, calls: &calls
+            )
+            callees[function.name] = calls.intersection(functionNames)
+        }
+        var result = seed
+        var changed = true
+        while changed {
+            changed = false
+            for function in module.functions where !result.contains(function.name) {
+                if (callees[function.name] ?? []).contains(where: result.contains) {
+                    result.insert(function.name)
+                    changed = true
+                }
+            }
+        }
+        return result
+    }
+
+    private static func bodyDiscards(_ statements: [WGSLStatement]) -> Bool {
+        statements.contains { statement in
+            if case .discardStatement = statement { return true }
+            return nestedBlocks(of: statement).contains(where: bodyDiscards)
+        }
+    }
+
+    /// Whether this body **writes** to a storage buffer, texture or atomic — the things to mask after `discard`.
+    private static func bodyWritesResources(_ statements: [WGSLStatement], storage: Set<String>) -> Bool {
+        statements.contains { statement in
+            switch statement {
+            case .assignment(let target, _, _):
+                if let root = rootIdentifier(of: target), storage.contains(root) { return true }
+            case .increment(let target), .decrement(let target):
+                if let root = rootIdentifier(of: target), storage.contains(root) { return true }
+            case .expressionStatement(let expression):
+                if case .call(let callee, _, _) = expression {
+                    if callee == "textureStore" { return true }
+                    if callee.hasPrefix("atomic"), callee != "atomicLoad" { return true }
+                }
+            default:
+                break
+            }
+            return nestedBlocks(of: statement).contains { bodyWritesResources($0, storage: storage) }
+        }
+    }
+
+    /// Sub-blocks contained in a statement (for descending through control structures).
+    private static func nestedBlocks(of statement: WGSLStatement) -> [[WGSLStatement]] {
+        switch statement {
+        case .block(let inner):
+            return [inner]
+        case .ifStatement(_, let then, let elseBranch):
+            var blocks = [then]
+            switch elseBranch {
+            case .block(let inner)?: blocks.append(inner)
+            case .chained(let nested)?: blocks.append([nested])
+            case nil: break
+            }
+            return blocks
+        case .forStatement(_, _, _, let body), .whileStatement(_, let body):
+            return [body]
+        case .loopStatement(let body, let continuing):
+            return continuing.map { [body, $0] } ?? [body]
+        case .switchStatement(_, let cases):
+            return cases.map(\.body)
+        default:
+            return []
+        }
+    }
+
+    /// The root identifier of an assignment target (`out[i].x` → `out`).
+    private static func rootIdentifier(of expression: WGSLExpression) -> String? {
+        switch expression {
+        case .identifier(let name): return name
+        case .index(let base, _), .member(let base, _), .dereference(let base), .paren(let base):
+            return rootIdentifier(of: base)
+        default: return nil
+        }
+    }
+
+    /// Names of functions that call a particular builtin (transitively).
+    ///
+    /// Used for builtins that **need an extra argument**, such as `arrayLength` — that argument has to
+    /// be taken at the entry point and threaded down the call graph.
     static func functionsCalling(_ builtin: String, in module: WGSLModule) -> Set<String> {
+        functionsMatching(in: module) { _, calls in calls.contains(builtin) }
+    }
+
+    /// Functions satisfying the condition, plus everything that calls them (transitively).
+    private static func functionsMatching(
+        in module: WGSLModule,
+        seed: (_ identifiers: Set<String>, _ calls: Set<String>) -> Bool
+    ) -> Set<String> {
         var callees: [String: Set<String>] = [:]
         var directly = Set<String>()
         let functionNames = Set(module.functions.map(\.name))
@@ -189,7 +342,7 @@ enum WGSLReflectionBuilder {
                 function.body, locals: Set(function.parameters.map(\.name)),
                 identifiers: &identifiers, calls: &calls
             )
-            if calls.contains(builtin) { directly.insert(function.name) }
+            if seed(identifiers, calls) { directly.insert(function.name) }
             callees[function.name] = calls.intersection(functionNames)
         }
 
@@ -207,11 +360,11 @@ enum WGSLReflectionBuilder {
         return result
     }
 
-    // MARK: - 식별자 수집 (스코프 인지)
+    // MARK: - Identifier collection (scope-aware)
 
-    /// 블록 하나를 순서대로 걷는다. 지역 선언은 **그 지점부터 블록 끝까지** 이름을 가리고
-    /// (WGSL 명세의 point-of-declaration 규칙 — 초기값은 바깥 이름을 본다), 중첩 블록은
-    /// 현재 지역 집합의 사본을 물려받는다.
+    /// Walks one block in order. A local declaration shadows the name **from that point to the end of
+    /// the block** (the WGSL spec's point-of-declaration rule — the initializer still sees the outer
+    /// name), and a nested block inherits a copy of the current local set.
     private static func collect(
         _ statements: [WGSLStatement],
         locals: Set<String>,
@@ -255,7 +408,7 @@ enum WGSLReflectionBuilder {
                 break
             }
         case .forStatement(let initializer, let condition, let update, let body):
-            // for 헤더의 선언은 조건·증감·본문까지가 스코프다.
+            // A declaration in a for header scopes over the condition, the increment and the body.
             var headerLocals = locals
             if let initializer {
                 collect(initializer, locals: &headerLocals, identifiers: &identifiers, calls: &calls)
@@ -270,7 +423,7 @@ enum WGSLReflectionBuilder {
             collect(condition, locals: locals, identifiers: &identifiers, calls: &calls)
             collect(body, locals: locals, identifiers: &identifiers, calls: &calls)
         case .loopStatement(let body, let continuing):
-            // continuing은 본문 선언을 볼 수 있으므로 같은 블록으로 걷는다 (방출도 그렇게 한다).
+            // continuing can see the body's declarations, so we walk it as the same block (emission does too).
             collect(body + (continuing ?? []), locals: locals, identifiers: &identifiers, calls: &calls)
         case .switchStatement(let subject, let cases):
             collect(subject, locals: locals, identifiers: &identifiers, calls: &calls)
@@ -313,7 +466,7 @@ enum WGSLReflectionBuilder {
         }
     }
 
-    // MARK: - 바인딩 레이아웃 유도
+    // MARK: - Deriving binding layouts
 
     static func bindingLayout(for global: WGSLGlobalVariable) -> WGPUBindingLayout? {
         switch global.type {

@@ -4,21 +4,20 @@ import UIKit
 import QuartzCore
 import Lynx
 import LynxWebGPUCore
-import LynxWebGPU
 
-/// `CAMetalLayer`를 백킹 레이어로 쓰는 뷰.
+/// A view whose backing layer is a `CAMetalLayer`.
 ///
-/// `layerClass`를 바꿔 서브레이어 없이 뷰 자체가 스왑체인이 되게 한다 — 레이어 하나가 줄면
-/// 합성 단계도 한 번 줄어든다.
+/// Overriding `layerClass` makes the view itself the swapchain with no sublayer — one layer fewer
+/// also means one compositing step fewer.
 public final class WebGPUCanvasView: UIView {
     public override class var layerClass: AnyClass { CAMetalLayer.self }
 
     var metalLayer: CAMetalLayer { layer as! CAMetalLayer }
-    /// 드로어블 크기(픽셀)가 바뀌면 알린다.
+    /// Reports that the drawable size in pixels changed.
     var onDrawableSizeChange: ((CGSize) -> Void)?
-    /// CSS px → 픽셀 배율. 지정하지 않으면 화면 배율을 쓴다.
+    /// CSS px → pixel scale. Uses the screen scale when unspecified.
     var pixelRatioOverride: CGFloat?
-    /// UIKit 히트 테스트에서 이 뷰를 투명하게 만들지 (`passthrough-touches` prop).
+    /// Whether this view is transparent to UIKit hit testing (the `passthrough-touches` prop).
     var passthroughTouches = false
 
     private var lastReportedSize: CGSize = .zero
@@ -26,10 +25,9 @@ public final class WebGPUCanvasView: UIView {
     public override init(frame: CGRect) {
         super.init(frame: frame)
         isOpaque = true
-        // 기본 포맷을 미리 맞춰 둔다. JS의 configure는 메인 스레드에 비동기로 반영되므로,
-        // getPreferredCanvasFormat()(= bgra8unorm)을 쓰는 일반적인 경우 첫 프레임부터 일치한다.
-        metalLayer.pixelFormat = .bgra8Unorm
-        metalLayer.framebufferOnly = true
+        // The layer's initial properties, such as pixel format, are not touched here — that is
+        // **runtime policy** (`WebGPURuntime.attachCanvas`). Only by handing over the layer alone does
+        // this code stay genuinely unchanged when the backend is swapped.
     }
 
     @available(*, unavailable)
@@ -39,12 +37,12 @@ public final class WebGPUCanvasView: UIView {
         pixelRatioOverride ?? window?.screen.scale ?? traitCollection.displayScale
     }
 
-    /// 통과 모드에서는 UIKit 히트 테스트에 잡히지 않는다 — 캔버스 **아래** 네이티브 뷰
-    /// (`<scroll-view>`의 UIScrollView 등)에 붙은 제스처 인식기가 터치를 받는다.
+    /// In passthrough mode it is invisible to UIKit hit testing — gesture recognizers on native views
+    /// **beneath** the canvas (a `<scroll-view>`'s UIScrollView, say) receive the touch.
     ///
-    /// Lynx 이벤트(`bindtouchstart` 등)는 영향을 받지 않는다: Lynx의 터치 인식기는
-    /// 개별 뷰가 아니라 **rootView(LynxView)에 붙어 있고**(`LynxEventHandler.attachContainerView`),
-    /// 타깃 결정도 UIKit이 아니라 Lynx 자체 hitTest(`LynxEventTarget`)가 한다.
+    /// Lynx events (`bindtouchstart` and the rest) are unaffected: Lynx's touch recognizer is attached
+    /// to **the rootView (LynxView)**, not to individual views (`LynxEventHandler.attachContainerView`),
+    /// and the target is decided by Lynx's own hitTest (`LynxEventTarget`) rather than UIKit.
     public override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         passthroughTouches ? nil : super.hitTest(point, with: event)
     }
@@ -62,17 +60,16 @@ public final class WebGPUCanvasView: UIView {
     }
 }
 
-/// `<webgpu-canvas>` — WebGPU가 그리는 화면 표면.
+/// `<webgpu-canvas>` — the screen surface WebGPU draws into.
 ///
-/// props: `canvas-id`(JS가 `configure({canvas})`에서 쓰는 이름, 필수) `pixel-ratio`(배율 강제)
-/// events: `bindcanvasresize`(detail: width/height/pixelRatio — 픽셀 크기가 바뀔 때)
-/// UI 메서드: `getInfo()` → `{width, height, pixelRatio}`
+/// props: `canvas-id` (the name JS uses in `configure({canvas})`, required), `pixel-ratio` (force a scale)
+/// events: `bindcanvasresize` (detail: width/height/pixelRatio — when the pixel size changes)
+/// UI methods: `getInfo()` → `{width, height, pixelRatio}`
 ///
-/// 등록/해제는 뷰 수명이 아니라 **prop 수명**을 따른다 — `canvas-id`가 정해지는 시점에 등록하고,
-/// 바뀌거나 엘리먼트가 사라질 때 해제한다.
+/// Registration and removal follow **prop lifetime**, not view lifetime — it registers when
+/// `canvas-id` is settled and removes when that changes or the element goes away.
 public final class WebGPUCanvasUI: LynxUI<WebGPUCanvasView> {
     private var canvasIdentifier: String?
-    private var surface: WGPUMetalLayerSurface?
     private var pendingPixelRatio: CGFloat?
     private var propsDirty = false
 
@@ -80,7 +77,9 @@ public final class WebGPUCanvasUI: LynxUI<WebGPUCanvasView> {
         let view = WebGPUCanvasView()
         view.onDrawableSizeChange = { [weak self] size in
             guard let self else { return }
-            self.surface?.updateDrawableSize(size)
+            if let canvasIdentifier = self.canvasIdentifier {
+                self.host?.resizeCanvas(identifier: canvasIdentifier, drawableSize: size)
+            }
             self.emit("canvasresize", detail: [
                 "width": Int(size.width),
                 "height": Int(size.height),
@@ -91,9 +90,9 @@ public final class WebGPUCanvasUI: LynxUI<WebGPUCanvasView> {
     }
 
     deinit {
-        // deinit은 임의 스레드일 수 있으나, 해제 자체는 컨텍스트 락으로 보호된다.
+        // deinit can be on any thread, but the removal itself is protected by the runtime's lock.
         if let canvasIdentifier {
-            host?.unregisterCanvas(identifier: canvasIdentifier)
+            host?.detachCanvas(identifier: canvasIdentifier)
         }
     }
 
@@ -110,9 +109,8 @@ public final class WebGPUCanvasUI: LynxUI<WebGPUCanvasView> {
     public func setCanvasId(_ value: NSString?, requestReset: Bool) {
         let next = requestReset ? nil : (value as String?)
         guard next != canvasIdentifier else { return }
-        if let canvasIdentifier { host?.unregisterCanvas(identifier: canvasIdentifier) }
+        if let canvasIdentifier { host?.detachCanvas(identifier: canvasIdentifier) }
         canvasIdentifier = next
-        surface = nil
         propsDirty = true
     }
 
@@ -130,11 +128,11 @@ public final class WebGPUCanvasUI: LynxUI<WebGPUCanvasView> {
         ["passthrough-touches", "setPassthroughTouches", "BOOL"]
     }
 
-    /// UIKit 터치 통과 (기본 꺼짐 — 웹처럼 캔버스가 아래를 가린다).
+    /// UIKit touch passthrough (off by default — the canvas covers what is beneath, as on the web).
     ///
-    /// 켜면 캔버스 **뒤**의 네이티브 제스처(형제 `<scroll-view>`의 스크롤 등)가 통과한다.
-    /// 캔버스 자신의 Lynx 이벤트는 계속 온다 — 통과한 제스처가 이기면 Lynx가
-    /// `touchcancel`을 보내는, 다른 엘리먼트와 같은 경쟁 규칙을 따른다.
+    /// Turning it on lets native gestures **behind** the canvas through (a sibling `<scroll-view>`'s
+    /// scrolling, say). The canvas's own Lynx events keep arriving — if the passed-through gesture
+    /// wins, Lynx sends `touchcancel`, following the same contention rules as any other element.
     @objc(setPassthroughTouches:requestReset:)
     public func setPassthroughTouches(_ value: Bool, requestReset: Bool) {
         view().passthroughTouches = requestReset ? false : value
@@ -150,22 +148,21 @@ public final class WebGPUCanvasUI: LynxUI<WebGPUCanvasView> {
         canvasView.setNeedsLayout()
 
         guard let canvasIdentifier, let host else { return }
-        let surface = WGPUMetalLayerSurface(identifier: canvasIdentifier, layer: canvasView.metalLayer)
-        surface.updateDrawableSize(CGSize(
+        // Hand over only the layer — the runtime picks the surface type (`WebGPURuntime.attachCanvas`).
+        host.attachCanvas(identifier: canvasIdentifier, layer: canvasView.metalLayer)
+        host.resizeCanvas(identifier: canvasIdentifier, drawableSize: CGSize(
             width: (canvasView.bounds.width * canvasView.pixelRatio).rounded(),
             height: (canvasView.bounds.height * canvasView.pixelRatio).rounded()
         ))
-        self.surface = surface
-        host.registerCanvas(surface)
-        WGPULog.canvas.info("<webgpu-canvas> 등록 — \(canvasIdentifier, privacy: .public)")
+        WGPULog.canvas.info("<webgpu-canvas> registered — \(canvasIdentifier, privacy: .public)")
     }
 
-    // MARK: - UI 메서드
+    // MARK: - UI methods
 
     @objc(__lynx_ui_method_config__webgpuCanvasGetInfo)
     public static func uiMethodConfigGetInfo() -> String { "getInfo" }
 
-    /// 현재 드로어블 크기를 돌려준다 (`bindcanvasresize`를 놓쳤을 때의 폴백).
+    /// Returns the current drawable size (a fallback for when `bindcanvasresize` was missed).
     @objc(getInfo:withResult:)
     public func getInfo(_ params: [AnyHashable: Any]?, withResult callback: LynxUIMethodCallbackBlock?) {
         let canvasView = view()
@@ -178,7 +175,7 @@ public final class WebGPUCanvasUI: LynxUI<WebGPUCanvasView> {
         ])
     }
 
-    // MARK: - 이벤트
+    // MARK: - Events
 
     private func emit(_ name: String, detail: [String: Any]) {
         guard let emitter = context?.eventEmitter else { return }

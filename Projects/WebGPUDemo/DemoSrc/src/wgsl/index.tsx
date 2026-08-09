@@ -2,15 +2,15 @@ import { root } from '@lynx-js/react'
 import { DemoScene, type SceneContext } from '../scene.jsx'
 import { GPUBufferUsage, GPUMapMode, GPUTextureUsage } from '../webgpu.js'
 
-/** 팔레트 색 수. 셰이더는 이 값을 모른다 — `arrayLength()`로 직접 센다. */
+/** The number of palette colors. The shader does not know this value — it counts with `arrayLength()`. */
 const PALETTE = 7
 const FRAME_SIZE = 8
 
 /**
- * 팔레트를 애니메이션한다.
+ * Animates the palette.
  *
- * 개수를 유니폼으로 받지 않고 `arrayLength(&palette)`로 센다. 런타임이 예약 인덱스에 꽂아 주는
- * 버퍼 크기 표가 틀리면 여기서 바로 어긋난다 (`info[0]`으로 CPU가 확인한다).
+ * The count is not taken as a uniform but measured with `arrayLength(&palette)`. A wrong buffer size table,
+ * which the runtime plugs into a reserved index, goes wrong right here (the CPU checks it via `info[0]`).
  */
 const COMPUTE_SHADER = /* wgsl */ `
 struct Params {
@@ -43,12 +43,12 @@ fn animate(@builtin(global_invocation_id) id: vec3u) {
 `
 
 /**
- * 화면을 세 띠로 나눠 세 기능을 한 번에 보여 준다.
+ * Splits the screen into three bands to show three features at once.
  *
- * 위: 타입 없는 상수식(AbstractInt)과 함수 지역 `const`로 잡은 배열.
- * 가운데: 같은 텍스처를 왼쪽은 `textureSampleBaseClampToEdge`(외부 텍스처), 오른쪽은 보통 샘플링.
- *         repeat 샘플러에 좌표를 일부러 [0,1] 밖으로 넘겨서 **오른쪽만 반대쪽이 감겨 들어온다**.
- * 아래: `arrayLength()`가 정한 칸 수 — 길이가 틀리면 칸 수가 눈에 보이게 달라진다.
+ * Top: an untyped constant expression (AbstractInt) and an array sized by a function-local `const`.
+ * Middle: the same texture, sampled on the left with `textureSampleBaseClampToEdge` (an external texture) and on the right normally.
+ *         The coordinates are deliberately pushed outside [0,1] on a repeat sampler, so **only the right side wraps the opposite edge in**.
+ * Bottom: the number of cells `arrayLength()` decided — a wrong length makes the cell count visibly differ.
  */
 const RENDER_SHADER = /* wgsl */ `
 @group(0) @binding(0) var<storage, read> palette: array<vec4f>;
@@ -56,7 +56,7 @@ const RENDER_SHADER = /* wgsl */ `
 @group(0) @binding(2) var frameSampler: sampler;
 @group(0) @binding(3) var frame2d: texture_2d<f32>;
 
-// 타입을 적지 않은 상수식은 WGSL에서 추상 정수(AbstractInt)다 — 쓰이는 자리의 타입으로 굳는다.
+// A constant expression with no type written is an abstract integer (AbstractInt) in WGSL — it settles into the type of where it is used.
 const HIGHLIGHT = vec3(1);
 const TILES = vec2(8, 2);
 
@@ -74,11 +74,11 @@ fn vs_main(@builtin(vertex_index) index: u32) -> Out {
   return out;
 }
 
-// 함수 안에서 선언한 const도 컴파일 타임 상수 — 배열 크기로 쓸 수 있다.
+// A const declared inside a function is a compile-time constant too — it can be used as an array size.
 fn ramp(t: f32) -> vec3f {
   const STEPS = 5u;
   var stops: array<vec3f, STEPS>;
-  // HUD가 얹히는 위쪽은 어둡게, 아래로 갈수록 밝게 — 흰 글씨가 읽히도록.
+  // Dark at the top where the HUD sits, brighter toward the bottom — so the white text stays readable.
   stops[0] = vec3f(0.06, 0.07, 0.13);
   stops[1] = vec3f(0.09, 0.16, 0.31);
   stops[2] = vec3f(0.12, 0.31, 0.36);
@@ -88,7 +88,7 @@ fn ramp(t: f32) -> vec3f {
   return stops[index];
 }
 
-// uv * TILES — 추상 정수 벡터가 f32 문맥에서 f32로 굳는다.
+// uv * TILES — an abstract integer vector settles to f32 in an f32 context.
 fn checker(uv: vec2f) -> f32 {
   let cell = floor(uv * TILES);
   return select(0.82, 1.0, (u32(cell.x) + u32(cell.y)) % 2u == 0u);
@@ -98,30 +98,33 @@ fn checker(uv: vec2f) -> f32 {
 fn fs_main(in: Out) -> @location(0) vec4f {
   let uv = in.uv;
 
-  // 위: 타입 없는 상수식. HUD가 얹히는 자리라 어두운 쪽이 위로 오게 두었다.
+  // Middle: the same texture and coordinates, sampled with edge clamping on the left only.
+  // The samples are taken first, **outside the branch (in uniform control flow)** — a textureSample inside
+  // a varying branch is a uniformity violation and the spec validator (Dawn/browsers) rejects the pipeline.
+  let local = vec2f(fract(uv.x * 2.0), (uv.y - 0.40) / 0.36);
+  // Deliberately pushed outside [0,1] — being a repeat sampler, without clamping the opposite edge wraps in.
+  let coord = local * 1.30 - vec2f(0.15, 0.15);
+  let clamped = textureSampleBaseClampToEdge(frame, frameSampler, coord);
+  let wrapped = textureSample(frame2d, frameSampler, coord);
+
+  // Top: the untyped constant expression. The dark side is put at the top because the HUD sits there.
   if (uv.y < 0.40) {
     let t = uv.y / 0.40;
     let base = ramp(t) * checker(vec2f(uv.x, t));
-    // HIGHLIGHT는 vec3(1) — 같은 상수가 f32 벡터 자리에서 f32로 굳는다.
+    // HIGHLIGHT is vec3(1) — the same constant settles to f32 in an f32 vector slot.
     return vec4f(mix(base, HIGHLIGHT, 0.06), 1.0);
   }
 
-  // 가운데: 같은 텍스처 · 같은 좌표를 왼쪽만 가장자리 클램프로 샘플한다.
-  if (uv.y < 0.76) {
-    let local = vec2f(fract(uv.x * 2.0), (uv.y - 0.40) / 0.36);
-    // 일부러 [0,1] 밖으로 넘긴다 — repeat 샘플러라 클램프가 없으면 반대쪽이 감겨 들어온다.
-    let coord = local * 1.30 - vec2f(0.15, 0.15);
-    // 두 패널 경계에 가는 선을 둬서 좌우 비교임을 분명히 한다.
+  // The middle band — it picks between the two samples taken above.
+  if (uv.y < 0.76 && uv.y >= 0.40) {
+    // A thin line at the boundary of the two panels, to make the left/right comparison obvious.
     if (abs(uv.x - 0.5) < 0.004) {
       return vec4f(0.04, 0.05, 0.08, 1.0);
     }
-    if (uv.x < 0.5) {
-      return textureSampleBaseClampToEdge(frame, frameSampler, coord);
-    }
-    return textureSample(frame2d, frameSampler, coord);
+    return select(wrapped, clamped, uv.x < 0.5);
   }
 
-  // 아래: arrayLength()가 정한 칸 수 — 길이가 틀리면 칸 수가 달라진다.
+  // Bottom: the number of cells arrayLength() decided — a wrong length changes the cell count.
   let count = arrayLength(&palette);
   let index = min(u32(uv.x * f32(count)), count - 1u);
   let edge = fract(uv.x * f32(count));
@@ -130,7 +133,7 @@ fn fs_main(in: Out) -> @location(0) vec4f {
 }
 `
 
-/** 8x8 "비디오 프레임". 가장자리 열/행을 대비색으로 칠해 이음선이 생기면 바로 보이게 한다. */
+/** An 8x8 "video frame". The edge columns/rows are painted in contrasting colors so a seam shows immediately. */
 function makeFrame(step: number): Uint8Array {
   const pixels = new Uint8Array(FRAME_SIZE * FRAME_SIZE * 4)
   const highlight = step % FRAME_SIZE
@@ -149,12 +152,12 @@ function makeFrame(step: number): Uint8Array {
         r = 255
         g = 40
         b = 200
-      } // 왼쪽 끝: 자홍
+      } // left edge: magenta
       if (x === FRAME_SIZE - 1) {
         r = 30
         g = 220
         b = 120
-      } // 오른쪽 끝: 초록
+      } // right edge: green
       if (y === 0) {
         g = Math.min(255, g + 60)
       }
@@ -190,14 +193,14 @@ function setup({ device, context, format, report }: SceneContext) {
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
     label: 'info',
   })
-  // MAP_READ는 COPY_DST와만 조합할 수 있다(명세) — 리드백은 전용 스테이징 버퍼로 받는다.
+  // MAP_READ can only combine with COPY_DST (spec) — the readback goes into a dedicated staging buffer.
   const infoStaging = device.createBuffer({
     size: 16,
     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
     label: 'info.staging',
   })
 
-  // 외부 텍스처 자리에는 보통 텍스처 뷰를 그대로 묶는다 (한 면짜리 비디오 프레임과 같은 모양).
+  // An ordinary texture view is bound into the external texture slot (the same shape as a single-plane video frame).
   const frame = device.createTexture({
     size: { width: FRAME_SIZE, height: FRAME_SIZE },
     format: 'rgba8unorm',
@@ -205,7 +208,7 @@ function setup({ device, context, format, report }: SceneContext) {
     label: 'frame',
   })
   const frameView = frame.createView()
-  // repeat 샘플러 — 클램프가 없으면 반대쪽 가장자리가 감겨 들어온다.
+  // A repeat sampler — without clamping, the opposite edge wraps in.
   const frameSampler = device.createSampler({
     magFilter: 'linear',
     minFilter: 'linear',
@@ -252,7 +255,7 @@ function setup({ device, context, format, report }: SceneContext) {
     paramsData[0] = time
     device.queue.writeBuffer(params, 0, paramsData)
 
-    // 프레임을 갱신해 "비디오"처럼 흐르게 한다 (8x8이라 256바이트).
+    // The frame is refreshed so it flows like "video" (8x8, so 256 bytes).
     if (frames % 6 === 0) {
       device.queue.writeTexture(
         { texture: frame },
@@ -285,7 +288,7 @@ function setup({ device, context, format, report }: SceneContext) {
     pass.draw(3)
     pass.end()
 
-    // 셰이더가 센 길이를 CPU가 한 번 확인한다 — 크기 표가 맞는지 눈이 아니라 숫자로 본다.
+    // The CPU checks the length the shader measured once — the size table is verified in numbers, not by eye.
     frames += 1
     const wantsReadback = !reported && frames > 10 && !reading
     if (wantsReadback) encoder.copyBufferToBuffer(info, 0, infoStaging, 0, 16)
@@ -301,11 +304,11 @@ function setup({ device, context, format, report }: SceneContext) {
           const ok = values[0] === PALETTE && values[1] === 4
           reported = ok
           report(
-            `arrayLength: palette ${values[0]} (기대 ${PALETTE}) · info ${values[1]} (기대 4)` +
+            `arrayLength: palette ${values[0]} (expected ${PALETTE}) · info ${values[1]} (expected 4)` +
               (ok ? ' ✓' : ' ✗')
           )
         })
-        .catch((error: unknown) => report(`리드백 실패: ${String(error)}`))
+        .catch((error: unknown) => report(`readback failed: ${String(error)}`))
         .finally(() => {
           infoStaging.unmap()
           reading = false
@@ -316,8 +319,8 @@ function setup({ device, context, format, report }: SceneContext) {
 
 root.render(
   <DemoScene
-    title="WGSL 호환성"
-    subtitle="arrayLength · 외부 텍스처(왼쪽만 가장자리 클램프) · 타입 없는 상수식"
+    title="WGSL compatibility"
+    subtitle="arrayLength · an external texture (edge-clamped on the left only) · untyped constant expressions"
     setup={setup}
   />
 )

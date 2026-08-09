@@ -1,7 +1,7 @@
 import Foundation
 import LynxWebGPUCore
 
-/// WGSL 토큰.
+/// A WGSL token.
 struct WGSLToken: Equatable {
     enum Kind: Equatable {
         case identifier
@@ -20,10 +20,11 @@ struct WGSLToken: Equatable {
     }
 }
 
-/// WGSL 소스를 토큰열로 자른다.
+/// Cuts WGSL source into a token stream.
 ///
-/// 키워드를 따로 분류하지 않는다 — 파서가 문맥에서 식별자 텍스트로 판별하는 편이
-/// WGSL의 문맥 의존 문법(`<`가 제네릭인지 비교인지)을 다루기 쉽다.
+/// Keywords are not classified separately — letting the parser decide from context, using the
+/// identifier text, makes WGSL's context-dependent grammar easier to handle (is `<` a generic or a
+/// comparison?).
 struct WGSLLexer {
     private let source: [Character]
     private var index = 0
@@ -33,7 +34,7 @@ struct WGSLLexer {
         self.source = Array(source)
     }
 
-    /// 긴 것부터 시도해야 `<<=`가 `<` + `<=`로 잘리지 않는다.
+    /// Longest first, so `<<=` is not cut into `<` + `<=`.
     private static let operators = [
         "<<=", ">>=",
         "->", "&&", "||", "<<", ">>", "<=", ">=", "==", "!=",
@@ -61,7 +62,7 @@ struct WGSLLexer {
             } else if let op = matchOperator() {
                 tokens.append(WGSLToken(kind: .punctuation, text: op, line: line))
             } else {
-                throw WGPUError.validation("WGSL: 알 수 없는 문자 '\(character)' (line \(line))")
+                throw WGPUError.validation("WGSL: unknown character '\(character)' (line \(line))")
             }
         }
         tokens.append(WGSLToken(kind: .endOfFile, text: "", line: line))
@@ -86,12 +87,12 @@ struct WGSLLexer {
         }
     }
 
-    /// WGSL의 블록 주석은 중첩된다.
+    /// WGSL block comments nest.
     private mutating func skipBlockComment() throws {
         var depth = 0
         repeat {
             guard index < source.count else {
-                throw WGPUError.validation("WGSL: 닫히지 않은 블록 주석 (line \(line))")
+                throw WGPUError.validation("WGSL: unterminated block comment (line \(line))")
             }
             if source[index] == "/", index + 1 < source.count, source[index + 1] == "*" {
                 depth += 1
@@ -135,7 +136,7 @@ struct WGSLLexer {
                 while index < source.count, source[index].isNumber { index += 1 }
             }
         }
-        // 접미사: u(uint) i(int) f(f32) h(f16)
+        // Suffixes: u(uint) i(int) f(f32) h(f16)
         if index < source.count, "uifh".contains(source[index]) {
             if source[index] == "f" || source[index] == "h" { isFloat = true }
             index += 1

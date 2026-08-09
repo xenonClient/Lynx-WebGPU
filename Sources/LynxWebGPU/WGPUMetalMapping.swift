@@ -2,12 +2,12 @@ import Foundation
 import Metal
 import LynxWebGPUCore
 
-/// WebGPU 열거형 → Metal 열거형.
+/// WebGPU enum → Metal enum.
 ///
-/// 대응하지 않는 값은 던진다 — 조용히 비슷한 값으로 바꾸면 렌더 결과가 미묘하게 달라져
-/// 원인을 찾기 어려운 버그가 된다.
+/// Values without a counterpart throw — quietly substituting something similar changes the render
+/// result subtly and becomes a bug that is hard to trace.
 enum WGPUMetalMapping {
-    // MARK: - 픽셀 포맷
+    // MARK: - Pixel formats
 
     static func pixelFormat(_ format: WGPUTextureFormat) throws -> MTLPixelFormat {
         switch format {
@@ -40,7 +40,7 @@ enum WGPUMetalMapping {
         case .rg11b10ufloat: return .rg11b10Float
         case .rgb9e5ufloat: return .rgb9e5Float
 
-        // --- 블록 압축 -------------------------------------------------------
+        // --- Block compression ------------------------------------------------
         case .bc1RGBAUnorm: return .bc1_rgba
         case .bc1RGBAUnormSRGB: return .bc1_rgba_srgb
         case .bc2RGBAUnorm: return .bc2_rgba
@@ -104,26 +104,27 @@ enum WGPUMetalMapping {
         case .rgba32float: return .rgba32Float
         case .stencil8: return .stencil8
         case .depth16unorm: return .depth16Unorm
-        // Apple GPU에는 24비트 깊이 포맷이 없다. WebGPU의 depth24plus는 "24비트 **이상**"이므로
-        // 32비트 float 깊이로 올려 주는 것이 명세에 맞는 처리다.
+        // Apple GPUs have no 24-bit depth format. WebGPU's depth24plus means "24-bit **or more**", so
+        // promoting it to 32-bit float depth is the spec-conforming handling.
         case .depth24plus, .depth32float: return .depth32Float
         case .depth24plusStencil8, .depth32floatStencil8: return .depth32Float_stencil8
         }
     }
 
-    /// 역방향 매핑 — 드로어블 텍스처가 실제로 어떤 포맷인지 JS에 돌려줄 때 쓴다.
-    /// (캔버스 레이어 설정은 메인 스레드에 비동기로 반영되므로, 요청한 포맷이 아니라
-    /// **실제 텍스처의 포맷**을 기준으로 삼아야 파이프라인 불일치를 정확히 진단할 수 있다.)
+    /// The reverse mapping — used when telling JS what format the drawable texture actually is.
+    /// (Canvas layer configuration is applied asynchronously on the main thread, so diagnosing a
+    /// pipeline mismatch accurately requires **the actual texture's format**, not the requested one.)
     ///
-    /// 표는 `pixelFormat(_:)`에서 **자동으로 뒤집어** 만든다. 손으로 적어 두면 포맷을
-    /// 늘릴 때마다 한쪽만 자라 조용히 비게 된다 (실제로 캔버스에 쓰이는 몇 개만 있었다).
+    /// The table is built by **inverting** `pixelFormat(_:)` automatically. Written by hand it would
+    /// grow on one side only as formats were added, going quietly incomplete (it once held just the
+    /// few used by canvases).
     static func textureFormat(from pixelFormat: MTLPixelFormat) -> WGPUTextureFormat? {
         inverseFormatTable[pixelFormat]
     }
 
-    /// 여러 WebGPU 포맷이 같은 Metal 포맷으로 접히는 자리가 있다 (`depth24plus`도
-    /// `depth32float`도 `.depth32Float`이다). 그런 자리는 **정밀도를 그대로 말해 주는 쪽**을
-    /// 고른다 — 되돌린 이름이 실제 텍스처보다 약하게 들리면 진단이 사람을 헷갈리게 한다.
+    /// Several WebGPU formats collapse onto the same Metal format (`depth24plus` and `depth32float`
+    /// are both `.depth32Float`). In those places we pick **the one that states the precision
+    /// honestly** — a recovered name weaker than the real texture misleads the reader.
     private static let inverseFormatTable: [MTLPixelFormat: WGPUTextureFormat] = {
         var table: [MTLPixelFormat: WGPUTextureFormat] = [:]
         for format in WGPUTextureFormat.allCases {
@@ -135,7 +136,7 @@ enum WGPUMetalMapping {
         return table
     }()
 
-    // MARK: - 정점
+    // MARK: - Vertex
 
     static func vertexFormat(_ format: WGPUVertexFormat) -> MTLVertexFormat {
         switch format {
@@ -202,7 +203,7 @@ enum WGPUMetalMapping {
         face == .ccw ? .counterClockwise : .clockwise
     }
 
-    // MARK: - 깊이 / 블렌딩
+    // MARK: - Depth / blending
 
     static func compareFunction(_ function: WGPUCompareFunction) -> MTLCompareFunction {
         switch function {
@@ -230,10 +231,10 @@ enum WGPUMetalMapping {
         }
     }
 
-    /// 한 면(front/back)의 스텐실 상태 + 파이프라인 공통 마스크.
+    /// One face's (front/back) stencil state plus the pipeline-wide masks.
     ///
-    /// 마스크는 명세상 `GPUDepthStencilState`에 하나씩만 있고 앞/뒤가 나뉘지 않는다.
-    /// Metal은 면마다 들고 있으므로 같은 값을 양쪽에 넣는다.
+    /// In the spec the masks live once on `GPUDepthStencilState` and are not split per face.
+    /// Metal holds them per face, so the same value goes into both.
     static func stencilDescriptor(
         _ face: WGPUStencilFaceState,
         readMask: Int,
@@ -286,7 +287,7 @@ enum WGPUMetalMapping {
         return result
     }
 
-    // MARK: - 샘플러
+    // MARK: - Samplers
 
     static func addressMode(_ mode: WGPUAddressMode) -> MTLSamplerAddressMode {
         switch mode {
@@ -304,7 +305,7 @@ enum WGPUMetalMapping {
         filter == .linear ? .linear : .nearest
     }
 
-    // MARK: - 텍스처
+    // MARK: - Textures
 
     static func textureType(_ dimension: WGPUTextureDimension, arrayLayers: Int, sampleCount: Int) -> MTLTextureType {
         switch dimension {
@@ -321,7 +322,7 @@ enum WGPUMetalMapping {
         if usage.contains(.textureBinding) { result.insert(.shaderRead) }
         if usage.contains(.storageBinding) { result.insert([.shaderRead, .shaderWrite]) }
         if usage.contains(.renderAttachment) { result.insert(.renderTarget) }
-        // copySrc/copyDst는 Metal에서 별도 usage 비트가 아니라 blit 인코더로 처리된다.
+        // copySrc/copyDst are not separate usage bits in Metal — they are handled by the blit encoder.
         return result.isEmpty ? .shaderRead : result
     }
 
@@ -345,52 +346,38 @@ enum WGPUMetalMapping {
     }
 }
 
-/// Metal 기능 집합에서 오는 **기기 능력** — 없는 것을 부르면 Metal이 단언으로 죽는다.
+/// **Device capabilities** coming from Metal feature sets — calling into one that is absent kills Metal with an assertion.
 ///
-/// 이 프로젝트의 검증 원칙은 "Metal에 맡길 수 있으면 맡긴다"지만, **단언으로 죽는 것은 예외**다.
-/// 프로세스가 사라지면 진단할 기회조차 없으므로 여기서 미리 걸러 오류로 알린다.
+/// This project's validation principle is "leave it to Metal where possible", but **an assertion is
+/// the exception**. Once the process is gone there is no chance to diagnose, so we filter here and report an error.
 public enum WGPUDeviceCapability {
-    /// 간접 드로우·디스패치 인자(`drawIndirect` 계열)를 쓸 수 있는가.
+    /// Whether indirect draw/dispatch arguments (the `drawIndirect` family) are available.
     ///
-    /// Metal 기능 집합표: **Apple family 3 이상** 또는 Mac family 2. iOS 17을 최소로 잡는
-    /// 이 라이브러리에서 실기기는 A12(family 5) 이상이라 **항상 지원**하지만,
-    /// **iOS 시뮬레이터는 family 2로 보고**해서 빠진다 — 지원하지 않는 기기에서 부르면
-    /// `MTLValidateFeatureSupport ... failed assertion`으로 프로세스가 죽는다.
+    /// Metal feature set table: **Apple family 3 or above**, or Mac family 2. With iOS 17 as the
+    /// minimum, real devices in this library are A12 (family 5) or newer and therefore **always
+    /// support it**, but **the iOS simulator reports family 2** and drops out — calling it on an
+    /// unsupported device kills the process with `MTLValidateFeatureSupport ... failed assertion`.
     public static func supportsIndirectArguments(_ device: MTLDevice) -> Bool {
         device.supportsFamily(.apple3) || device.supportsFamily(.mac2)
     }
 
-    /// 포맷이 속한 압축 계열 — 명세의 선택 기능 이름과 1:1로 대응한다.
-    public enum CompressionFamily {
-        case none, bc, etc2, astc
+    /// The compression family a format belongs to — the classification itself is a spec fact, so it
+    /// lives in Core (`WGPUTextureCompressionFamily`; the engine's creation check uses the same one).
+    /// An alias and a forwarder keep the old spelling working.
+    public typealias CompressionFamily = WGPUTextureCompressionFamily
 
-        /// `adapter.features`에 싣는 이름 (명세 철자 그대로).
-        public var featureName: String? {
-            switch self {
-            case .none: return nil
-            case .bc: return "texture-compression-bc"
-            case .etc2: return "texture-compression-etc2"
-            case .astc: return "texture-compression-astc"
-            }
-        }
-    }
-
-    /// ETC2와 EAC는 명세에서 **같은 기능 비트**다 (`texture-compression-etc2`).
     public static func compressionFamily(_ format: WGPUTextureFormat) -> CompressionFamily {
-        guard format.isCompressed else { return .none }
-        if format.rawValue.hasPrefix("bc") { return .bc }
-        if format.rawValue.hasPrefix("astc-") { return .astc }
-        return .etc2
+        format.compressionFamily
     }
 
-    /// 블록 압축 포맷을 이 기기가 지원하는가.
+    /// Whether this device supports a block-compressed format.
     ///
-    /// Metal은 **지원하지 않는 압축 포맷으로 텍스처를 만들면 단언으로 죽는다.** 그래서
-    /// `adapter.features`로 미리 알려 주고, 없는 계열은 생성 시점에 오류로 한 번 더 막는다.
+    /// Metal **dies on an assertion if you create a texture in an unsupported compressed format.** So
+    /// we advertise support through `adapter.features` and block an absent family once more at creation.
     ///
-    /// - ETC2/EAC · ASTC: 모든 Apple GPU가 한다 (iOS 전 기종, Apple Silicon Mac).
-    ///   Intel/AMD Mac(`mac2`)에는 없다.
-    /// - BC(DXT/BPTC): Apple7(A14/M1) 이상, 또는 Intel/AMD Mac.
+    /// - ETC2/EAC and ASTC: every Apple GPU does these (all iOS devices, Apple Silicon Macs).
+    ///   Intel/AMD Macs (`mac2`) do not.
+    /// - BC (DXT/BPTC): Apple7 (A14/M1) and above, or an Intel/AMD Mac.
     public static func supportsCompression(_ format: WGPUTextureFormat, on device: MTLDevice) -> Bool {
         switch compressionFamily(format) {
         case .none: return true

@@ -3,15 +3,16 @@ import Metal
 import LynxWebGPUCore
 @testable import LynxWebGPU
 
-/// `WGPUOffscreenSurface.readPixels`의 계약 — 어떤 포맷을 읽고, 어디서 거부하는가.
+/// The contract of `WGPUOffscreenSurface.readPixels` — which formats it reads, and where it refuses.
 ///
-/// 예전 구현은 픽셀당 4바이트를 가정해서, `rgba16float` 표면에서 **오류 없이** 길이도 해석도
-/// 틀린 바이트를 돌려줬다. 여기서 못 박는 것은 "틀린 값 대신 오류가 난다"는 쪽이다.
+/// The old implementation assumed 4 bytes per pixel and, on an `rgba16float` surface, returned bytes
+/// wrong in both length and interpretation **with no error**. What is pinned here is that an error
+/// comes back instead of a wrong value.
 final class OffscreenReadbackTests: XCTestCase {
     private var device: MTLDevice!
 
     override func setUpWithError() throws {
-        try XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, "Metal 디바이스 없음")
+        try XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, "no Metal device")
         device = MTLCreateSystemDefaultDevice()
     }
 
@@ -33,7 +34,7 @@ final class OffscreenReadbackTests: XCTestCase {
         return surface
     }
 
-    func test_되읽기_길이와_행간격이_포맷을_따라간다() throws {
+    func test_readbackLengthAndRowStrideFollowTheFormat() throws {
         let queue = try XCTUnwrap(device.makeCommandQueue())
 
         for (format, bytesPerPixel) in [
@@ -42,7 +43,7 @@ final class OffscreenReadbackTests: XCTestCase {
             (.rgba16float, 8),
             (.rgba32float, 16),
             (.r8unorm, 1),
-            // 팩된 32비트 — 채널 경계가 바이트에 맞지 않아도 픽셀은 4바이트다.
+            // Packed 32-bit — the pixel is 4 bytes even though channel boundaries do not fall on bytes.
             (.rgb10a2uint, 4),
             (.rgb9e5ufloat, 4),
         ] as [(WGPUTextureFormat, Int)] {
@@ -55,7 +56,7 @@ final class OffscreenReadbackTests: XCTestCase {
         }
     }
 
-    func test_depth_stencil_표면은_읽지_않고_오류를_낸다() throws {
+    func test_aDepthStencilSurfaceErrorsInsteadOfReading() throws {
         let queue = try XCTUnwrap(device.makeCommandQueue())
 
         for format: WGPUTextureFormat in [.depth32float, .depth16unorm, .depth32floatStencil8] {
@@ -65,13 +66,13 @@ final class OffscreenReadbackTests: XCTestCase {
                 XCTAssertEqual(error?.kind, .validation)
                 XCTAssertTrue(
                     error?.message.contains(format.rawValue) == true,
-                    "오류 메시지에 포맷이 있어야 원인을 알 수 있다: \(error?.message ?? "")"
+                    "the error message needs the format for the cause to be knowable: \(error?.message ?? "")"
                 )
             }
         }
     }
 
-    func test_configure_전에는_읽을_수_없다() throws {
+    func test_itCannotBeReadBeforeConfigure() throws {
         let queue = try XCTUnwrap(device.makeCommandQueue())
         let surface = WGPUOffscreenSurface(size: CGSize(width: 4, height: 4), device: device)
         XCTAssertThrowsError(try surface.readPixels(queue: queue)) { error in

@@ -1,8 +1,8 @@
 /**
- * 쿼리셋의 커맨드 페이로드.
+ * The command payloads of a query set.
  *
- * 쿼리는 **패스를 열 때만** 붙일 수 있어서, 디스크립터가 핸들로 제대로 바뀌는지가 특히 중요하다 —
- * 객체가 그대로 실리면 Lynx 값 변환기가 이상한 것으로 만들고 오류 없이 조용히 깨진다.
+ * A query can only be attached **when opening a pass**, so whether the descriptor is properly turned into a
+ * handle matters especially — an object riding on as is gets turned into something strange by Lynx's value converter and breaks silently.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -19,7 +19,7 @@ async function setUp() {
 
 const findOp = (state, op) => commandsOf(state).find((command) => command.op === op);
 
-test('createQuerySet이 종류와 개수를 싣는다', async () => {
+test('createQuerySet puts the kind and count on', async () => {
   const { state, device } = await setUp();
   const querySet = device.createQuerySet({ type: 'occlusion', count: 4, label: 'visible' });
   device.queue.submit([]);
@@ -29,12 +29,12 @@ test('createQuerySet이 종류와 개수를 싣는다', async () => {
   assert.equal(command.type, 'occlusion');
   assert.equal(command.count, 4);
   assert.equal(command.label, 'visible');
-  // 웹 코드가 읽는 프로퍼티도 그대로 있어야 한다.
+  // The properties web code reads must be there as well.
   assert.equal(querySet.type, 'occlusion');
   assert.equal(querySet.count, 4);
 });
 
-test('occlusionQuerySet이 핸들로 바뀌어 beginRenderPass에 실린다', async () => {
+test('occlusionQuerySet becomes a handle and rides on beginRenderPass', async () => {
   const { state, device, view, encoder } = await setUp();
   const querySet = device.createQuerySet({ type: 'occlusion', count: 2 });
   const pass = encoder.beginRenderPass({ colorAttachments: [{ view }], occlusionQuerySet: querySet });
@@ -49,7 +49,7 @@ test('occlusionQuerySet이 핸들로 바뀌어 beginRenderPass에 실린다', as
   assert.ok(findOp(state, 'endOcclusionQuery'));
 });
 
-test('timestampWrites의 쿼리셋도 핸들로 바뀐다', async () => {
+test('the query sets in timestampWrites become handles too', async () => {
   const { state, device, view, encoder } = await setUp();
   const querySet = device.createQuerySet({ type: 'timestamp', count: 2 });
   encoder
@@ -62,16 +62,16 @@ test('timestampWrites의 쿼리셋도 핸들로 바뀐다', async () => {
   device.queue.submit([encoder.finish()]);
 
   const render = findOp(state, 'beginRenderPass').timestampWrites;
-  assert.equal(render.querySet, querySet.id, '객체가 아니라 핸들이어야 한다');
+  assert.equal(render.querySet, querySet.id, 'it must be a handle, not an object');
   assert.equal(render.beginningOfPassWriteIndex, 0);
   assert.equal(render.endOfPassWriteIndex, 1);
 
   const compute = findOp(state, 'beginComputePass').timestampWrites;
   assert.equal(compute.querySet, querySet.id);
-  assert.equal(compute.beginningOfPassWriteIndex, undefined, '생략한 자리는 비워 둔다');
+  assert.equal(compute.beginningOfPassWriteIndex, undefined, 'an omitted slot is left empty');
 });
 
-test('resolveQuerySet이 구간과 목적지를 싣는다', async () => {
+test('resolveQuerySet puts the range and destination on', async () => {
   const { state, device, encoder } = await setUp();
   const querySet = device.createQuerySet({ type: 'occlusion', count: 4 });
   const destination = device.createBuffer({ size: 512, usage: 0x0200 });
@@ -86,7 +86,7 @@ test('resolveQuerySet이 구간과 목적지를 싣는다', async () => {
   assert.equal(command.destinationOffset, 256);
 });
 
-test('adapter.features가 has로 기능을 알려 준다', async () => {
+test('adapter.features reports features through has', async () => {
   installNativeMock();
   globalThis.NativeModules.WebGPU.adapterInfo = () => ({
     ok: true, name: 'mock-gpu', backend: 'metal', limits: {}, features: ['timestamp-query'],
@@ -98,7 +98,7 @@ test('adapter.features가 has로 기능을 알려 준다', async () => {
   assert.equal(adapter.features.has('texture-compression-astc'), false);
 });
 
-test('쿼리를 써도 프레임당 브리지 왕복은 1회다', async () => {
+test('the bridge crossings stay at one per frame even with queries', async () => {
   const { state, device, view, encoder } = await setUp();
   const querySet = device.createQuerySet({ type: 'occlusion', count: 1 });
   const destination = device.createBuffer({ size: 256 + 8, usage: 0x0200 });

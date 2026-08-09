@@ -1,15 +1,15 @@
 import Foundation
 import LynxWebGPUCore
 
-/// WGSL 호스트 공유(uniform/storage) 타입의 메모리 배치 계산기.
+/// Memory layout calculator for WGSL host-shared (uniform/storage) types.
 ///
-/// **왜 필요한가** — WGSL과 MSL의 배치 규칙은 거의 같지만 `vec3`에서 갈린다.
-/// WGSL `vec3<f32>`는 정렬 16 / 크기 12라서 `struct { pos: vec3f, r: f32 }`가 16바이트지만,
-/// MSL `float3`는 크기가 16이라 같은 구조체가 32바이트가 된다. JS가 WGSL 규칙으로 채운
-/// 유니폼 버퍼를 그대로 읽으려면 **MSL 구조체를 WGSL 오프셋에 맞춰 패딩**해야 한다.
-/// 방출기(`MSLEmitter`)가 이 계산 결과로 `packed_float3` 선택과 패딩 삽입을 결정한다.
+/// **Why it is needed** — WGSL and MSL layout rules are nearly identical but diverge on `vec3`.
+/// WGSL `vec3<f32>` has alignment 16 and size 12, so `struct { pos: vec3f, r: f32 }` is 16 bytes;
+/// MSL `float3` has size 16, making the same struct 32 bytes. For JS to fill a uniform buffer by
+/// WGSL rules and have it read back correctly, **the MSL struct must be padded to WGSL offsets**.
+/// The emitter (`MSLEmitter`) uses this calculation to choose `packed_float3` and insert padding.
 ///
-/// 참고: WGSL 명세 "Memory Layout" (AlignOf/SizeOf/RoundUp).
+/// Reference: the WGSL spec's "Memory Layout" (AlignOf/SizeOf/RoundUp).
 enum WGSLLayout {
     struct MemberPlacement {
         var name: String
@@ -17,7 +17,7 @@ enum WGSLLayout {
         var offset: Int
         var size: Int
         var align: Int
-        /// 다음 멤버가 offset+16 안쪽에서 시작해 `float3`(16바이트)로는 표현할 수 없는 vec3.
+        /// A vec3 whose next member starts within offset+16, so `float3` (16 bytes) cannot express it.
         var needsPackedVector: Bool
     }
 
@@ -32,7 +32,7 @@ enum WGSLLayout {
         return ((value + alignment - 1) / alignment) * alignment
     }
 
-    // MARK: - 정렬 / 크기
+    // MARK: - Alignment / size
 
     static func align(of type: WGSLType, module: WGSLModule, uniform: Bool) -> Int {
         switch type {
@@ -90,7 +90,7 @@ enum WGSLLayout {
         return uniform ? roundUp(16, stride) : stride
     }
 
-    // MARK: - 구조체 배치
+    // MARK: - Struct layout
 
     static func layout(of structure: WGSLStruct, module: WGSLModule, uniform: Bool) -> StructPlacement {
         var members: [MemberPlacement] = []
@@ -114,7 +114,7 @@ enum WGSLLayout {
         }
 
         let structAlign = uniform ? roundUp(16, maximumAlign) : maximumAlign
-        // vec3 멤버 뒤에 12~15 바이트 구간을 쓰는 멤버가 오면 MSL `float3`(16바이트)로는 자리를 못 맞춘다.
+        // If a member after a vec3 uses bytes 12...15, MSL `float3` (16 bytes) cannot line it up.
         for index in members.indices {
             guard case .vector(3, _) = members[index].type else { continue }
             let end = members[index].offset + 16
@@ -127,18 +127,18 @@ enum WGSLLayout {
         return StructPlacement(members: members, size: roundUp(structAlign, offset), align: structAlign)
     }
 
-    // MARK: - 보조
+    // MARK: - Helpers
 
     static func resolveStruct(_ name: String, module: WGSLModule) -> WGSLStruct? {
         if let structure = module.structNamed(name) { return structure }
-        // alias를 한 단계 따라간다.
+        // Follow an alias one step.
         if let alias = module.aliases.first(where: { $0.name == name }), case .named(let target) = alias.type {
             return module.structNamed(target)
         }
         return nil
     }
 
-    /// 배열 길이처럼 컴파일 타임에 알아야 하는 값을 계산한다. 정수 리터럴과 모듈 상수만 지원한다.
+    /// Computes a value that must be known at compile time, such as an array length. Only integer literals and module constants are supported.
     static func constantValue(_ expression: WGSLExpression, module: WGSLModule) -> Int? {
         switch expression {
         case .intLiteral(let text):
@@ -150,7 +150,7 @@ enum WGSLLayout {
                let value = constant.value {
                 return constantValue(value, module: module)
             }
-            // 함수 안에서 선언한 `const`도 컴파일 타임 상수다 (`var a: array<T, maxLayers>;`).
+            // A `const` declared inside a function is a compile-time constant too (`var a: array<T, maxLayers>;`).
             return uniqueLocalConstant(named: name, module: module)
         case .binary(let op, let left, let right):
             guard let l = constantValue(left, module: module), let r = constantValue(right, module: module) else {
@@ -168,11 +168,12 @@ enum WGSLLayout {
         }
     }
 
-    /// 모듈 전체에서 이 이름으로 선언된 함수 지역 `const`의 값.
+    /// The value of a function-local `const` declared under this name anywhere in the module.
     ///
-    /// 지역 상수라 원칙적으로는 선언한 함수 안에서만 보이지만, 배열 크기를 정할 때는 함수 문맥이
-    /// 없다. 그래서 **모듈 안에서 값이 하나로 정해질 때만** 쓴다 — 같은 이름이 함수마다 다른 값이면
-    /// 어느 쪽인지 알 수 없으니 포기하고 종전처럼 오류를 낸다.
+    /// Being local, it is visible only inside its function in principle, but there is no function
+    /// context when settling an array size. So it is used **only when the module settles on one
+    /// value** — if the same name holds different values per function we cannot tell which, so we
+    /// give up and raise the error as before.
     private static func uniqueLocalConstant(named name: String, module: WGSLModule) -> Int? {
         var found: Int?
         for function in module.functions {
@@ -198,7 +199,7 @@ enum WGSLLayout {
         return values
     }
 
-    /// 중첩 블록만 훑는다 (지역 `const`가 어디에 있어도 찾을 수 있게).
+    /// Walks nested blocks only (so a local `const` is found wherever it sits).
     private static func nestedBlocks(of statement: WGSLStatement) -> [[WGSLStatement]] {
         switch statement {
         case .ifStatement(_, let then, let elseBranch):
@@ -222,7 +223,7 @@ enum WGSLLayout {
         }
     }
 
-    /// uniform 주소 공간에서 쓰이는 구조체 이름들 — 배치 규칙이 storage보다 엄격하다.
+    /// Names of structs used in the uniform address space — their layout rules are stricter than storage.
     static func uniformStructNames(_ module: WGSLModule) -> Set<String> {
         var names = Set<String>()
         for global in module.globals where global.addressSpace == "uniform" {

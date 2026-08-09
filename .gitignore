@@ -7,6 +7,7 @@
 # 자기 Lynx 핀을 여기 써 넣어, 도구를 번갈아 돌릴 때마다 트리가 더러워진다 — 추적하지 않는다.
 Package.resolved
 Package.resolved.bak
+.package.resolved
 
 # Xcode
 *.xcodeproj
@@ -15,6 +16,7 @@ Derived/
 DerivedData/
 .derivedData-cli/
 .derivedData-device/
+.derivedData-dawncheck/
 
 # rspeedy (예제 Lynx 번들 소스) — dist 산출물은 커밋하지 않는다
 node_modules/

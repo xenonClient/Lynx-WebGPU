@@ -51,7 +51,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   if (distance > 1.0) {
     discard;
   }
-  // 가장자리만 부드럽게 — 겹치는 부분에서 알파 합성이 눈에 들어온다.
+  // Only the edge is softened — the alpha compositing reads clearly where they overlap.
   let edge = smoothstep(1.0, 0.9, distance);
   return vec4f(in.color.rgb * in.color.a * edge, in.color.a * edge);
 }
@@ -60,7 +60,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
 function setup({ device, context, format }: SceneContext) {
   const module = device.createShaderModule({ code: SHADER, label: 'blending' })
 
-  // Circle 32B × 3 + aspect(f32) → 16 정렬 → 112B
+  // Circle 32B × 3 + aspect(f32) → aligned to 16 → 112B
   const uniformBuffer = device.createBuffer({
     size: 112,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -74,12 +74,12 @@ function setup({ device, context, format }: SceneContext) {
       entryPoint: 'fs_main',
       targets: [{
         format,
-        // 미리 곱해진 알파(premultiplied) 합성 — 프래그먼트가 이미 RGB에 알파를 곱해 내보내므로
-        // srcFactor는 `src-alpha`가 아니라 `one`이다. 결과는 src·a + dst·(1−a).
+        // Premultiplied alpha compositing — the fragment already multiplies alpha into RGB, so
+        // srcFactor is `one` rather than `src-alpha`. The result is src·a + dst·(1−a).
         //
-        // 캔버스 포맷이 `bgra8unorm`(비 sRGB)이라 합성이 **감마 인코딩된 값 위에서** 일어난다.
-        // 브라우저에서 비 sRGB 캔버스를 쓸 때와 같은 동작이지만, 물리적으로 정확한 선형 공간
-        // 합성보다 겹친 부분이 탁해 보인다. 선형 합성을 원하면 `bgra8unorm-srgb`를 쓸 것.
+        // The canvas format is `bgra8unorm` (not sRGB), so compositing happens **on gamma-encoded values**.
+        // It is the same behaviour as using a non-sRGB canvas in a browser, but the overlaps look muddier
+        // than physically correct linear-space compositing. Use `bgra8unorm-srgb` if you want linear compositing.
         blend: {
           color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
           alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
@@ -104,7 +104,7 @@ function setup({ device, context, format }: SceneContext) {
   return ({ delta, width, height }: { delta: number; width: number; height: number }) => {
     time += delta / 1000
 
-    // 원은 y 기준 크기다 — 세로 화면에서 x로 퍼지지 않게 짧은 축에 맞춘다.
+    // The circles are sized against y — fitted to the short axis so they do not spread along x on a portrait screen.
     const aspect = Math.max(width / height, 0.001)
     const fit = Math.min(1, aspect)
     const radius = 0.42 * fit
@@ -112,7 +112,7 @@ function setup({ device, context, format }: SceneContext) {
 
     for (let index = 0; index < COUNT; index++) {
       const angle = time * 0.7 + (index * Math.PI * 2) / COUNT
-      const base = index * 8 // Circle = 32B = f32 8개
+      const base = index * 8 // Circle = 32B = 8 f32s
       data[base + 0] = (Math.cos(angle) * orbit) / aspect   // center.x
       data[base + 1] = Math.sin(angle) * orbit              // center.y
       data[base + 2] = radius
@@ -143,5 +143,5 @@ function setup({ device, context, format }: SceneContext) {
 }
 
 root.render(
-  <DemoScene title="알파 블렌딩" subtitle="겹치는 반투명 원 + discard + smoothstep" setup={setup} />
+  <DemoScene title="Alpha blending" subtitle="Overlapping translucent circles + discard + smoothstep" setup={setup} />
 )

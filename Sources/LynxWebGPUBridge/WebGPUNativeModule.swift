@@ -2,17 +2,16 @@
 import Foundation
 import Lynx
 import LynxWebGPUCore
-import LynxWebGPU
 
-/// JS의 `NativeModules.WebGPU` — WebGPU 커맨드 스트림 입구.
+/// JS's `NativeModules.WebGPU` — the entrance to the WebGPU command stream.
 ///
-/// **스레딩** — Lynx는 모듈 메서드를 JS 백그라운드 스레드에서 호출한다. 여기서는 그 스레드를
-/// 그대로 쓴다. Metal 인코딩은 메인 스레드를 요구하지 않으므로, 메인으로 넘기면 UI 작업과
-/// 경쟁하며 프레임만 늦어진다. (UIKit을 건드리는 브리지라면 반대로 메인으로 넘겨야 하지만,
-/// 여기서 하는 일은 커맨드 해석과 Metal 인코딩뿐이다.)
+/// **Threading** — Lynx calls module methods on a JS background thread, and we stay on that thread.
+/// Metal encoding does not require the main thread, so hopping to main would only contend with UI
+/// work and delay frames. (A bridge touching UIKit would have to hop the other way, but all this one
+/// does is interpret commands and encode Metal.)
 ///
-/// `execute`는 **동기 반환**이다. 프레임당 커맨드 배열 하나를 넘기고 결과를 바로 받는 구조라
-/// 콜백 왕복이 필요 없다.
+/// `execute` **returns synchronously**. One command array per frame goes in and the result comes
+/// straight back, so no callback round trip is needed.
 @objcMembers
 public final class WebGPUNativeModule: NSObject, LynxModule {
     public static var name: String { "WebGPU" }
@@ -32,7 +31,7 @@ public final class WebGPUNativeModule: NSObject, LynxModule {
         ]
     }
 
-    /// `LynxConfig.register(_:param:)`으로 주입되는 호스트.
+    /// The host injected through `LynxConfig.register(_:param:)`.
     private weak var host: LynxWebGPUHost?
 
     public init(param: Any) {
@@ -44,66 +43,52 @@ public final class WebGPUNativeModule: NSObject, LynxModule {
         super.init()
     }
 
-    // MARK: - 커맨드 실행
+    // MARK: - Command execution
 
-    /// 한 프레임 분량의 커맨드 스트림을 실행한다.
+    /// Runs one frame's worth of the command stream.
     ///
     /// - Parameter payload: `{"commands": [{op: …}, …]}`
     /// - Returns: `{"ok": Bool, "errors": [...], "canvases": {...}}`
     public func execute(_ payload: [String: Any]) -> [String: Any] {
         guard let host else { return Self.unavailable }
-        return host.context.execute(payload)
+        return host.runtime.execute(payload)
     }
 
-    /// `navigator.gpu.requestAdapter()`가 쓰는 디바이스 정보/한계값.
+    /// The device info and limits `navigator.gpu.requestAdapter()` uses.
     public func adapterInfo() -> [String: Any] {
         guard let host else { return Self.unavailable }
-        return host.context.adapterInfo()
+        return host.runtime.adapterInfo()
     }
 
-    /// `GPUShaderModule.getCompilationInfo()` — 그 모듈의 컴파일 진단.
+    /// `GPUShaderModule.getCompilationInfo()` — that module's compilation diagnostics.
     public func shaderCompilationInfo(_ params: [String: Any]) -> [String: Any] {
         guard let host else { return Self.unavailable }
         guard let handle = params["module"] as? Int else {
-            return ["ok": false, "errors": [WGPUError.validation("module 핸들이 필요하다").payload]]
+            return ["ok": false, "errors": [WGPUError.validation("a module handle is required").payload]]
         }
-        return host.context.shaderCompilationInfo(handle: handle)
+        return host.runtime.shaderCompilationInfo(handle: handle)
     }
 
-    /// 캔버스의 현재 픽셀 크기. 뷰포트·투영행렬 계산에 쓴다.
+    /// The canvas's current pixel size. Used to compute viewport and projection matrices.
     public func canvasInfo(_ params: [String: Any]) -> [String: Any] {
         guard let host else { return Self.unavailable }
         guard let identifier = params["canvas"] as? String else {
-            return ["ok": false, "errors": [WGPUError.validation("canvas 이름이 필요하다").payload]]
+            return ["ok": false, "errors": [WGPUError.validation("a canvas name is required").payload]]
         }
-        guard let surface = host.context.surface(for: identifier) else {
-            return [
-                "ok": false,
-                "errors": [WGPUError.validation(
-                    "캔버스 '\(identifier)'이(가) 없다 (등록된 것: "
-                        + "\(host.context.registeredSurfaceIdentifiers.joined(separator: ", ")))"
-                ).payload],
-            ]
-        }
-        return [
-            "ok": true,
-            "width": Int(surface.pixelSize.width),
-            "height": Int(surface.pixelSize.height),
-            "format": surface.configuredFormat.rawValue,
-        ]
+        return host.runtime.canvasInfo(identifier: identifier)
     }
 
-    /// 버퍼 내용을 읽는다 (`GPUBuffer.mapAsync` 대응). GPU 완료를 기다리므로 콜백형이다.
+    /// Reads buffer contents (corresponding to `GPUBuffer.mapAsync`). It waits on GPU completion, hence the callback form.
     public func readBuffer(_ params: [String: Any], callback: @escaping LynxCallbackBlock) {
         guard let host else {
             callback(Self.unavailable)
             return
         }
         guard let handle = (params["buffer"] as? NSNumber)?.intValue else {
-            callback(["ok": false, "errors": [WGPUError.validation("buffer 핸들이 필요하다").payload]])
+            callback(["ok": false, "errors": [WGPUError.validation("a buffer handle is required").payload]])
             return
         }
-        host.context.readBuffer(
+        host.runtime.readBuffer(
             handle: handle,
             offset: (params["offset"] as? NSNumber)?.intValue ?? 0,
             size: (params["size"] as? NSNumber)?.intValue,
@@ -111,16 +96,16 @@ public final class WebGPUNativeModule: NSObject, LynxModule {
         )
     }
 
-    // MARK: - 애셋
+    // MARK: - Assets
 
-    /// 애셋을 `ArrayBuffer`로 읽는다. 브라우저의 `fetch()`가 하던 역할을 최소한으로 대신한다.
+    /// Reads an asset as an `ArrayBuffer`. A minimal stand-in for what the browser's `fetch()` did.
     ///
-    /// 이름 해석은 전적으로 `host.assetProvider`에 맡긴다 — 기본 공급자는 등록된 메모리
-    /// 데이터·파일 경로·번들 상대 이름을 받고, 앱이 공급자를 갈아끼워 규칙과 접근 범위를
-    /// 정할 수 있다 (`WGPUAssetProvider` 참고).
+    /// Name resolution is left entirely to `host.assetProvider` — the default provider accepts
+    /// registered in-memory data, file paths and bundle-relative names, and an app can swap the
+    /// provider to decide the rules and the access scope (see `WGPUAssetProvider`).
     ///
     /// - Parameter params: `{"name": String}`
-    /// - Returns: 콜백으로 `{"ok": true, "data": ArrayBuffer, "byteLength": Int}`.
+    /// - Returns: through the callback, `{"ok": true, "data": ArrayBuffer, "byteLength": Int}`.
     public func loadAsset(_ params: [String: Any], callback: @escaping LynxCallbackBlock) {
         guard let host else {
             callback(Self.unavailable)
@@ -129,22 +114,22 @@ public final class WebGPUNativeModule: NSObject, LynxModule {
         WGPUAssetLoading.load(params, provider: host.assetProvider, callback: callback)
     }
 
-    /// 인코딩된 이미지를 풀어 `ImageBitmap` 자리의 객체로 등록한다 (JS `createImageBitmap`).
+    /// Decodes an encoded image and registers it as the object standing in for `ImageBitmap` (JS `createImageBitmap`).
     ///
-    /// 브라우저의 `createImageBitmap()`이 하던 일이다. Lynx에는 `<img>`도 `ImageBitmap`도
-    /// 없으므로 ImageIO로 대신한다 — PNG·JPEG·HEIC를 JS에서 손으로 푸는 것보다 훨씬 빠르고,
-    /// 픽셀이 네이티브에 남아 **브리지를 한 번도 건너지 않는다.**
+    /// This is what the browser's `createImageBitmap()` did. Lynx has neither `<img>` nor
+    /// `ImageBitmap`, so ImageIO stands in — far faster than unpacking PNG/JPEG/HEIC by hand in JS,
+    /// and the pixels stay native, **never crossing the bridge at all.**
     ///
     /// - Parameter params: `{"id": Int, "data"?: ArrayBuffer, "name"?: String,
     ///   "flipY"?: Bool, "premultiplyAlpha"?: Bool, "resizeWidth"?: Int, "resizeHeight"?: Int}`
-    /// - Returns: 콜백으로 `{"ok": true, "width": Int, "height": Int}`.
+    /// - Returns: through the callback, `{"ok": true, "width": Int, "height": Int}`.
     public func decodeImage(_ params: [String: Any], callback: @escaping LynxCallbackBlock) {
         guard let host else {
             callback(Self.unavailable)
             return
         }
         guard let handle = (params["id"] as? NSNumber)?.intValue else {
-            callback(["ok": false, "errors": [WGPUError.validation("createImageBitmap에는 id가 필요하다").payload]])
+            callback(["ok": false, "errors": [WGPUError.validation("createImageBitmap requires an id").payload]])
             return
         }
         var resize: (width: Int, height: Int)?
@@ -152,11 +137,11 @@ public final class WebGPUNativeModule: NSObject, LynxModule {
            let height = (params["resizeHeight"] as? NSNumber)?.intValue {
             resize = (width, height)
         }
-        host.context.decodeImage(
+        host.runtime.decodeImage(
             handle: handle,
             data: WGPUValueReader(params).data("data"),
             name: params["name"] as? String,
-            options: WGPUImageDecoder.Options(
+            options: WGPUImageDecodeOptions(
                 flipY: (params["flipY"] as? NSNumber)?.boolValue ?? false,
                 premultiplyAlpha: (params["premultiplyAlpha"] as? NSNumber)?.boolValue ?? false,
                 resize: resize
@@ -166,9 +151,9 @@ public final class WebGPUNativeModule: NSObject, LynxModule {
         )
     }
 
-    // MARK: - 프레임 루프
+    // MARK: - Frame loop
 
-    /// `webgpu:frame` 전역 이벤트를 화면 갱신 주기에 맞춰 보내기 시작한다.
+    /// Starts sending the `webgpu:frame` global event in step with the display refresh.
     public func startFrameLoop(_ params: [String: Any]) -> [String: Any] {
         guard let host else { return Self.unavailable }
         host.startFrameLoop(preferredFramesPerSecond: (params["fps"] as? NSNumber)?.intValue ?? 60)
@@ -181,17 +166,17 @@ public final class WebGPUNativeModule: NSObject, LynxModule {
         return ["ok": true]
     }
 
-    /// 모든 GPU 객체를 버린다 (페이지 이탈/핫 리로드).
+    /// Discards every GPU object (page exit, hot reload).
     public func reset() -> [String: Any] {
         guard let host else { return Self.unavailable }
-        host.context.reset()
+        host.runtime.reset()
         return ["ok": true]
     }
 
     private static let unavailable: [String: Any] = [
         "ok": false,
         "errors": [WGPUError.backend(
-            "WebGPU 호스트가 연결되지 않았다 — LynxWebGPU.register(in:host:)와 host.attach(to:)를 확인할 것"
+            "the WebGPU host is not connected — check LynxWebGPU.register(in:host:) and host.attach(to:)"
         ).payload],
     ]
 }
