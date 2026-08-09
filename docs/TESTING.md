@@ -74,7 +74,7 @@ arch -arm64 xcodebuild -workspace LynxWebGPUDemo.xcworkspace -scheme WebGPUDemo 
 
 ```swift
 let outcomes = WebGPUConformance.run(on: myRuntime)
-print(WebGPUConformance.summary(outcomes))     // "적합성 29/29 통과"
+print(WebGPUConformance.summary(outcomes))     // "conformance 29/29 passed"
 ```
 
 검사는 **커맨드 스트림 · `readCanvasPixels` · `readBuffer` · `adapterInfo`만** 쓴다.

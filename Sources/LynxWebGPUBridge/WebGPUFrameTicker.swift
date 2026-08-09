@@ -3,11 +3,11 @@ import Foundation
 import QuartzCore
 import UIKit
 
-/// `CADisplayLink` 기반 프레임 드라이버.
+/// `CADisplayLink`-based frame driver.
 ///
-/// 항상 메인 스레드에서 돌며, 콜백에서는 전역 이벤트 하나만 보낸다 (GPU 작업은 JS 스레드에서 한다).
+/// It always runs on the main thread and the callback only sends one global event (GPU work happens on the JS thread).
 final class WebGPUFrameTicker {
-    /// (타임스탬프 초, 직전 프레임과의 간격 초)
+    /// (timestamp in seconds, seconds since the previous frame)
     var onFrame: ((CFTimeInterval, CFTimeInterval) -> Void)?
 
     private var displayLink: CADisplayLink?
@@ -50,7 +50,7 @@ final class WebGPUFrameTicker {
         onFrame?(link.timestamp, delta)
     }
 
-    /// CADisplayLink는 타깃을 강하게 잡으므로 프록시로 순환 참조를 끊는다.
+    /// CADisplayLink retains its target strongly, so a proxy breaks the reference cycle.
     private final class WeakProxy: NSObject {
         private weak var owner: WebGPUFrameTicker?
         init(_ owner: WebGPUFrameTicker) { self.owner = owner }

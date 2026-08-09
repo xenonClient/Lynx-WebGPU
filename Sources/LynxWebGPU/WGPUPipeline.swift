@@ -16,12 +16,12 @@ public final class WGPUBindGroupLayoutObject {
     }
 }
 
-/// `GPUPipelineLayout` — 그룹 목록과 그로부터 계산된 Metal 인덱스 배정을 함께 들고 있다.
+/// `GPUPipelineLayout` — holds the group list together with the Metal index assignment derived from it.
 public final class WGPUPipelineLayoutObject {
     public let groups: [WGPUBindGroupLayoutObject]
     let assignment: WGSLBindingAssignment
-    /// 드로우/디스패치 전에 반드시 바인드되어 있어야 하는 그룹 인덱스.
-    /// 빈 그룹(선언에 구멍이 있어 생긴 자리)은 요구하지 않는다.
+    /// Group indices that must be bound before a draw or dispatch.
+    /// Empty groups (slots created by a hole in the declarations) are not required.
     let requiredGroups: Set<Int>
 
     init(groups: [WGPUBindGroupLayoutObject]) throws {
@@ -35,9 +35,9 @@ public final class WGPUPipelineLayoutObject {
     }
 }
 
-/// 바인드 그룹이 실제로 가리키는 Metal 객체 (`WGPUMetalBindGroup.Binding`이 담는다).
+/// The Metal objects a bind group actually points at (carried by `WGPUMetalBindGroup.Binding`).
 enum WGPUResolvedBinding {
-    /// `boundSize`는 이 바인딩이 보는 바이트 수 — `arrayLength()`가 이 값을 쓴다.
+    /// `boundSize` is how many bytes this binding sees — `arrayLength()` uses this value.
     case buffer(MTLBuffer, offset: Int, boundSize: Int)
     case sampler(MTLSamplerState)
     case texture(MTLTexture)
@@ -55,11 +55,11 @@ public final class WGPURenderPipelineObject {
     let depthBias: Float
     let depthBiasSlopeScale: Float
     let depthBiasClamp: Float
-    /// 셰이더가 `arrayLength()`를 쓰는가 — 쓰면 버퍼 크기 표를 바인딩해야 한다.
+    /// Whether the shader uses `arrayLength()` — if so, the buffer size table must be bound.
     let needsBufferSizes: Bool
-    /// 드로우 전에 반드시 바인드되어 있어야 하는 정점 버퍼 슬롯 (`vertex.buffers`에 선언된 것).
+    /// Vertex buffer slots that must be bound before a draw (those declared in `vertex.buffers`).
     let requiredVertexSlots: Set<Int>
-    /// 깊이/스텐실 값을 쓰는가 — `depthReadOnly`/`stencilReadOnly` 패스에서 거부할 때 쓴다.
+    /// Whether it writes depth/stencil — used when rejecting in a `depthReadOnly`/`stencilReadOnly` pass.
     let writesDepth: Bool
     let writesStencil: Bool
 
@@ -78,9 +78,9 @@ public final class WGPURenderPipelineObject {
         self.depthBias = Float(descriptor.depthStencil?.depthBias ?? 0)
         self.depthBiasSlopeScale = Float(descriptor.depthStencil?.depthBiasSlopeScale ?? 0)
         self.depthBiasClamp = Float(descriptor.depthStencil?.depthBiasClamp ?? 0)
-        // 진입점 이름은 여기서 확정한다 — 명세상 생략할 수 있고, 그때는 그 스테이지의
-        // 유일한 진입점을 쓴다 (`resolveEntryPoint`). 해석기가 이미 확정해 넘기지만
-        // 같은 결과라 멱등이고, 이 타입만 봐도 계약이 닫힌다.
+        // The entry point name is settled here — the spec allows omitting it, in which case the
+        // stage's only entry point is used (`resolveEntryPoint`). The interpreter already settled and
+        // passed it, but the result is identical so this is idempotent, and the contract closes within this type alone.
         let vertexEntry = try vertexModule.resolveEntryPoint(descriptor.vertex.entryPoint, stage: .vertex)
         let fragmentEntry = try descriptor.fragment.flatMap { fragment -> String? in
             try fragmentModule?.resolveEntryPoint(fragment.entryPoint, stage: .fragment)
@@ -97,23 +97,23 @@ public final class WGPURenderPipelineObject {
         self.needsBufferSizes = wantsBufferSizes
         self.requiredVertexSlots = Set(descriptor.vertex.buffers.indices)
         self.writesDepth = descriptor.depthStencil?.depthWriteEnabled ?? false
-        // 명세의 기준은 **op**다 — 세 op이 전부 `keep`이면 쓰지 않는 것으로 본다
-        // (writeMask 0으로 막아 둔 경우까지 허용하면 브라우저보다 느슨해진다).
+        // The spec's criterion is the **op** — all three ops being `keep` counts as not writing
+        // (allowing a writeMask of 0 to count too would be looser than a browser).
         self.writesStencil = descriptor.depthStencil.map {
             !$0.stencilFront.isWriteFree || !$0.stencilBack.isWriteFree
         } ?? false
 
         let metalDescriptor = MTLRenderPipelineDescriptor()
-        // Metal 검증 레이어는 label에 nil을 넣으면 단언으로 죽는다 — 있을 때만 설정한다.
+        // The Metal validation layer dies on an assertion if label is nil — set it only when present.
         if let label = descriptor.label { metalDescriptor.label = label }
 
-        // 정점/프래그먼트가 같은 모듈이면 MSL 하나에 두 진입점을 담아 한 번만 컴파일한다.
+        // When vertex and fragment share a module, both entry points go into one MSL and compile once.
         let sharesModule = fragmentModule === vertexModule
         let vertexEntryPoints = sharesModule && fragmentEntry != nil
             ? [vertexEntry, fragmentEntry!]
             : [vertexEntry]
 
-        // 정점/프래그먼트가 같은 모듈이면 상수도 합쳐서 한 번에 방출한다.
+        // When vertex and fragment share a module, the constants are merged and emitted together too.
         let sharedConstants = descriptor.vertex.constants.merging(
             descriptor.fragment?.constants ?? [:]
         ) { _, fragment in fragment }
@@ -125,7 +125,7 @@ public final class WGPURenderPipelineObject {
         )
         let vertexName = vertexModule.metalFunctionName(for: vertexEntry)
         guard let vertexFunction = vertexLibrary.makeFunction(name: vertexName) else {
-            throw WGPUError.validation("정점 셰이더 진입점 '\(vertexEntry)'을(를) 찾을 수 없다")
+            throw WGPUError.validation("could not find vertex shader entry point '\(vertexEntry)'")
         }
         metalDescriptor.vertexFunction = vertexFunction
 
@@ -140,7 +140,7 @@ public final class WGPURenderPipelineObject {
                 )
             let fragmentName = fragmentModule.metalFunctionName(for: fragmentEntry)
             guard let fragmentFunction = fragmentLibrary.makeFunction(name: fragmentName) else {
-                throw WGPUError.validation("프래그먼트 셰이더 진입점 '\(fragmentEntry)'을(를) 찾을 수 없다")
+                throw WGPUError.validation("could not find fragment shader entry point '\(fragmentEntry)'")
             }
             metalDescriptor.fragmentFunction = fragmentFunction
 
@@ -162,8 +162,8 @@ public final class WGPURenderPipelineObject {
 
         if let depthStencil = descriptor.depthStencil {
             let format = try WGPUMetalMapping.pixelFormat(depthStencil.format)
-            // 깊이와 스텐실은 **각각** 확인한다. `stencil8` 단독 포맷에 깊이 어태치먼트 포맷을
-            // 세팅하면 렌더 패스에 없는 깊이를 요구하게 되어 파이프라인 생성이 실패한다.
+            // Depth and stencil are checked **separately**. Setting a depth attachment format on a
+            // stencil8-only format would demand a depth the render pass lacks, failing pipeline creation.
             if depthStencil.format.hasDepth { metalDescriptor.depthAttachmentPixelFormat = format }
             if depthStencil.format.hasStencil { metalDescriptor.stencilAttachmentPixelFormat = format }
 
@@ -197,20 +197,20 @@ public final class WGPURenderPipelineObject {
         do {
             state = try device.makeRenderPipelineState(descriptor: metalDescriptor)
         } catch {
-            throw WGPUError.backend("렌더 파이프라인 생성 실패: \(error.localizedDescription)")
+            throw WGPUError.backend("render pipeline creation failed: \(error.localizedDescription)")
         }
     }
 
     private static func vertexDescriptor(for buffers: [WGPUVertexBufferLayout]) throws -> MTLVertexDescriptor {
         guard buffers.count <= WGSLMetalLimits.maxVertexBufferSlots else {
             throw WGPUError.validation(
-                "정점 버퍼 슬롯은 최대 \(WGSLMetalLimits.maxVertexBufferSlots)개다 (요청 \(buffers.count)개)"
+                "at most \(WGSLMetalLimits.maxVertexBufferSlots) vertex buffer slots are available (\(buffers.count) requested)"
             )
         }
         let descriptor = MTLVertexDescriptor()
         for (slot, layout) in buffers.enumerated() {
             guard layout.arrayStride > 0 else {
-                throw WGPUError.unsupported("arrayStride 0(모든 정점이 같은 값)은 지원하지 않는다 — 슬롯 \(slot)")
+                throw WGPUError.unsupported("arrayStride 0 (every vertex the same value) is not supported — slot \(slot)")
             }
             let bufferIndex = WGSLMetalLimits.vertexBufferIndex(slot: slot)
             descriptor.layouts[bufferIndex].stride = layout.arrayStride
@@ -241,7 +241,7 @@ public final class WGPUComputePipelineObject {
         module: WGPUShaderModuleObject
     ) throws {
         self.layout = layout
-        // 렌더 쪽과 같다 — 이름을 생략하면 유일한 compute 진입점을 쓴다 (멱등).
+        // Same as the render side — omitting the name uses the only compute entry point (idempotent).
         let entry = try module.resolveEntryPoint(descriptor.entryPoint, stage: .compute)
         self.needsBufferSizes = module.wgsl?.usesArrayLength(entryPoints: [entry]) ?? false
 
@@ -253,26 +253,26 @@ public final class WGPUComputePipelineObject {
         )
         let name = module.metalFunctionName(for: entry)
         guard let function = library.makeFunction(name: name) else {
-            throw WGPUError.validation("컴퓨트 진입점 '\(entry)'을(를) 찾을 수 없다")
+            throw WGPUError.validation("could not find compute entry point '\(entry)'")
         }
         do {
             state = try device.makeComputePipelineState(function: function)
         } catch {
-            throw WGPUError.backend("컴퓨트 파이프라인 생성 실패: \(error.localizedDescription)")
+            throw WGPUError.backend("compute pipeline creation failed: \(error.localizedDescription)")
         }
 
-        // MSL에는 workgroup 크기 선언이 없다. WGSL의 `@workgroup_size`를 리플렉션에서 가져와
-        // dispatch 시 threadsPerThreadgroup으로 쓴다.
+        // MSL has no workgroup size declaration. WGSL's `@workgroup_size` is taken from reflection and
+        // used as threadsPerThreadgroup at dispatch.
         let size = module.wgsl?.workgroupSize(of: entry) ?? (x: 1, y: 1, z: 1)
         threadsPerThreadgroup = MTLSize(width: size.x, height: size.y, depth: size.z)
     }
 }
 
-// MARK: - 레이아웃 유도
+// MARK: - Deriving layouts
 
 enum WGPUPipelineLayoutResolver {
-    /// `layout: "auto"` — 여러 셰이더 모듈의 선언을 (그룹, 바인딩)으로 합친다.
-    /// visibility는 합집합이다. (명시적 레이아웃의 핸들 해석은 엔진이 끝내고 온다.)
+    /// `layout: "auto"` — merges the declarations of several shader modules by (group, binding).
+    /// Visibility is the union. (Resolving an explicit layout's handles is finished by the engine.)
     static func derivedGroups(
         stages: [(module: WGPUShaderModuleObject, entryPoints: [String])]
     ) throws -> [WGPUBindGroupLayoutObject] {
@@ -281,7 +281,7 @@ enum WGPUPipelineLayoutResolver {
         for stage in stages {
             guard let wgsl = stage.module.wgsl else {
                 throw WGPUError.validation(
-                    "layout: \"auto\"는 WGSL 셰이더에만 쓸 수 있다 — MSL 셰이더는 GPUPipelineLayout을 명시할 것"
+                    "layout: \"auto\" can only be used with WGSL shaders — specify a GPUPipelineLayout for MSL shaders"
                 )
             }
             for (groupIndex, entries) in wgsl.autoBindGroupLayouts(entryPoints: stage.entryPoints).enumerated() {
@@ -289,7 +289,7 @@ enum WGPUPipelineLayoutResolver {
                     if let existing = merged[groupIndex]?[entry.binding] {
                         guard existing.layout == entry.layout else {
                             throw WGPUError.validation(
-                                "@group(\(groupIndex)) @binding(\(entry.binding))의 리소스 종류가 스테이지마다 다르다"
+                                "the resource kind of @group(\(groupIndex)) @binding(\(entry.binding)) differs between stages"
                             )
                         }
                         merged[groupIndex, default: [:]][entry.binding] = WGPUBindGroupLayoutEntry(

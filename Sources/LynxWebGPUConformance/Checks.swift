@@ -1,14 +1,14 @@
 import Foundation
 import LynxWebGPUCore
 
-/// 스위트에 담긴 검사들.
+/// The checks that make up the suite.
 ///
-/// 각 검사는 **계약의 한 자리**를 본다. 새 op을 더하면 여기 검사를 하나 더하는 것이
-/// `docs/COMMAND-STREAM.md` §7의 마지막 단계다.
+/// Each check looks at **one place in the contract**. Adding a check here is the last step of
+/// `docs/COMMAND-STREAM.md` §7 when you add a new op.
 public extension WebGPUConformance {
 
-    /// 화면 전체를 덮는 삼각형 — 정점 버퍼 없이 `vertex_index`만으로.
-    /// 프래그먼트 출력이 색 하나로 고정되므로 픽셀 단언이 단순해진다.
+    /// A full-screen triangle — no vertex buffer, driven by `vertex_index` alone.
+    /// The fragment output is a fixed color, which keeps the pixel assertions simple.
     static let fullscreenShader = """
     @vertex
     fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f {
@@ -47,7 +47,7 @@ public extension WebGPUConformance {
             handleTypeMismatch,
             adapterLimitsSpelling,
             canvasInfoReporting,
-            // 프레임 수명·콜백 API (LifecycleChecks.swift)
+            // Frame lifetime and callback APIs (LifecycleChecks.swift)
             presentFalsePreservesFrame,
             presentExpiresFrame,
             emptyPresentClosesFrame,
@@ -61,9 +61,9 @@ public extension WebGPUConformance {
         ]
     }
 
-    // MARK: - 렌더 기초
+    // MARK: - Render basics
 
-    /// 클리어 색이 그대로 나온다 — 렌더 패스가 열리고 닫히는 가장 짧은 경로.
+    /// The clear color comes out as given — the shortest path through opening and closing a render pass.
     static var clearColor: Check {
         Check("clear-color") { harness in
             try harness.executeExpectingSuccess(
@@ -79,7 +79,7 @@ public extension WebGPUConformance {
         }
     }
 
-    /// WGSL → 파이프라인 → 드로우가 실제로 픽셀을 바꾼다.
+    /// WGSL → pipeline → draw actually changes pixels.
     static var solidDraw: Check {
         Check("solid-draw") { harness in
             try harness.executeExpectingSuccess(
@@ -93,14 +93,14 @@ public extension WebGPUConformance {
                     ["op": "endPass"],
                 ]
             )
-            try harness.expectPixel(x: 32, y: 32, equals: (255, 0, 0, 255), "드로우 결과")
+            try harness.expectPixel(x: 32, y: 32, equals: (255, 0, 0, 255), "draw result")
         }
     }
 
-    /// 정점 버퍼의 위치·색이 래스터화에 반영된다 (안/밖이 갈린다).
+    /// A vertex buffer's position and color reach rasterization (inside and outside differ).
     static var vertexBuffer: Check {
         Check("vertex-buffer") { harness in
-            // 위치(x,y) + 색(r,g,b) 인터리브 — stride 20B
+            // Interleaved position (x,y) + color (r,g,b) — stride 20B
             let vertices: [Float] = [
                 -0.5, -0.5, 1, 0, 0,
                  0.5, -0.5, 1, 0, 0,
@@ -132,12 +132,12 @@ public extension WebGPUConformance {
                     ["op": "endPass"],
                 ]
             )
-            try harness.expectPixel(x: 32, y: 32, equals: (255, 0, 0, 255), "삼각형 내부")
-            try harness.expectPixel(x: 1, y: 1, equals: (0, 0, 255, 255), "삼각형 외부(클리어색)")
+            try harness.expectPixel(x: 32, y: 32, equals: (255, 0, 0, 255), "inside the triangle")
+            try harness.expectPixel(x: 1, y: 1, equals: (0, 0, 255, 255), "outside the triangle (clear color)")
         }
     }
 
-    /// 유니폼 버퍼가 프래그먼트 출력에 닿는다 — 바인드 그룹 배정이 셰이더와 맞는지 본다.
+    /// A uniform buffer reaches the fragment output — checks that bind group assignment matches the shader.
     static var uniformBindGroup: Check {
         Check("uniform-bind-group") { harness in
             let tint: [Float] = [0, 1, 0, 1]
@@ -164,14 +164,14 @@ public extension WebGPUConformance {
                     ["op": "endPass"],
                 ]
             )
-            try harness.expectPixel(x: 32, y: 32, equals: (0, 255, 0, 255), "유니폼 색")
+            try harness.expectPixel(x: 32, y: 32, equals: (0, 255, 0, 255), "uniform color")
         }
     }
 
-    /// `drawIndexed`가 같은 삼각형을 직접 드로우와 **같은 픽셀로** 그린다.
+    /// `drawIndexed` draws the same triangle as a direct draw, **pixel for pixel**.
     static var indexBufferEquivalence: Check {
         Check("index-buffer-equivalence") { harness in
-            // 사각형 네 꼭짓점. 직접 경로는 6개를 늘어놓고, 인덱스 경로는 4개 + 인덱스 6개다.
+            // Four quad corners. The direct path lists six; the indexed path uses four plus six indices.
             let corners: [Float] = [-0.5, -0.5, 0.5, -0.5, -0.5, 0.5, 0.5, 0.5]
             let expanded: [Float] = [
                 -0.5, -0.5, 0.5, -0.5, -0.5, 0.5,
@@ -206,13 +206,13 @@ public extension WebGPUConformance {
                     drawing: ["op": "drawIndexed", "indexCount": 6]
                 )
             )
-            try harness.expectFrameEquals(direct, "drawIndexed가 직접 드로우와 다른 그림을 냈다")
+            try harness.expectFrameEquals(direct, "drawIndexed produced a different picture than the direct draw")
         }
     }
 
-    // MARK: - 컴퓨트 · 버퍼
+    // MARK: - Compute and buffers
 
-    /// 컴퓨트 패스가 스토리지 버퍼에 쓰고, 그 값을 되읽을 수 있다.
+    /// A compute pass writes into a storage buffer and the values can be read back.
     static var computeStorageReadback: Check {
         Check("compute-storage-readback") { harness in
             let shader = """
@@ -223,8 +223,8 @@ public extension WebGPUConformance {
                 data[id.x] = id.x * 2u;
             }
             """
-            // 명세는 `MAP_READ`를 `COPY_DST` 외의 usage와 함께 쓰지 못하게 한다 — 스토리지
-            // 버퍼를 직접 매핑할 수 없으므로 리드백 버퍼로 한 번 복사한다 (웹에서도 같은 모양이다).
+            // The spec forbids combining `MAP_READ` with usages other than `COPY_DST` — a storage
+            // buffer cannot be mapped directly, so it is copied into a readback buffer first (the same shape as on the web).
             try harness.executeExpectingSuccess([
                 ["op": "createShaderModule", "id": 1, "code": shader],
                 ["op": "createBuffer", "id": 2, "size": 16,
@@ -245,12 +245,12 @@ public extension WebGPUConformance {
             ])
             let values = try harness.readBufferSync(handle: 6, as: UInt32.self)
             guard values == [0, 2, 4, 6] else {
-                throw ConformanceFailure("컴퓨트 결과가 \(values) — 기대 [0, 2, 4, 6]")
+                throw ConformanceFailure("compute result was \(values) — expected [0, 2, 4, 6]")
             }
         }
     }
 
-    /// `copyBufferToBuffer`가 바이트를 그대로 옮긴다.
+    /// `copyBufferToBuffer` moves bytes across unchanged.
     static var copyBufferToBuffer: Check {
         Check("copy-buffer-to-buffer") { harness in
             let source: [Float] = [1, 2, 3, 4]
@@ -264,12 +264,12 @@ public extension WebGPUConformance {
             ])
             let copied = try harness.readBufferSync(handle: 2, as: Float.self)
             guard copied == source else {
-                throw ConformanceFailure("복사 결과가 \(copied) — 기대 \(source)")
+                throw ConformanceFailure("copy result was \(copied) — expected \(source)")
             }
         }
     }
 
-    /// `clearBuffer`가 구간을 0으로 만든다 (CPU에서 0 배열을 실어 보내지 않는 경로).
+    /// `clearBuffer` zeroes a range (the path that never ships a zero array from the CPU).
     static var clearBuffer: Check {
         Check("clear-buffer") { harness in
             let filled: [Float] = [7, 7, 7, 7]
@@ -281,14 +281,14 @@ public extension WebGPUConformance {
             ])
             let values = try harness.readBufferSync(handle: 1, as: Float.self)
             guard values == [0, 0, 7, 7] else {
-                throw ConformanceFailure("clearBuffer 결과가 \(values) — 기대 [0, 0, 7, 7]")
+                throw ConformanceFailure("clearBuffer result was \(values) — expected [0, 0, 7, 7]")
             }
         }
     }
 
-    // MARK: - 텍스처
+    // MARK: - Textures
 
-    /// `writeTexture`로 올린 픽셀을 셰이더가 샘플한다.
+    /// A shader samples pixels uploaded with `writeTexture`.
     static var textureUploadAndSample: Check {
         Check("texture-upload-and-sample") { harness in
             let shader = """
@@ -308,7 +308,7 @@ public extension WebGPUConformance {
                 return textureSample(source, linearSampler, vec2f(0.25, 0.25));
             }
             """
-            // 2×2 RGBA8 — 좌상단이 빨강이고, 셰이더가 그 자리를 샘플한다.
+            // 2×2 RGBA8 — the top-left is red and the shader samples that spot.
             let pixels: [UInt8] = [
                 255, 0, 0, 255, 0, 255, 0, 255,
                 0, 0, 255, 255, 255, 255, 0, 255,
@@ -342,13 +342,13 @@ public extension WebGPUConformance {
                     ["op": "endPass"],
                 ]
             )
-            try harness.expectPixel(x: 32, y: 32, equals: (255, 0, 0, 255), "좌상단 텍셀")
+            try harness.expectPixel(x: 32, y: 32, equals: (255, 0, 0, 255), "top-left texel")
         }
     }
 
-    /// 렌더 타깃을 버퍼로 내려 받는다 (`copyTextureToBuffer`).
+    /// Downloads a render target into a buffer (`copyTextureToBuffer`).
     ///
-    /// 폭을 64로 잡아 행 간격이 256B가 되게 한다 — 명세가 요구하는 정렬이다.
+    /// The width is 64 so the row stride is 256B — the alignment the spec requires.
     static var copyTextureToBuffer: Check {
         Check("copy-texture-to-buffer") { harness in
             try harness.executeExpectingSuccess([
@@ -370,20 +370,20 @@ public extension WebGPUConformance {
             ])
             let bytes = try harness.readBufferSync(handle: 3, as: UInt8.self)
             guard bytes.count == 1024 else {
-                throw ConformanceFailure("리드백 길이가 \(bytes.count)B — 기대 1024B")
+                throw ConformanceFailure("readback length was \(bytes.count)B — expected 1024B")
             }
             guard Array(bytes.prefix(4)) == [255, 0, 0, 255],
                   Array(bytes.suffix(4)) == [255, 0, 0, 255] else {
                 throw ConformanceFailure(
-                    "복사된 픽셀이 다르다 — 첫 \(Array(bytes.prefix(4))), 끝 \(Array(bytes.suffix(4)))"
+                    "copied pixels differ — first \(Array(bytes.prefix(4))), last \(Array(bytes.suffix(4)))"
                 )
             }
         }
     }
 
-    // MARK: - 파이프라인 상태
+    // MARK: - Pipeline state
 
-    /// 알파 블렌딩 공식이 적용된다.
+    /// The alpha blending formula is applied.
     static var alphaBlending: Check {
         Check("alpha-blending") { harness in
             let shader = Self.fullscreenShader.replacingOccurrences(
@@ -411,12 +411,12 @@ public extension WebGPUConformance {
                     ["op": "endPass"],
                 ]
             )
-            // 0.5·빨강 + 0.5·파랑
+            // 0.5·red + 0.5·blue
             try harness.expectPixel(x: 32, y: 32, equals: (128, 0, 128, 255), tolerance: 3)
         }
     }
 
-    /// 깊이 테스트가 뒤에 있는 삼각형을 가린다.
+    /// The depth test hides the triangle behind.
     static var depthTest: Check {
         Check("depth-test") { harness in
             let near = Self.depthShader(z: 0.2, color: "vec4f(1.0, 0.0, 0.0, 1.0)")
@@ -456,11 +456,11 @@ public extension WebGPUConformance {
                     ["op": "endPass"],
                 ]
             )
-            try harness.expectPixel(x: 32, y: 32, equals: (255, 0, 0, 255), "앞의 삼각형이 남아야 한다")
+            try harness.expectPixel(x: 32, y: 32, equals: (255, 0, 0, 255), "the front triangle must remain")
         }
     }
 
-    /// 렌더 번들이 **직접 인코딩과 같은 그림**을 낸다 — 번들의 계약 그 자체다.
+    /// A render bundle produces **the same picture as direct encoding** — the bundle contract itself.
     static var renderBundleEquivalence: Check {
         Check("render-bundle-equivalence") { harness in
             let setup: [[String: Any]] = [
@@ -499,16 +499,16 @@ public extension WebGPUConformance {
                     ["op": "endPass"],
                 ]
             )
-            try harness.expectFrameEquals(direct, "번들 실행이 직접 인코딩과 다른 그림을 냈다")
+            try harness.expectFrameEquals(direct, "bundle execution produced a different picture than direct encoding")
         }
     }
 
-    /// 간접 드로우가 직접 드로우와 **같은 그림**을 낸다.
+    /// An indirect draw produces **the same picture** as a direct draw.
     ///
-    /// 기기가 간접 인자를 지원할 때만 돈다 — iOS 시뮬레이터는 여기서 빠진다.
+    /// Runs only where the device supports indirect arguments — the iOS simulator drops out here.
     static var indirectDrawEquivalence: Check {
         Check("indirect-draw-equivalence", requiresFeature: "indirect-first-instance") { harness in
-            // vertexCount, instanceCount, firstVertex, firstInstance — u32 4개
+            // vertexCount, instanceCount, firstVertex, firstInstance — four u32s
             let arguments: [UInt32] = [3, 1, 0, 0]
             let argumentBytes = arguments.withUnsafeBufferPointer {
                 Data(buffer: $0).base64EncodedString()
@@ -546,13 +546,13 @@ public extension WebGPUConformance {
                     ["op": "endPass"],
                 ]
             )
-            try harness.expectFrameEquals(direct, "간접 드로우가 직접 드로우와 다른 그림을 냈다")
+            try harness.expectFrameEquals(direct, "the indirect draw produced a different picture than the direct draw")
         }
     }
 
-    // MARK: - 오류 계약
+    // MARK: - Error contract
 
-    /// **오류 하나가 배치를 죽이지 않는다** — 앞선 명령의 결과는 그대로 남는다.
+    /// **One error does not kill the batch** — the results of earlier commands remain.
     static var errorAccumulation: Check {
         Check("error-accumulation") { harness in
             let result = harness.execute(
@@ -562,25 +562,25 @@ public extension WebGPUConformance {
                         "clearValue": ["r": 0, "g": 1, "b": 0, "a": 1],
                     ]]],
                     ["op": "endPass"],
-                    // 패스 밖의 setPipeline — 유효하지 않다.
+                    // setPipeline outside a pass — not valid.
                     ["op": "setPipeline", "pipeline": 999],
                 ]
             )
             guard (result["ok"] as? Bool) == false else {
-                throw ConformanceFailure("잘못된 명령이 있는데 ok: true로 돌아왔다")
+                throw ConformanceFailure("an invalid command was present but ok: true came back")
             }
             guard let errors = result["errors"] as? [[String: Any]], !errors.isEmpty else {
-                throw ConformanceFailure("오류 목록이 비어 있다")
+                throw ConformanceFailure("the error list is empty")
             }
             guard errors.contains(where: { ($0["path"] as? String)?.hasPrefix("commands[") == true }) else {
-                throw ConformanceFailure("오류에 커맨드 스트림 경로가 붙지 않았다 — \(errors)")
+                throw ConformanceFailure("the error carries no command stream path — \(errors)")
             }
-            // 오류 앞의 클리어는 살아 있어야 한다.
-            try harness.expectPixel(x: 32, y: 32, equals: (0, 255, 0, 255), "오류 앞의 클리어")
+            // The clear before the error must survive.
+            try harness.expectPixel(x: 32, y: 32, equals: (0, 255, 0, 255), "the clear before the error")
         }
     }
 
-    /// 오류 스코프가 오류를 **가로챈다** — 배치 결과에는 실리지 않는다.
+    /// An error scope **intercepts** the error — it is not carried in the batch result.
     static var errorScopeCapture: Check {
         Check("error-scope-capture") { harness in
             let result = harness.execute([
@@ -590,44 +590,44 @@ public extension WebGPUConformance {
             ])
             guard (result["ok"] as? Bool) == true else {
                 throw ConformanceFailure(
-                    "스코프가 잡은 오류가 배치 결과에도 실렸다 — \(ConformanceHarness.describeErrors(result))"
+                    "an error caught by a scope was also carried in the batch result — \(ConformanceHarness.describeErrors(result))"
                 )
             }
             guard let scopes = result["errorScopes"] as? [Any], scopes.count == 1 else {
-                throw ConformanceFailure("errorScopes가 \(result["errorScopes"] ?? "없음") — 1개를 기대")
+                throw ConformanceFailure("errorScopes was \(result["errorScopes"] ?? "absent") — expected 1")
             }
             guard let captured = scopes[0] as? [String: Any],
                   (captured["kind"] as? String) == "validation" else {
-                throw ConformanceFailure("스코프가 validation 오류를 잡지 못했다 — \(scopes[0])")
+                throw ConformanceFailure("the scope did not catch the validation error — \(scopes[0])")
             }
         }
     }
 
-    /// 핸들 타입이 어긋나면 **크래시가 아니라 검증 오류**다 (WebGPU는 안전한 API다).
+    /// A handle type mismatch is **a validation error, not a crash** (WebGPU is a safe API).
     static var handleTypeMismatch: Check {
         Check("handle-type-mismatch") { harness in
             let errors = try harness.executeExpectingFailure([
                 ["op": "createBuffer", "id": 1, "size": 16, "usage": WebGPUUsage.uniform],
-                // 버퍼 핸들을 텍스처 뷰 자리에 넣는다.
+                // Put a buffer handle where a texture view belongs.
                 ["op": "beginRenderPass", "colorAttachments": [["view": 1]]],
             ])
             guard errors.contains(where: { ($0["kind"] as? String) == "validation" }) else {
-                throw ConformanceFailure("validation 오류가 아니다 — \(errors)")
+                throw ConformanceFailure("not a validation error — \(errors)")
             }
         }
     }
 
-    // MARK: - 조회 API
+    // MARK: - Query APIs
 
-    /// `adapter.limits`가 **명세 철자 그대로** 나온다.
+    /// `adapter.limits` comes out **with the spec spelling exactly**.
     ///
-    /// 웹 라이브러리가 이 이름으로 읽고 자기 예산을 정한다 — 우리 식으로 이름을 지으면
-    /// `undefined`를 보고 잘못된 가정을 세운다.
+    /// Web libraries read these names to set their own budgets — naming them our own way makes them
+    /// see `undefined` and build wrong assumptions.
     static var adapterLimitsSpelling: Check {
         Check("adapter-limits-spelling") { harness in
             let info = harness.runtime.adapterInfo()
             guard let limits = info["limits"] as? [String: Any] else {
-                throw ConformanceFailure("adapterInfo에 limits가 없다")
+                throw ConformanceFailure("adapterInfo has no limits")
             }
             let required = [
                 "maxTextureDimension2D", "maxBindGroups", "maxBufferSize",
@@ -638,20 +638,20 @@ public extension WebGPUConformance {
             ]
             let missing = required.filter { limits[$0] == nil }
             guard missing.isEmpty else {
-                throw ConformanceFailure("limits에 없는 명세 항목 — \(missing.joined(separator: ", "))")
+                throw ConformanceFailure("spec entries missing from limits — \(missing.joined(separator: ", "))")
             }
             guard (info["preferredCanvasFormat"] as? String) != nil else {
-                throw ConformanceFailure("preferredCanvasFormat이 없다")
+                throw ConformanceFailure("preferredCanvasFormat is absent")
             }
             guard let adapter = info["info"] as? [String: Any],
                   adapter["vendor"] is String, adapter["architecture"] is String,
                   adapter["description"] is String else {
-                throw ConformanceFailure("GPUAdapterInfo 모양이 아니다 — \(info["info"] ?? "없음")")
+                throw ConformanceFailure("not the shape of GPUAdapterInfo — \(info["info"] ?? "absent")")
             }
         }
     }
 
-    /// `canvasInfo`가 설정한 크기·포맷을 보고한다.
+    /// `canvasInfo` reports the configured size and format.
     static var canvasInfoReporting: Check {
         Check("canvas-info") { harness in
             try harness.executeExpectingSuccess([
@@ -659,26 +659,26 @@ public extension WebGPUConformance {
             ])
             let info = harness.runtime.canvasInfo(identifier: harness.canvas)
             guard (info["ok"] as? Bool) == true else {
-                throw ConformanceFailure("canvasInfo 실패 — \(ConformanceHarness.describeErrors(info))")
+                throw ConformanceFailure("canvasInfo failed — \(ConformanceHarness.describeErrors(info))")
             }
             guard (info["width"] as? Int) == harness.width,
                   (info["height"] as? Int) == harness.height else {
                 throw ConformanceFailure(
-                    "크기가 \(info["width"] ?? "?")×\(info["height"] ?? "?") — "
-                        + "기대 \(harness.width)×\(harness.height)"
+                    "size was \(info["width"] ?? "?")×\(info["height"] ?? "?") — "
+                        + "expected \(harness.width)×\(harness.height)"
                 )
             }
             guard (info["format"] as? String) == "rgba8unorm" else {
-                throw ConformanceFailure("포맷이 \(info["format"] ?? "없음") — 기대 rgba8unorm")
+                throw ConformanceFailure("format was \(info["format"] ?? "absent") — expected rgba8unorm")
             }
-            // 없는 캔버스는 오류로 답해야 한다 (크래시가 아니라).
-            guard (harness.runtime.canvasInfo(identifier: "없는-캔버스")["ok"] as? Bool) == false else {
-                throw ConformanceFailure("없는 캔버스를 물었는데 ok: true로 답했다")
+            // A missing canvas must answer with an error (not a crash).
+            guard (harness.runtime.canvasInfo(identifier: "no-such-canvas")["ok"] as? Bool) == false else {
+                throw ConformanceFailure("asked about a missing canvas but got ok: true")
             }
         }
     }
 
-    // MARK: - 셰이더 조각
+    // MARK: - Shader fragments
 
     static let vertexColorShader = """
     struct VertexOutput {
@@ -748,12 +748,12 @@ public extension WebGPUConformance {
     }
 }
 
-// MARK: - 스트림 조각
+// MARK: - Stream fragments
 
 extension ConformanceHarness {
-    /// 캔버스를 설정하고 이번 배치의 드로어블 텍스처(10)와 뷰(11)를 얻는다.
+    /// Configures the canvas and obtains this batch's drawable texture (10) and view (11).
     ///
-    /// 드로어블 핸들은 **프레임 스코프**라 배치마다 다시 얻어야 한다
+    /// Drawable handles are **frame-scoped**, so they must be obtained again in every batch
     /// (`docs/COMMAND-STREAM.md` §4-5).
     var canvasSetup: [[String: Any]] {
         [
@@ -763,7 +763,7 @@ extension ConformanceHarness {
         ]
     }
 
-    /// 화면 전체를 덮는 삼각형 하나를 그리는 셰이더 + 파이프라인.
+    /// A shader plus pipeline drawing one full-screen triangle.
     func fullscreenPipeline(module: Int, pipeline: Int) -> [[String: Any]] {
         [
             ["op": "createShaderModule", "id": module, "code": WebGPUConformance.fullscreenShader],
@@ -774,7 +774,7 @@ extension ConformanceHarness {
         ]
     }
 
-    /// 사각형 하나를 그리는 렌더 패스 (직접/인덱스 경로가 공유한다).
+    /// A render pass drawing one quad (shared by the direct and indexed paths).
     func quadPass(
         pipeline: Int,
         vertexBuffer: Int,

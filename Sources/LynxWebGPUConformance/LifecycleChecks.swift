@@ -2,33 +2,33 @@ import Foundation
 import CoreGraphics
 import LynxWebGPUCore
 
-/// 프레임 수명·콜백 API·조회 계약의 검사들.
+/// Checks for frame lifetime, callback APIs and query contracts.
 ///
-/// `Checks.swift`가 "그리면 그려지는가"를 본다면, 여기는 **경계**를 본다 — present가 프레임을
-/// 언제 닫는가, 콜백형 API가 무엇을 돌려주는가. 이 계약들은 어긋나도 단순한 씬에서는 티가
-/// 안 나고, Three.js류의 지연 파이프라인 생성처럼 프레임을 여러 배치로 쪼개는 코드에서만
-/// 터진다 (`docs/COMMAND-STREAM.md` §2). 그래서 스위트가 직접 경계를 몰아 본다.
+/// Where `Checks.swift` asks "does drawing draw?", this file looks at **the boundaries** — when
+/// present closes a frame, what a callback API returns. Getting these wrong shows nothing in a simple
+/// scene and only blows up in code that splits a frame across several batches, such as Three.js-style
+/// lazy pipeline creation (`docs/COMMAND-STREAM.md` §2). So the suite drives the boundaries directly.
 public extension WebGPUConformance {
 
-    // MARK: - 프레임 수명
+    // MARK: - Frame lifetime
 
-    /// `present: false` 배치는 프레임을 닫지 않는다 — 프레임 스코프 핸들이 살아남는다.
+    /// A `present: false` batch does not close the frame — frame-scoped handles survive.
     ///
-    /// 가운데 배치가 **writeBuffer 하나로 커맨드 버퍼를 만드는** 것이 요점이다: 커밋이
-    /// 일어나는데도 present·핸들 만료는 미뤄야 한다. Three.js의 지연 파이프라인 생성이
-    /// 정확히 이 경로를 밟았다 (pop 즉시 flush).
+    /// The point is that the middle batch **produces a command buffer from a single writeBuffer**: a
+    /// commit happens, yet present and handle expiry must still be deferred. Three.js's lazy pipeline
+    /// creation walked exactly this path (flush right after pop).
     static var presentFalsePreservesFrame: Check {
         Check("present-false-preserves-frame") { harness in
-            // 배치 1 (프레임 열기): 드로어블 텍스처(10)와 뷰(11)를 얻는다.
+            // Batch 1 (open the frame): obtain the drawable texture (10) and view (11).
             try harness.executeExpectingSuccess(harness.canvasSetup, present: false)
-            // 배치 2 (프레임 중간): 커맨드 버퍼가 생기는 위험 경로.
+            // Batch 2 (mid-frame): the dangerous path where a command buffer appears.
             try harness.executeExpectingSuccess([
                 ["op": "createBuffer", "id": 20, "size": 16,
                  "usage": WebGPUUsage.copyDst | WebGPUUsage.uniform],
                 ["op": "writeBuffer", "buffer": 20,
                  "data": [UInt8](repeating: 7, count: 16).conformanceBase64],
             ], present: false)
-            // 배치 3 (진짜 프레임 제출): 배치 1의 뷰가 아직 유효해야 한다.
+            // Batch 3 (the real frame submit): batch 1's view must still be valid.
             try harness.executeExpectingSuccess([
                 ["op": "beginRenderPass", "colorAttachments": [[
                     "view": 11, "loadOp": "clear", "storeOp": "store",
@@ -37,12 +37,12 @@ public extension WebGPUConformance {
                 ["op": "endPass"],
             ])
             try harness.expectPixel(
-                x: 32, y: 32, equals: (255, 0, 0, 255), "중간 제출을 지나 살아남은 핸들로 그린 결과"
+                x: 32, y: 32, equals: (255, 0, 0, 255), "drawn with a handle that survived the mid-frame submit"
             )
         }
     }
 
-    /// present가 프레임을 닫으면 프레임 스코프 핸들은 만료된다 — 재사용은 validation 오류다.
+    /// When present closes the frame, frame-scoped handles expire — reuse is a validation error.
     static var presentExpiresFrame: Check {
         Check("present-expires-frame") { harness in
             try harness.executeExpectingSuccess(
@@ -60,13 +60,13 @@ public extension WebGPUConformance {
                 ]]],
             ])
             guard errors.contains(where: { ($0["kind"] as? String) == "validation" }) else {
-                throw ConformanceFailure("만료된 핸들 재사용이 validation이 아니다 — \(errors)")
+                throw ConformanceFailure("reusing an expired handle was not a validation error — \(errors)")
             }
         }
     }
 
-    /// 명령이 **빈** present 배치는 틱의 마무리다 — 그래도 프레임을 닫아야 한다
-    /// (핸들 만료 + 그린 내용은 화면에 남는다).
+    /// A present batch with **no** commands is a tick's closing batch — it must still close the frame
+    /// (handles expire, and what was drawn stays on screen).
     static var emptyPresentClosesFrame: Check {
         Check("empty-present-closes-frame") { harness in
             try harness.executeExpectingSuccess(
@@ -78,7 +78,7 @@ public extension WebGPUConformance {
                     ["op": "endPass"],
                 ], present: false
             )
-            // 틱 마무리 — 커맨드가 없어도 프레임을 닫는다.
+            // Tick close — closes the frame even with no commands.
             try harness.executeExpectingSuccess([], present: true)
             _ = try harness.executeExpectingFailure([
                 ["op": "beginRenderPass", "colorAttachments": [[
@@ -86,15 +86,15 @@ public extension WebGPUConformance {
                 ]]],
             ])
             try harness.expectPixel(
-                x: 32, y: 32, equals: (64, 128, 191, 255), "프레임을 닫은 뒤에도 남아 있는 그림"
+                x: 32, y: 32, equals: (64, 128, 191, 255), "the picture still there after the frame closed"
             )
         }
     }
 
-    // MARK: - 콜백 API
+    // MARK: - Callback APIs
 
-    /// `readBuffer`(mapAsync + getMappedRange) — 전량/부분 읽기, 매핑 중 재진입 거부,
-    /// unmap 후 재사용, 없는 핸들의 깨끗한 실패.
+    /// `readBuffer` (mapAsync + getMappedRange) — full and partial reads, refusing re-entry while
+    /// mapped, reuse after unmap, and a clean failure for a missing handle.
     static var readBufferContract: Check {
         Check("read-buffer-contract") { harness in
             let bytes = (0..<32).map(UInt8.init)
@@ -106,10 +106,10 @@ public extension WebGPUConformance {
 
             let all = try harness.readBufferSync(handle: 1)
             guard [UInt8](all) == bytes else {
-                throw ConformanceFailure("전량 읽기가 쓴 값과 다르다 — \([UInt8](all))")
+                throw ConformanceFailure("the full read differs from what was written — \([UInt8](all))")
             }
 
-            // 읽는 동안 버퍼는 매핑 상태다 — 재진입은 거부되어야 한다 (명세의 unavailable).
+            // The buffer is mapped while being read — re-entry must be refused (the spec's unavailable).
             let box = LifecycleResultBox()
             let semaphore = DispatchSemaphore(value: 0)
             harness.runtime.readBuffer(handle: 1, offset: 0, size: nil) { result in
@@ -117,22 +117,22 @@ public extension WebGPUConformance {
                 semaphore.signal()
             }
             try harness.waitPumping(semaphore, timeout: 10) {
-                ConformanceFailure("매핑 중 readBuffer가 답하지 않았다")
+                ConformanceFailure("readBuffer did not answer while mapped")
             }
             guard (box.value["ok"] as? Bool) == false else {
-                throw ConformanceFailure("매핑 중 재읽기가 거부되지 않았다")
+                throw ConformanceFailure("a re-read while mapped was not refused")
             }
 
-            // unmap하면 다시 읽을 수 있고, offset/size 부분 읽기가 그 구간만 준다.
+            // After unmap it can be read again, and an offset/size partial read gives just that range.
             try harness.executeExpectingSuccess([
                 ["op": "unmapBuffer", "buffer": 1],
             ], present: false)
             let part = try harness.readBufferSync(handle: 1, offset: 8, size: 4)
             guard [UInt8](part) == Array(bytes[8..<12]) else {
-                throw ConformanceFailure("부분 읽기(offset 8, size 4)가 다르다 — \([UInt8](part))")
+                throw ConformanceFailure("the partial read (offset 8, size 4) differs — \([UInt8](part))")
             }
 
-            // 없는 핸들은 크래시가 아니라 오류 페이로드다.
+            // A missing handle is an error payload, not a crash.
             let missing = LifecycleResultBox()
             let missingSemaphore = DispatchSemaphore(value: 0)
             harness.runtime.readBuffer(handle: 999, offset: 0, size: nil) { result in
@@ -140,16 +140,16 @@ public extension WebGPUConformance {
                 missingSemaphore.signal()
             }
             try harness.waitPumping(missingSemaphore, timeout: 10) {
-                ConformanceFailure("없는 핸들 readBuffer가 답하지 않았다")
+                ConformanceFailure("readBuffer with a missing handle did not answer")
             }
             guard (missing.value["ok"] as? Bool) == false,
                   (missing.value["errors"] as? [[String: Any]])?.isEmpty == false else {
-                throw ConformanceFailure("없는 핸들이 오류로 답하지 않았다 — \(missing.value)")
+                throw ConformanceFailure("a missing handle did not answer with an error — \(missing.value)")
             }
         }
     }
 
-    /// `resizeCanvas` 뒤에는 `canvasInfo`·`getCurrentTexture`·픽셀 읽기가 전부 새 크기를 본다.
+    /// After `resizeCanvas`, `canvasInfo`, `getCurrentTexture` and pixel readback all see the new size.
     static var resizeCanvasReflects: Check {
         Check("resize-canvas") { harness in
             try harness.executeExpectingSuccess([
@@ -161,7 +161,7 @@ public extension WebGPUConformance {
             let info = harness.runtime.canvasInfo(identifier: harness.canvas)
             guard (info["width"] as? Int) == 32, (info["height"] as? Int) == 16 else {
                 throw ConformanceFailure(
-                    "resize 뒤 canvasInfo가 \(info["width"] ?? "?")×\(info["height"] ?? "?") — 기대 32×16"
+                    "after resize canvasInfo was \(info["width"] ?? "?")×\(info["height"] ?? "?") — expected 32×16"
                 )
             }
             try harness.executeExpectingSuccess([
@@ -176,32 +176,32 @@ public extension WebGPUConformance {
             let readback = try harness.readback()
             guard readback.width == 32, readback.height == 16 else {
                 throw ConformanceFailure(
-                    "resize 뒤 리드백이 \(readback.width)×\(readback.height) — 기대 32×16"
+                    "after resize the readback was \(readback.width)×\(readback.height) — expected 32×16"
                 )
             }
         }
     }
 
-    /// `shaderCompilationInfo` — 깨진 WGSL은 6키를 갖춘 `GPUCompilationMessage`로 진단되고,
-    /// 정상 모듈은 빈 목록, 없는 핸들은 깨끗한 실패다.
+    /// `shaderCompilationInfo` — broken WGSL is diagnosed as a `GPUCompilationMessage` with all six
+    /// keys, a healthy module gives an empty list, and a missing handle fails cleanly.
     static var shaderCompilationInfoShape: Check {
         Check("shader-compilation-info") { harness in
-            // 오류 보고 여부(즉시 vs 지연)는 런타임마다 갈릴 수 있다 — 여기서는 진단 통로만 본다.
+            // Whether errors are reported immediately or deferred may vary per runtime — here we only look at the diagnostic channel.
             _ = harness.execute([
                 ["op": "createShaderModule", "id": 1, "code": "fn broken( {"],
             ], present: false)
             let info = harness.runtime.shaderCompilationInfo(handle: 1)
             guard (info["ok"] as? Bool) == true,
                   let messages = info["messages"] as? [[String: Any]], !messages.isEmpty else {
-                throw ConformanceFailure("깨진 셰이더의 진단이 없다 — \(info)")
+                throw ConformanceFailure("no diagnostic for a broken shader — \(info)")
             }
-            // 명세 `GPUCompilationMessage`의 여섯 키 — 편집기가 이 이름으로 밑줄을 긋는다.
+            // The six keys of the spec's `GPUCompilationMessage` — editors underline by these names.
             let required = ["message", "type", "lineNum", "linePos", "offset", "length"]
             for message in messages {
                 let missing = required.filter { message[$0] == nil }
                 guard missing.isEmpty else {
                     throw ConformanceFailure(
-                        "GPUCompilationMessage 키 누락 — \(missing.joined(separator: ", "))"
+                        "GPUCompilationMessage keys missing — \(missing.joined(separator: ", "))"
                     )
                 }
             }
@@ -212,17 +212,17 @@ public extension WebGPUConformance {
             let clean = harness.runtime.shaderCompilationInfo(handle: 2)
             guard (clean["ok"] as? Bool) == true,
                   (clean["messages"] as? [[String: Any]])?.isEmpty == true else {
-                throw ConformanceFailure("정상 모듈에 진단이 있다 — \(clean)")
+                throw ConformanceFailure("a healthy module carries diagnostics — \(clean)")
             }
 
             guard (harness.runtime.shaderCompilationInfo(handle: 999)["ok"] as? Bool) == false else {
-                throw ConformanceFailure("없는 모듈을 물었는데 ok: true다")
+                throw ConformanceFailure("asked about a missing module but got ok: true")
             }
         }
     }
 
-    /// `language: "msl"`은 **선택 기능**이다 — 지원하면 성공, 아니면 전원 `unsupported`로
-    /// 깨끗이 거부한다 (크래시·validation 금지 — `docs/COMMAND-STREAM.md` §4-1).
+    /// `language: "msl"` is an **optional feature** — succeed if supported, otherwise refuse cleanly
+    /// with `unsupported` throughout (no crash, no validation — `docs/COMMAND-STREAM.md` §4-1).
     static var mslOptional: Check {
         Check("msl-optional") { harness in
             let result = harness.execute([
@@ -237,19 +237,19 @@ public extension WebGPUConformance {
             guard !errors.isEmpty,
                   errors.allSatisfy({ ($0["kind"] as? String) == "unsupported" }) else {
                 throw ConformanceFailure(
-                    "msl 미지원은 unsupported로 거부해야 한다 — \(ConformanceHarness.describeErrors(result))"
+                    "unsupported msl must be refused as unsupported — \(ConformanceHarness.describeErrors(result))"
                 )
             }
         }
     }
 
-    /// `decodeImage`(createImageBitmap) → `copyExternalImageToTexture` — 애셋 없이
-    /// 내장 2×2 PNG로 디코딩·업로드 경로를 픽셀까지 확인한다.
+    /// `decodeImage` (createImageBitmap) → `copyExternalImageToTexture` — verifies the decode and
+    /// upload path down to the pixels using a built-in 2×2 PNG, with no assets.
     static var decodeImageUpload: Check {
         Check("decode-image-upload") { harness in
             let pixels: [UInt8] = [
-                255, 0, 0, 255,    0, 255, 0, 255,     // 1행: 빨강, 초록
-                0, 0, 255, 255,    255, 255, 0, 255,   // 2행: 파랑, 노랑
+                255, 0, 0, 255,    0, 255, 0, 255,     // row 1: red, green
+                0, 0, 255, 255,    255, 255, 0, 255,   // row 2: blue, yellow
             ]
             let box = LifecycleResultBox()
             let semaphore = DispatchSemaphore(value: 0)
@@ -264,11 +264,11 @@ public extension WebGPUConformance {
                 semaphore.signal()
             }
             try harness.waitPumping(semaphore, timeout: 10) {
-                ConformanceFailure("decodeImage가 돌아오지 않았다")
+                ConformanceFailure("decodeImage did not return")
             }
             guard (box.value["ok"] as? Bool) == true,
                   (box.value["width"] as? Int) == 2, (box.value["height"] as? Int) == 2 else {
-                throw ConformanceFailure("decodeImage 실패 — \(box.value)")
+                throw ConformanceFailure("decodeImage failed — \(box.value)")
             }
 
             try harness.executeExpectingSuccess([
@@ -281,7 +281,7 @@ public extension WebGPUConformance {
                  "copySize": ["width": 2, "height": 2]],
                 ["op": "createBuffer", "id": 2, "size": 512,
                  "usage": WebGPUUsage.copyDst | WebGPUUsage.mapRead],
-                // bytesPerRow는 명세 하한(256의 배수)을 지킨다.
+                // bytesPerRow honours the spec's lower bound (a multiple of 256).
                 ["op": "copyTextureToBuffer",
                  "source": ["texture": 1],
                  "destination": ["buffer": 2, "bytesPerRow": 256],
@@ -293,17 +293,18 @@ public extension WebGPUConformance {
             let row1 = [UInt8](data.dropFirst(256).prefix(8))
             guard row0 == [255, 0, 0, 255, 0, 255, 0, 255],
                   row1 == [0, 0, 255, 255, 255, 255, 0, 255] else {
-                throw ConformanceFailure("업로드된 픽셀이 다르다 — 1행 \(row0), 2행 \(row1)")
+                throw ConformanceFailure("the uploaded pixels differ — row 1 \(row0), row 2 \(row1)")
             }
         }
     }
 
-    // MARK: - 프레임 신호
+    // MARK: - Frame signals
 
-    /// `execute`(JS 스레드)와 `processEvents`(틱 스레드)는 **동시에 불리는 것이 계약**이다
-    /// (`docs/COMMAND-STREAM.md` §5-1). 백엔드 API가 스레드 안전하지 않으면 구현이 직렬화해야
-    /// 하고, 빠뜨린 구현은 여기서 백엔드 내부 단언(프로세스 종료)으로 드러난다 — Dawn 시제품이
-    /// 실제로 Metal 인코더 회계 단언으로 죽었던 자리다. 성공 기준은 **완주**다.
+    /// `execute` (JS thread) and `processEvents` (tick thread) **are contractually called
+    /// concurrently** (`docs/COMMAND-STREAM.md` §5-1). If the backend API is not thread-safe the
+    /// implementation must serialize them, and one that skipped it shows up here as an internal backend
+    /// assertion (process death) — the Dawn prototype really did die on a Metal encoder accounting
+    /// assertion here. The success criterion is **finishing**.
     static var pumpConcurrency: Check {
         Check("pump-concurrency") { harness in
             final class StopFlag {
@@ -332,7 +333,7 @@ public extension WebGPUConformance {
                 _ = finished.wait(timeout: .now() + 5)
             }
 
-            // 펌프가 도는 동안 배치를 몰아친다 — 생성·업로드·파괴가 매 배치 백엔드를 만진다.
+            // Hammer batches while the pump runs — creation, upload and destruction touch the backend every batch.
             for index in 0..<200 {
                 try harness.executeExpectingSuccess([
                     ["op": "createBuffer", "id": 40, "size": 256,
@@ -342,7 +343,7 @@ public extension WebGPUConformance {
                     ["op": "destroy", "id": 40],
                 ], present: false)
             }
-            // 매핑 경로도 경쟁 아래에서 — 완료 콜백이 펌프에서 오는 구현을 그대로 찌른다.
+            // The mapping path under contention too — this pokes an implementation whose completion callback comes from the pump.
             try harness.executeExpectingSuccess([
                 ["op": "createBuffer", "id": 41,
                  "usage": WebGPUUsage.mapRead | WebGPUUsage.copyDst,
@@ -350,42 +351,43 @@ public extension WebGPUConformance {
             ], present: false)
             let bytes = try harness.readBufferSync(handle: 41)
             guard [UInt8](bytes) == [1, 2, 3, 4] else {
-                throw ConformanceFailure("경쟁 중 리드백이 오염됐다 — \([UInt8](bytes))")
+                throw ConformanceFailure("the readback was corrupted under contention — \([UInt8](bytes))")
             }
         }
     }
 
-    /// `isReadyForNextFrame`은 유휴 상태에서 true이고 논블로킹이다. `processEvents`는
-    /// 언제 불러도 안전하다 (no-op 허용).
+    /// `isReadyForNextFrame` is true when idle and non-blocking. `processEvents` is safe to call at
+    /// any time (a no-op is allowed).
     static var frameReadiness: Check {
         Check("frame-readiness") { harness in
             let start = Date()
             let ready = harness.runtime.isReadyForNextFrame
             guard Date().timeIntervalSince(start) < 0.1 else {
-                throw ConformanceFailure("isReadyForNextFrame이 블로킹한다")
+                throw ConformanceFailure("isReadyForNextFrame blocks")
             }
             guard ready else {
-                throw ConformanceFailure("유휴 상태인데 isReadyForNextFrame이 false다")
+                throw ConformanceFailure("isReadyForNextFrame is false while idle")
             }
             harness.runtime.processEvents()
         }
     }
 }
 
-/// 콜백이 다른 스레드에서 올 수 있어 값을 참조 타입에 담는다 (세마포어가 가시성을 보장한다).
+/// The callback can come from another thread, so the value lives in a reference type (the semaphore guarantees visibility).
 private final class LifecycleResultBox {
     var value: [String: Any] = [:]
 }
 
-/// 애셋 없이 도는 이미지 검사용 최소 PNG 인코더 (RGBA8 · 무압축 stored deflate).
+/// A minimal PNG encoder for the image check to run without assets (RGBA8, uncompressed stored deflate).
 ///
-/// 검증 대상은 인코딩이 아니라 **런타임의 디코딩 경로**다 — 무압축이라도 유효한 PNG이므로
-/// 어느 디코더(ImageIO 등)든 열 수 있고, 바이트가 결정적이라 픽셀 단언이 흔들리지 않는다.
+/// What is under test is not the encoding but **the runtime's decode path** — uncompressed is still a
+/// valid PNG that any decoder (ImageIO and the rest) can open, and the bytes are deterministic so the
+/// pixel assertions never wobble.
 private enum LifecyclePNG {
     static func encode(rgba: [UInt8], width: Int, height: Int) -> Data {
         var raw = Data()
         for row in 0..<height {
-            raw.append(0)   // 필터: None
+            raw.append(0)   // filter: None
             raw.append(contentsOf: rgba[(row * width * 4)..<((row + 1) * width * 4)])
         }
         var png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])

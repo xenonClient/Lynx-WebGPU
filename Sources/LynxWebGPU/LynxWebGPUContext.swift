@@ -5,19 +5,19 @@ import QuartzCore
 import LynxWebGPUCore
 import LynxWebGPUShader
 
-/// `WebGPURuntime`의 **Metal 직접 구현** — 이 패키지가 기본으로 주는 것.
+/// The **direct Metal implementation** of `WebGPURuntime` — what this package ships by default.
 ///
-/// 실체는 `WGPUBackendEngine`(Core — 오케스트레이션) 위에 `WGPUMetalBackend`(인코딩)를
-/// 얹은 조합이다. 이 타입은 그 조합을 만들어 묶고, 호스트가 쓰는 Metal 고유 표면
-/// (디바이스·큐·커스텀 `WGPUSurface` 등록)을 노출한다. 호스트 앱이 이 객체를 만들어 Lynx
-/// 브리지에 넘기거나 (`LynxWebGPUHost(runtime:)`), Lynx 없이 Swift에서 직접 커맨드 스트림을
-/// 실행할 수 있다 (테스트 하네스가 그렇게 쓴다).
+/// In substance it is `WGPUMetalBackend` (encoding) mounted on `WGPUBackendEngine` (Core —
+/// orchestration). This type builds and binds that pair and exposes the Metal-specific surface a host
+/// uses (device, queue, registering a custom `WGPUSurface`). A host app can create this object and
+/// hand it to the Lynx bridge (`LynxWebGPUHost(runtime:)`), or run the command stream straight from
+/// Swift without Lynx at all (which is how the test harness uses it).
 ///
-/// 다른 구현으로 갈아끼우는 이야기는 `WebGPURuntime` 문서에, 백엔드만 갈아끼우는 이야기는
-/// `WGPUBackend` 문서에 있다.
+/// Swapping in a different implementation is covered in `WebGPURuntime`; swapping only the backend is
+/// covered in `WGPUBackend`.
 ///
-/// **스레딩** — 직렬화는 엔진이 책임진다 (`WGPUBackendEngine` 문서). 표면 등록/해제는
-/// 메인/임의 스레드에서 와도 안전하다 (엔진의 등록부 락).
+/// **Threading** — serialization is the engine's responsibility (see `WGPUBackendEngine`). Surface
+/// registration and removal are safe from the main thread or any other (the engine's registry lock).
 public final class LynxWebGPUContext: WebGPURuntime {
     public let device: MTLDevice
     public let queue: MTLCommandQueue
@@ -25,31 +25,30 @@ public final class LynxWebGPUContext: WebGPURuntime {
     private let backend: WGPUMetalBackend
     private let engine: WGPUBackendEngine<WGPUMetalBackend>
 
-    /// in-flight 프레임 회계 — **백엔드와 무관한 정책**이라 Core에 있다
-    /// (`WGPUFrameCoordinator` 문서 참고). 호스트가 프레임 티커를 자기 방식으로 몰 때
-    /// 들여다볼 수 있도록 공개한다.
+    /// In-flight frame accounting — **backend-independent policy**, so it lives in Core (see
+    /// `WGPUFrameCoordinator`). Exposed so a host driving the frame ticker its own way can inspect it.
     public var frameCoordinator: WGPUFrameCoordinator { engine.frameCoordinator }
 
     public init(device: MTLDevice? = nil, frameCoordinator: WGPUFrameCoordinator = WGPUFrameCoordinator()) throws {
         guard let resolved = device ?? MTLCreateSystemDefaultDevice() else {
-            throw WGPUError.backend("Metal 디바이스를 만들 수 없다 (시뮬레이터/기기 지원 확인)")
+            throw WGPUError.backend("cannot create a Metal device (check simulator/device support)")
         }
         guard let queue = resolved.makeCommandQueue() else {
-            throw WGPUError.backend("MTLCommandQueue 생성 실패")
+            throw WGPUError.backend("MTLCommandQueue creation failed")
         }
         self.device = resolved
         self.queue = queue
         self.backend = WGPUMetalBackend(device: resolved, queue: queue)
         self.engine = WGPUBackendEngine(backend: backend, frameCoordinator: frameCoordinator)
-        WGPULog.device.info("WebGPU 컨텍스트 시작 — \(resolved.name, privacy: .public)")
+        WGPULog.device.info("WebGPU context started — \(resolved.name, privacy: .public)")
     }
 
-    // MARK: - 캔버스 (WebGPURuntime)
+    // MARK: - Canvas (WebGPURuntime)
 
-    /// `<webgpu-canvas>`의 `CAMetalLayer`를 표면으로 붙인다.
+    /// Attaches the `CAMetalLayer` of a `<webgpu-canvas>` as a surface.
     ///
-    /// 표면 타입을 **런타임이** 고르는 것이 요점이다 — 브리지는 레이어만 넘기므로, 런타임을
-    /// 갈아끼워도 엘리먼트 코드가 그대로다 (`WebGPURuntime.attachCanvas` 참고).
+    /// The point is that **the runtime** picks the surface type — the bridge only hands over the layer,
+    /// so swapping the runtime leaves the element code untouched (see `WebGPURuntime.attachCanvas`).
     public func attachCanvas(identifier: String, layer: CAMetalLayer) {
         engine.attachCanvas(identifier: identifier, layer: layer)
     }
@@ -74,9 +73,9 @@ public final class LynxWebGPUContext: WebGPURuntime {
         try engine.readCanvasPixels(identifier: identifier)
     }
 
-    // MARK: - 표면 등록 (Metal 고유 표면)
+    // MARK: - Surface registration (Metal-specific surfaces)
 
-    /// 커스텀 `WGPUSurface` 구현(테스트 더블 등)을 직접 등록한다.
+    /// Registers a custom `WGPUSurface` implementation (a test double, say) directly.
     public func registerSurface(_ surface: WGPUSurface) {
         engine.registerSurface(surface, identifier: surface.identifier, pacesFrames: surface.pacesFrames)
     }
@@ -93,24 +92,24 @@ public final class LynxWebGPUContext: WebGPURuntime {
         engine.registeredSurfaceIdentifiers
     }
 
-    /// 등록된 모든 표면이 새 프레임을 받을 수 있는가 — 회계는 `frameCoordinator`가 한다.
+    /// Whether every registered surface can take a new frame — `frameCoordinator` does the accounting.
     public var isReadyForNextFrame: Bool { engine.isReadyForNextFrame }
 
     public func processEvents() {
         engine.processEvents()
     }
 
-    // MARK: - 커맨드 실행
+    // MARK: - Command execution
 
-    /// 커맨드 스트림 하나를 실행한다.
+    /// Runs one command stream.
     ///
     /// - Parameter payload: `{"commands": [ {op: …}, … ]}`
-    /// - Returns: `{"ok": Bool, "errors": [...], "canvases": {...}}` — JS로 그대로 돌려준다.
+    /// - Returns: `{"ok": Bool, "errors": [...], "canvases": {...}}` — passed straight back to JS.
     public func execute(_ payload: [String: Any]) -> [String: Any] {
         engine.execute(payload)
     }
 
-    /// 버퍼 내용을 읽는다 (`GPUBuffer.mapAsync` + `getMappedRange`에 해당).
+    /// Reads buffer contents (corresponding to `GPUBuffer.mapAsync` + `getMappedRange`).
     public func readBuffer(
         handle: Int,
         offset: Int = 0,
@@ -120,7 +119,7 @@ public final class LynxWebGPUContext: WebGPURuntime {
         engine.readBuffer(handle: handle, offset: offset, size: size, completion: completion)
     }
 
-    /// 인코딩된 이미지를 풀어 `ImageBitmap` 자리의 객체로 등록한다 (JS `createImageBitmap`).
+    /// Decodes an encoded image and registers it as the object standing in for `ImageBitmap` (JS `createImageBitmap`).
     public func decodeImage(
         handle: Int,
         data: Data?,
@@ -135,23 +134,23 @@ public final class LynxWebGPUContext: WebGPURuntime {
         )
     }
 
-    /// `GPUShaderModule.getCompilationInfo()` — 그 모듈의 컴파일 진단.
+    /// `GPUShaderModule.getCompilationInfo()` — that module's compilation diagnostics.
     public func shaderCompilationInfo(handle: Int) -> [String: Any] {
         engine.shaderCompilationInfo(handle: handle)
     }
 
-    /// `navigator.gpu.requestAdapter()` 가 돌려줄 어댑터 정보와 한계값 (`WGPUMetalBackend`).
+    /// The adapter info and limits `navigator.gpu.requestAdapter()` returns (`WGPUMetalBackend`).
     public func adapterInfo() -> [String: Any] {
         engine.adapterInfo()
     }
 
-    /// 모든 GPU 객체를 버린다 (페이지 이탈 등).
+    /// Discards every GPU object (leaving the page, and so on).
     public func reset() {
         engine.reset()
     }
 
     public var liveObjectCount: Int { engine.liveObjectCount }
 
-    /// 테스트 관찰용 — 업로드 스테이징 풀.
+    /// Test observation hook — the upload staging pool.
     var stagingPool: WGPUStagingPool { backend.stagingPool }
 }

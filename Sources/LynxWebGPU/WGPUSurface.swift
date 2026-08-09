@@ -4,46 +4,46 @@ import Metal
 import QuartzCore
 import LynxWebGPUCore
 
-/// 한 프레임의 표시 대상.
+/// The display target for one frame.
 public protocol WGPUDrawable: AnyObject {
     var texture: MTLTexture { get }
-    /// 커맨드 버퍼가 커밋될 때 화면에 올린다. 오프스크린 표면은 아무것도 하지 않는다.
+    /// Puts it on screen when the command buffer is committed. An offscreen surface does nothing.
     func present(with commandBuffer: MTLCommandBuffer)
 }
 
-/// `GPUCanvasContext`가 그리는 표면 — 화면(CAMetalLayer) 또는 오프스크린 텍스처.
+/// The surface a `GPUCanvasContext` draws into — a screen (CAMetalLayer) or an offscreen texture.
 ///
-/// 호스트가 `LynxWebGPUContext.registerSurface(_:)`로 등록하고, JS는 `canvas` 문자열 id로 지목한다.
+/// The host registers it with `LynxWebGPUContext.registerSurface(_:)`, and JS names it by the `canvas` string id.
 public protocol WGPUSurface: AnyObject {
-    /// JS가 `context.configure({ canvas: "main" })`에서 쓰는 id.
+    /// The id JS uses in `context.configure({ canvas: "main" })`.
     var identifier: String { get }
-    /// 픽셀 단위 크기. JS가 뷰포트·투영행렬을 계산할 때 돌려준다.
+    /// Size in pixels. Returned so JS can compute viewport and projection matrices.
     var pixelSize: CGSize { get }
     var configuredFormat: WGPUTextureFormat { get }
 
     func configure(_ configuration: WGPUCanvasConfiguration, device: MTLDevice) throws
-    /// 이번 프레임에 그릴 드로어블. 표면이 아직 크기를 못 받았거나 드로어블이 고갈되면 nil.
+    /// The drawable to draw this frame. Nil when the surface has no size yet, or drawables are exhausted.
     func nextDrawable() -> WGPUDrawable?
 
-    /// 드로어블 크기(픽셀)가 바뀌었다 (`WebGPURuntime.resizeCanvas` — 메인 스레드).
-    /// 화면 표면은 레이어의 `drawableSize`를, 오프스크린 표면은 백킹 텍스처를 새 크기로 맞춘다.
+    /// The drawable size in pixels changed (`WebGPURuntime.resizeCanvas` — main thread).
+    /// A screen surface updates the layer's `drawableSize`; an offscreen one resizes its backing texture.
     func updateDrawableSize(_ size: CGSize)
 
-    /// 드로어블 풀이 있어 **밀릴 수 있는** 표면인가.
+    /// Whether the surface has a drawable pool and **can fall behind**.
     ///
-    /// in-flight 회계 자체는 백엔드 밖(`WGPUFrameCoordinator`)에 있다 — Dawn을 쓰든
-    /// Metal을 쓰든 같은 정책이 필요하기 때문이다. 표면이 답할 것은 "내가 그 대상인가"뿐이다.
-    /// 오프스크린 표면은 풀이 없으므로 false.
+    /// The in-flight accounting itself lives outside the backend (`WGPUFrameCoordinator`) — the same
+    /// policy is needed whether you use Dawn or Metal. All a surface answers is "am I subject to it?".
+    /// An offscreen surface has no pool, so false.
     var pacesFrames: Bool { get }
 }
 
 public extension WGPUSurface {
     var pacesFrames: Bool { false }
-    /// 기본은 no-op — 크기가 고정인 표면(테스트 더블)은 반응할 것이 없다.
+    /// No-op by default — a fixed-size surface (a test double) has nothing to react to.
     func updateDrawableSize(_ size: CGSize) {}
 }
 
-// MARK: - 화면 표면 (CAMetalLayer)
+// MARK: - Screen surface (CAMetalLayer)
 
 final class WGPUMetalLayerDrawable: WGPUDrawable {
     private let drawable: CAMetalDrawable
@@ -56,17 +56,17 @@ final class WGPUMetalLayerDrawable: WGPUDrawable {
     }
 }
 
-/// `CAMetalLayer` 기반 표면. `<webgpu-canvas>` 엘리먼트가 만들어 등록한다.
+/// A `CAMetalLayer`-backed surface. The `<webgpu-canvas>` element creates and registers it.
 ///
-/// 스레딩: 레이어 프로퍼티 설정(`drawableSize`, `pixelFormat`)은 **메인 스레드**에서,
-/// `nextDrawable()`은 커맨드를 해석하는 **JS 스레드**에서 일어난다. 크기는 메인 스레드가
-/// 갱신한 값을 락으로 감싼 캐시에서 읽어, 렌더 스레드가 레이어 프로퍼티를 건드리지 않게 한다.
+/// Threading: setting layer properties (`drawableSize`, `pixelFormat`) happens on the **main thread**,
+/// while `nextDrawable()` happens on the **JS thread** interpreting commands. The size is read from a
+/// lock-wrapped cache the main thread updates, keeping the render thread away from layer properties.
 public final class WGPUMetalLayerSurface: WGPUSurface {
     public let identifier: String
     public let layer: CAMetalLayer
 
-    /// 드로어블 풀이 고갈되면 `nextDrawable()`이 JS 스레드를 세운다 — 페이싱 대상이다.
-    /// 세는 일은 `WGPUFrameCoordinator`가 한다.
+    /// When the drawable pool drains, `nextDrawable()` stalls the JS thread — so it is paced.
+    /// The counting is done by `WGPUFrameCoordinator`.
     public var pacesFrames: Bool { true }
 
     private var cachedSize: CGSize = .zero
@@ -76,11 +76,11 @@ public final class WGPUMetalLayerSurface: WGPUSurface {
     public init(identifier: String, layer: CAMetalLayer) {
         self.identifier = identifier
         self.layer = layer
-        // 레이어 초기 속성은 런타임 정책이다 — 엘리먼트는 레이어를 넘기기만 한다
-        // (`WebGPURuntime.attachCanvas`). configure 반영이 비동기라(아래 configure 참고)
-        // 기본값을 첫 프레임 전에 맞춰 둔다 — getPreferredCanvasFormat()(= bgra8unorm)을
-        // 쓰는 일반적인 경우 첫 프레임부터 일치한다. attachCanvas는 메인 스레드 계약이라
-        // 동기 설정이 안전하다.
+        // The layer's initial properties are runtime policy — the element only hands the layer over
+        // (`WebGPURuntime.attachCanvas`). Because applying configure is asynchronous (see configure
+        // below), the defaults are set before the first frame — in the common case of
+        // getPreferredCanvasFormat() (= bgra8unorm) they match from the very first frame. attachCanvas
+        // is a main-thread contract, so synchronous setup is safe.
         layer.pixelFormat = .bgra8Unorm
         layer.framebufferOnly = true
     }
@@ -97,7 +97,7 @@ public final class WGPUMetalLayerSurface: WGPUSurface {
         return format
     }
 
-    /// 메인 스레드에서 레이아웃이 바뀔 때 호출한다.
+    /// Called from the main thread when layout changes.
     public func updateDrawableSize(_ size: CGSize) {
         layer.drawableSize = size
         lock.lock()
@@ -113,20 +113,21 @@ public final class WGPUMetalLayerSurface: WGPUSurface {
         cachedSize = size
         lock.unlock()
 
-        // CAMetalLayer 설정은 메인 스레드 전용이다. JS 스레드에서 `main.sync`를 걸면
-        // 메인이 Lynx 런타임을 기다리는 순간 교착이 나므로 **비동기**로 넘긴다.
-        // 그래서 요청한 포맷은 다음 프레임부터 적용된다 — `getCurrentTexture`는 캐시된 설정이 아니라
-        // 실제 드로어블 텍스처의 포맷을 보고한다 (기본값이 bgra8unorm이라 보통은 첫 프레임부터 일치한다).
+        // CAMetalLayer configuration is main-thread only. A `main.sync` from the JS thread deadlocks
+        // the moment main is waiting on the Lynx runtime, so it is handed over **asynchronously**.
+        // The requested format therefore applies from the next frame — `getCurrentTexture` reports the
+        // actual drawable texture's format rather than the cached configuration (with bgra8unorm as the
+        // default they usually agree from the first frame anyway).
         let apply = { [layer] in
             layer.device = device
             layer.pixelFormat = pixelFormat
             layer.isOpaque = configuration.alphaMode == .opaque
             layer.framebufferOnly = !configuration.usage.contains(.copySrc)
 
-            // EDR — `extended`면 1.0을 넘는 값을 SDR 흰색 위쪽 여유 밝기로 그대로 내보낸다.
-            // 색공간을 확장 **선형**으로 함께 바꿔야 한다. 둘 중 하나만 걸면 값이 잘리거나
-            // 감마가 두 번 먹는다. (셰이더는 sRGB 인코딩 없이 선형 값을 그대로 써야 하고,
-            // 포맷도 1.0 초과를 담는 `rgba16float`여야 실제로 밝아진다.)
+            // EDR — with `extended`, values above 1.0 go out as headroom brighter than SDR white.
+            // The color space must move to extended **linear** at the same time. Setting only one of
+            // the two clips the values or applies gamma twice. (The shader must emit linear values
+            // with no sRGB encoding, and the format must be `rgba16float` to hold above 1.0 for it to actually brighten.)
             let extended = configuration.toneMappingMode == .extended
             layer.wantsExtendedDynamicRangeContent = extended
             let space: CFString
@@ -153,7 +154,7 @@ public final class WGPUMetalLayerSurface: WGPUSurface {
 
 }
 
-// MARK: - 오프스크린 표면 (테스트 하네스)
+// MARK: - Offscreen surface (test harness)
 
 final class WGPUOffscreenDrawable: WGPUDrawable {
     let texture: MTLTexture
@@ -161,10 +162,10 @@ final class WGPUOffscreenDrawable: WGPUDrawable {
     func present(with commandBuffer: MTLCommandBuffer) {}
 }
 
-/// 화면 없이 텍스처에 그리는 표면.
+/// A surface that draws into a texture with no screen.
 ///
-/// GPU 결과를 눈이 아니라 **픽셀 값으로 검증**하기 위한 것이다 — 시뮬레이터 스크린샷 대신
-/// 렌더 결과를 읽어 단언한다 (`docs/TESTING.md` §4).
+/// It exists to **verify GPU results as pixel values** rather than by eye — instead of a simulator
+/// screenshot, the render result is read back and asserted (`docs/TESTING.md` §4).
 public final class WGPUOffscreenSurface: WGPUSurface {
     public let identifier: String
     public private(set) var texture: MTLTexture?
@@ -186,9 +187,9 @@ public final class WGPUOffscreenSurface: WGPUSurface {
         try remakeTexture()
     }
 
-    /// 크기가 바뀌면 백킹 텍스처를 새 크기로 다시 만든다 — 화면 표면의 `drawableSize` 갱신과
-    /// 같은 의미다 (`canvasInfo`·`getCurrentTexture`·`readCanvasPixels`가 즉시 새 크기를 본다).
-    /// 아직 configure 전이면 크기만 기억한다 — 텍스처는 configure가 만든다.
+    /// When the size changes the backing texture is rebuilt at the new size — the same meaning as a
+    /// screen surface's `drawableSize` update (`canvasInfo`, `getCurrentTexture` and `readCanvasPixels`
+    /// see the new size immediately). Before configure it only remembers the size — configure builds the texture.
     public func updateDrawableSize(_ size: CGSize) {
         guard size != self.size else { return }
         self.size = size
@@ -206,7 +207,7 @@ public final class WGPUOffscreenSurface: WGPUSurface {
         descriptor.usage = [.renderTarget, .shaderRead]
         descriptor.storageMode = .private
         guard let texture = device.makeTexture(descriptor: descriptor) else {
-            throw WGPUError.outOfMemory("오프스크린 표면 텍스처 생성 실패")
+            throw WGPUError.outOfMemory("offscreen surface texture creation failed")
         }
         texture.label = "webgpu.offscreen.\(identifier)"
         self.texture = texture
@@ -217,23 +218,24 @@ public final class WGPUOffscreenSurface: WGPUSurface {
         return WGPUOffscreenDrawable(texture: texture)
     }
 
-    /// 렌더 결과를 **표면에 설정된 포맷 그대로** 읽어 온다. 호출 전에 GPU 작업이 끝나 있어야 한다.
+    /// Reads the render result **in the format the surface was configured with**. GPU work must have finished before calling.
     ///
-    /// 예전에는 `Data`만 돌려주면서 픽셀당 4바이트를 가정했다. 그러면 `rgba16float` 표면에서
-    /// 길이도 해석도 틀린 바이트가 **오류 없이** 나오므로, 지금은 포맷·크기·행 간격을 함께 묶은
-    /// `WGPUPixelReadback`을 돌려준다. 값 하나는 `readback.rgba(x:y:)`로 꺼낸다.
+    /// It used to return only `Data`, assuming 4 bytes per pixel. On an `rgba16float` surface that
+    /// yields bytes wrong in both length and interpretation **with no error**, so it now returns a
+    /// `WGPUPixelReadback` carrying format, size and row stride together. One value comes out via
+    /// `readback.rgba(x:y:)`.
     ///
-    /// - Throws: 아직 `configure`되지 않았거나 표면이 depth/stencil 포맷이면 `WGPUError.validation`.
-    ///           depth/stencil은 Metal blit이 aspect 지정 없이 한 덩어리로 복사할 수 없고,
-    ///           `depth32float-stencil8`처럼 두 aspect가 섞인 포맷은 픽셀당 바이트 수 자체가
-    ///           연속된 한 블록으로 존재하지 않는다.
+    /// - Throws: `WGPUError.validation` if it has not been `configure`d yet, or the surface is a
+    ///           depth/stencil format. A Metal blit cannot copy depth/stencil as one block without
+    ///           naming an aspect, and in a mixed format such as `depth32float-stencil8` the bytes per
+    ///           pixel do not exist as one contiguous block at all.
     public func readPixels(queue: MTLCommandQueue) throws -> WGPUPixelReadback {
         guard let texture else {
-            throw WGPUError.validation("표면이 아직 configure 되지 않았다")
+            throw WGPUError.validation("the surface has not been configured yet")
         }
         guard !format.isDepthOrStencil else {
             throw WGPUError.validation(
-                "\(format.rawValue) 표면은 readPixels로 읽을 수 없다 — depth/stencil은 aspect별 복사가 필요하다"
+                "a \(format.rawValue) surface cannot be read with readPixels — depth/stencil needs a per-aspect copy"
             )
         }
         let bytesPerRow = texture.width * format.bytesPerPixel
@@ -241,7 +243,7 @@ public final class WGPUOffscreenSurface: WGPUSurface {
         guard let staging = device.makeBuffer(length: length, options: .storageModeShared),
               let commandBuffer = queue.makeCommandBuffer(),
               let blit = commandBuffer.makeBlitCommandEncoder() else {
-            throw WGPUError.backend("픽셀 읽기용 blit 생성 실패")
+            throw WGPUError.backend("blit creation for pixel readback failed")
         }
         blit.copy(
             from: texture,
