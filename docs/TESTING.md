@@ -87,11 +87,13 @@ print(WebGPUConformance.summary(outcomes))     // "적합성 29/29 통과"
 | **계약** — 커맨드 스트림 수준 | `CommandInterpreterTests` `RenderPipelineTests` `ErrorScopeTests` `StencilTests` `QuerySetTests` `RenderBundleTests` `IndirectDrawTests` `CompressedTextureTests` `ExternalImageTests` `OffscreenReadbackTests` | 그대로 옮길 수 있다. 스위트가 그중 **핵심을 추려** 라이브러리로 옮겨 둔 것이다 |
 | **Metal 내부** | `MetalMappingTests` `StagingPoolTests` `SurfaceInFlightTests` `RenderHarnessTests` | 옮겨지지 않는다 — 인자 테이블 배정·스테이징 풀·드로어블 회계는 이 백엔드에만 있다 |
 
-검사는 렌더 기초·동치성·오류 모델(19개)에 더해 **경계 계약**(9개)을 본다 — present:false의
-프레임 스코프 핸들 생존(Three.js 회귀)·present 후 만료·빈 present 배치의 프레임 닫기,
-`readBuffer`(매핑 재진입 거부 포함)·`resizeCanvas`·`shaderCompilationInfo`의 6키·
-msl-optional(성공 또는 깨끗한 `unsupported`)·내장 PNG로 `decodeImage`→업로드 픽셀 왕복·
-`isReadyForNextFrame`. 단순한 씬에서는 어긋나도 티가 안 나는 자리들이라 스위트가 직접 몬다.
+검사는 렌더 기초·동치성·오류 모델(19개 — `Checks.swift`)에 더해 **경계 계약**(10개 —
+`LifecycleChecks.swift`)을 본다 — present:false의 프레임 스코프 핸들 생존(Three.js 회귀)·
+present 후 만료·빈 present 배치의 프레임 닫기, `readBuffer`(매핑 재진입 거부 포함)·
+`resizeCanvas`·`shaderCompilationInfo`의 6키·msl-optional(성공 또는 깨끗한 `unsupported`)·
+내장 PNG로 `decodeImage`→업로드 픽셀 왕복·`isReadyForNextFrame`·**펌프 동시성**
+(`processEvents`가 `execute`와 동시에 불려도 견디는가).
+단순한 씬에서는 어긋나도 티가 안 나는 자리들이라 스위트가 직접 몬다.
 
 `ConformanceTests`가 기본 런타임을 스위트에 걸고, **스위트가 실제로 걸러 내는지도 함께 잰다** —
 응답·페이로드·콜백을 일부러 망가뜨린 런타임(`MisbehavingRuntime`)을 걸어 실패가 나오는지 본다.

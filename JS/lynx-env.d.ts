@@ -14,6 +14,11 @@ interface WGPUErrorPayload {
   kind: 'validation' | 'out-of-memory' | 'unsupported' | 'backend';
   message: string;
   path?: string;
+  /**
+   * 셰이더 오류에만 붙는 WGSL 소스 줄 번호 (1부터).
+   * `getCompilationInfo()`의 `lineNum`이 이 값을 그대로 쓴다 — `docs/COMMAND-STREAM.md` §2-1.
+   */
+  line?: number;
 }
 
 /** `execute`의 반환. */
@@ -27,9 +32,10 @@ interface WGPUExecuteResult {
   objects?: number;
   /**
    * 이번 배치에서 `popErrorScope`로 닫힌 스코프들의 결과 — **pop한 순서 그대로**다.
-   * 오류가 없던 스코프는 `null`. shim이 이 순서로 Promise를 푼다.
+   * shim이 이 순서로 Promise를 푼다. 슬롯은 세 가지다 (`docs/COMMAND-STREAM.md` §2):
+   * `null`(깨끗) · 오류 객체(잡힘) · `{rejected: true}`(`push`와 짝이 없어 **reject**한다).
    */
-  errorScopes?: (WGPUErrorPayload | null)[];
+  errorScopes?: (WGPUErrorPayload | { rejected: true } | null)[];
 }
 
 /** `shaderCompilationInfo`의 반환. */

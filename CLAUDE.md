@@ -19,9 +19,10 @@ Lynx 연동: `docs/LYNX-INTEGRATION.md` · 커맨드 스트림 명세: `docs/COM
 ```zsh
 # macOS 개발 루프 — Lynx 없이 엔진/트랜스파일러만 빌드·테스트 (가장 빠르다)
 swift build
-swift test                                   # 362개 테스트, ~7초
+swift test                                   # 364개 테스트, ~7초
 swift test --filter LynxWebGPUShaderTests    # WGSL → MSL 트랜스파일러만
 swift test --filter RenderPipelineTests      # GPU 오프스크린 렌더 검증
+swift test --filter ConformanceTests         # 적합성 스위트(29검사) — 런타임 무관 계약
 
 # 외부 백엔드 주입 검증 — Core의 public 표면을 바꿨으면 반드시 (회귀 훅에는 없다)
 swift build --package-path Examples/ExternalRuntime
@@ -76,6 +77,9 @@ LynxWebGPUCore    ← (없음)                    WebGPU 열거형·디스크립
 LynxWebGPUShader  ← Core                      WGSL 렉서/파서/리플렉션/MSL 방출기. 순수 Swift.
 LynxWebGPU        ← Core, Shader              `WebGPURuntime`의 **기본 구현** — Metal 백엔드
                                               (리소스·파이프라인·인코더), 캔버스 표면, 해석기.
+LynxWebGPUConformance ← Core                  런타임 무관 **적합성 스위트**(29검사). 테스트 타깃이
+                                              아니라 **라이브러리**다 — 저장소 밖 백엔드가 같은
+                                              계약을 지키는지 스스로 재려면 그래야 한다.
 LynxWebGPUBridge  ← Core, Lynx                NativeModule(`NativeModules.WebGPU`) +
   (SPM 타깃 아님 — 소스)                        `<webgpu-canvas>` 엘리먼트. iOS 전용.
                                               **GPU 백엔드를 모른다** — 프로토콜만 본다.
@@ -123,6 +127,10 @@ Sources/
 ├── LynxWebGPU/         — WGPUMetalMapping / WGPUResources / WGPUPipeline / WGPUSurface
 │                         WGPUMetalBackend(= WGPUBackend의 Metal 구현 — 인코딩 동사만)
 │                         LynxWebGPUContext(= 엔진 + Metal 백엔드 조합 — WebGPURuntime 기본 구현)
+├── LynxWebGPUConformance/ — WebGPUConformance(스위트 입구) · ConformanceHarness ·
+│                         Checks(렌더·동치성·오류 19) · LifecycleChecks(경계 계약 10)
+│                         **커맨드 스트림과 `WebGPURuntime`만 쓴다** — 백엔드 내부를 보는
+│                         검사는 여기 들어올 수 없다 (다른 런타임에서 안 돈다)
 ├── LynxWebGPUBridge/   — LynxWebGPUHost / WebGPUNativeModule / WebGPUCanvasUI / WebGPUFrameTicker
 └── (다른 백엔드)        — 이 저장소 밖. `WGPUBackend` 동사를 구현해 `WGPUBackendEngine`에
                           얹으면 오케스트레이션 없이 런타임이 된다 (Projects/DawnCheck가 실물)
