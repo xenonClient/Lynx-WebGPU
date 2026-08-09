@@ -3,15 +3,16 @@ import Metal
 import LynxWebGPUCore
 @testable import LynxWebGPU
 
-/// `pushErrorScope` / `popErrorScope` — **GPU가 필요 없는 프로토콜 계약**이다.
+/// `pushErrorScope` / `popErrorScope` — **a protocol contract needing no GPU**.
 ///
-/// 오류를 어디로 보낼지 정하는 것이 전부이므로 렌더 결과와 무관하다. 잘못된 커맨드로
-/// 오류를 일부러 내고, 그것이 스코프에 잡히는지 / 결과의 `errors`에서 빠지는지를 본다.
+/// All it decides is where an error goes, so it is unrelated to render results. We raise errors on
+/// purpose with bad commands and check whether a scope catches them and whether they drop out of the
+/// result's `errors`.
 final class ErrorScopeTests: XCTestCase {
     private var harness: RenderHarness!
 
     override func setUpWithError() throws {
-        try XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, "Metal 디바이스 없음")
+        try XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, "no Metal device")
         harness = try XCTUnwrap(RenderHarness.make(width: 8, height: 8))
     }
 
@@ -24,15 +25,15 @@ final class ErrorScopeTests: XCTestCase {
         result["errors"] as? [[String: Any]] ?? []
     }
 
-    /// pop 결과 배열 — `NSNull`은 "그 스코프에서는 오류가 없었다"는 뜻이다.
+    /// The pop result array — `NSNull` means "that scope caught no error".
     private func scopes(_ result: [String: Any]) -> [[String: Any]?] {
         (result["errorScopes"] as? [Any] ?? []).map { $0 as? [String: Any] }
     }
 
-    /// validation 오류를 하나 내는 명령 (없는 핸들 참조).
+    /// A command raising exactly one validation error (referencing a missing handle).
     private let failingCommand: [String: Any] = ["op": "setVertexBuffer", "slot": 0, "buffer": 999]
 
-    // MARK: - 기본 동작
+    // MARK: - Basic behaviour
 
     func test_aScopeInterceptsTheErrorAndRemovesItFromTheResult() {
         let result = harness.execute([
@@ -41,9 +42,9 @@ final class ErrorScopeTests: XCTestCase {
             ["op": "popErrorScope"],
         ])
 
-        // 스코프가 가져갔으므로 전역으로 새지 않는다 — 그래야 JS의 onError가 중복 보고를 안 한다.
-        XCTAssertEqual(errors(result).count, 0, "잡힌 오류는 errors에 실리면 안 된다")
-        XCTAssertEqual(result["ok"] as? Bool, true, "처리된 오류는 배치를 실패로 만들지 않는다")
+        // The scope took it, so it does not leak globally — that is what stops JS's onError double-reporting.
+        XCTAssertEqual(errors(result).count, 0, "a caught error must not appear in errors")
+        XCTAssertEqual(result["ok"] as? Bool, true, "a handled error does not make the batch a failure")
         XCTAssertEqual(scopes(result).first??["kind"] as? String, "validation")
     }
 
@@ -55,7 +56,7 @@ final class ErrorScopeTests: XCTestCase {
         ])
 
         XCTAssertEqual(scopes(result).count, 1)
-        XCTAssertNil(scopes(result).first ?? nil, "오류가 없으면 null이어야 한다")
+        XCTAssertNil(scopes(result).first ?? nil, "with no error it must be null")
     }
 
     func test_anErrorOutsideAnyScopeGoesGlobal() {
@@ -65,12 +66,12 @@ final class ErrorScopeTests: XCTestCase {
             failingCommand,
         ])
 
-        XCTAssertNil(scopes(result).first ?? nil, "닫힌 스코프는 뒤의 오류를 못 잡는다")
+        XCTAssertNil(scopes(result).first ?? nil, "a closed scope cannot catch later errors")
         XCTAssertEqual(errors(result).count, 1)
         XCTAssertEqual(errors(result).first?["kind"] as? String, "validation")
     }
 
-    // MARK: - 필터
+    // MARK: - Filters
 
     func test_aNonMatchingFilterLetsItThroughToTheOutside() {
         let result = harness.execute([
@@ -79,45 +80,45 @@ final class ErrorScopeTests: XCTestCase {
             ["op": "popErrorScope"],
         ])
 
-        XCTAssertNil(scopes(result).first ?? nil, "out-of-memory 스코프는 validation을 안 잡는다")
-        XCTAssertEqual(errors(result).count, 1, "못 잡은 오류는 전역으로 나가야 한다")
+        XCTAssertNil(scopes(result).first ?? nil, "an out-of-memory scope does not catch validation")
+        XCTAssertEqual(errors(result).count, 1, "an uncaught error must go global")
     }
 
     func test_withNestedScopesOnlyTheInnerOneCatches() {
         let result = harness.execute([
-            ["op": "pushErrorScope", "filter": "validation"],   // 바깥
-            ["op": "pushErrorScope", "filter": "validation"],   // 안쪽
+            ["op": "pushErrorScope", "filter": "validation"],   // outer
+            ["op": "pushErrorScope", "filter": "validation"],   // inner
             failingCommand,
-            ["op": "popErrorScope"],                            // 안쪽이 먼저 닫힌다
+            ["op": "popErrorScope"],                            // the inner one closes first
             ["op": "popErrorScope"],
         ])
 
         XCTAssertEqual(scopes(result).count, 2)
-        XCTAssertEqual(scopes(result)[0]?["kind"] as? String, "validation", "안쪽이 가져간다")
-        XCTAssertNil(scopes(result)[1], "바깥은 못 본다")
+        XCTAssertEqual(scopes(result)[0]?["kind"] as? String, "validation", "the inner one takes it")
+        XCTAssertNil(scopes(result)[1], "the outer one never sees it")
         XCTAssertEqual(errors(result).count, 0)
     }
 
     func test_whenTheInnerFilterDoesNotMatchTheOuterScopeCatches() {
         let result = harness.execute([
-            ["op": "pushErrorScope", "filter": "validation"],     // 바깥 — 이쪽이 잡아야 한다
-            ["op": "pushErrorScope", "filter": "out-of-memory"],  // 안쪽 — 필터가 안 맞는다
+            ["op": "pushErrorScope", "filter": "validation"],     // outer — this one must catch
+            ["op": "pushErrorScope", "filter": "out-of-memory"],  // inner — the filter does not match
             failingCommand,
             ["op": "popErrorScope"],
             ["op": "popErrorScope"],
         ])
 
-        XCTAssertNil(scopes(result)[0], "안쪽은 필터가 달라 못 잡는다")
-        XCTAssertEqual(scopes(result)[1]?["kind"] as? String, "validation", "바깥으로 흘러가 잡힌다")
+        XCTAssertNil(scopes(result)[0], "the inner one cannot catch, its filter differs")
+        XCTAssertEqual(scopes(result)[1]?["kind"] as? String, "validation", "it flows out and is caught")
         XCTAssertEqual(errors(result).count, 0)
     }
 
     func test_theValidationScopeCatchesAnUnsupportedFeature() {
-        // `unsupported`는 "명세상 유효하지만 이 구현이 아직 안 하는 것"이다. 브라우저에서
-        // 같은 코드는 validation으로 나거나 성공하므로, validation 스코프로 잡아야 대응이 된다.
+        // `unsupported` means "valid per spec, but this implementation does not do it yet". The same code
+        // in a browser either raises validation or succeeds, so a validation scope must catch it to allow a response.
         let result = harness.execute([
             ["op": "pushErrorScope", "filter": "validation"],
-            ["op": "텔레포트"],
+            ["op": "teleport"],
             ["op": "popErrorScope"],
         ])
 
@@ -140,14 +141,14 @@ final class ErrorScopeTests: XCTestCase {
         XCTAssertEqual(errors(result).count, 0)
     }
 
-    /// shim의 `createRenderPipelineAsync`가 쓰는 배치 그대로 — validation 바깥, internal 안쪽.
+    /// Exactly the batch the shim's `createRenderPipelineAsync` uses — validation outside, internal inside.
     ///
-    /// 파이프라인 생성은 두 종류로 실패한다. 디스크립터 문제는 `validation`(+`unsupported`)이고
-    /// 셰이더 번역·컴파일 실패는 `backend`라 `internal` 필터로만 잡힌다. 두 겹으로 싸야
-    /// **어느 쪽이든 스코프가 가져가고**, 한 겹만 치면 나머지 절반이 전역으로 새면서
-    /// Promise는 성공으로 풀려 못 쓰는 파이프라인이 손에 남는다.
+    /// Pipeline creation fails in two ways. A descriptor problem is `validation` (plus `unsupported`),
+    /// while a shader translation or compilation failure is `backend` and only an `internal` filter
+    /// catches it. Wrapping in two layers is what makes **either kind land in a scope** — with one layer
+    /// the other half leaks globally, the promise resolves as success, and you are left holding an unusable pipeline.
     func test_twoNestedScopesTakeBothPipelineFailures() {
-        // ① 셰이더 컴파일 실패 → 안쪽(internal)이 가져가고 바깥(validation)은 깨끗하다.
+        // (1) shader compile failure → the inner one (internal) takes it and the outer (validation) stays clean.
         let backend = harness.execute([
             ["op": "pushErrorScope", "filter": "validation"],
             ["op": "pushErrorScope", "filter": "internal"],
@@ -159,11 +160,11 @@ final class ErrorScopeTests: XCTestCase {
             ["op": "popErrorScope"],
             ["op": "popErrorScope"],
         ])
-        XCTAssertEqual(scopes(backend).first??["kind"] as? String, "backend", "안쪽이 먼저 가져간다")
-        XCTAssertNil(scopes(backend).last ?? nil, "바깥은 비어야 한다")
-        XCTAssertEqual(errors(backend).count, 0, "전역으로 새면 안 된다")
+        XCTAssertEqual(scopes(backend).first??["kind"] as? String, "backend", "the inner one takes it first")
+        XCTAssertNil(scopes(backend).last ?? nil, "the outer one must be empty")
+        XCTAssertEqual(errors(backend).count, 0, "it must not leak globally")
 
-        // ② 디스크립터 오류 → 안쪽은 필터가 안 맞으니 바깥(validation)이 가져간다.
+        // (2) descriptor error → the inner filter does not match, so the outer (validation) takes it.
         let validation = harness.execute([
             ["op": "pushErrorScope", "filter": "validation"],
             ["op": "pushErrorScope", "filter": "internal"],
@@ -172,27 +173,27 @@ final class ErrorScopeTests: XCTestCase {
             ["op": "popErrorScope"],
             ["op": "popErrorScope"],
         ])
-        XCTAssertNil(scopes(validation).first ?? nil, "안쪽은 비어야 한다")
+        XCTAssertNil(scopes(validation).first ?? nil, "the inner one must be empty")
         XCTAssertEqual(scopes(validation).last??["kind"] as? String, "validation")
         XCTAssertEqual(errors(validation).count, 0)
     }
 
-    // MARK: - 수명
+    // MARK: - Lifetime
 
-    /// WebGPU에서 오류 스코프는 **디바이스 상태**다. `push`와 `pop` 사이에 `submit`이 몇 번이든
-    /// 들어갈 수 있으므로, 배치 경계에서 스택이 초기화되면 안 된다.
+    /// In WebGPU an error scope is **device state**. Any number of `submit`s may fall between `push`
+    /// and `pop`, so the stack must not reset at a batch boundary.
     func test_scopesSpanBatches() {
         harness.executeExpectingSuccess([["op": "pushErrorScope", "filter": "validation"]])
 
         let middle = harness.execute([failingCommand])
-        XCTAssertEqual(errors(middle).count, 0, "다른 배치의 오류도 열린 스코프가 잡는다")
+        XCTAssertEqual(errors(middle).count, 0, "an open scope catches errors from another batch too")
 
         let closing = harness.execute([["op": "popErrorScope"]])
         XCTAssertEqual(scopes(closing).first??["kind"] as? String, "validation")
     }
 
     func test_aScopeReturnsOnlyTheFirstErrorItCaught() {
-        // 핸들 번호가 메시지에 드러나는 명령을 쓴다 — 어느 쪽이 잡혔는지 구분하려면 필요하다.
+        // Use commands whose handle number shows in the message — needed to tell which one was caught.
         let bytes = [Float](repeating: 0, count: 4).base64
         let result = harness.execute([
             ["op": "pushErrorScope", "filter": "validation"],
@@ -201,53 +202,53 @@ final class ErrorScopeTests: XCTestCase {
             ["op": "popErrorScope"],
         ])
 
-        XCTAssertEqual(scopes(result).count, 1, "스코프 하나당 결과 하나")
+        XCTAssertEqual(scopes(result).count, 1, "one result per scope")
         XCTAssertTrue(
             ((scopes(result).first??["message"] as? String) ?? "").contains("111"),
-            "명세상 처음 잡힌 오류를 돌려준다"
+            "per spec it returns the first error caught"
         )
     }
 
-    /// 명세는 짝이 없는 `pop`을 **Promise reject**로 정하고, **오류를 생성하지 않는다.**
-    /// 그래서 GPUError로 흘리지 않고 슬롯에 "짝 없음"만 실어 보낸다 — 그러지 않으면
-    /// 명세에 없는 오류가 앱의 전역 핸들러·텔레메트리에 섞이고, 앱은 "깨끗했다(null)"와
-    /// "짝이 안 맞았다"를 구분할 수 없다.
+    /// The spec defines an unmatched `pop` as **a promise rejection** and **creates no error**.
+    /// So we do not route it as a GPUError but carry only "unmatched" in the slot — otherwise an error
+    /// the spec never defined mixes into the app's global handler and telemetry, and the app cannot
+    /// tell "it was clean (null)" from "it was unmatched".
     func test_anUnmatchedPopReturnsARejectedStateRatherThanAnError() {
         let result = harness.execute([["op": "popErrorScope"]])
 
-        XCTAssertEqual(result["ok"] as? Bool, true, "명세에 없는 GPUError를 만들면 안 된다")
+        XCTAssertEqual(result["ok"] as? Bool, true, "it must not create a GPUError the spec does not define")
         XCTAssertNil(result["errors"])
-        // 자리가 밀리면 JS가 Promise를 엉뚱한 결과로 풀게 된다 — 개수는 지켜야 한다.
+        // A shifted slot makes JS resolve the promise with the wrong result — the count has to hold.
         XCTAssertEqual(scopes(result).count, 1)
         XCTAssertEqual((scopes(result).first ?? nil)?["rejected"] as? Bool, true)
     }
 
-    /// 필터를 못 읽어도 스택 깊이는 맞춰야 한다.
-    /// 안 그러면 이후 `pop`이 **바깥 스코프**를 가져가, 앱이 안쪽 구간의 결과라고 믿는 값이
-    /// 실제로는 바깥 구간의 결과가 된다 — 진단하려고 연 스코프가 오진을 만든다.
+    /// The stack depth must hold even when the filter cannot be read.
+    /// Otherwise a later `pop` takes **the outer scope**, and the value the app believes is the inner
+    /// region's is really the outer region's — a scope opened to diagnose creates a misdiagnosis.
     func test_anUnreadableFilterStillKeepsTheScopeStackDepth() {
         let result = harness.execute([
-            ["op": "pushErrorScope", "filter": "validation"],   // 바깥 A
-            ["op": "pushErrorScope", "filter": "Validation"],   // 오타 — 자리표시자로 쌓인다
-            failingCommand,                                     // 자리표시자는 아무것도 잡지 않는다
-            ["op": "popErrorScope"],                            // 안쪽(자리표시자)
-            ["op": "popErrorScope"],                            // 바깥 A
+            ["op": "pushErrorScope", "filter": "validation"],   // outer A
+            ["op": "pushErrorScope", "filter": "Validation"],   // a typo — pushed as a placeholder
+            failingCommand,                                     // the placeholder catches nothing
+            ["op": "popErrorScope"],                            // the inner one (the placeholder)
+            ["op": "popErrorScope"],                            // outer A
         ])
 
-        XCTAssertEqual(scopes(result).count, 2, "pop 두 번이면 결과도 두 개")
-        XCTAssertNil(scopes(result)[0], "자리표시자는 아무것도 잡지 않는다")
+        XCTAssertEqual(scopes(result).count, 2, "two pops means two results")
+        XCTAssertNil(scopes(result)[0], "the placeholder catches nothing")
         XCTAssertNotNil(
             scopes(result)[1]?["message"],
-            "바깥 스코프가 오류를 잡아야 한다 — 스택이 밀렸다면 여기가 비어 있다"
+            "the outer scope must catch the error — a shifted stack would leave this empty"
         )
     }
 
-    func test_reset은_열려_있던_스코프를_버린다() {
+    func test_resetDiscardsOpenScopes() {
         harness.executeExpectingSuccess([["op": "pushErrorScope", "filter": "validation"]])
         harness.runtime.reset()
 
-        // 스코프가 남아 있었다면 이 오류를 조용히 삼켰을 것이다.
+        // Had a scope remained, it would have swallowed this error silently.
         let result = harness.execute([failingCommand])
-        XCTAssertEqual(errors(result).count, 1, "디바이스를 버리면 스코프도 함께 버려야 한다")
+        XCTAssertEqual(errors(result).count, 1, "discarding the device must discard its scopes too")
     }
 }

@@ -6,15 +6,15 @@ import UniformTypeIdentifiers
 import LynxWebGPUCore
 @testable import LynxWebGPU
 
-/// 외부 이미지 → 텍스처 (`createImageBitmap` + `copyExternalImageToTexture`).
+/// External image → texture (`createImageBitmap` + `copyExternalImageToTexture`).
 ///
-/// 웹에서는 브라우저가 디코딩을 맡는 자리다. 여기서는 ImageIO가 하므로 **채널 순서와
-/// 상하 방향**이 조용히 틀릴 수 있다 — 둘 다 화면에서만 드러나는 종류라 픽셀로 못 박는다.
+/// On the web the browser owns decoding. Here ImageIO does, so **channel order and vertical
+/// orientation** can go quietly wrong — both only surface on screen, so they are pinned by pixels.
 final class ExternalImageTests: XCTestCase {
     var harness: RenderHarness!
 
     override func setUpWithError() throws {
-        try XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, "Metal 디바이스 없음")
+        try XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, "no Metal device")
         harness = try XCTUnwrap(RenderHarness.make())
     }
 
@@ -23,9 +23,9 @@ final class ExternalImageTests: XCTestCase {
         super.tearDown()
     }
 
-    // MARK: - 이미지 만들기
+    // MARK: - Building the image
 
-    /// 위/아래 절반 색이 다른 PNG를 만든다 — flipY가 실제로 뒤집는지 보려면 비대칭이어야 한다.
+    /// Builds a PNG whose top and bottom halves differ — it must be asymmetric to see flipY actually flip.
     private func makePNG(
         width: Int, height: Int,
         top: (UInt8, UInt8, UInt8, UInt8), bottom: (UInt8, UInt8, UInt8, UInt8)
@@ -52,7 +52,7 @@ final class ExternalImageTests: XCTestCase {
         return output as Data
     }
 
-    /// `decodeImage`를 동기적으로 기다린다 (테스트 편의).
+    /// Waits for `decodeImage` synchronously (test convenience).
     @discardableResult
     private func decode(
         handle: Int, data: Data, options: WGPUImageDecoder.Options = .init()
@@ -69,42 +69,42 @@ final class ExternalImageTests: XCTestCase {
         return payload
     }
 
-    // MARK: - 디코딩
+    // MARK: - Decoding
 
-    func test_PNG를_풀면_크기와_채널_순서가_맞는다() throws {
+    func test_decodingAPNGGivesTheRightSizeAndChannelOrder() throws {
         let png = try makePNG(width: 4, height: 4, top: (255, 0, 0, 255), bottom: (0, 0, 255, 255))
         let bitmap = try WGPUImageDecoder.decode(png)
 
         XCTAssertEqual(bitmap.width, 4)
         XCTAssertEqual(bitmap.height, 4)
         XCTAssertEqual(bitmap.bytesPerRow, 16)
-        // 첫 행은 빨강 — RGBA 순서가 아니면 여기서 B가 255로 나온다.
-        XCTAssertEqual(Array(bitmap.pixels.prefix(4)), [255, 0, 0, 255], "첫 픽셀이 빨강이 아니다")
-        // 마지막 행은 파랑 — 위아래가 뒤집혔으면 여기서 걸린다.
-        XCTAssertEqual(Array(bitmap.pixels.suffix(4)), [0, 0, 255, 255], "위아래가 뒤집혔다")
+        // The first row is red — with the wrong RGBA order B would come out 255 here.
+        XCTAssertEqual(Array(bitmap.pixels.prefix(4)), [255, 0, 0, 255], "the first pixel is not red")
+        // The last row is blue — a vertical flip is caught here.
+        XCTAssertEqual(Array(bitmap.pixels.suffix(4)), [0, 0, 255, 255], "it came out flipped vertically")
     }
 
-    func test_flipY가_위아래를_뒤집는다() throws {
+    func test_flipYFlipsTopToBottom() throws {
         let png = try makePNG(width: 4, height: 4, top: (255, 0, 0, 255), bottom: (0, 0, 255, 255))
         let flipped = try WGPUImageDecoder.decode(png, options: .init(flipY: true))
 
-        XCTAssertEqual(Array(flipped.pixels.prefix(4)), [0, 0, 255, 255], "뒤집으면 첫 행이 파랑이다")
+        XCTAssertEqual(Array(flipped.pixels.prefix(4)), [0, 0, 255, 255], "flipped, the first row is blue")
         XCTAssertEqual(Array(flipped.pixels.suffix(4)), [255, 0, 0, 255])
     }
 
-    func test_premultiplyAlpha가_색에_알파를_곱한다() throws {
-        // 알파 50%의 흰색. 곱하면 128 근처, 안 곱하면 255다.
+    func test_premultiplyAlphaMultipliesAlphaIntoTheColor() throws {
+        // White at 50% alpha. Premultiplied it lands near 128; unpremultiplied it stays 255.
         let png = try makePNG(width: 2, height: 2, top: (255, 255, 255, 128), bottom: (255, 255, 255, 128))
 
         let straight = try WGPUImageDecoder.decode(png)
-        XCTAssertEqual(straight.pixels[0], 255, "곱하지 않으면 색은 그대로다")
+        XCTAssertEqual(straight.pixels[0], 255, "unpremultiplied leaves the color as it is")
 
         let premultiplied = try WGPUImageDecoder.decode(png, options: .init(premultiplyAlpha: true))
         XCTAssertEqual(Int(premultiplied.pixels[0]), 128, accuracy: 2)
         XCTAssertTrue(premultiplied.premultiplied)
     }
 
-    func test_resize로_크기를_바꾼다() throws {
+    func test_resizeChangesTheSize() throws {
         let png = try makePNG(width: 8, height: 8, top: (255, 0, 0, 255), bottom: (255, 0, 0, 255))
         let bitmap = try WGPUImageDecoder.decode(png, options: .init(resize: (width: 4, height: 2)))
 
@@ -113,7 +113,7 @@ final class ExternalImageTests: XCTestCase {
         XCTAssertEqual(bitmap.pixels.count, 4 * 2 * 4)
     }
 
-    /// 깨진 데이터는 **오류로** 온다 — 조용히 빈 이미지를 만들면 화면이 검게 나오고 원인은 사라진다.
+    /// Broken data comes back **as an error** — silently producing an empty image blackens the screen and loses the cause.
     func test_undecodableDataIsAnError() {
         XCTAssertThrowsError(try WGPUImageDecoder.decode(Data([0x00, 0x01, 0x02, 0x03]))) { error in
             XCTAssertTrue("\(error)".contains("decode"), "\(error)")
@@ -121,7 +121,7 @@ final class ExternalImageTests: XCTestCase {
         XCTAssertThrowsError(try WGPUImageDecoder.decode(Data()))
     }
 
-    func test_decodeImage가_핸들에_등록하고_크기를_돌려준다() throws {
+    func test_decodeImageRegistersUnderTheHandleAndReturnsTheSize() throws {
         let png = try makePNG(width: 8, height: 4, top: (0, 255, 0, 255), bottom: (0, 255, 0, 255))
         let result = try decode(handle: 40, data: png)
 
@@ -141,7 +141,7 @@ final class ExternalImageTests: XCTestCase {
         XCTAssertEqual(payload["ok"] as? Bool, false)
     }
 
-    // MARK: - 텍스처로 올리기
+    // MARK: - Uploading into a texture
 
     private static let shader = """
     @group(0) @binding(0) var tex: texture_2d<f32>;
@@ -157,7 +157,7 @@ final class ExternalImageTests: XCTestCase {
         var positions = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
         var out: Out;
         out.position = vec4f(positions[index], 0.0, 1.0);
-        // 텍스처 좌표는 위가 0이다 — y를 뒤집어 이미지 첫 행이 화면 위로 가게 한다.
+        // Texture coordinates have 0 at the top — flip y so the image's first row lands at the top of the screen.
         out.uv = vec2f(positions[index].x * 0.5 + 0.5, 0.5 - positions[index].y * 0.5);
         return out;
     }
@@ -168,7 +168,7 @@ final class ExternalImageTests: XCTestCase {
     }
     """
 
-    /// 이미지를 텍스처로 올려 화면에 펼치는 커맨드 스트림.
+    /// The command stream uploading an image into a texture and spreading it across the screen.
     private func drawImage(bitmap: Int, texture size: (Int, Int), copy: [String: Any]) {
         var commands: [[String: Any]] = [
             ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
@@ -215,30 +215,30 @@ final class ExternalImageTests: XCTestCase {
             "copySize": ["width": 4, "height": 4],
         ])
 
-        // 화면 위쪽은 이미지 첫 행(빨강), 아래쪽은 마지막 행(파랑)이다.
-        try harness.assertPixel(x: 32, y: 8, equals: (255, 0, 0, 255), "위 절반")
-        try harness.assertPixel(x: 32, y: 56, equals: (0, 0, 255, 255), "아래 절반")
+        // The top of the screen is the image's first row (red), the bottom its last (blue).
+        try harness.assertPixel(x: 32, y: 8, equals: (255, 0, 0, 255), "the top half")
+        try harness.assertPixel(x: 32, y: 56, equals: (0, 0, 255, 255), "the bottom half")
     }
 
-    /// 소스 일부만 잘라 올린다 — 스트라이드를 이미지 폭 그대로 쓰면 여기서 색이 밀린다.
+    /// Uploads only a crop of the source — using the full image width as the stride shifts the color here.
     func test_uploadsOnlyACroppedPartOfTheImage() throws {
         let png = try makePNG(width: 8, height: 8, top: (255, 0, 0, 255), bottom: (0, 0, 255, 255))
         try decode(handle: 40, data: png)
 
         drawImage(bitmap: 40, texture: (4, 4), copy: [
             "op": "copyExternalImageToTexture",
-            "source": ["source": 40, "origin": ["x": 2, "y": 4]],   // 아래 절반(파랑)에서 4x4
+            "source": ["source": 40, "origin": ["x": 2, "y": 4]],   // 4x4 out of the bottom half (blue)
             "destination": ["texture": 2],
             "copySize": ["width": 4, "height": 4],
         ])
 
-        try harness.assertPixel(x: 32, y: 32, equals: (0, 0, 255, 255), "잘라낸 영역은 전부 파랑")
+        try harness.assertPixel(x: 32, y: 32, equals: (0, 0, 255, 255), "the cropped region is entirely blue")
     }
 
-    /// 명세 `GPUCopyExternalImageSourceInfo.flipY` — **복사 시점** 뒤집기.
+    /// Spec `GPUCopyExternalImageSourceInfo.flipY` — flipping at **copy time**.
     ///
-    /// `createImageBitmap`의 flipY와는 다른 자리다. 웹 라이브러리는 이쪽을 쓴다
-    /// (three.js의 `Texture.flipY`가 기본 true라, 무시하면 텍스처가 조용히 뒤집힌다).
+    /// A different place from `createImageBitmap`'s flipY. Web libraries use this one
+    /// (three.js's `Texture.flipY` defaults to true, so ignoring it flips textures silently).
     func test_copyTimeFlipYFlipsTopToBottom() throws {
         let png = try makePNG(width: 4, height: 4, top: (255, 0, 0, 255), bottom: (0, 0, 255, 255))
         try decode(handle: 40, data: png)
@@ -250,13 +250,13 @@ final class ExternalImageTests: XCTestCase {
             "copySize": ["width": 4, "height": 4],
         ])
 
-        // 뒤집었으니 화면 위쪽이 이미지의 **마지막** 행(파랑)이다.
-        try harness.assertPixel(x: 32, y: 8, equals: (0, 0, 255, 255), "위 절반")
-        try harness.assertPixel(x: 32, y: 56, equals: (255, 0, 0, 255), "아래 절반")
+        // Flipped, the top of the screen is the image's **last** row (blue).
+        try harness.assertPixel(x: 32, y: 8, equals: (0, 0, 255, 255), "the top half")
+        try harness.assertPixel(x: 32, y: 56, equals: (255, 0, 0, 255), "the bottom half")
     }
 
-    /// 디코딩 시점과 복사 시점을 **둘 다** 뒤집으면 제자리로 돌아온다 — 두 옵션이
-    /// 서로 다른 층이라는 증거다.
+    /// Flipping at **both** decode time and copy time returns to the original — evidence that the two
+    /// options live in different layers.
     func test_flippingAtBothDecodeAndCopyReturnsToTheOriginal() throws {
         let png = try makePNG(width: 4, height: 4, top: (255, 0, 0, 255), bottom: (0, 0, 255, 255))
         try decode(handle: 40, data: png, options: .init(flipY: true))
@@ -267,13 +267,13 @@ final class ExternalImageTests: XCTestCase {
             "destination": ["texture": 2],
         ])
 
-        try harness.assertPixel(x: 32, y: 8, equals: (255, 0, 0, 255), "원본 그대로")
+        try harness.assertPixel(x: 32, y: 8, equals: (255, 0, 0, 255), "the original, unchanged")
         try harness.assertPixel(x: 32, y: 56, equals: (0, 0, 255, 255))
     }
 
-    /// 부분 복사와 flipY가 함께 와도 **잘라낸 영역 안에서만** 뒤집힌다.
+    /// With a partial copy and flipY together, the flip happens **only within the cropped region**.
     func test_flipYAppliesWithinTheRegionForAPartialCopy() throws {
-        // 위 2행 빨강, 아래 2행 파랑. (0,1)에서 4x2를 뜨면 빨강 1행 + 파랑 1행이다.
+        // Top 2 rows red, bottom 2 blue. Taking 4x2 from (0,1) gives 1 red row + 1 blue row.
         let png = try makePNG(width: 4, height: 4, top: (255, 0, 0, 255), bottom: (0, 0, 255, 255))
         try decode(handle: 40, data: png)
 
@@ -284,12 +284,12 @@ final class ExternalImageTests: XCTestCase {
             "copySize": ["width": 4, "height": 2],
         ])
 
-        // 원본 1행(빨강)·2행(파랑) → 뒤집으면 파랑이 먼저다.
-        try harness.assertPixel(x: 32, y: 8, equals: (0, 0, 255, 255), "위")
-        try harness.assertPixel(x: 32, y: 56, equals: (255, 0, 0, 255), "아래")
+        // Source row 1 (red) and row 2 (blue) → flipped, blue comes first.
+        try harness.assertPixel(x: 32, y: 8, equals: (0, 0, 255, 255), "top")
+        try harness.assertPixel(x: 32, y: 56, equals: (255, 0, 0, 255), "bottom")
     }
 
-    func test_copySize를_생략하면_이미지_전체다() throws {
+    func test_omittingCopySizeMeansTheWholeImage() throws {
         let png = try makePNG(width: 4, height: 4, top: (255, 0, 0, 255), bottom: (255, 0, 0, 255))
         try decode(handle: 40, data: png)
 
@@ -318,11 +318,11 @@ final class ExternalImageTests: XCTestCase {
         XCTAssertTrue(harness.describeErrors(result).contains("exceeds the image"), harness.describeErrors(result))
     }
 
-    /// 압축 텍스처로는 올릴 수 없다 — GPU에 블록 인코더가 없다.
+    /// It cannot upload into a compressed texture — the GPU has no block encoder.
     func test_cannotUploadIntoACompressedTexture() throws {
         try XCTSkipUnless(
             WGPUDeviceCapability.supportsCompression(.astc4x4Unorm, on: harness.context!.device),
-            "이 기기는 ASTC를 지원하지 않는다"
+            "this device does not support ASTC"
         )
         let png = try makePNG(width: 4, height: 4, top: (255, 0, 0, 255), bottom: (255, 0, 0, 255))
         try decode(handle: 40, data: png)
@@ -337,8 +337,8 @@ final class ExternalImageTests: XCTestCase {
         XCTAssertTrue(harness.describeErrors(result).contains("compressed"), harness.describeErrors(result))
     }
 
-    /// 4바이트가 아닌 포맷은 조용히 어긋나느니 거부한다.
-    func test_16비트_포맷은_거부한다() throws {
+    /// A non-4-byte format is refused rather than going quietly wrong.
+    func test_a16BitFormatIsRefused() throws {
         let png = try makePNG(width: 4, height: 4, top: (255, 0, 0, 255), bottom: (255, 0, 0, 255))
         try decode(handle: 40, data: png)
 
@@ -363,8 +363,8 @@ final class ExternalImageTests: XCTestCase {
         XCTAssertTrue(harness.describeErrors(result).contains("ImageBitmap"), harness.describeErrors(result))
     }
 
-    /// `destroy` op으로 네이티브 픽셀이 실제로 사라지는지 (JS `bitmap.close()`).
-    func test_destroy가_이미지를_지운다() throws {
+    /// Whether the `destroy` op really releases the native pixels (JS `bitmap.close()`).
+    func test_destroyReleasesTheImage() throws {
         let png = try makePNG(width: 4, height: 4, top: (255, 0, 0, 255), bottom: (255, 0, 0, 255))
         try decode(handle: 40, data: png)
 
