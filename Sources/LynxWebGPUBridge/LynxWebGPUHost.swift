@@ -75,11 +75,21 @@ public final class LynxWebGPUHost: NSObject {
     ///
     /// JS의 `setInterval`로 프레임을 돌리면 화면 갱신과 어긋나 프레임이 뭉치거나 버려진다.
     /// CADisplayLink로 몰아 주는 편이 훨씬 고르다 (`docs/JS-AUTHORING.md` §4).
-    func startFrameLoop(preferredFramesPerSecond: Int) {
+    ///
+    /// **정상 경로는 JS다** — 번들이 `startFrameLoop(handler)`를 부르면 shim이
+    /// `NativeModules.WebGPU.startFrameLoop`를 거쳐 여기로 온다. `attach(to:)`는 틱 콜백을
+    /// 배선만 하고 **루프를 시작하지 않는다** (프레임을 쓰지 않는 페이지에서 디스플레이 링크가
+    /// 헛도는 것을 막기 위해서다 — `docs/LYNX-INTEGRATION.md` §3).
+    ///
+    /// 호스트가 직접 부를 수 있게 열어 둔 것은 **JS 밖에서 프레임을 모는 구성**을 위해서다
+    /// (네이티브가 커맨드 스트림을 직접 만드는 경우, 또는 JS 경로를 진단할 때). 두 경로를
+    /// 함께 쓰면 틱이 겹치지 않는다 — 링크는 하나이고 `start`는 기존 것을 갈아 끼운다.
+    public func startFrameLoop(preferredFramesPerSecond: Int = 60) {
         ticker.start(preferredFramesPerSecond: preferredFramesPerSecond)
     }
 
-    func stopFrameLoop() {
+    /// 프레임 루프를 멈춘다. `detach()`가 이미 부르므로 페이지 이탈에서는 따로 부를 필요가 없다.
+    public func stopFrameLoop() {
         ticker.stop()
     }
 

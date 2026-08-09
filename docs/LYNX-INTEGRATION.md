@@ -131,6 +131,26 @@ final class GPUPageViewController: UIViewController {
 
 페이지를 떠날 때 `host.detach()`를 부르지 않으면 `CADisplayLink`가 계속 돌고 GPU 객체가 남는다.
 
+### 프레임 루프는 누가 시작하나 — `attach`만으로는 돌지 않는다
+
+`attach(to:)`는 틱 콜백을 **배선만** 한다. 디스플레이 링크는 **JS가 프레임을 요청할 때** 돈다:
+
+```
+JS  startFrameLoop(handler)          (JS/webgpu.js)
+ └▶ NativeModules.WebGPU.startFrameLoop({fps})
+     └▶ LynxWebGPUHost.startFrameLoop(preferredFramesPerSecond:)  →  CADisplayLink 시작
+         └▶ 매 틱: runtime.processEvents() → isReadyForNextFrame 검사 → `webgpu:frame` 전역 이벤트
+```
+
+프레임을 쓰지 않는 페이지에서 링크가 헛도는 것을 막는 배치다. 그래서 **애니메이션 없는
+씬은 링크가 아예 돌지 않는 것이 정상**이고, 그런 씬에서도 `mapAsync` 완료가 굶지 않도록
+펌프가 필요한 백엔드는 엔진이 자체 펌프를 돌린다 (`WGPUBackendCapabilities.needsEventPump`).
+
+**"캔버스는 뜨는데 화면이 검다"면 이 사슬부터 본다** — 번들이 `startFrameLoop`(또는 그 위의
+`requestAnimationFrame`)을 부르는지, 링크가 서 있는지. 호스트가 JS 밖에서 프레임을 몰아야
+한다면 `host.startFrameLoop(preferredFramesPerSecond:)`를 직접 부를 수 있다 (public이다 —
+네이티브가 커맨드 스트림을 직접 만드는 구성이나 JS 경로 진단용).
+
 ## 4. Lynx 번들(JS) 쪽
 
 `JS/webgpu.js`, `JS/webgpu.d.ts`, `JS/elements.d.ts`를 rspeedy 프로젝트의 `src/` 아래로 복사한다.
