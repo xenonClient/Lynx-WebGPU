@@ -2,18 +2,18 @@ import Foundation
 import WebGPU
 import LynxWebGPUCore
 
-// Core의 문자열 열거형(명세 철자) → Dawn C 열거형.
+// Core's string enums (spec spelling) → Dawn C enums.
 //
-// 타입 이름이 두 모듈에서 겹치므로 (Core `WGPUTextureFormat` ↔ C `WGPUTextureFormat`)
-// 시그니처는 모듈을 명시한다. C 열거형 **값**은 전역 상수(`WGPUTextureFormat_RGBA8Unorm`)라
-// 겹치지 않는다. 매핑이 없는 값은 `unsupported`로 던진다 — 비슷한 것으로 조용히 바꾸면
-// 원인을 못 찾는 버그가 된다 (Metal 매핑과 같은 규칙).
+// The type names collide across the two modules (Core `WGPUTextureFormat` ↔ C `WGPUTextureFormat`),
+// so signatures name the module. C enum **values** are global constants (`WGPUTextureFormat_RGBA8Unorm`)
+// and do not collide. A value with no mapping is thrown as `unsupported` — quietly substituting
+// something similar turns into a bug whose cause cannot be found (the same rule as the Metal mapping).
 enum DawnEnum {
 
     static func textureFormat(
         _ format: LynxWebGPUCore.WGPUTextureFormat
     ) throws -> WebGPU.WGPUTextureFormat {
-        // Core의 전 케이스를 옮긴다 — default가 없어 Core에 포맷이 늘면 컴파일이 잡는다.
+        // Move every Core case across — with no default, a format added to Core is caught at compile time.
         switch format {
         case .r8unorm: return WGPUTextureFormat_R8Unorm
         case .r8snorm: return WGPUTextureFormat_R8Snorm
@@ -354,7 +354,7 @@ enum DawnEnum {
         WebGPU.WGPUColor(r: color.red, g: color.green, b: color.blue, a: color.alpha)
     }
 
-    /// 음수·범위 초과는 트랩이 아니라 validation이다 (`dawnU32`).
+    /// A negative or out-of-range value is validation, not a trap (`dawnU32`).
     static func origin(_ origin: LynxWebGPUCore.WGPUOrigin3D, field: String) throws -> WebGPU.WGPUOrigin3D {
         WebGPU.WGPUOrigin3D(
             x: try dawnU32(origin.x, "\(field).x"),
@@ -371,7 +371,7 @@ enum DawnEnum {
         )
     }
 
-    /// Dawn 기능 → 명세 철자. 모르는 기능은 nil — 광고하지도, 요청하지도 않는다.
+    /// A Dawn feature → the spec spelling. An unknown feature is nil — neither advertised nor requested.
     static func featureLabel(_ feature: WGPUFeatureName) -> String? {
         switch feature {
         case WGPUFeatureName_DepthClipControl: return "depth-clip-control"

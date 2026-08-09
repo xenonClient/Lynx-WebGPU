@@ -3,7 +3,7 @@ import Lynx
 import LynxWebGPU
 import LynxWebGPUBridge
 
-/// `.lynx.bundle` 파일을 앱 번들에서 읽어 LynxView에 넘긴다.
+/// Reads a `.lynx.bundle` file from the app bundle and hands it to the LynxView.
 final class BundleTemplateProvider: NSObject, LynxTemplateProvider {
     func loadTemplate(withUrl url: String!, onComplete callback: LynxTemplateLoadBlock!) {
         do {
@@ -14,9 +14,9 @@ final class BundleTemplateProvider: NSObject, LynxTemplateProvider {
     }
 }
 
-/// 데모 씬 하나를 띄우는 호스트 화면.
+/// The host screen showing one demo scene.
 ///
-/// `docs/LYNX-INTEGRATION.md` §2의 3단계가 그대로 들어 있다:
+/// It contains the three steps of `docs/LYNX-INTEGRATION.md` §2 verbatim:
 /// `LynxWebGPUHost(runtime:)` → `LynxWebGPU.register(in:host:)` → `host.attach(to:)`
 final class DemoViewController: UIViewController {
     private let scene: DemoScene
@@ -38,19 +38,19 @@ final class DemoViewController: UIViewController {
         view.backgroundColor = UIColor(red: 0.05, green: 0.06, blue: 0.09, alpha: 1)
 
         do {
-            // 런타임(백엔드)은 **앱이 고른다** — 기본은 Metal 엔진이다.
+            // **The app picks** the runtime (backend) — the default is the Metal engine.
             host = LynxWebGPUHost(runtime: try LynxWebGPUContext())
         } catch {
-            showError("WebGPU 런타임을 만들 수 없다: \(error)")
+            showError("could not create the WebGPU runtime: \(error)")
             return
         }
         guard let host else { return }
 
         guard let templatePath = Bundle.main.path(forResource: scene.rawValue, ofType: "lynx.bundle") else {
             showError(
-                "\(scene.rawValue).lynx.bundle 이 앱 번들에 없다.\n"
-                    + "Projects/WebGPUDemo/DemoSrc 에서 `mise exec -- npm run build` 후 "
-                    + "산출물을 Resources/ 로 복사할 것."
+                "\(scene.rawValue).lynx.bundle is not in the app bundle.\n"
+                    + "Run `mise exec -- npm run build` in Projects/WebGPUDemo/DemoSrc and "
+                    + "copy the output into Resources/."
             )
             return
         }
@@ -63,7 +63,7 @@ final class DemoViewController: UIViewController {
             builder.screenSize = screenSize
             builder.fontScale = 1.0
         }
-        host.attach(to: lynxView)                        // 전역 이벤트/캔버스 연결
+        host.attach(to: lynxView)                        // wires global events and the canvas
 
         lynxView.preferredLayoutWidth = screenSize.width
         lynxView.preferredLayoutHeight = screenSize.height
@@ -79,8 +79,8 @@ final class DemoViewController: UIViewController {
         ])
         self.lynxView = lynxView
 
-        // 모달로 올라온 씬은 네비게이션 바가 없으니 닫기 버튼을 직접 얹는다.
-        // LynxView보다 **나중에** 붙여야 UIKit 히트 테스트에서 위로 온다.
+        // A modally presented scene has no navigation bar, so a close button is placed directly.
+        // It must be attached **after** the LynxView to sit above it in UIKit hit testing.
         if scene.coversFullScreen { addDismissButton() }
 
         lynxView.loadTemplate(fromURL: templatePath, initData: initialData)
@@ -95,7 +95,7 @@ final class DemoViewController: UIViewController {
         configuration.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12)
 
         let button = UIButton(configuration: configuration)
-        button.accessibilityLabel = "닫기"
+        button.accessibilityLabel = "Close"
         button.addTarget(self, action: #selector(dismissScene), for: .touchUpInside)
         button.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(button)
@@ -113,14 +113,14 @@ final class DemoViewController: UIViewController {
         }
     }
 
-    /// 자동화 하네스 — 시뮬레이터에는 터치를 주입할 방법이 없어, **손으로 눌러야만 보이는 상태를
-    /// 회귀 확인하려면** 런치 인자로 고정하는 이 경로가 필요하다.
+    /// Automation harness — the simulator offers no way to inject touches, so **regression-checking a
+    /// state only reachable by hand** needs this path, pinned through a launch argument.
     ///
     ///   xcrun simctl launch <device> org.lynxwebgpu.demo -demo interactive -cardTilt 0.45
     ///   xcrun simctl launch <device> org.lynxwebgpu.demo -demo bundle -altMode 1
     ///
-    /// `-altMode 1`은 토글이 있는 씬(`stencil`·`gpudriven`·`bundle`)을 **기본이 아닌 쪽**으로
-    /// 시작시킨다 — 버튼을 누른 화면을 캡처하려고 둔 것이다.
+    /// `-altMode 1` starts a scene with a toggle (`stencil`, `gpudriven`, `bundle`) on **the non-default**
+    /// side — it exists to capture the screen after the button has been pressed.
     private var initialData: LynxTemplateData? {
         var data: [String: Any] = [:]
         let tilt = UserDefaults.standard.double(forKey: "cardTilt")
@@ -140,7 +140,7 @@ final class DemoViewController: UIViewController {
     }
 
     deinit {
-        host?.detach()   // 디스플레이 링크 정지 + GPU 객체 해제
+        host?.detach()   // stops the display link and releases GPU objects
     }
 
     private func showError(_ message: String) {

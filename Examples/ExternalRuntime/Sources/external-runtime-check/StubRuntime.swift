@@ -3,18 +3,18 @@ import CoreGraphics
 import QuartzCore
 import LynxWebGPUCore
 
-/// GPU 없는 스텁 런타임 — "Core만 링크해 `WebGPURuntime`을 구현할 수 있다"의 실물 증거.
+/// A GPU-free stub runtime — the tangible proof that "`WebGPURuntime` can be implemented linking Core alone".
 ///
-/// Dawn 런타임이 채울 자리가 정확히 이 클래스의 멤버들이다. GPU가 없으므로 실행 계열 op은
-/// 정직하게 `unsupported`로 거부하지만, **와이어 정책은 전부 Core의 공용 타입으로 조립한다** —
-/// 디스패치는 `WGPUCommand`, 오류 스코프는 `WGPUErrorScopeStack`, 응답 모양은 `WGPUBatchResult`,
-/// 지연 실패는 `WGPUDeferredErrorQueue`. 외부 구현이 이 타입들만으로 계약 검사
-/// (오류 누적·스코프·msl-optional 등)를 통과할 수 있음을 보인다.
+/// The members of this class are exactly the slots a Dawn runtime would fill. With no GPU it honestly
+/// rejects the execution family of ops as `unsupported`, but **the wire policy is assembled entirely from
+/// Core's public types** — `WGPUCommand` for dispatch, `WGPUErrorScopeStack` for error scopes,
+/// `WGPUBatchResult` for the response shape, `WGPUDeferredErrorQueue` for deferred failures. It shows that
+/// an external implementation can pass the contract checks (error accumulation, scopes, msl-optional, …) with those types alone.
 ///
-/// `processEvents()`는 일부러 구현하지 않는다 — 프로토콜 기본 구현(no-op)이 외부 모듈에서도
-/// 동작하는지가 검증 대상이다.
+/// `processEvents()` is deliberately left unimplemented — whether the protocol's default implementation
+/// (a no-op) works from an external module too is part of what is being verified.
 final class StubRuntime: WebGPURuntime {
-    /// 레지스트리에 넣는 자리표시 객체 — 핸들 수명(레지스트리 계약)만 흉내 낸다.
+    /// A placeholder object put into the registry — it only mimics handle lifetime (the registry contract).
     private final class Placeholder {}
 
     private let lock = NSLock()
@@ -23,7 +23,7 @@ final class StubRuntime: WebGPURuntime {
     private let deferredErrors = WGPUDeferredErrorQueue()
     private var canvases: [String: (size: CGSize, format: WGPUTextureFormat)] = [:]
 
-    // MARK: - 커맨드 스트림
+    // MARK: - Command stream
 
     func execute(_ payload: [String: Any]) -> [String: Any] {
         lock.lock()
@@ -31,7 +31,7 @@ final class StubRuntime: WebGPURuntime {
 
         let reader = WGPUValueReader(payload)
         guard let commands = try? reader.requiredObjects("commands") else {
-            return WGPUBatchResult.failure([.validation("commands 배열이 없다")])
+            return WGPUBatchResult.failure([.validation("there is no commands array")])
         }
 
         var errors: [WGPUError] = []
@@ -45,7 +45,7 @@ final class StubRuntime: WebGPURuntime {
 
         for (index, commandReader) in commands.enumerated() {
             do {
-                // Core의 디스패치 표 — op 이름 switch를 여기서 다시 쓰지 않는다.
+                // Core's dispatch table — the op name switch is not written again here.
                 let command = try WGPUCommand(from: commandReader)
                 switch command {
                 case .pushErrorScope(let filter, let decodeFailure):
@@ -59,14 +59,14 @@ final class StubRuntime: WebGPURuntime {
                     registry.remove(destroy.id)
                 case .configureCanvas(let configuration):
                     guard canvases[configuration.canvasId] != nil else {
-                        throw WGPUError.validation("캔버스 '\(configuration.canvasId)'이(가) 없다")
+                        throw WGPUError.validation("canvas '\(configuration.canvasId)' does not exist")
                     }
                     canvases[configuration.canvasId]?.format = configuration.format
                 case .endPass:
                     break
                 default:
                     throw WGPUError.unsupported(
-                        "스텁 런타임은 '\(command.opName)'을(를) 실행하지 않는다 (GPU 없음)"
+                        "the stub runtime does not execute '\(command.opName)' (no GPU)"
                     )
                 }
             } catch let error as WGPUError {
@@ -89,10 +89,10 @@ final class StubRuntime: WebGPURuntime {
         ).payload
     }
 
-    // MARK: - 조회
+    // MARK: - Queries
 
     func adapterInfo() -> [String: Any] {
-        // 명세 철자를 지킨 최소 응답 — 모양 계약(adapter-limits-spelling)은 GPU 없이도 지킬 수 있다.
+        // A minimal response that keeps the spec spelling — the shape contract (adapter-limits-spelling) can be kept with no GPU.
         [
             "ok": true,
             "info": [
@@ -113,7 +113,7 @@ final class StubRuntime: WebGPURuntime {
     }
 
     func shaderCompilationInfo(handle: Int) -> [String: Any] {
-        ["ok": false, "errors": [WGPUError.validation("GPUShaderModule #\(handle)이(가) 없다").payload]]
+        ["ok": false, "errors": [WGPUError.validation("GPUShaderModule #\(handle) does not exist").payload]]
     }
 
     func canvasInfo(identifier: String) -> [String: Any] {
@@ -121,7 +121,7 @@ final class StubRuntime: WebGPURuntime {
         defer { lock.unlock() }
         guard let canvas = canvases[identifier] else {
             return ["ok": false, "errors": [
-                WGPUError.validation("캔버스 '\(identifier)'이(가) 없다").payload,
+                WGPUError.validation("canvas '\(identifier)' does not exist").payload,
             ]]
         }
         return [
@@ -132,11 +132,11 @@ final class StubRuntime: WebGPURuntime {
         ]
     }
 
-    // MARK: - 비동기
+    // MARK: - Asynchronous
 
     func readBuffer(handle: Int, offset: Int, size: Int?, completion: @escaping ([String: Any]) -> Void) {
         completion(["ok": false, "errors": [
-            WGPUError.unsupported("스텁 런타임은 GPU 메모리가 없다").payload,
+            WGPUError.unsupported("the stub runtime has no GPU memory").payload,
         ]])
     }
 
@@ -145,11 +145,11 @@ final class StubRuntime: WebGPURuntime {
         provider: WGPUAssetProvider?, completion: @escaping ([String: Any]) -> Void
     ) {
         completion(["ok": false, "errors": [
-            WGPUError.unsupported("스텁 런타임은 이미지를 디코딩하지 않는다").payload,
+            WGPUError.unsupported("the stub runtime does not decode images").payload,
         ]])
     }
 
-    // MARK: - 캔버스
+    // MARK: - Canvases
 
     func attachCanvas(identifier: String, layer: CAMetalLayer) {
         lock.lock()
@@ -176,10 +176,10 @@ final class StubRuntime: WebGPURuntime {
     }
 
     func readCanvasPixels(identifier: String) throws -> WGPUPixelReadback {
-        throw WGPUError.unsupported("스텁 런타임은 그리지 않으므로 읽을 픽셀이 없다")
+        throw WGPUError.unsupported("the stub runtime does not draw, so there are no pixels to read")
     }
 
-    // MARK: - 프레임 · 수명
+    // MARK: - Frames and lifetime
 
     var isReadyForNextFrame: Bool { true }
 

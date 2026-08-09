@@ -4,25 +4,25 @@ import QuartzCore
 import WebGPU
 import LynxWebGPUCore
 
-/// `WGPUBackend`의 **Dawn 구현** — `docs/extra/DAWN-BACKEND-REVIEW.md`가 그린 절단면의 실물.
+/// The **Dawn implementation** of `WGPUBackend` — the real thing at the cut line `docs/extra/DAWN-BACKEND-REVIEW.md` drew.
 ///
-/// 오케스트레이션(디코딩·검증·오류 스코프·프레임 수명·매핑 게이트·직렬화)은 전부
-/// `WGPUBackendEngine`(Core)이 한다 — Metal 백엔드와 **같은 엔진**이다. 이 파일이 쓰는 것은
-/// 정말로 인코딩뿐이다: 해석이 끝난 Core 값 → Dawn C 호출 (`DawnEnum`·`DawnArena`),
-/// JS 유래 정수의 안전 변환(`dawnU32` 계열 — 트랩 대신 validation).
+/// Orchestration (decoding, validation, error scopes, frame lifetime, the mapping gate, serialization) is
+/// all done by `WGPUBackendEngine` (Core) — **the same engine** as the Metal backend. What this file does
+/// is really only encoding: interpreted Core values → Dawn C calls (`DawnEnum`/`DawnArena`), plus safe
+/// conversion of JS-derived integers (the `dawnU32` family — validation instead of a trap).
 ///
-/// ## Dawn 오류를 와이어 모델로 옮기는 방법
+/// ## How Dawn errors are moved onto the wire model
 ///
-/// - 핸들·상태·범위 오류는 **엔진**이 경로 붙은 validation으로 만든다 (Metal과 같은 문구).
-/// - Dawn 자체 검증 오류는 배치 전체를 디바이스 오류 스코프(validation·out-of-memory)로 감싸
-///   `collectBatchDiagnostics()`에서 회수한다 — 엔진이 같은 배치 결과에 싣는다.
-/// - 스코프 밖(uncaptured) 오류도 같은 통로로 모아 두었다가 다음 회수 때 넘긴다 —
-///   엔진의 지연 오류 큐가 다음 배치에 실어 보낸다 (`docs/COMMAND-STREAM.md` §2).
+/// - Handle, state and range errors are turned into path-tagged validation by **the engine** (the same wording as Metal).
+/// - Dawn's own validation errors are wrapped in a device error scope (validation/out-of-memory) around the
+///   whole batch and reclaimed in `collectBatchDiagnostics()` — the engine puts them on the same batch result.
+/// - Errors outside a scope (uncaptured) are collected through the same channel and handed over at the next
+///   reclamation — the engine's deferred error queue ships them with the next batch (`docs/COMMAND-STREAM.md` §2).
 ///
-/// ## 시뮬레이터 주의
+/// ## Simulator note
 ///
-/// 간접 드로우는 시뮬레이터 Metal(family 2)에서 단언으로 죽는 경로라
-/// `ensureIndirectSupported()`가 막고, `indirect-first-instance` 광고도 뺀다 (`CLAUDE.md`).
+/// Indirect draw is a path that dies on an assertion under the simulator's Metal (family 2), so
+/// `ensureIndirectSupported()` blocks it and `indirect-first-instance` is dropped from the advertisement (`CLAUDE.md`).
 final class DawnBackend: WGPUBackend {
     typealias Buffer = DawnBufferObject
     typealias Texture = DawnTextureObject
@@ -42,22 +42,22 @@ final class DawnBackend: WGPUBackend {
     private let adapter: WGPUAdapter
     private let device: WGPUDevice
     private let queue: WGPUQueue
-    /// 광고 가능한 기능의 명세 철자 — 압축 지원 질의와 adapterInfo가 같은 목록을 쓴다.
+    /// The spec spellings of the advertisable features — the compression support query and adapterInfo use the same list.
     private let featureLabels: Set<String>
 
-    /// 스코프 밖(uncaptured) 디바이스 오류 — `collectBatchDiagnostics`가 비운다.
+    /// Device errors outside a scope (uncaptured) — `collectBatchDiagnostics` drains them.
     private let uncaptured = WGPUDeferredErrorQueue()
 
-    // 배치 수명 상태 (beginBatch ~ submit)
+    // Batch lifetime state (beginBatch ~ submit)
     private var commandEncoder: WGPUCommandEncoder?
     private var renderPass: WGPURenderPassEncoder?
     private var computePass: WGPUComputePassEncoder?
-    /// 이번 프레임에 텍스처를 내준 캔버스 — `submit(present: true)`가 화면으로 보낸다.
+    /// The canvases handed a texture this frame — `submit(present: true)` sends them to the screen.
     private var presentTargets: [String: DawnCanvas] = [:]
 
     init() throws {
         guard let instance = wgpuCreateInstance(nil) else {
-            throw DawnBootstrapError("wgpuCreateInstance 실패")
+            throw DawnBootstrapError("wgpuCreateInstance failed")
         }
         self.instance = instance
         self.adapter = try DawnBootstrap.requestAdapter(instance: instance)
@@ -69,7 +69,7 @@ final class DawnBackend: WGPUBackend {
             }
         )
         guard let queue = wgpuDeviceGetQueue(device) else {
-            throw DawnBootstrapError("wgpuDeviceGetQueue 실패")
+            throw DawnBootstrapError("wgpuDeviceGetQueue failed")
         }
         self.queue = queue
         self.featureLabels = Set(
@@ -87,19 +87,19 @@ final class DawnBackend: WGPUBackend {
         wgpuInstanceRelease(instance)
     }
 
-    // MARK: - 능력
+    // MARK: - Capabilities
 
     var capabilities: WGPUBackendCapabilities {
         WGPUBackendCapabilities(
             supportsNativeRenderBundles: true,
-            // 명세 기본값 — 어댑터 한계(maxVertexBuffers)와 같은 값이다.
+            // The spec default — the same value as the adapter limit (maxVertexBuffers).
             maxVertexBufferSlots: 8,
-            // mapAsync 완료가 wgpuInstanceProcessEvents에서만 나온다 — 프레임 티커가 없는
-            // 씬을 위해 엔진이 자가 펌프를 돌린다 (`WGPUBackendCapabilities` 문서).
+            // mapAsync completion only comes out of wgpuInstanceProcessEvents — for scenes with no frame
+            // ticker the engine runs a self pump (`WGPUBackendCapabilities` documentation).
             needsEventPump: true,
-            // Dawn은 브라우저와 같은 검증기를 통째로 갖고 있다 — 명세 검증은 Dawn이 하고,
-            // 엔진 위층에는 브리징과 최소한의 예외처리만 남는다. 그래서 이 파일의 동사들은
-            // JS 유래 정수를 **반드시 dawn* 안전 변환으로** 받는다 (트랩 방지가 이쪽 몫이다).
+            // Dawn carries the browser's validator wholesale — Dawn does the spec validation, and only
+            // bridging plus minimal exception handling is left above the engine. That is why the verbs in this
+            // file take JS-derived integers **strictly through the dawn* safe conversions** (avoiding traps is this side's job).
             validatesNatively: true
         )
     }
@@ -109,12 +109,12 @@ final class DawnBackend: WGPUBackend {
         return featureLabels.contains(feature)
     }
 
-    /// 시뮬레이터는 간접 인자를 지원하지 않는다 (Apple GPU family 2 — Metal은 3 이상 요구).
-    /// Dawn도 결국 Metal 단언으로 죽는 경로라 여기서 막는다 (`CLAUDE.md`).
+    /// The simulator does not support indirect arguments (Apple GPU family 2 — Metal requires 3 or higher).
+    /// Dawn ends up dying on the same Metal assertion, so it is blocked here (`CLAUDE.md`).
     func ensureIndirectSupported() throws {
         #if targetEnvironment(simulator)
         throw WGPUError.unsupported(
-            "iOS 시뮬레이터는 간접 드로우·디스패치를 지원하지 않는다 (실기기 A12 이상에서는 동작)"
+            "the iOS simulator does not support indirect draw/dispatch (it works on hardware, A12 or later)"
         )
         #endif
     }
@@ -133,29 +133,29 @@ final class DawnBackend: WGPUBackend {
         _ = uncaptured.drain()
     }
 
-    // MARK: - 배치 수명
+    // MARK: - Batch lifetime
 
     func beginBatch() {
-        // 앞 배치가 제출 없이 끝났다면 남은 인코더를 정리한다 (도달할 일은 없어야 한다).
+        // If the previous batch ended without a submit, clean up the leftover encoder (it should be unreachable).
         endOpenPasses()
         if let commandEncoder {
             wgpuCommandEncoderRelease(commandEncoder)
             self.commandEncoder = nil
         }
-        // 배치 오류는 **uncaptured 콜백**으로 모은다 — 디바이스 오류 스코프는 첫 오류
-        // 하나만 돌려줘서, 한 배치의 다중 거부(범위 초과 여러 건 등)가 뭉개진다.
-        // uncaptured는 오류마다 개별 전달이라 브라우저의 오류 밀도와 같다.
+        // Batch errors are collected through the **uncaptured callback** — a device error scope returns only
+        // the first error, so multiple rejections in one batch (several out-of-range values, say) get flattened.
+        // uncaptured delivers each error individually, matching the browser's error density.
     }
 
     func collectBatchDiagnostics() -> [WGPUError] {
-        // 검증 오류는 인코더 Finish/제출 뒤 wgpuInstanceProcessEvents에서 콜백으로 나온다.
-        // 몇 차례 퍼 올려 이 배치 몫을 회수한다 — 그래도 늦게 오는 것은 지연 오류 계약대로
-        // 다음 배치에 실린다 (`WGPUDeferredErrorQueue`).
+        // Validation errors come out as callbacks from wgpuInstanceProcessEvents after encoder Finish and submit.
+        // Pump a few times to reclaim this batch's share — whatever still arrives late rides on the next batch
+        // as the deferred error contract says (`WGPUDeferredErrorQueue`).
         for _ in 0..<3 { wgpuInstanceProcessEvents(instance) }
         let drained = uncaptured.drain()
-        // 무효 객체의 연쇄 에코("[Invalid X] is invalid due to a previous error")는 뿌리 오류의
-        // 하류 반복이다. 같은 회수분에 뿌리가 있으면 에코를 걸러 낸다 — 씬 오버레이는 마지막
-        // 오류만 보여 주므로, 안 거르면 항상 에코가 뿌리를 가린다 (스텐실 씬에서 실제로 그랬다).
+        // The cascading echo of an invalid object ("[Invalid X] is invalid due to a previous error") is a
+        // downstream repeat of the root error. When the root is in the same reclamation, the echoes are filtered
+        // out — a scene overlay only shows the last error, so unfiltered the echo always hides the root (it really did in the stencil scene).
         let roots = drained.filter { !$0.message.contains("is invalid due to a previous error") }
         return roots.isEmpty ? drained : roots
     }
@@ -177,13 +177,13 @@ final class DawnBackend: WGPUBackend {
         wgpuCommandEncoderRelease(encoder)
         commandEncoder = nil
 
-        // present는 제출 **뒤**다 (Metal이 commit 전 present인 것과 반대 — 백엔드 규칙).
+        // present comes **after** submit (the opposite of Metal, which presents before commit — a backend rule).
         if present {
             for (_, canvas) in presentTargets { canvas.present() }
             presentTargets.removeAll()
         }
-        // GPU 실패는 uncaptured/디바이스 로스트 통로로 온다 — 완료 통지는 성공으로 보낸다.
-        // 콜백은 processEvents 펌프(호스트 틱)에서 돌아온다.
+        // GPU failures arrive through the uncaptured / device-lost channel — the completion notification is sent as success.
+        // The callback comes back on the processEvents pump (the host tick).
         var callbackInfo = WGPUQueueWorkDoneCallbackInfo()
         callbackInfo.mode = WGPUCallbackMode_AllowProcessEvents
         callbackInfo.callback = { _, _, userdata1, _ in
@@ -194,9 +194,9 @@ final class DawnBackend: WGPUBackend {
         _ = wgpuQueueOnSubmittedWorkDone(queue, callbackInfo)
     }
 
-    /// 그리지 못한 획득분을 놓는다 — present 없이 프레임이 끝났을 때 엔진이 부른다.
-    /// 표면 텍스처 자체는 엔진이 프레임 스코프 핸들을 만료시키며 놓으므로, 여기서는
-    /// present 대상 목록만 비운다 — 남겨 두면 다음 프레임이 지난 프레임의 표면을 내보낸다.
+    /// Releases acquisitions we could not draw — called by the engine when a frame ended without a present.
+    /// The surface texture itself is released by the engine as it expires the frame-scoped handles, so all
+    /// that happens here is clearing the present target list — left behind, the next frame would present the previous frame's surface.
     func discardAcquiredFrames() {
         presentTargets.removeAll()
     }
@@ -206,13 +206,13 @@ final class DawnBackend: WGPUBackend {
         init(_ body: @escaping (WGPUError?) -> Void) { self.body = body }
     }
 
-    // MARK: - 인코더 수명
+    // MARK: - Encoder lifetime
 
     private func ensureEncoder() throws -> WGPUCommandEncoder {
         if let commandEncoder { return commandEncoder }
-        // 디바이스 로스트 등으로 nil이 올 수 있다 — 강제 언랩은 곧 크래시다.
+        // nil can come back on a device loss and the like — a force unwrap is an immediate crash.
         guard let encoder = wgpuDeviceCreateCommandEncoder(device, nil) else {
-            throw WGPUError.backend("커맨드 인코더 생성 실패 (디바이스 로스트?)")
+            throw WGPUError.backend("failed to create the command encoder (device lost?)")
         }
         commandEncoder = encoder
         return encoder
@@ -235,7 +235,7 @@ final class DawnBackend: WGPUBackend {
         endOpenPasses()
     }
 
-    // MARK: - 버퍼
+    // MARK: - Buffers
 
     func makeBuffer(_ descriptor: LynxWebGPUCore.WGPUBufferDescriptor) throws -> DawnBufferObject {
         let arena = DawnArena()
@@ -247,7 +247,7 @@ final class DawnBackend: WGPUBackend {
         dawnDescriptor.mappedAtCreation = (descriptor.mappedAtCreation || needsInitialData) ? 1 : 0
 
         guard let buffer = wgpuDeviceCreateBuffer(device, &dawnDescriptor) else {
-            throw WGPUError.outOfMemory("GPUBuffer 생성 실패")
+            throw WGPUError.outOfMemory("failed to create the GPUBuffer")
         }
         if let data = descriptor.initialData, !data.isEmpty {
             if let mapped = wgpuBufferGetMappedRange(buffer, 0, data.count) {
@@ -284,7 +284,7 @@ final class DawnBackend: WGPUBackend {
         _ buffer: DawnBufferObject, offset: Int, length: Int,
         deliver: @escaping (Result<Data, WGPUError>) -> Void
     ) {
-        // MAP_READ가 있으면 직접 매핑, 없으면 스테이징 복사 (COPY_SRC 필요).
+        // With MAP_READ, map directly; without it, copy through staging (which needs COPY_SRC).
         if buffer.usage.contains(.mapRead) {
             mapAndDeliver(
                 buffer: buffer.buffer, mapSize: buffer.size,
@@ -298,7 +298,7 @@ final class DawnBackend: WGPUBackend {
             descriptor.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead
             guard let staging = wgpuDeviceCreateBuffer(device, &descriptor),
                   let encoder = wgpuDeviceCreateCommandEncoder(device, nil) else {
-                deliver(.failure(WGPUError.outOfMemory("리드백 스테이징 생성 실패")))
+                deliver(.failure(WGPUError.outOfMemory("failed to create the readback staging buffer")))
                 return
             }
             wgpuCommandEncoderCopyBufferToBuffer(
@@ -317,12 +317,12 @@ final class DawnBackend: WGPUBackend {
             )
         } else {
             deliver(.failure(WGPUError.validation(
-                "readBuffer에는 MAP_READ 또는 COPY_SRC usage가 필요하다"
+                "readBuffer needs either MAP_READ or COPY_SRC usage"
             )))
         }
     }
 
-    /// mapAsync를 걸고, 콜백(processEvents 펌프에서 온다)에서 바이트를 떠 deliver를 부른다.
+    /// Starts a mapAsync and, in the callback (which arrives on the processEvents pump), lifts the bytes out and calls deliver.
     private func mapAndDeliver(
         buffer: WGPUBuffer,
         mapSize: Int,
@@ -358,7 +358,7 @@ final class DawnBackend: WGPUBackend {
             defer { if let staging = context.releaseAfter { wgpuBufferRelease(staging) } }
             guard status == WGPUMapAsyncStatus_Success else {
                 context.deliver(.failure(WGPUError.backend(
-                    "mapAsync 실패 — \(String(wgpu: message))"
+                    "mapAsync failed — \(String(wgpu: message))"
                 )))
                 return
             }
@@ -367,7 +367,7 @@ final class DawnBackend: WGPUBackend {
             ) else {
                 wgpuBufferUnmap(context.buffer)
                 context.deliver(.failure(WGPUError.backend(
-                    "매핑 범위를 얻지 못했다 (offset \(context.readOffset), length \(context.readLength))"
+                    "could not obtain the mapped range (offset \(context.readOffset), length \(context.readLength))"
                 )))
                 return
             }
@@ -379,7 +379,7 @@ final class DawnBackend: WGPUBackend {
         _ = wgpuBufferMapAsync(buffer, WGPUMapMode_Read, 0, mapSize, callbackInfo)
     }
 
-    // MARK: - 텍스처
+    // MARK: - Textures
 
     func makeTexture(_ descriptor: LynxWebGPUCore.WGPUTextureDescriptor) throws -> DawnTextureObject {
         let arena = DawnArena()
@@ -392,7 +392,7 @@ final class DawnBackend: WGPUBackend {
         dawnDescriptor.mipLevelCount = try dawnU32(descriptor.mipLevelCount, "mipLevelCount")
         dawnDescriptor.sampleCount = try dawnU32(descriptor.sampleCount, "sampleCount")
         guard let texture = wgpuDeviceCreateTexture(device, &dawnDescriptor) else {
-            throw WGPUError.outOfMemory("GPUTexture 생성 실패")
+            throw WGPUError.outOfMemory("failed to create the GPUTexture")
         }
         return DawnTextureObject(
             texture: texture, format: descriptor.format,
@@ -441,7 +441,7 @@ final class DawnBackend: WGPUBackend {
             .map { try dawnU32($0, "arrayLayerCount") } ?? UInt32.max
         dawnDescriptor.aspect = DawnEnum.aspect(descriptor.aspect)
         guard let view = wgpuTextureCreateView(texture.texture, &dawnDescriptor) else {
-            throw WGPUError.backend("GPUTextureView 생성 실패")
+            throw WGPUError.backend("failed to create the GPUTextureView")
         }
         return DawnTextureViewObject(view: view)
     }
@@ -461,21 +461,21 @@ final class DawnBackend: WGPUBackend {
         dawnDescriptor.compare = descriptor.compare.map(DawnEnum.compare) ?? WGPUCompareFunction_Undefined
         dawnDescriptor.maxAnisotropy = try dawnU16(descriptor.maxAnisotropy, "maxAnisotropy")
         guard let sampler = wgpuDeviceCreateSampler(device, &dawnDescriptor) else {
-            throw WGPUError.backend("GPUSampler 생성 실패")
+            throw WGPUError.backend("failed to create the GPUSampler")
         }
         return DawnSamplerObject(sampler: sampler)
     }
 
-    // MARK: - 셰이더 · 레이아웃
+    // MARK: - Shaders and layouts
 
     func makeShaderModule(
         _ descriptor: LynxWebGPUCore.WGPUShaderModuleDescriptor, fieldPath: (String) -> String?
     ) throws -> WGPUShaderModuleCreation<DawnBackend> {
         guard descriptor.language == .wgsl else {
-            // msl은 Metal 런타임의 탈출구다 — 선택 기능이라 깨끗이 거부한다
-            // (`docs/COMMAND-STREAM.md` §4-1, 적합성 `msl-optional`).
+            // msl is the Metal runtime's escape hatch — it is an optional feature, so it is cleanly rejected
+            // (`docs/COMMAND-STREAM.md` §4-1, conformance `msl-optional`).
             throw WGPUError.unsupported(
-                "Dawn 런타임은 language \"\(descriptor.language.rawValue)\"을(를) 지원하지 않는다 (wgsl만)",
+                "the Dawn runtime does not support language \"\(descriptor.language.rawValue)\" (wgsl only)",
                 path: fieldPath("language")
             )
         }
@@ -491,9 +491,9 @@ final class DawnBackend: WGPUBackend {
             return wgpuDeviceCreateShaderModule(device, &dawnDescriptor)
         }
         guard let module else {
-            throw WGPUError.backend("GPUShaderModule 생성 실패")
+            throw WGPUError.backend("failed to create the GPUShaderModule")
         }
-        // 컴파일 진단은 디바이스 스코프(collectBatchDiagnostics)와 getCompilationInfo로 나온다.
+        // Compilation diagnostics come out through the device scope (collectBatchDiagnostics) and getCompilationInfo.
         return WGPUShaderModuleCreation(module: DawnShaderModuleObject(module: module), failure: nil)
     }
 
@@ -561,7 +561,7 @@ final class DawnBackend: WGPUBackend {
         dawnDescriptor.entryCount = dawnEntries.count
         dawnDescriptor.entries = arena.array(dawnEntries)
         guard let layout = wgpuDeviceCreateBindGroupLayout(device, &dawnDescriptor) else {
-            throw WGPUError.backend("GPUBindGroupLayout 생성 실패")
+            throw WGPUError.backend("failed to create the GPUBindGroupLayout")
         }
         return DawnBindGroupLayoutObject(layout: layout)
     }
@@ -573,7 +573,7 @@ final class DawnBackend: WGPUBackend {
         dawnDescriptor.bindGroupLayoutCount = layouts.count
         dawnDescriptor.bindGroupLayouts = arena.array(layouts)
         guard let layout = wgpuDeviceCreatePipelineLayout(device, &dawnDescriptor) else {
-            throw WGPUError.backend("GPUPipelineLayout 생성 실패")
+            throw WGPUError.backend("failed to create the GPUPipelineLayout")
         }
         return DawnPipelineLayoutObject(layout: layout)
     }
@@ -603,7 +603,7 @@ final class DawnBackend: WGPUBackend {
         dawnDescriptor.entryCount = dawnEntries.count
         dawnDescriptor.entries = arena.array(dawnEntries)
         guard let group = wgpuDeviceCreateBindGroup(device, &dawnDescriptor) else {
-            throw WGPUError.backend("GPUBindGroup 생성 실패")
+            throw WGPUError.backend("failed to create the GPUBindGroup")
         }
         return DawnBindGroupObject(group: group)
     }
@@ -615,16 +615,16 @@ final class DawnBackend: WGPUBackend {
         dawnDescriptor.type = DawnEnum.queryType(descriptor.type)
         dawnDescriptor.count = try dawnU32(descriptor.count, "count")
         guard let querySet = wgpuDeviceCreateQuerySet(device, &dawnDescriptor) else {
-            throw WGPUError.backend("GPUQuerySet 생성 실패")
+            throw WGPUError.backend("failed to create the GPUQuerySet")
         }
         return DawnQuerySetObject(querySet: querySet, type: descriptor.type, count: descriptor.count)
     }
 
-    // MARK: - 파이프라인
+    // MARK: - Pipelines
 
     private func resolveLayout(_ layout: WGPUResolvedPipelineLayout<DawnBackend>) -> WGPUPipelineLayout? {
         switch layout {
-        case .auto: return nil   // Dawn의 auto 레이아웃 — 명세와 같은 의미다
+        case .auto: return nil   // Dawn's auto layout — the same meaning as the spec's
         case .explicit(let object): return object.layout
         }
     }
@@ -651,7 +651,7 @@ final class DawnBackend: WGPUBackend {
         dawnDescriptor.label = arena.string(descriptor.label)
         dawnDescriptor.layout = resolveLayout(layout)
 
-        // vertex — 진입점 생략은 Dawn의 네이티브 기본 규칙(유일 진입점)에 맡긴다.
+        // vertex — an omitted entry point is left to Dawn's native default rule (the sole entry point).
         var vertex = WGPUVertexState()
         vertex.module = vertexModule.module
         vertex.entryPoint = arena.string(descriptor.vertex.entryPoint)
@@ -747,10 +747,10 @@ final class DawnBackend: WGPUBackend {
         }
 
         guard let pipeline = wgpuDeviceCreateRenderPipeline(device, &dawnDescriptor) else {
-            throw WGPUError.backend("GPURenderPipeline 생성 실패")
+            throw WGPUError.backend("failed to create the GPURenderPipeline")
         }
-        // 드로우 전 검사 메타데이터는 주지 않는다 — Dawn이 네이티브로 검증하고,
-        // 오류는 디바이스 스코프로 이 배치 결과에 실린다.
+        // No pre-draw check metadata is given — Dawn validates natively, and the errors ride on this
+        // batch's result through the device scope.
         return WGPURenderPipelineCreation(
             pipeline: DawnRenderPipelineObject(pipeline: pipeline),
             info: WGPURenderPipelineInfo()
@@ -796,7 +796,7 @@ final class DawnBackend: WGPUBackend {
         compute.constants = arena.array(constants)
         dawnDescriptor.compute = compute
         guard let pipeline = wgpuDeviceCreateComputePipeline(device, &dawnDescriptor) else {
-            throw WGPUError.backend("GPUComputePipeline 생성 실패")
+            throw WGPUError.backend("failed to create the GPUComputePipeline")
         }
         return WGPUComputePipelineCreation(
             pipeline: DawnComputePipelineObject(pipeline: pipeline),
@@ -816,14 +816,14 @@ final class DawnBackend: WGPUBackend {
             layout = wgpuComputePipelineGetBindGroupLayout(compute.pipeline, dawnIndex)
         }
         guard let layout else { return nil }
-        // 항목은 모른다 (Dawn은 파생 레이아웃의 구성을 되묻는 API가 없다) —
-        // 바인드 그룹 항목 매칭은 Dawn의 네이티브 검증에 맡겨진다.
+        // The entries are unknown (Dawn has no API to ask a derived layout for its composition) —
+        // matching bind group entries is left to Dawn's native validation.
         return WGPUBindGroupLayoutCreation(
             layout: DawnBindGroupLayoutObject(layout: layout), entries: nil
         )
     }
 
-    // MARK: - 렌더 번들 (네이티브)
+    // MARK: - Render bundles (native)
 
     func makeRenderBundle(
         _ descriptor: LynxWebGPUCore.WGPURenderBundleDescriptor, commands: [WGPUCommand],
@@ -833,7 +833,7 @@ final class DawnBackend: WGPUBackend {
         var dawnDescriptor = WGPURenderBundleEncoderDescriptor()
         dawnDescriptor.label = arena.string(descriptor.label)
         let formats = try descriptor.colorFormats.map { format -> WebGPU.WGPUTextureFormat in
-            guard let format else { return WGPUTextureFormat_Undefined }   // 빈 슬롯
+            guard let format else { return WGPUTextureFormat_Undefined }   // an empty slot
             return try DawnEnum.textureFormat(format)
         }
         dawnDescriptor.colorFormatCount = formats.count
@@ -845,12 +845,12 @@ final class DawnBackend: WGPUBackend {
         dawnDescriptor.stencilReadOnly = descriptor.stencilReadOnly ? 1 : 0
 
         guard let encoder = wgpuDeviceCreateRenderBundleEncoder(device, &dawnDescriptor) else {
-            throw WGPUError.backend("GPURenderBundleEncoder 생성 실패")
+            throw WGPUError.backend("failed to create the GPURenderBundleEncoder")
         }
         defer { wgpuRenderBundleEncoderRelease(encoder) }
 
-        // 엔진이 디코딩·op 검증을 끝낸 명령을 **진짜 Dawn 번들**로 굽는다 —
-        // Metal 백엔드의 record/replay와 달리 여기는 명세의 렌더 번들 그 자체다.
+        // Bakes commands the engine has finished decoding and op-validating into a **real Dawn bundle** —
+        // unlike the Metal backend's record/replay, this is the spec's render bundle itself.
         for bundleCommand in commands {
             switch bundleCommand {
             case .setPipeline(let c):
@@ -919,15 +919,15 @@ final class DawnBackend: WGPUBackend {
                 let labelArena = DawnArena()
                 wgpuRenderBundleEncoderInsertDebugMarker(encoder, labelArena.string(c.markerLabel))
             default:
-                // 엔진의 allowedOps 검증이 먼저 걸러 도달할 수 없다.
+                // The engine's allowedOps validation filters this first, so it is unreachable.
                 throw WGPUError.validation(
-                    "렌더 번들에서 쓸 수 없는 명령 '\(bundleCommand.opName)'"
+                    "command '\(bundleCommand.opName)' cannot be used in a render bundle"
                 )
             }
         }
 
         guard let bundle = wgpuRenderBundleEncoderFinish(encoder, nil) else {
-            throw WGPUError.backend("GPURenderBundle 생성 실패")
+            throw WGPUError.backend("failed to create the GPURenderBundle")
         }
         return DawnRenderBundleObject(bundle: bundle)
     }
@@ -940,7 +940,7 @@ final class DawnBackend: WGPUBackend {
         }
     }
 
-    // MARK: - 표면
+    // MARK: - Surfaces
 
     func makeLayerSurface(identifier: String, layer: CAMetalLayer) -> WGPUSurfaceCreation<DawnBackend> {
         WGPUSurfaceCreation(
@@ -963,7 +963,7 @@ final class DawnBackend: WGPUBackend {
     }
 
     func resizeSurface(_ surface: DawnCanvas, size: CGSize) {
-        // NaN·음수·비유한 크기는 이후 모든 UInt32 변환의 트랩 씨앗이다 — 입구에서 거른다.
+        // A NaN, negative or non-finite size is the seed of a trap in every later UInt32 conversion — filtered at the door.
         guard size.width.isFinite, size.height.isFinite,
               size.width >= 0, size.height >= 0 else { return }
         surface.updateSize(size, device: device)
@@ -984,7 +984,7 @@ final class DawnBackend: WGPUBackend {
             texture: DawnTextureObject(
                 texture: texture, format: surface.format,
                 width: Int(surface.size.width), height: Int(surface.size.height),
-                retain: !owned   // 표면 텍스처는 이미 +1로 나온다 — 빌린 것만 retain
+                retain: !owned   // a surface texture already comes out at +1 — only a borrow is retained
             ),
             format: surface.format,
             width: Int(surface.size.width),
@@ -993,13 +993,13 @@ final class DawnBackend: WGPUBackend {
     }
 
     func readPixels(_ surface: DawnCanvas, identifier: String) throws -> WGPUPixelReadback {
-        // 픽셀 읽기는 오프스크린 통로다 — 화면 표면 텍스처는 present와 함께 사라진다.
+        // Reading pixels is the offscreen channel — a screen surface texture disappears with the present.
         guard let canvas = surface as? DawnOffscreenCanvas, let texture = canvas.texture else {
             throw WGPUError.validation(
-                "캔버스 '\(identifier)'은(는) 오프스크린 표면이 아니거나 configure 전이다"
+                "canvas '\(identifier)' is not an offscreen surface, or is not configured yet"
             )
         }
-        let dimensions = try dawnTextureDimensions(canvas.size, "캔버스 '\(identifier)'")
+        let dimensions = try dawnTextureDimensions(canvas.size, "canvas '\(identifier)'")
         let width = Int(dimensions.width)
         let height = Int(dimensions.height)
         let bytesPerPixel = canvas.format.bytesPerPixel
@@ -1011,7 +1011,7 @@ final class DawnBackend: WGPUBackend {
         descriptor.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead
         guard let staging = wgpuDeviceCreateBuffer(device, &descriptor),
               let encoder = wgpuDeviceCreateCommandEncoder(device, nil) else {
-            throw WGPUError.outOfMemory("픽셀 읽기 스테이징 생성 실패")
+            throw WGPUError.outOfMemory("failed to create the pixel readback staging buffer")
         }
         defer { wgpuBufferRelease(staging) }
 
@@ -1036,7 +1036,7 @@ final class DawnBackend: WGPUBackend {
         }
         wgpuCommandEncoderRelease(encoder)
 
-        // 동기 매핑 — 계약이 "GPU 완료 후 읽기"다 (mapAsync가 완료를 기다린다).
+        // A synchronous map — the contract is "read after GPU completion" (mapAsync waits for completion).
         final class MapBox { var done = false; var message = "" }
         let box = MapBox()
         var callbackInfo = WGPUBufferMapCallbackInfo()
@@ -1049,9 +1049,9 @@ final class DawnBackend: WGPUBackend {
         }
         callbackInfo.userdata1 = Unmanaged.passRetained(box).toOpaque()
         _ = wgpuBufferMapAsync(staging, WGPUMapMode_Read, 0, total, callbackInfo)
-        try DawnBootstrap.pump(instance: instance, until: { box.done }, what: "readCanvasPixels 매핑")
+        try DawnBootstrap.pump(instance: instance, until: { box.done }, what: "readCanvasPixels mapping")
         guard let pointer = wgpuBufferGetConstMappedRange(staging, 0, total) else {
-            throw WGPUError.backend("픽셀 매핑 실패 — \(box.message)")
+            throw WGPUError.backend("pixel mapping failed — \(box.message)")
         }
         let data = Data(bytes: pointer, count: total)
         wgpuBufferUnmap(staging)
@@ -1060,7 +1060,7 @@ final class DawnBackend: WGPUBackend {
         )
     }
 
-    // MARK: - 패스
+    // MARK: - Passes
 
     func beginRenderPass(_ pass: WGPUResolvedRenderPass<DawnBackend>) throws {
         let arena = DawnArena()
@@ -1104,7 +1104,7 @@ final class DawnBackend: WGPUBackend {
         if let writes = pass.timestampWrites {
             var dawnWrites = WebGPU.WGPUPassTimestampWrites()
             dawnWrites.querySet = writes.querySet.querySet
-            // 생략된 자리는 WGPU_QUERY_SET_INDEX_UNDEFINED(=UInt32.max)다.
+            // An omitted slot is WGPU_QUERY_SET_INDEX_UNDEFINED (= UInt32.max).
             dawnWrites.beginningOfPassWriteIndex = try writes.beginningOfPassWriteIndex
                 .map { try dawnU32($0, "beginningOfPassWriteIndex") } ?? UInt32.max
             dawnWrites.endOfPassWriteIndex = try writes.endOfPassWriteIndex
@@ -1113,7 +1113,7 @@ final class DawnBackend: WGPUBackend {
         }
 
         guard let encoder = wgpuCommandEncoderBeginRenderPass(try ensureEncoder(), &dawnDescriptor) else {
-            throw WGPUError.backend("렌더 패스 시작 실패")
+            throw WGPUError.backend("failed to begin the render pass")
         }
         renderPass = encoder
     }
@@ -1132,7 +1132,7 @@ final class DawnBackend: WGPUBackend {
             dawnDescriptor.timestampWrites = arena.value(dawnWrites)
         }
         guard let encoder = wgpuCommandEncoderBeginComputePass(try ensureEncoder(), &dawnDescriptor) else {
-            throw WGPUError.backend("컴퓨트 패스 시작 실패")
+            throw WGPUError.backend("failed to begin the compute pass")
         }
         computePass = encoder
     }
@@ -1260,7 +1260,7 @@ final class DawnBackend: WGPUBackend {
         }
     }
 
-    // MARK: - 드로우 / 디스패치
+    // MARK: - Draw / dispatch
 
     func draw(_ command: WGPUDrawCommand) throws {
         guard let renderPass else { return }
@@ -1277,8 +1277,8 @@ final class DawnBackend: WGPUBackend {
         _ command: WGPUDrawIndexedCommand, index: WGPUResolvedIndexBinding<DawnBackend>
     ) throws {
         guard let renderPass else { return }
-        // 인덱스 바인딩은 엔진 그림자 상태에서 온다 — 드로우마다 다시 세팅해도
-        // Dawn은 상태 변경으로만 처리하므로 비용이 없다.
+        // The index binding comes from the engine's shadow state — setting it again on every draw costs
+        // nothing, since Dawn only treats it as a state change.
         wgpuRenderPassEncoderSetIndexBuffer(
             renderPass, index.buffer.buffer, DawnEnum.indexFormat(index.format),
             try dawnU64(index.offset, "offset"), UInt64.max
@@ -1328,7 +1328,7 @@ final class DawnBackend: WGPUBackend {
         )
     }
 
-    // MARK: - 복사
+    // MARK: - Copies
 
     func copyBufferToBuffer(
         source: DawnBufferObject, sourceOffset: Int,
@@ -1429,7 +1429,7 @@ final class DawnBackend: WGPUBackend {
         )
     }
 
-    // MARK: - 어댑터 정보
+    // MARK: - Adapter info
 
     func adapterInfo() -> [String: Any] {
         var limits = WGPULimits()
@@ -1492,17 +1492,17 @@ final class DawnBackend: WGPUBackend {
             "backend": "dawn-metal",
             "preferredCanvasFormat": LynxWebGPUCore.WGPUTextureFormat.bgra8unorm.rawValue,
             "limits": limitsPayload,
-            // 요청한 것만 광고한다 — 목록의 출처가 requestDevice와 같아야 광고와 실제가
-            // 어긋나지 않는다 (시뮬레이터에서는 간접 기능이 목록에서 빠진다).
+            // Only what was requested is advertised — the list has to come from the same place as
+            // requestDevice for the advertisement and reality to agree (on the simulator the indirect feature drops out of the list).
             "features": Array(featureLabels).sorted(),
         ]
     }
 }
 
-// MARK: - 런타임 조립
+// MARK: - Runtime assembly
 
-/// Dawn 백엔드를 공유 엔진에 얹은 **런타임** — 예전 이름을 그대로 쓴다.
-/// 오케스트레이션은 전부 엔진 몫이므로, 이 별칭이 곧 "Dawn을 임포트해서 쓰는 방법"의 전부다.
+/// **The runtime** with the Dawn backend mounted on the shared engine — the old name is kept as is.
+/// Orchestration is entirely the engine's job, so this alias is the whole of "how to import and use Dawn".
 typealias DawnWebGPURuntime = WGPUBackendEngine<DawnBackend>
 
 extension WGPUBackendEngine where B == DawnBackend {

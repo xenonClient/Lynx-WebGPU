@@ -1,14 +1,14 @@
 import ProjectDescription
 
-// Dawn 백엔드 연동 검증 프로젝트 — **루트 워크스페이스(`LynxWebGPUDemo.xcworkspace`)의
-// 별도 프로젝트**다 (`Workspace.swift`). 데모 로직과 완전히 분리돼 있고, 루트에서
-// `mise exec -- tuist generate` 한 번이면 스킴 셋(WebGPUDemo · DawnCheck · DawnDemo)이 다 나온다.
+// The Dawn backend integration verification project — **a separate project inside the root
+// workspace (`LynxWebGPUDemo.xcworkspace`)** (`Workspace.swift`). It is fully separated from the
+// demo logic, and one `mise exec -- tuist generate` at the root produces every scheme (WebGPUDemo · DawnCheck · DawnDemo).
 //
-// `docs/extra/DAWN-BACKEND-REVIEW.md` §3-6이 그리는 "별도 저장소 Lynx-WebGPU-Dawn"의
-// 시제품이다 — [Dawn-xcFramework](https://github.com/xenonClient/Dawn-xcFramework)의
-// 프리빌트 바이너리 위에 `WebGPURuntime`을 구현하고, 같은 적합성 스위트를 돌려
-// Metal 런타임과 계약이 같은지 잰다. Dawn.xcframework는 iOS 슬라이스만 있으므로
-// (macOS 없음) 검증은 시뮬레이터에서 돈다:
+// It is a prototype of the "separate Lynx-WebGPU-Dawn repository" sketched in
+// `docs/extra/DAWN-BACKEND-REVIEW.md` §3-6 — it implements `WebGPURuntime` on top of the prebuilt
+// binaries of [Dawn-xcFramework](https://github.com/xenonClient/Dawn-xcFramework) and runs the same
+// conformance suite to measure whether its contract matches the Metal runtime's. Dawn.xcframework
+// only has iOS slices (no macOS), so verification runs on the simulator:
 //   arch -arm64 xcodebuild -workspace LynxWebGPUDemo.xcworkspace -scheme DawnCheck \
 //     -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' \
 //     -derivedDataPath .derivedData-cli test
@@ -16,21 +16,21 @@ let project = Project(
     name: "DawnCheck",
     organizationName: "LynxWebGPU",
     packages: [
-        // 루트 SPM 패키지 — 계약(Core)과 증명 수단(Conformance)만 쓴다. Metal 엔진은 링크하지 않는다.
+        // The root SPM package — only the contract (Core) and the means of proof (Conformance) are used. The Metal engine is not linked.
         .local(path: "../.."),
-        // Dawn 프리빌트 (제품 "Dawn", 모듈 "WebGPU" — webgpu.h C API). BSD-3-Clause.
+        // The Dawn prebuilt (product "Dawn", module "WebGPU" — the webgpu.h C API). BSD-3-Clause.
         .remote(
             url: "https://github.com/xenonClient/Dawn-xcFramework",
             requirement: .exact("20260731.171941.0")
         ),
-        // Lynx는 **앱 타깃(DawnDemo)이 고른다** — 데모와 같은 규칙 (docs/LYNX-INTEGRATION.md §1).
+        // **The app target (DawnDemo) picks Lynx** — the same rule as the demo (docs/LYNX-INTEGRATION.md §1).
         .remote(
             url: "https://github.com/xenonClient/Lynx-XCFramework",
             requirement: .exact("4.0.0")
         ),
     ],
     settings: .settings(
-        // 이 환경은 서명이 구성돼 있지 않아 팀을 명시해야 시뮬레이터 테스트 번들이 서명된다.
+        // This environment has no signing configuration, so the team must be stated for the simulator test bundle to be signed.
         base: [
             "DEVELOPMENT_TEAM": "TFLQDNW4Z9",
             "CODE_SIGN_STYLE": "Automatic",
@@ -38,7 +38,7 @@ let project = Project(
         configurations: [.debug(name: "Debug"), .release(name: "Release")]
     ),
     targets: [
-        // 오프스크린 적합성 검증 (29검사 — docs/TESTING.md §2-1).
+        // Offscreen conformance verification (29 checks — docs/TESTING.md §2-1).
         .target(
             name: "DawnCheckTests",
             destinations: .iOS,
@@ -52,12 +52,12 @@ let project = Project(
                 .package(product: "LynxWebGPUConformance"),
             ]
         ),
-        // 실제 연동 실증 앱 — 데모의 씬 목록·런처·.lynx.bundle을 **그대로** 쓰되
-        // 런타임만 Dawn이다. `LynxWebGPU`(Metal 엔진)는 링크하지 않는다.
+        // The real integration demonstration app — it uses the demo's scene list, launcher and
+        // .lynx.bundle **unchanged**, with only the runtime being Dawn. `LynxWebGPU` (the Metal engine) is not linked.
         //
-        // 브리지도 **데모 프로젝트의 타깃을 그대로** 쓴다 (`.project` 교차 참조) — 같은 이름의
-        // 타깃을 여기 또 만들면 한 워크스페이스에서 산출물이 충돌하고, 브리지가 백엔드를
-        // 모른다는 계약도 "같은 빌드 산출물"로 증명하는 편이 정확하다.
+        // The bridge is **the demo project's target, used as is** (a `.project` cross reference) — making
+        // another target of the same name here would collide on output within one workspace, and proving
+        // "the bridge does not know the backend" with **the same build artifact** is more accurate anyway.
         .target(
             name: "DawnDemo",
             destinations: .iOS,
@@ -80,13 +80,13 @@ let project = Project(
             ]),
             sources: [
                 "App/**",
-                "Sources/**",   // DawnWebGPURuntime — 적합성 타깃과 같은 소스
-                // 씬 목록과 런처는 데모의 것을 그대로 쓴다 (Foundation/UIKit뿐이다) —
-                // DemoViewController만 이 앱의 것(App/)이 대신한다.
+                "Sources/**",   // DawnWebGPURuntime — the same sources as the conformance target
+                // The scene list and launcher are the demo's, used as is (they are only Foundation/UIKit) —
+                // only DemoViewController is replaced by this app's own (App/).
                 "../WebGPUDemo/Sources/DemoScene.swift",
                 "../WebGPUDemo/Sources/LauncherViewController.swift",
             ],
-            // 데모 번들(.lynx.bundle)도 그대로 — JS 무변경 계약의 증거다.
+            // The demo bundles (.lynx.bundle) unchanged too — the evidence for the JS-unchanged contract.
             resources: ["../WebGPUDemo/Resources/**"],
             dependencies: [
                 .project(target: "LynxWebGPUBridge", path: "../WebGPUDemo"),

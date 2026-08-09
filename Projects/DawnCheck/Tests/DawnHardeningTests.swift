@@ -2,17 +2,17 @@ import XCTest
 import CoreGraphics
 import LynxWebGPUCore
 
-/// 크래시 하드닝 검증 — "잘못된 인자로 프로세스를 죽이지 않는다"(`WGPUError`)가 Dawn 런타임에도
-/// 성립하는가. JS는 어떤 정수든 실어 보낼 수 있으므로, 음수·거대값·NaN이 GPU 인자 폭 변환에서
-/// **트랩(프로세스 종료)이 아니라 validation 오류**가 되어야 한다.
+/// Crash hardening — whether "bad arguments never kill the process" (`WGPUError`) holds on the Dawn
+/// runtime too. JS can send any integer, so a negative, an enormous value or a NaN must become
+/// **a validation error rather than a trap (process death)** when converted to a GPU argument width.
 final class DawnHardeningTests: XCTestCase {
 
-    func test_적대적_인자에도_크래시_없이_validation으로_거부한다() throws {
+    func test_hostileArgumentsAreRejectedAsValidationWithoutCrashing() throws {
         let runtime = try DawnWebGPURuntime()
         defer { runtime.reset() }
         try runtime.attachOffscreenCanvas(identifier: "h", size: CGSize(width: 8, height: 8))
 
-        // 음수 크기·오프셋·인덱스, u32/u16 범위 초과, 없는 핸들 — 전 계열을 한 배치로.
+        // Negative sizes, offsets and indices; u32/u16 overflow; missing handles — every family in one batch.
         let hostile: [[String: Any]] = [
             ["op": "createBuffer", "id": 1, "size": -16, "usage": 0x20],
             ["op": "createBuffer", "id": 2, "size": 16, "usage": 0x0040 | 0x0008],
@@ -36,24 +36,24 @@ final class DawnHardeningTests: XCTestCase {
             ["op": "resolveQuerySet", "querySet": 999, "firstQuery": -1, "destination": 2],
         ]
         let result = runtime.execute(commands: hostile, present: true)
-        XCTAssertEqual(result["ok"] as? Bool, false, "적대 입력이 성공으로 보고됐다")
+        XCTAssertEqual(result["ok"] as? Bool, false, "hostile input was reported as success")
         let errors = result["errors"] as? [[String: Any]] ?? []
-        XCTAssertFalse(errors.isEmpty, "적대 입력이 오류 없이 지나갔다")
-        // 전부 명세 오류 4종 중 하나로 분류돼야 한다 (트랩·크래시가 아니라).
+        XCTAssertFalse(errors.isEmpty, "hostile input passed with no error")
+        // Every one must classify as one of the four spec error kinds (not a trap or crash).
         for error in errors {
-            XCTAssertNotNil(error["kind"], "kind 없는 오류: \(error)")
+            XCTAssertNotNil(error["kind"], "an error with no kind: \(error)")
         }
 
-        // 프로세스도 디바이스도 살아 있다 — 이어지는 정상 배치가 그대로 동작한다.
+        // Both the process and the device are alive — a following normal batch works unchanged.
         let sane = runtime.execute(commands: [
             ["op": "createBuffer", "id": 20, "size": 16, "usage": 0x0040],
         ], present: false)
-        XCTAssertEqual(sane["ok"] as? Bool, true, "적대 배치 뒤 정상 배치가 실패한다")
+        XCTAssertEqual(sane["ok"] as? Bool, true, "a normal batch failed after the hostile one")
 
-        // 크기 공격 — NaN·음수 resize는 무시되고, 잘못된 캔버스 읽기는 던진다 (트랩 아님).
+        // Size attacks — a NaN or negative resize is ignored, and reading a bad canvas throws (no trap).
         runtime.resizeCanvas(identifier: "h", drawableSize: CGSize(width: CGFloat.nan, height: -5))
-        XCTAssertThrowsError(try runtime.readCanvasPixels(identifier: "없는-캔버스"))
+        XCTAssertThrowsError(try runtime.readCanvasPixels(identifier: "no-such-canvas"))
         let info = runtime.canvasInfo(identifier: "h")
-        XCTAssertEqual(info["ok"] as? Bool, true, "NaN resize가 캔버스 상태를 오염시켰다")
+        XCTAssertEqual(info["ok"] as? Bool, true, "the NaN resize corrupted the canvas state")
     }
 }

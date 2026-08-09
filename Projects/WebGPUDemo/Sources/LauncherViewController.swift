@@ -1,10 +1,10 @@
 import UIKit
 import Metal
 
-/// 데모 씬 목록. 각 행을 누르면 그 씬의 Lynx 번들을 띄운다.
+/// The demo scene list. Tapping a row shows that scene's Lynx bundle.
 ///
-/// 씬마다 **LynxView와 WebGPU 런타임을 새로 만들고 화면을 떠날 때 해제**하므로,
-/// 목록 ↔ 씬을 오가는 것만으로 생성/해제 경로까지 함께 확인된다.
+/// Each scene **creates a fresh LynxView and WebGPU runtime and releases them on leaving**, so moving
+/// between the list and a scene exercises the creation and teardown paths too.
 final class LauncherViewController: UITableViewController {
     private let scenes = DemoScene.allCases
 
@@ -31,7 +31,7 @@ final class LauncherViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
         let device = MTLCreateSystemDefaultDevice()
-        return "\(device?.name ?? "Metal 디바이스 없음") · 통합 메모리 \(device?.hasUnifiedMemory == true ? "O" : "X")"
+        return "\(device?.name ?? "no Metal device") · unified memory \(device?.hasUnifiedMemory == true ? "yes" : "no")"
     }
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -54,7 +54,7 @@ final class LauncherViewController: UITableViewController {
         let scene = scenes[indexPath.row]
         let controller = DemoViewController(scene: scene)
 
-        // 제스처가 겹치면 안 되는 씬은 모달 전체 화면으로 (`DemoScene.coversFullScreen` 참고).
+        // Scenes whose gestures must not overlap go modal full-screen (see `DemoScene.coversFullScreen`).
         guard scene.coversFullScreen else {
             navigationController?.pushViewController(controller, animated: true)
             return

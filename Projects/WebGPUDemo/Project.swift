@@ -1,7 +1,7 @@
 import ProjectDescription
 
-// 서명 — 이 환경은 로컬 서명 구성이 없어 팀을 **기본으로 명시**해야 Xcode 빌드가 된다.
-// 다른 팀을 쓰려면 환경변수로 바꾼다:
+// Signing — this environment has no local signing configuration, so the team must be **stated by
+// default** for an Xcode build to work. Override it with an environment variable:
 //   TUIST_DEVELOPMENT_TEAM=XXXXXXXXXX mise exec -- tuist generate
 let signingSettings: SettingsDictionary = {
     let team = Environment.developmentTeam.getString(default: "TFLQDNW4Z9")
@@ -12,11 +12,11 @@ let signingSettings: SettingsDictionary = {
 let project = Project(
     name: "WebGPUDemo",
     organizationName: "LynxWebGPU",
-    // 저장소 루트의 SPM 패키지를 로컬 의존성으로 그대로 쓴다 — 데모가 항상 현재 소스를 링크한다.
+    // The repository root's SPM package is used directly as a local dependency — the demo always links current source.
     //
-    // **Lynx는 이 데모가 직접 고른다.** 라이브러리 패키지에는 Lynx 의존성이 없다 —
-    // 버전과 배포처를 앱이 정할 수 있게 하기 위해서다 (`docs/LYNX-INTEGRATION.md` §2).
-    // 다른 버전을 시험하려면 아래 `requirement`만 바꾸면 된다.
+    // **This demo picks Lynx itself.** The library package has no Lynx dependency —
+    // so the app can decide the version and distribution (`docs/LYNX-INTEGRATION.md` §2).
+    // To try another version, change only the `requirement` below.
     packages: [
         .local(path: "../.."),
         .remote(
@@ -25,19 +25,19 @@ let project = Project(
         ),
     ],
     settings: .settings(
-        // Lynx 공식 가이드 요구사항 (docs/LYNX-INTEGRATION.md §1)
+        // A requirement of the official Lynx guide (docs/LYNX-INTEGRATION.md §1)
         base: ["ENABLE_USER_SCRIPT_SANDBOXING": "NO"].merging(signingSettings) { _, new in new },
         configurations: [.debug(name: "Debug"), .release(name: "Release")]
     ),
     targets: [
-        // Lynx 연동 레이어 — **저장소의 브리지 소스를 여기서 컴파일한다.**
+        // The Lynx integration layer — **the repository's bridge sources are compiled here.**
         //
-        // 이 타깃이 Lynx를 의존성으로 들고 있으므로 브리지 안의 `#if canImport(Lynx)`가 켜진다.
-        // SPM 패키지 쪽에 두면 매니페스트가 Lynx 버전을 박아 버리므로 일부러 앱 쪽에 둔 것이다.
-        // 실제 앱도 이 모양을 그대로 따라 하면 된다 (`docs/LYNX-INTEGRATION.md` §2-2).
+        // This target carries Lynx as a dependency, which is what turns on `#if canImport(Lynx)` inside the bridge.
+        // Putting it in the SPM package would pin the Lynx version in the manifest, so it lives on the app side deliberately.
+        // A real app can follow this shape exactly (`docs/LYNX-INTEGRATION.md` §2-2).
         //
-        // **의존성이 `LynxWebGPUCore`뿐인 것에 주목할 것** — 브리지는 `WebGPURuntime` 프로토콜만
-        // 알고 GPU 백엔드를 모른다. 어느 엔진을 링크할지는 아래 앱 타깃이 정한다.
+        // **Note that its only dependency is `LynxWebGPUCore`** — the bridge knows only the
+        // `WebGPURuntime` protocol, not the GPU backend. Which engine to link is decided by the app target below.
         .target(
             name: "LynxWebGPUBridge",
             destinations: .iOS,
@@ -71,26 +71,26 @@ let project = Project(
                 ],
             ]),
             sources: ["Sources/**"],
-            // .lynx.bundle 산출물 (DemoSrc의 rspeedy 빌드 결과를 복사한 것)
+            // The .lynx.bundle outputs (copies of DemoSrc's rspeedy build results)
             resources: ["Resources/**"],
             dependencies: [
                 .target(name: "LynxWebGPUBridge"),
-                // **런타임(백엔드)을 고르는 자리.** 기본 Metal 엔진을 쓰므로 여기서 링크한다 —
-                // 다른 백엔드로 가려면 이 줄을 그 패키지로 바꾸고 `LynxWebGPUHost(runtime:)`에
-                // 넘기는 객체만 바꾸면 된다 (브리지와 JS 번들은 그대로다).
+                // **Where the runtime (backend) is chosen.** The default Metal engine is linked here —
+                // to move to another backend, change this line to that package and change only the object
+                // passed to `LynxWebGPUHost(runtime:)` (the bridge and the JS bundle stay as they are).
                 .package(product: "LynxWebGPU"),
-                // 앱 코드도 Lynx를 직접 쓴다 (LynxView 호스팅 — AppDelegate/DemoViewController).
+                // The app code uses Lynx directly too (LynxView hosting — AppDelegate/DemoViewController).
                 .package(product: "Lynx"),
             ]
         ),
-        // **기본 런타임(Metal)의 iOS 검증** — `DawnCheckTests`와 같은 스위트를 같은 목적지에서
-        // 돌린다 (docs/TESTING.md §2-1).
+        // **iOS verification of the default runtime (Metal)** — runs the same suite as `DawnCheckTests`
+        // at the same destination (docs/TESTING.md §2-1).
         //
-        // `swift test`의 `ConformanceTests`도 같은 29검사를 돌리지만 그건 **macOS**다.
-        // 정작 실려 나가는 곳은 iOS인데 거기서 기본 백엔드를 재는 자리가 없으면,
-        // 실험 백엔드(Dawn)만 iOS 검증을 받는 뒤집힌 모양이 된다.
+        // `swift test`'s `ConformanceTests` runs the same 29 checks, but that is **macOS**.
+        // Where it actually ships is iOS, and with no place measuring the default backend there,
+        // only the experimental backend (Dawn) would get iOS verification — backwards.
         //
-        // Lynx도 앱 코드도 링크하지 않는다 — 재는 것은 **런타임의 계약**뿐이다.
+        // It links neither Lynx nor the app code — what it measures is **the runtime's contract** alone.
         .target(
             name: "WebGPUDemoTests",
             destinations: .iOS,
@@ -110,11 +110,11 @@ let project = Project(
             name: "WebGPUDemo",
             shared: true,
             buildAction: .buildAction(targets: ["WebGPUDemo"]),
-            // 앱 스킴에서도 ⌘U가 돌게 붙여 둔다 — Xcode에서 데모를 띄워 놓고 바로 잴 수 있다.
+            // Attached so ⌘U works from the app scheme too — measure straight from Xcode with the demo open.
             testAction: .targets(["WebGPUDemoTests"], configuration: "Debug"),
             runAction: .runAction(configuration: "Debug")
         ),
-        // 검증 전용 스킴 — `DawnCheck`의 짝이다. 앱을 빌드하지 않으므로 CLI에서 빠르다.
+        // A verification-only scheme — the counterpart of `DawnCheck`. It does not build the app, so it is fast from the CLI.
         .scheme(
             name: "WebGPUCheck",
             shared: true,

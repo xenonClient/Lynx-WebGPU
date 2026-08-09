@@ -2,11 +2,11 @@ import UIKit
 import Lynx
 import LynxWebGPUBridge
 
-// WebGPUDemo의 DemoViewController에서 **딱 한 곳**만 다르다 — 런타임 주입 줄.
-// `import LynxWebGPU`(Metal 엔진)가 없다는 것이 이 파일의 요점이다: 브리지도, 씬 목록도,
-// `.lynx.bundle`(JS)도 데모의 것을 그대로 쓰면서 백엔드만 Dawn이다.
+// It differs from WebGPUDemo's DemoViewController in **exactly one place** — the runtime injection line.
+// The point of this file is the absence of `import LynxWebGPU` (the Metal engine): the bridge, the scene
+// list and the `.lynx.bundle` (JS) are all the demo's, unchanged — only the backend is Dawn.
 
-/// `.lynx.bundle` 파일을 앱 번들에서 읽어 LynxView에 넘긴다.
+/// Reads a `.lynx.bundle` file out of the app bundle and hands it to LynxView.
 final class BundleTemplateProvider: NSObject, LynxTemplateProvider {
     func loadTemplate(withUrl url: String!, onComplete callback: LynxTemplateLoadBlock!) {
         do {
@@ -17,7 +17,7 @@ final class BundleTemplateProvider: NSObject, LynxTemplateProvider {
     }
 }
 
-/// 데모 씬 하나를 Dawn 런타임으로 띄우는 호스트 화면.
+/// The host screen that brings up one demo scene on the Dawn runtime.
 final class DemoViewController: UIViewController {
     private let scene: DemoScene
     private var host: LynxWebGPUHost?
@@ -38,16 +38,16 @@ final class DemoViewController: UIViewController {
         view.backgroundColor = UIColor(red: 0.05, green: 0.06, blue: 0.09, alpha: 1)
 
         do {
-            // 런타임(백엔드)은 **앱이 고른다** — 여기서는 Dawn이다. 이 한 줄이 전부다.
+            // **The app picks the runtime (backend)** — here it is Dawn. This one line is all of it.
             host = LynxWebGPUHost(runtime: try DawnWebGPURuntime())
         } catch {
-            showError("Dawn 런타임을 만들 수 없다: \(error)")
+            showError("could not create the Dawn runtime: \(error)")
             return
         }
         guard let host else { return }
 
         guard let templatePath = Bundle.main.path(forResource: scene.rawValue, ofType: "lynx.bundle") else {
-            showError("\(scene.rawValue).lynx.bundle 이 앱 번들에 없다.")
+            showError("\(scene.rawValue).lynx.bundle is not in the app bundle.")
             return
         }
 
@@ -89,7 +89,7 @@ final class DemoViewController: UIViewController {
         configuration.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12)
 
         let button = UIButton(configuration: configuration)
-        button.accessibilityLabel = "닫기"
+        button.accessibilityLabel = "Close"
         button.addTarget(self, action: #selector(dismissScene), for: .touchUpInside)
         button.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(button)
@@ -107,7 +107,7 @@ final class DemoViewController: UIViewController {
         }
     }
 
-    /// 자동화 하네스 — 데모와 같은 런치 인자 (`-cardTilt`, `-altMode`).
+    /// The automation harness — the same launch arguments as the demo (`-cardTilt`, `-altMode`).
     private var initialData: LynxTemplateData? {
         var data: [String: Any] = [:]
         let tilt = UserDefaults.standard.double(forKey: "cardTilt")

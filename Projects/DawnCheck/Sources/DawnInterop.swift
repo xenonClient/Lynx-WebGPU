@@ -2,74 +2,74 @@ import Foundation
 import WebGPU
 import LynxWebGPUCore
 
-// webgpu.h C API ↔ Swift 브리징 도구.
+// webgpu.h C API ↔ Swift bridging tools.
 //
-// C 콜백은 컨텍스트를 캡처할 수 없으므로 (모든 `WGPU*CallbackInfo`가 함수 포인터 +
-// `userdata1/2`) 상자를 retained 포인터로 넘기고 콜백 안에서 되찾는다.
+// A C callback cannot capture context (every `WGPU*CallbackInfo` is a function pointer plus
+// `userdata1/2`), so a box is passed across as a retained pointer and reclaimed inside the callback.
 
-/// 콜백 하나가 채우는 결과 상자. `done`은 폴링 루프의 종료 조건이다.
+/// A result box filled by a single callback. `done` is the polling loop's exit condition.
 final class DawnBox<Value> {
     var value: Value?
     var message = ""
     var done = false
 }
 
-// MARK: - 안전 정수 변환
+// MARK: - Safe integer conversion
 //
-// JS가 실어 보낸 Int는 음수·거대값일 수 있다. `UInt32(value)` 같은 직변환은 범위를 벗어나면
-// **Swift 런타임 트랩(프로세스 종료)**이다 — "잘못된 인자로 프로세스를 죽이지 않는다"는
-// 이 라이브러리의 계약(`WGPUError`)에 정면으로 어긋난다. GPU 인자 폭으로 옮기는 모든 자리는
-// 아래 헬퍼를 거쳐 **validation 오류로 거부**한다.
+// An Int sent by JS may be negative or enormous. A direct conversion like `UInt32(value)` is a
+// **Swift runtime trap (process death)** when out of range — squarely against this library's contract
+// (`WGPUError`) that "bad arguments never kill the process". Every place that moves a value into a
+// GPU argument width goes through the helpers below and **rejects with a validation error**.
 
 func dawnU32(_ value: Int, _ field: String) throws -> UInt32 {
     guard let converted = UInt32(exactly: value) else {
-        throw WGPUError.validation("\(field) 값 \(value)이(가) u32 범위를 벗어난다")
+        throw WGPUError.validation("\(field) value \(value) is out of u32 range")
     }
     return converted
 }
 
 func dawnU64(_ value: Int, _ field: String) throws -> UInt64 {
     guard value >= 0 else {
-        throw WGPUError.validation("\(field) 값 \(value)이(가) 음수다")
+        throw WGPUError.validation("\(field) value \(value) is negative")
     }
     return UInt64(value)
 }
 
 func dawnI32(_ value: Int, _ field: String) throws -> Int32 {
     guard let converted = Int32(exactly: value) else {
-        throw WGPUError.validation("\(field) 값 \(value)이(가) i32 범위를 벗어난다")
+        throw WGPUError.validation("\(field) value \(value) is out of i32 range")
     }
     return converted
 }
 
 func dawnU16(_ value: Int, _ field: String) throws -> UInt16 {
     guard let converted = UInt16(exactly: value) else {
-        throw WGPUError.validation("\(field) 값 \(value)이(가) u16 범위를 벗어난다")
+        throw WGPUError.validation("\(field) value \(value) is out of u16 range")
     }
     return converted
 }
 
-/// CGSize(레이아웃·JS 유래)를 텍스처 크기로 옮긴다 — NaN·음수·0·상한 초과를 전부 거른다.
-/// `UInt32(CGFloat.nan)`도 트랩이다.
+/// Moves a CGSize (layout- or JS-derived) into a texture size — it filters out NaN, negative, zero and over-cap.
+/// `UInt32(CGFloat.nan)` is a trap too.
 func dawnTextureDimensions(_ size: CGSize, _ what: String) throws -> (width: UInt32, height: UInt32) {
     guard size.width.isFinite, size.height.isFinite,
           size.width >= 1, size.height >= 1,
           size.width <= 16384, size.height <= 16384 else {
-        throw WGPUError.validation("\(what) 크기가 유효하지 않다: \(Int(size.width))×\(Int(size.height))")
+        throw WGPUError.validation("\(what) size is not valid: \(Int(size.width))×\(Int(size.height))")
     }
     return (UInt32(size.width), UInt32(size.height))
 }
 
 extension WGPUStringView {
-    /// `WGPU_STRLEN`(SIZE_MAX) — "명시 길이 없음" 센티널. C의 `size_t`가 Swift에는 `Int`로
-    /// 들어오므로 **비트 패턴**으로 만들어야 한다 — `Int.max`를 넣으면 Dawn이 2^63 길이의
-    /// 문자열을 만들려다 `length_error`로 abort한다 (실제로 겪었다).
+    /// `WGPU_STRLEN` (SIZE_MAX) — the "no explicit length" sentinel. C's `size_t` arrives in Swift as
+    /// `Int`, so it has to be built from the **bit pattern** — passing `Int.max` makes Dawn try to build
+    /// a string of length 2^63 and abort with `length_error` (experienced first hand).
     static var noLength: Int { Int(bitPattern: UInt.max) }
 }
 
 extension String {
-    /// `WGPUStringView` → String. `data`가 nil이면 빈 문자열,
-    /// 길이가 `WGPU_STRLEN`(SIZE_MAX 센티널)이면 nul 종료 문자열로 읽는다.
+    /// `WGPUStringView` → String. If `data` is nil the result is the empty string;
+    /// if the length is `WGPU_STRLEN` (the SIZE_MAX sentinel) it is read as a nul-terminated string.
     init(wgpu view: WGPUStringView) {
         guard let data = view.data else {
             self = ""
@@ -85,11 +85,11 @@ extension String {
     }
 }
 
-/// 디스크립터를 만드는 동안 C가 참조할 메모리를 붙잡아 두는 아레나.
+/// An arena holding on to the memory C will reference while a descriptor is being built.
 ///
-/// Dawn은 디스크립터를 **호출 중에 복사**하므로 (webgpu.h 계약 — 반환 후에는 참조하지 않는다)
-/// 아레나의 수명은 C 호출 하나를 감싸면 충분하다. 중첩 배열(바인드 그룹 엔트리, 컬러 타깃,
-/// 정점 속성 …)을 `withUnsafe…` 중첩 없이 만들기 위한 장치다.
+/// Dawn **copies descriptors during the call** (the webgpu.h contract — it does not reference them after
+/// returning), so an arena's lifetime only needs to wrap a single C call. It exists to build nested arrays
+/// (bind group entries, color targets, vertex attributes …) without nesting `withUnsafe…`.
 final class DawnArena {
     private var allocations: [UnsafeMutableRawPointer] = []
 
@@ -97,8 +97,8 @@ final class DawnArena {
         for allocation in allocations { allocation.deallocate() }
     }
 
-    /// String → `WGPUStringView`. nil은 "문자열 없음" 센티널 (`{nil, WGPU_STRLEN}`) —
-    /// entryPoint 자동 결정처럼 nil과 빈 문자열이 다른 자리에 중요하다.
+    /// String → `WGPUStringView`. nil is the "no string" sentinel (`{nil, WGPU_STRLEN}`) —
+    /// nil differing from the empty string matters in places like automatic entryPoint selection.
     func string(_ value: String?) -> WGPUStringView {
         guard let value else { return WGPUStringView(data: nil, length: WGPUStringView.noLength) }
         let utf8 = Array(value.utf8)
@@ -117,7 +117,7 @@ final class DawnArena {
         )
     }
 
-    /// 값 배열 → C 배열 포인터. 빈 배열은 nil을 돌려준다 (count 0과 짝).
+    /// A value array → a C array pointer. An empty array returns nil (paired with a count of 0).
     func array<T>(_ values: [T]) -> UnsafePointer<T>? {
         guard !values.isEmpty else { return nil }
         let buffer = UnsafeMutableBufferPointer<T>.allocate(capacity: values.count)
@@ -127,7 +127,7 @@ final class DawnArena {
         return UnsafePointer(base)
     }
 
-    /// 값 하나 → 포인터 (옵셔널 서브 디스크립터 자리).
+    /// A single value → a pointer (for optional sub-descriptor slots).
     func value<T>(_ value: T) -> UnsafePointer<T> {
         let pointer = UnsafeMutablePointer<T>.allocate(capacity: 1)
         pointer.initialize(to: value)
@@ -136,18 +136,18 @@ final class DawnArena {
     }
 }
 
-/// 부트스트랩 실패 — GPU 오류가 아니라 "Dawn을 세울 수 없다".
+/// A bootstrap failure — not a GPU error but "Dawn cannot be brought up".
 struct DawnBootstrapError: LocalizedError {
     let message: String
     init(_ message: String) { self.message = message }
     var errorDescription: String? { message }
 }
 
-/// 인스턴스 → 어댑터 → 디바이스 동기 기동.
+/// Instance → adapter → device, brought up synchronously.
 ///
-/// 요청 API는 전부 비동기(future)지만 콜백 모드를 `AllowProcessEvents`로 걸고
-/// `wgpuInstanceProcessEvents`를 돌리면 같은 스레드에서 완료를 받을 수 있다 —
-/// 런타임의 `processEvents()`가 쓰는 것과 같은 펌프다.
+/// The request APIs are all asynchronous (futures), but setting the callback mode to
+/// `AllowProcessEvents` and running `wgpuInstanceProcessEvents` lets completion arrive on the same
+/// thread — the same pump the runtime's `processEvents()` uses.
 enum DawnBootstrap {
 
     static func requestAdapter(instance: WGPUInstance) throws -> WGPUAdapter {
@@ -168,17 +168,17 @@ enum DawnBootstrap {
         _ = wgpuInstanceRequestAdapter(instance, nil, callbackInfo)
         try pump(instance: instance, until: { box.done }, what: "requestAdapter")
         guard let adapter = box.value else {
-            throw DawnBootstrapError("어댑터 요청 실패 — \(box.message)")
+            throw DawnBootstrapError("adapter request failed — \(box.message)")
         }
         return adapter
     }
 
-    /// 어댑터가 지원하는 기능 중 **명세 철자로 옮길 수 있고 이 환경에서 안전한 것**.
+    /// Of the features the adapter supports, **those translatable to the spec spelling and safe in this environment**.
     ///
-    /// 광고(adapterInfo)와 요청(requestDevice)이 **같은 목록**을 써야 한다 — 광고만 하고
-    /// 요청하지 않으면 JS가 본 기능과 디바이스 실제가 어긋난다 (한계와 같은 함정).
-    /// 시뮬레이터에서는 간접 드로우가 Metal 단언으로 죽는 경로라 `indirect-first-instance`를
-    /// 뺀다 (`CLAUDE.md` — Metal 런타임과 같은 판단).
+    /// Advertisement (adapterInfo) and request (requestDevice) must use **the same list** — advertising
+    /// without requesting makes the features JS sees disagree with the actual device (the same trap as limits).
+    /// On the simulator, indirect draw is a path that dies on a Metal assertion, so `indirect-first-instance`
+    /// is dropped (`CLAUDE.md` — the same judgement as the Metal runtime).
     static func supportedFeatures(adapter: WGPUAdapter) -> [WGPUFeatureName] {
         var supported = WGPUSupportedFeatures()
         wgpuAdapterGetFeatures(adapter, &supported)
@@ -196,14 +196,14 @@ enum DawnBootstrap {
         return result
     }
 
-    /// - Parameter onUncapturedError: 스코프에 안 잡힌 디바이스 오류 (지연 보고 큐로 보낼 것).
+    /// - Parameter onUncapturedError: device errors not caught by a scope (to be sent to the deferred report queue).
     static func requestDevice(
         instance: WGPUInstance,
         adapter: WGPUAdapter,
         onUncapturedError: @escaping (WGPUErrorType, String) -> Void
     ) throws -> WGPUDevice {
-        // 언캡처드 콜백은 디바이스 수명 내내 불릴 수 있으므로 상자를 **영구 보유**한다
-        // (passRetained 후 회수하지 않는다 — 디바이스와 함께 산다).
+        // The uncaptured callback can be called for the device's whole lifetime, so the box is **held forever**
+        // (passRetained with no reclamation — it lives with the device).
         final class ErrorSink {
             let handler: (WGPUErrorType, String) -> Void
             init(_ handler: @escaping (WGPUErrorType, String) -> Void) { self.handler = handler }
@@ -221,8 +221,8 @@ enum DawnBootstrap {
         var lost = WGPUDeviceLostCallbackInfo()
         lost.mode = WGPUCallbackMode_AllowProcessEvents
         lost.callback = { _, _, message, _, _ in
-            // 테스트 픽스처에서는 기록만 한다 — 로스트 이후의 호출은 Dawn이 무해하게 무시한다.
-            print("DawnCheck: 디바이스 로스트 — \(String(wgpu: message))")
+            // In the test fixture it is only recorded — Dawn harmlessly ignores calls after a loss.
+            print("DawnCheck: device lost — \(String(wgpu: message))")
         }
         descriptor.deviceLostCallbackInfo = lost
 
@@ -241,16 +241,16 @@ enum DawnBootstrap {
         }
         callbackInfo.userdata1 = Unmanaged.passRetained(box).toOpaque()
 
-        // 어댑터의 한계를 **그대로 요구**한다 — 안 넘기면 디바이스는 명세 기본값(예:
-        // maxUniformBufferBindingSize 64KB)에 묶이는데, adapterInfo는 어댑터 한계를 광고하므로
-        // JS가 본 한계와 실제 디바이스 한계가 어긋난다 (threelab이 실제로 밟았다: 광고 256MB,
-        // 디바이스 64KB → 256KB 유니폼 바인딩이 거부됐다). 기능도 같은 이유로 함께 요구한다.
+        // **Request the adapter's limits as they are** — without passing them the device is bound to the
+        // spec defaults (e.g. maxUniformBufferBindingSize 64KB), while adapterInfo advertises the adapter's
+        // limits, so the limits JS sees disagree with the device's actual ones (threelab really hit this:
+        // 256MB advertised, 64KB device → a 256KB uniform binding was rejected). Features are requested along for the same reason.
         var adapterLimits = WGPULimits()
         let haveLimits = wgpuAdapterGetLimits(adapter, &adapterLimits) == WGPUStatus_Success
         var requestedFeatures = supportedFeatures(adapter: adapter)
-        // Dawn 전용 스레드 안전 기능 — 명세 기능이 아니라 **광고 목록에는 없다** (요청 전용).
-        // 런타임의 락이 1차 방어지만, Dawn 내부 경로(콜백·큐 이벤트)까지 디바이스 차원에서
-        // 직렬화되도록 켠다. 없으면 락만으로 간다.
+        // A Dawn-only thread safety feature — not a spec feature, so **it is not in the advertised list** (request only).
+        // The runtime's lock is the first line of defence, but this makes Dawn's internal paths (callbacks,
+        // queue events) serialize at the device level too. Without it, the lock alone carries it.
         if wgpuAdapterHasFeature(adapter, WGPUFeatureName_ImplicitDeviceSynchronization) != 0 {
             requestedFeatures.append(WGPUFeatureName_ImplicitDeviceSynchronization)
         }
@@ -266,12 +266,12 @@ enum DawnBootstrap {
         }
         try pump(instance: instance, until: { box.done }, what: "requestDevice")
         guard let device = box.value else {
-            throw DawnBootstrapError("디바이스 요청 실패 — \(box.message)")
+            throw DawnBootstrapError("device request failed — \(box.message)")
         }
         return device
     }
 
-    /// 완료까지 이벤트를 퍼 올린다. 상한은 교착이 아니라 진단을 위해서다.
+    /// Pumps events until completion. The cap is for diagnosis, not deadlock.
     static func pump(
         instance: WGPUInstance,
         until done: () -> Bool,
@@ -283,7 +283,7 @@ enum DawnBootstrap {
             wgpuInstanceProcessEvents(instance)
             if done() { return }
             guard Date() < deadline else {
-                throw DawnBootstrapError("\(what)이(가) \(timeout)초 안에 완료되지 않았다")
+                throw DawnBootstrapError("\(what) did not complete within \(timeout)s")
             }
             usleep(500)
         }

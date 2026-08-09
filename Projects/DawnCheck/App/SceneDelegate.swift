@@ -12,7 +12,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
         let navigation = UINavigationController(rootViewController: LauncherViewController())
 
-        // 자동화 하네스 — 데모와 같은 런치 인자 (`-demo <name>`), 같은 씬 목록.
+        // The automation harness — the same launch arguments as the demo (`-demo <name>`), the same scene list.
         //   xcrun simctl launch <device> org.lynxwebgpu.dawndemo -demo triangle
         let requested = UserDefaults.standard.string(forKey: "demo").flatMap(DemoScene.init(rawValue:))
         if let requested, !requested.coversFullScreen {

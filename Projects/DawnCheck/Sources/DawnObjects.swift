@@ -4,19 +4,19 @@ import QuartzCore
 import WebGPU
 import LynxWebGPUCore
 
-// Dawn C 핸들의 Swift 래퍼.
+// Swift wrappers around Dawn C handles.
 //
-// `WGPUObjectRegistry`(Core)는 `AnyObject`를 저장하므로, C의 불투명 포인터를 클래스로 감싼다.
-// 래퍼가 참조 +1을 소유하고 `deinit`에서 릴리스한다 — 레지스트리에서 빠지면(destroy·reset)
-// Dawn 객체도 따라 죽는 수명 모델이다. 핸들 타입 불일치가 경로 붙은 validation 오류가 되는
-// 것도 레지스트리 계약 그대로다 (`handle-type-mismatch` 검사).
+// `WGPUObjectRegistry` (Core) stores `AnyObject`, so C's opaque pointers are wrapped in classes.
+// The wrapper owns a +1 reference and releases it in `deinit` — a lifetime model where leaving the
+// registry (destroy/reset) kills the Dawn object with it. A handle type mismatch becoming a validation
+// error with a path attached is the registry contract as it stands too (the `handle-type-mismatch` check).
 
 final class DawnBufferObject {
     let buffer: WGPUBuffer
     let size: Int
     let usage: LynxWebGPUCore.WGPUBufferUsage
-    /// Dawn 수준에서 실제로 매핑돼 있는가 (mappedAtCreation·직접 map 경로).
-    /// 와이어 계약의 매핑 상태는 엔진(`WGPUEngineBuffer.isMapped`)이 관리한다.
+    /// Whether it is actually mapped at the Dawn level (mappedAtCreation and the direct map path).
+    /// The wire contract's mapping state is managed by the engine (`WGPUEngineBuffer.isMapped`).
     var dawnMapped = false
 
     init(buffer: WGPUBuffer, size: Int, usage: LynxWebGPUCore.WGPUBufferUsage) {
@@ -34,8 +34,8 @@ final class DawnTextureObject {
     let width: Int
     let height: Int
 
-    /// - Parameter retain: 이미 소유된 참조를 감싸면 false(생성 반환값),
-    ///   남의 참조를 나눠 가지면 true(캔버스 텍스처 — 캔버스도 계속 쓴다).
+    /// - Parameter retain: false when wrapping an already-owned reference (a creation return value),
+    ///   true when sharing someone else's reference (a canvas texture — the canvas keeps using it).
     init(
         texture: WGPUTexture,
         format: LynxWebGPUCore.WGPUTextureFormat,
@@ -121,29 +121,29 @@ final class DawnRenderBundleObject {
     deinit { wgpuRenderBundleRelease(bundle) }
 }
 
-/// 캔버스 표면 — 화면(`DawnLayerCanvas`) 또는 오프스크린(`DawnOffscreenCanvas`).
+/// A canvas surface — either on screen (`DawnLayerCanvas`) or offscreen (`DawnOffscreenCanvas`).
 ///
-/// Metal 런타임의 `WGPUSurface` 프로토콜에 해당하는 자리다 — 표면 추상은 백엔드 내부 사정이고
-/// (`docs/ARCHITECTURE.md` §3-1), 런타임 경계는 "레이어/크기를 넘길 테니 표면 타입은 네가 골라라"다.
+/// This is the counterpart of the Metal runtime's `WGPUSurface` protocol — the surface abstraction is
+/// a backend's own business (`docs/ARCHITECTURE.md` §3-1), and the runtime boundary says "I hand you a layer and a size; you pick the surface type".
 protocol DawnCanvas: AnyObject {
     var identifier: String { get }
     var size: CGSize { get }
     var format: LynxWebGPUCore.WGPUTextureFormat { get }
-    /// 드로어블 풀이 있어 **밀릴 수 있는** 표면인가 — in-flight 회계(`WGPUFrameCoordinator`) 대상.
+    /// Whether it is a surface with a drawable pool that **can fall behind** — subject to in-flight accounting (`WGPUFrameCoordinator`).
     var pacesFrames: Bool { get }
     func configure(device: WGPUDevice, format: LynxWebGPUCore.WGPUTextureFormat) throws
     func updateSize(_ size: CGSize, device: WGPUDevice)
-    /// 이번 프레임의 텍스처. `owned`면 +1 참조를 호출자가 소유하고(표면 경로 — 매 프레임 새로 나옴),
-    /// 아니면 캔버스 소유 참조를 빌린 것이다(오프스크린 — 래퍼가 retain해야 한다).
+    /// This frame's texture. When `owned`, the caller owns a +1 reference (the surface path — a new one each frame);
+    /// otherwise it is a borrow of the canvas-owned reference (offscreen — the wrapper must retain).
     func acquireTexture(device: WGPUDevice) throws -> (texture: WGPUTexture, owned: Bool)
-    /// 프레임을 화면에 올린다. 오프스크린은 no-op.
+    /// Puts the frame on screen. Offscreen is a no-op.
     func present()
 }
 
-/// 오프스크린 캔버스 — 적합성 스위트의 픽셀 통로 (`attachOffscreenCanvas`/`readCanvasPixels`).
+/// The offscreen canvas — the conformance suite's pixel channel (`attachOffscreenCanvas`/`readCanvasPixels`).
 ///
-/// Metal 런타임의 `WGPUOffscreenSurface`와 같은 역할이다: `configure`가 백킹 텍스처를 만들고,
-/// `getCurrentTexture`가 그 텍스처를 프레임 스코프 핸들로 내준다.
+/// It plays the same role as the Metal runtime's `WGPUOffscreenSurface`: `configure` creates the backing
+/// texture, and `getCurrentTexture` hands that texture out as a frame-scoped handle.
 final class DawnOffscreenCanvas: DawnCanvas {
     let identifier: String
     private(set) var size: CGSize
@@ -163,8 +163,8 @@ final class DawnOffscreenCanvas: DawnCanvas {
         try remakeTexture(device: device)
     }
 
-    /// 크기 변경 — 이미 configure됐다면 백킹 텍스처를 새 크기로 다시 만든다
-    /// (`resize-canvas` 검사의 계약, 오프스크린 Metal 표면과 같은 규칙).
+    /// A size change — if it is already configured, the backing texture is recreated at the new size
+    /// (the `resize-canvas` check's contract, the same rule as the offscreen Metal surface).
     func updateSize(_ newSize: CGSize, device: WGPUDevice) {
         guard newSize != size else { return }
         size = newSize
@@ -174,7 +174,7 @@ final class DawnOffscreenCanvas: DawnCanvas {
 
     func acquireTexture(device: WGPUDevice) throws -> (texture: WGPUTexture, owned: Bool) {
         guard let texture else {
-            throw WGPUError.validation("캔버스 '\(identifier)'이(가) 아직 configure되지 않았다")
+            throw WGPUError.validation("canvas '\(identifier)' is not configured yet")
         }
         return (texture, false)
     }
@@ -182,7 +182,7 @@ final class DawnOffscreenCanvas: DawnCanvas {
     func present() {}
 
     private func remakeTexture(device: WGPUDevice) throws {
-        let dimensions = try dawnTextureDimensions(size, "오프스크린 캔버스 '\(identifier)'")
+        let dimensions = try dawnTextureDimensions(size, "offscreen canvas '\(identifier)'")
         releaseTexture()
         var descriptor = WGPUTextureDescriptor()
         descriptor.usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_CopySrc
@@ -195,7 +195,7 @@ final class DawnOffscreenCanvas: DawnCanvas {
         descriptor.mipLevelCount = 1
         descriptor.sampleCount = 1
         guard let texture = wgpuDeviceCreateTexture(device, &descriptor) else {
-            throw WGPUError.outOfMemory("오프스크린 캔버스 텍스처 생성 실패")
+            throw WGPUError.outOfMemory("failed to create the offscreen canvas texture")
         }
         self.texture = texture
     }
@@ -206,13 +206,13 @@ final class DawnOffscreenCanvas: DawnCanvas {
     }
 }
 
-/// 화면 캔버스 — `<webgpu-canvas>`의 `CAMetalLayer`를 Dawn 표면(`WGPUSurfaceSourceMetalLayer`)으로
-/// 감싼다. **엘리먼트·브리지는 무변경**이다: 레이어만 넘어오고, 표면 생성·설정·present는 전부
-/// 런타임 몫이다 (검토 문서 §3-1이 약속한 그 절단면).
+/// The screen canvas — it wraps `<webgpu-canvas>`'s `CAMetalLayer` in a Dawn surface
+/// (`WGPUSurfaceSourceMetalLayer`). **The element and the bridge are unchanged**: only the layer comes
+/// across, and surface creation, configuration and present are all the runtime's job (the very cut line the review document §3-1 promised).
 ///
-/// 스레딩: 생성은 메인(attachCanvas 계약), `updateSize`는 메인, `acquireTexture`/`present`는
-/// JS 스레드다. 크기·설정 상태는 락으로 감싸고, **실제 wgpuSurfaceConfigure는 acquire 직전에
-/// JS 스레드에서 lazy로** 한다 — 메인↔JS 양쪽에서 Dawn 표면을 만지지 않게 하는 배치다.
+/// Threading: creation is on main (the attachCanvas contract), `updateSize` is on main, and
+/// `acquireTexture`/`present` are on the JS thread. Size and configuration state are wrapped in a lock,
+/// and **the actual wgpuSurfaceConfigure happens lazily on the JS thread just before acquire** — an arrangement that keeps the Dawn surface from being touched on both main and JS.
 final class DawnLayerCanvas: DawnCanvas {
     let identifier: String
     private let layer: CAMetalLayer
@@ -276,7 +276,7 @@ final class DawnLayerCanvas: DawnCanvas {
 
     func acquireTexture(device: WGPUDevice) throws -> (texture: WGPUTexture, owned: Bool) {
         guard let surface else {
-            throw WGPUError.backend("캔버스 '\(identifier)'의 Dawn 표면 생성이 실패했었다")
+            throw WGPUError.backend("creating the Dawn surface for canvas '\(identifier)' had failed")
         }
         try reconfigureIfNeeded(surface: surface, device: device)
 
@@ -286,10 +286,10 @@ final class DawnLayerCanvas: DawnCanvas {
             || surfaceTexture.status == WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal
         guard usable, let texture = surfaceTexture.texture else {
             throw WGPUError.validation(
-                "캔버스 '\(identifier)'의 드로어블을 얻지 못했다 (status \(surfaceTexture.status))"
+                "could not obtain a drawable for canvas '\(identifier)' (status \(surfaceTexture.status))"
             )
         }
-        return (texture, true)   // 표면 텍스처는 매 프레임 호출자 소유 +1로 나온다
+        return (texture, true)   // a surface texture comes out caller-owned +1 every frame
     }
 
     func present() {
@@ -303,8 +303,8 @@ final class DawnLayerCanvas: DawnCanvas {
         let needed = needsConfigure
         lock.unlock()
         guard needed else { return }
-        // 0·NaN·상한 초과는 트랩이 아니라 validation이다 — 레이아웃 전이면 아직 크기가 없다.
-        let dimensions = try dawnTextureDimensions(size, "캔버스 '\(identifier)'")
+        // Zero, NaN or over the cap is validation, not a trap — before layout there is no size yet.
+        let dimensions = try dawnTextureDimensions(size, "canvas '\(identifier)'")
         var configuration = WGPUSurfaceConfiguration()
         configuration.device = device
         configuration.format = try DawnEnum.textureFormat(format)
