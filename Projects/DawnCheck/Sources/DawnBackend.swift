@@ -152,7 +152,12 @@ final class DawnBackend: WGPUBackend {
         // 몇 차례 퍼 올려 이 배치 몫을 회수한다 — 그래도 늦게 오는 것은 지연 오류 계약대로
         // 다음 배치에 실린다 (`WGPUDeferredErrorQueue`).
         for _ in 0..<3 { wgpuInstanceProcessEvents(instance) }
-        return uncaptured.drain()
+        let drained = uncaptured.drain()
+        // 무효 객체의 연쇄 에코("[Invalid X] is invalid due to a previous error")는 뿌리 오류의
+        // 하류 반복이다. 같은 회수분에 뿌리가 있으면 에코를 걸러 낸다 — 씬 오버레이는 마지막
+        // 오류만 보여 주므로, 안 거르면 항상 에코가 뿌리를 가린다 (스텐실 씬에서 실제로 그랬다).
+        let roots = drained.filter { !$0.message.contains("is invalid due to a previous error") }
+        return roots.isEmpty ? drained : roots
     }
 
     var hasPendingWork: Bool { commandEncoder != nil }
