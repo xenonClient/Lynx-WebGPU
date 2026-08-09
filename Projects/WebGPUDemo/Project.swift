@@ -83,13 +83,44 @@ let project = Project(
                 .package(product: "Lynx"),
             ]
         ),
+        // **기본 런타임(Metal)의 iOS 검증** — `DawnCheckTests`와 같은 스위트를 같은 목적지에서
+        // 돌린다 (docs/TESTING.md §2-1).
+        //
+        // `swift test`의 `ConformanceTests`도 같은 29검사를 돌리지만 그건 **macOS**다.
+        // 정작 실려 나가는 곳은 iOS인데 거기서 기본 백엔드를 재는 자리가 없으면,
+        // 실험 백엔드(Dawn)만 iOS 검증을 받는 뒤집힌 모양이 된다.
+        //
+        // Lynx도 앱 코드도 링크하지 않는다 — 재는 것은 **런타임의 계약**뿐이다.
+        .target(
+            name: "WebGPUDemoTests",
+            destinations: .iOS,
+            product: .unitTests,
+            bundleId: "org.lynxwebgpu.demo.tests",
+            deploymentTargets: .iOS("17.0"),
+            sources: ["Tests/**"],
+            dependencies: [
+                .package(product: "LynxWebGPU"),
+                .package(product: "LynxWebGPUCore"),
+                .package(product: "LynxWebGPUConformance"),
+            ]
+        ),
     ],
     schemes: [
         .scheme(
             name: "WebGPUDemo",
             shared: true,
             buildAction: .buildAction(targets: ["WebGPUDemo"]),
+            // 앱 스킴에서도 ⌘U가 돌게 붙여 둔다 — Xcode에서 데모를 띄워 놓고 바로 잴 수 있다.
+            testAction: .targets(["WebGPUDemoTests"], configuration: "Debug"),
             runAction: .runAction(configuration: "Debug")
-        )
+        ),
+        // 검증 전용 스킴 — `DawnCheck`의 짝이다. 앱을 빌드하지 않으므로 CLI에서 빠르다.
+        .scheme(
+            name: "WebGPUCheck",
+            shared: true,
+            buildAction: .buildAction(targets: ["WebGPUDemoTests"]),
+            testAction: .targets(["WebGPUDemoTests"], configuration: "Debug"),
+            runAction: .runAction(configuration: "Debug")
+        ),
     ]
 )

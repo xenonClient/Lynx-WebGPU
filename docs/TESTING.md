@@ -99,6 +99,30 @@ present 후 만료·빈 present 배치의 프레임 닫기, `readBuffer`(매핑 
 응답·페이로드·콜백을 일부러 망가뜨린 런타임(`MisbehavingRuntime`)을 걸어 실패가 나오는지 본다.
 항상 통과하는 적합성 스위트는 "29/29"이라는 문장이 아무것도 보증하지 못하게 만든다.
 
+### 스위트를 거는 자리 셋 — 백엔드 × 플랫폼
+
+같은 29검사를 **세 곳**에서 돌린다. 빠진 칸이 생기면 그 조합만 검증 없이 배포된다:
+
+| 자리 | 백엔드 | 플랫폼 | 실행 |
+|---|---|---|---|
+| `Tests/LynxWebGPUTests/ConformanceTests` | Metal | **macOS** | `swift test` (회귀 훅에 포함) |
+| `Projects/WebGPUDemo/Tests` (스킴 `WebGPUCheck`) | Metal | **iOS** | 아래 xcodebuild |
+| `Projects/DawnCheck/Tests` (스킴 `DawnCheck`) | Dawn | **iOS** | 아래 xcodebuild |
+
+`swift test`는 macOS다 — 드라이버도 GPU 패밀리도 iOS와 다르다. **정작 실려 나가는 곳은
+iOS**이므로 기본 백엔드(Metal)도 거기서 재야 한다. 이 칸이 비어 있던 동안에는 실험
+백엔드(Dawn)만 iOS 검증을 받는 뒤집힌 모양이었다.
+
+두 iOS 검증은 적합성 외에 **크래시 하드닝**(`*HardeningTests`)도 같은 적대 입력으로 돌린다 —
+음수·거대값·NaN이 트랩이 아니라 validation 오류가 되는지 본다. Metal 쪽이 특히 중요하다:
+Metal 검증 레이어는 잘못된 인자에 `assert`로 프로세스를 죽이지만 Dawn은 오류를 돌려준다.
+
+```zsh
+mise exec -- tuist generate --no-open   # 스킴: WebGPUDemo · WebGPUCheck · DawnCheck · DawnDemo
+arch -arm64 xcodebuild -workspace LynxWebGPUDemo.xcworkspace -scheme WebGPUCheck \
+  -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' -derivedDataPath .derivedData-cli test
+```
+
 ### 외부 주입 검증 픽스처
 
 `Examples/ExternalRuntime`은 저장소 **밖** 백엔드의 시야 — `LynxWebGPUCore`와

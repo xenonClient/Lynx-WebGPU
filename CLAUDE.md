@@ -28,10 +28,13 @@ swift test --filter ConformanceTests         # 적합성 스위트(29검사) —
 swift build --package-path Examples/ExternalRuntime
 swift run --package-path Examples/ExternalRuntime external-runtime-check
 
-# Dawn 연동 검증 — 진짜 Dawn 위의 WebGPURuntime을 같은 적합성 스위트에 건다 (docs/TESTING.md §2-1)
-# 데모와 **같은 워크스페이스**다 — 위의 tuist generate가 스킴 셋(WebGPUDemo·DawnCheck·DawnDemo)을 다 만든다.
+# iOS 적합성 — **같은 29검사를 두 백엔드 모두** 시뮬레이터에서 돌린다 (docs/TESTING.md §2-1).
+# `swift test`는 macOS라 드라이버·GPU 패밀리가 다르다. 실려 나가는 곳은 iOS이므로 여기서도 잰다.
+# 데모와 **같은 워크스페이스**다 — 위의 tuist generate가 스킴 넷(WebGPUDemo·WebGPUCheck·DawnCheck·DawnDemo)을 다 만든다.
+arch -arm64 xcodebuild -workspace LynxWebGPUDemo.xcworkspace -scheme WebGPUCheck \
+  -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' -derivedDataPath .derivedData-cli test  # Metal
 arch -arm64 xcodebuild -workspace LynxWebGPUDemo.xcworkspace -scheme DawnCheck \
-  -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' -derivedDataPath .derivedData-cli test
+  -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' -derivedDataPath .derivedData-cli test  # Dawn
 xcrun simctl launch <device> org.lynxwebgpu.dawndemo -demo triangle   # DawnDemo 스킴 빌드 후 화면 확인
 
 # JS 클라이언트(shim) — 런타임 의존성 0. TypeScript는 **검사·선언 생성 전용**이다 (빌드 산출물 없음)
@@ -145,6 +148,9 @@ Examples/HelloTriangle.tsx  — ReactLynx 최소 예제
 Examples/ExternalRuntime/   — 외부 백엔드 주입 검증 픽스처 (Core+Conformance만 링크하는 중첩 SPM)
 Projects/WebGPUDemo/    — Tuist 데모 호스트 앱 (Sources/) + 데모 번들 rspeedy 소스 (DemoSrc/)
                           Tools/ — 빌드 시점 애셋 변환 (HDR HEIC → GPU가 바로 먹는 바이너리)
+                          Tests/ — **Metal 런타임의 iOS 적합성·하드닝** (스킴 WebGPUCheck).
+                          DawnCheck와 같은 스위트를 같은 목적지에서 돌린다 — 기본 백엔드가
+                          실험 백엔드보다 검증이 얇아지지 않게.
 Projects/DawnCheck/     — 진짜 Dawn 위의 백엔드 (루트 워크스페이스의 별도 프로젝트, 시뮬레이터
                           전용). DawnBackend가 `WGPUBackend`를 구현하고 공유 엔진에 얹힌다.
                           스킴 둘: DawnCheck(오프스크린 적합성 29검사) ·
