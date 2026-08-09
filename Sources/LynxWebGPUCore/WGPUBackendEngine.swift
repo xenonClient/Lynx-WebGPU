@@ -59,6 +59,9 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
     private var usedOcclusionQueries: Set<Int> = []
     /// 이번 프레임에 드로어블을 내준 (핸들, 캔버스 id) — present 시 만료·회계 대상이다.
     private var acquiredFrames: [(handle: WGPUHandle, canvas: String)] = []
+    /// **이번 배치에서** 드로어블을 내준 캔버스. 한 배치 안의 반복 획득(같은 프레임)과
+    /// 배치를 건너뛴 반복 획득(새 프레임)을 가르는 데 쓴다 — `getCurrentTexture` 참고.
+    private var acquiredThisBatch: Set<String> = []
     /// 프레임이 끝나면 무효해지는 핸들 (드로어블 텍스처와 그 뷰).
     private var frameScopedHandles: [WGPUHandle] = []
     private var touchedCanvases: [String: B.Surface] = [:]
@@ -166,6 +169,7 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         openOcclusionQuery = nil
         usedOcclusionQueries.removeAll()
         touchedCanvases.removeAll()
+        acquiredThisBatch.removeAll()
         errors.removeAll()
         poppedScopes.removeAll()
         // `errorScopes`는 일부러 비우지 않는다 — 디바이스 상태이므로 배치를 넘어 이어진다.
@@ -203,6 +207,11 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         if boundary.closesFrame, !backend.hasPendingWork, !acquiredFrames.isEmpty {
             backend.ensureSubmittableWork()
         }
+        // 제출거리가 없으면 present할 것도 없다. 획득해 둔 드로어블은 **그대로 남긴다** —
+        // 이 상태는 "프레임이 실패했다"가 아니라 "아직 진행 중이다"일 수 있고(Three.js의
+        // 지연 파이프라인 생성이 그렇다), 여기서 놓으면 뒤따라올 `beginRenderPass`가
+        // "없는 핸들"로 깨진다. 붙들린 드로어블은 다음 프레임의 획득이 거둔다
+        // (`getCurrentTexture` 참고).
         guard backend.hasPendingWork else { return }
 
         // in-flight 회계 — 프레임 티커가 이 수를 보고 포화 시 틱을 건너뛴다.
@@ -219,11 +228,19 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         // 드로어블 텍스처와 그 뷰는 **present할 때** 무효해진다 (명세의 "Expire the current
         // texture"가 정한 시점). 배치가 끝날 때마다 회수하면 프레임 중간 제출이 그 프레임의
         // 스왑체인 핸들을 지워 버려 뒤이은 `beginRenderPass`가 "없는 핸들"로 깨진다.
-        if present, !acquiredFrames.isEmpty {
-            for handle in frameScopedHandles { registry.remove(handle) }
-            frameScopedHandles.removeAll()
-            acquiredFrames.removeAll()
-        }
+        // (드로어블 자체는 `submit(present: true)`이 내보내며 이미 놓았다.)
+        if present, !acquiredFrames.isEmpty { expireFrame() }
+    }
+
+    /// 프레임이 끝났다 — 드로어블 텍스처와 그 뷰의 핸들을 만료시킨다
+    /// (명세 `GPUCanvasContext`의 "Expire the current texture").
+    ///
+    /// present한 프레임과 **제출거리 없이 끝난 프레임**이 같은 것을 해야 해서 뽑아 두었다.
+    /// 한쪽만 고치면 다른 쪽에서 핸들이 영영 살아남는다.
+    private func expireFrame() {
+        for handle in frameScopedHandles { registry.remove(handle) }
+        frameScopedHandles.removeAll()
+        acquiredFrames.removeAll()
     }
 
     /// 이번 프레임에 드로어블을 내준 캔버스들 (중복 제거 — 한 표면에서 여러 번 얻어도 프레임은 하나다).
@@ -878,6 +895,23 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         guard let entry = surfaceEntry(for: canvasId) else {
             throw WGPUError.validation("캔버스 '\(canvasId)'이(가) 등록되지 않았다")
         }
+        // **앞 배치**에서 얻은 드로어블이 present되지 못한 채 이 캔버스가 또 요청됐다면,
+        // 그 프레임은 끝난 것이다 — 여기서 거둔다.
+        //
+        // 제출 없이 끝난 배치가 드로어블을 남기는 것 자체는 의도된 것이다: 프레임이 아직
+        // 진행 중일 수 있다 (`finish()` 참고 — Three.js의 지연 파이프라인 생성). 문제는 그
+        // 프레임이 **영영 안 그려질 때**로, 첫 인코더 전에 검증 오류가 나면 그렇게 된다.
+        // 거두지 않으면 프레임마다 하나씩 쌓여 화면 표면에서는 세 번 만에 드로어블 풀이
+        // 마르고, 그 뒤로는 획득이 JS 스레드를 최대 1초씩 세운 뒤 영영 실패한다.
+        //
+        // **한 배치 안의 반복 획득은 제외한다** — 그건 같은 프레임이고(명세도 같은 텍스처를
+        // 돌려주라고 한다), 앞서 내준 뷰가 아직 그 프레임에서 쓰인다.
+        if !acquiredThisBatch.contains(canvasId),
+           acquiredFrames.contains(where: { $0.canvas == canvasId }) {
+            backend.discardAcquiredFrames()
+            expireFrame()
+        }
+        acquiredThisBatch.insert(canvasId)
         touchedCanvases[canvasId] = entry.raw
         guard let acquired = try backend.acquireFrameTexture(entry.raw) else {
             throw WGPUError.validation(

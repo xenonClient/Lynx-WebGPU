@@ -264,6 +264,38 @@ final class CommandInterpreterTests: XCTestCase {
         )
     }
 
+    /// 제출거리 없이 실패한 프레임이 **쌓이지는** 않아야 한다.
+    ///
+    /// 첫 인코더가 생기기 전에 검증 오류가 나면(리사이즈 뒤 죽은 뷰로 `beginRenderPass` 등)
+    /// 커맨드 버퍼가 없어 present할 것이 없다. 그 드로어블을 배치 끝에서 놓을 수는 없다 —
+    /// 프레임이 아직 진행 중일 수 있기 때문이다(바로 위 테스트의 계약). 대신 **다음 프레임이
+    /// 같은 캔버스의 드로어블을 다시 요구할 때** 앞 프레임이 끝났음이 확정되므로 그때 거둔다.
+    ///
+    /// 이 회수가 없으면 프레임마다 하나씩 쌓여, 화면 표면에서는 세 프레임 만에 드로어블 풀이
+    /// 말라 `nextDrawable()`이 JS 스레드를 최대 1초씩 세운 뒤 영영 실패한다.
+    func test_실패한_프레임의_드로어블이_프레임마다_쌓이지_않는다() {
+        harness.executeExpectingSuccess([
+            ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
+        ])
+        let before = harness.liveObjects
+
+        var counts: [Int] = []
+        for frame in 0..<5 {
+            let result = harness.execute([
+                ["op": "getCurrentTexture", "id": 100 + frame, "canvas": "test"],
+                // 없는 뷰 — 백엔드에 닿기 전에 거부되므로 커맨드 버퍼가 만들어지지 않는다.
+                ["op": "beginRenderPass", "colorAttachments": [["view": 9999]]],
+            ])
+            XCTAssertEqual(result["ok"] as? Bool, false, "이 배치는 실패해야 한다")
+            counts.append((result["objects"] as? Int ?? -1) - before)
+        }
+
+        XCTAssertEqual(
+            counts, [1, 1, 1, 1, 1],
+            "붙들리는 드로어블은 **진행 중인 프레임 하나**뿐이어야 한다 (프레임마다 늘면 누수다)"
+        )
+    }
+
     func test_버퍼_쓰기와_복사와_읽기가_순서대로_동작한다() throws {
         let source: [Float] = [1, 2, 3, 4]
         harness.executeExpectingSuccess([
