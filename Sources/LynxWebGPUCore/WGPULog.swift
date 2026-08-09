@@ -17,4 +17,6 @@ public enum WGPULog {
     public static let bridge = logger(category: "Bridge")
     public static let canvas = logger(category: "Canvas")
     public static let registry = logger(category: "Registry")
+    /// 엔진 수준의 드문 사건 — 자가 펌프 포기 등. 프레임 경로에서는 쓰지 않는다.
+    public static let runtime = logger(category: "Runtime")
 }

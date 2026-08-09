@@ -1889,6 +1889,14 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
     private var pendingReadbacks = 0
     private var readbackPumpRunning = false
 
+    /// 자가 펌프의 회전 상한 (1ms 간격 × 이 수 = 약 30초).
+    ///
+    /// 완료가 **영영 안 오는** 경우(디바이스 손실, 백엔드가 콜백을 흘림)에도 분리 스레드가
+    /// 영원히 돌지 않게 하는 안전장치다. 상한이 없으면 그 스레드가 CPU를 태우면서 매 회전마다
+    /// `executionLock`을 잡아 JS 스레드까지 느리게 만든다 — 원인은 다른 곳인데 증상만 번진다.
+    /// (제네릭 타입이라 저장 프로퍼티가 될 수 없어 계산 프로퍼티다.)
+    private static var readbackPumpMaxSpins: Int { 30_000 }
+
     /// 완료가 `pumpEvents()`에서만 나오는 백엔드(Dawn)를 위해, 미결 리드백이 있는 동안
     /// 자가 펌프를 돌린다.
     ///
@@ -1906,17 +1914,32 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         guard !readbackPumpRunning else { return }
         readbackPumpRunning = true
         Thread.detachNewThread { [weak self] in
+            var spins = 0
             while true {
                 guard let self else { return }
                 self.executionLock.lock()
                 let outstanding = self.pendingReadbacks
-                if outstanding > 0 {
+                spins += 1
+                let exhausted = spins >= Self.readbackPumpMaxSpins
+                if outstanding > 0, !exhausted {
                     self.backend.pumpEvents()
                 } else {
+                    // 여기서 내려놓는다 — 미결 카운터는 **일부러 그대로 둔다.**
+                    // 다음 `readBuffer`가 펌프를 다시 세우므로 회복 가능하고,
+                    // 카운터를 0으로 속이면 진짜 미결이 있는지 알 수 없게 된다.
                     self.readbackPumpRunning = false
                 }
                 self.executionLock.unlock()
                 if outstanding == 0 { return }
+                if exhausted {
+                    WGPULog.runtime.error(
+                        """
+                        리드백 자가 펌프를 멈춘다 — 미결 \(outstanding, privacy: .public)건의 완료가 \
+                        30초 동안 오지 않았다 (디바이스 손실이거나 백엔드가 완료 콜백을 흘리고 있다)
+                        """
+                    )
+                    return
+                }
                 // 락을 놓은 채 쉰다 — JS 스레드의 execute와 1ms 간격으로만 경쟁한다.
                 usleep(1_000)
             }
@@ -1946,7 +1969,14 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
                     let bitmap = try WGPUImageDecoder.decode(bytes, options: options)
-                    guard let self else { return }
+                    // 런타임이 먼저 해제됐어도 **콜백은 반드시 한 번 부른다.** 그냥 빠져나가면
+                    // JS의 `createImageBitmap()` Promise가 영영 풀리지 않아, 앱은 오류도 못 보고
+                    // 그 자리에 멈춘다 (실패 경로들은 전부 콜백한다 — 여기만 새던 구멍이었다).
+                    guard let self else {
+                        return fail(WGPUError.validation(
+                            "런타임이 이미 해제됐다 — createImageBitmap 결과를 등록할 수 없다"
+                        ))
+                    }
                     self.executionLock.lock()
                     self.registry.insert(bitmap, at: WGPUHandle(handle))
                     self.executionLock.unlock()
@@ -2066,8 +2096,19 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
     /// 등록된 모든 표면이 새 프레임을 받을 수 있는가 — 회계는 `frameCoordinator`가 한다.
     public var isReadyForNextFrame: Bool { frameCoordinator.isReadyForNextFrame }
 
+    /// 비동기 완료 펌프 — 프레임 티커가 **매 틱, 메인 스레드에서** 부른다.
+    ///
+    /// **`tryLock`인 것이 핵심이다.** 백엔드 API가 스레드 안전하지 않을 수 있어
+    /// `execute`와 같은 락으로 직렬화해야 하는데(`WebGPURuntime` 문서), 그냥 `lock()`을
+    /// 잡으면 메인 스레드가 JS 스레드의 배치 인코딩 전체를 기다린다 — 무거운 프레임에서
+    /// 그대로 UI 히치가 된다. 펌프는 "정확성을 여기 의존하지 않는다, 지연 상한을 좁히는
+    /// 용도"라고 계약이 정해 두었으므로(같은 문서), 락이 잡혀 있으면 이 틱은 거른다.
+    /// 어차피 그 순간 `execute`가 백엔드를 돌리고 있고, 다음 틱이 곧 온다.
+    ///
+    /// 티커가 아예 없는 구성에서 리드백이 굶는 문제는 이 경로가 아니라
+    /// `noteReadbackStarted()`의 자가 펌프가 막는다.
     public func processEvents() {
-        executionLock.lock()
+        guard executionLock.try() else { return }
         backend.pumpEvents()
         executionLock.unlock()
     }
