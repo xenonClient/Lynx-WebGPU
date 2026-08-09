@@ -268,10 +268,18 @@ public struct WGPUBackendCapabilities {
     /// 정점 버퍼 슬롯 수 상한 — 엔진의 `setVertexBuffer` 슬롯 검사가 쓴다
     /// (Metal은 인자 테이블 배정 규칙에서, Dawn은 명세 기본값 8에서 나온다).
     public let maxVertexBufferSlots: Int
+    /// 비동기 완료가 `pumpEvents()`에서만 나오는 백엔드인가 (Dawn의
+    /// `wgpuInstanceProcessEvents`). 참이면 엔진이 **미결 리드백이 있는 동안 자가 펌프**를
+    /// 돌린다 — 프레임 티커가 없는 구성(정적 씬·헤드리스)에서도 완료가 도착해야 한다는
+    /// `WebGPURuntime.processEvents` 계약의 이행 지점이다. Metal처럼 완료가 스스로
+    /// 도착하는 백엔드는 거짓으로 두면 비용이 없다.
+    public let needsEventPump: Bool
 
-    public init(supportsNativeRenderBundles: Bool, maxVertexBufferSlots: Int) {
+    public init(supportsNativeRenderBundles: Bool, maxVertexBufferSlots: Int,
+                needsEventPump: Bool = false) {
         self.supportsNativeRenderBundles = supportsNativeRenderBundles
         self.maxVertexBufferSlots = maxVertexBufferSlots
+        self.needsEventPump = needsEventPump
     }
 }
 

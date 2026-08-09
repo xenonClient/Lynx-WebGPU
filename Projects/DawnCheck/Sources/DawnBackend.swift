@@ -93,7 +93,10 @@ final class DawnBackend: WGPUBackend {
         WGPUBackendCapabilities(
             supportsNativeRenderBundles: true,
             // 명세 기본값 — 어댑터 한계(maxVertexBuffers)와 같은 값이다.
-            maxVertexBufferSlots: 8
+            maxVertexBufferSlots: 8,
+            // mapAsync 완료가 wgpuInstanceProcessEvents에서만 나온다 — 프레임 티커가 없는
+            // 씬을 위해 엔진이 자가 펌프를 돌린다 (`WGPUBackendCapabilities` 문서).
+            needsEventPump: true
         )
     }
 

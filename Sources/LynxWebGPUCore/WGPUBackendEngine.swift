@@ -1680,9 +1680,12 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
 
         // 앞서 제출한 GPU 작업 완료 대기는 백엔드 몫이다. 완료는 임의 스레드에서 오므로
         // 래퍼가 락을 다시 잡는다 — 등록 도중 동기로 와도 재귀 락이라 안전하다.
-        backend.readBuffer(target.raw, offset: offset, length: length) { [executionLock] result in
-            executionLock.lock()
-            defer { executionLock.unlock() }
+        noteReadbackStarted()
+        backend.readBuffer(target.raw, offset: offset, length: length) { [weak self] result in
+            guard let self else { return }
+            self.executionLock.lock()
+            defer { self.executionLock.unlock() }
+            self.noteReadbackFinished()
             switch result {
             case .failure(let error):
                 target.isMapped = false
@@ -1694,6 +1697,52 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
             }
         }
         executionLock.unlock()
+    }
+
+    // MARK: - 리드백 자가 펌프
+
+    /// 미결 리드백 수 — `executionLock` 아래에서만 읽고 쓴다.
+    private var pendingReadbacks = 0
+    private var readbackPumpRunning = false
+
+    /// 완료가 `pumpEvents()`에서만 나오는 백엔드(Dawn)를 위해, 미결 리드백이 있는 동안
+    /// 자가 펌프를 돌린다.
+    ///
+    /// 호스트의 프레임 티커는 **JS가 프레임 루프를 켠 씬에서만** 돈다. 애니메이션 없는
+    /// 씬(정적 검사 화면)이 `mapAsync`를 걸면 아무도 펌프를 밟지 않아 완료가 영영 도착하지
+    /// 않았다 — 오류가 아니라 **영원한 대기**라 화면에는 아무 일도 없다. `WebGPURuntime.
+    /// processEvents` 문서가 "티커가 없는 구성에서도 완료는 도착해야 한다 — 자체 대기 수단을
+    /// 갖출 것"이라 정한 자리의 이행이다. (Metal은 완료 핸들러가 스스로 도착하므로
+    /// `needsEventPump`가 거짓이고, 이 경로 전체가 비용 없이 빠진다.)
+    ///
+    /// `executionLock` 아래에서 부른다.
+    private func noteReadbackStarted() {
+        guard backend.capabilities.needsEventPump else { return }
+        pendingReadbacks += 1
+        guard !readbackPumpRunning else { return }
+        readbackPumpRunning = true
+        Thread.detachNewThread { [weak self] in
+            while true {
+                guard let self else { return }
+                self.executionLock.lock()
+                let outstanding = self.pendingReadbacks
+                if outstanding > 0 {
+                    self.backend.pumpEvents()
+                } else {
+                    self.readbackPumpRunning = false
+                }
+                self.executionLock.unlock()
+                if outstanding == 0 { return }
+                // 락을 놓은 채 쉰다 — JS 스레드의 execute와 1ms 간격으로만 경쟁한다.
+                usleep(1_000)
+            }
+        }
+    }
+
+    /// `executionLock` 아래에서 부른다 (완료 래퍼 안).
+    private func noteReadbackFinished() {
+        guard backend.capabilities.needsEventPump else { return }
+        pendingReadbacks -= 1
     }
 
     /// 인코딩된 이미지를 풀어 `ImageBitmap` 자리의 객체로 등록한다 (JS `createImageBitmap`).
