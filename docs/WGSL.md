@@ -191,6 +191,9 @@ fn count_and_sample(uv: vec2f) -> vec4f {
 
 **`texture_external`** — 샘플링 가능한 2D 텍스처로 내려간다. 바인드 그룹에는 보통
 `GPUTextureView`를 묶으면 된다 (한 면짜리 비디오 프레임과 같은 모양).
+**JS API `importExternalTexture()`는 없다** — Lynx에 비디오 엘리먼트 핸들이 없기 때문이다
+(`docs/WEBGPU-API.md` §8). 즉 **WGSL 쪽은 열려 있고 소스만 직접 올리면 된다**:
+프레임을 `writeTexture`/`copyExternalImageToTexture`로 텍스처에 올린 뒤 그 뷰를 이 자리에 묶는다.
 `textureSampleBaseClampToEdge`는 밉 0에서 좌표를 텍셀 절반만큼 안쪽으로 물려 샘플하므로,
 `repeat` 샘플러라도 프레임 경계에서 반대쪽이 감겨 들어오지 않는다.
 
@@ -249,18 +252,18 @@ WGSL에는 값이 정해져 있는데 MSL(C++)에서는 **정의되지 않은 �
 
 ## 4-1. 실제 셰이더로 재 본 호환성
 
-공식 [webgpu-samples](https://github.com/webgpu/webgpu-samples)의 WGSL 68개를 그대로 통과시켜 본 결과
+공식 [webgpu-samples](https://github.com/webgpu/webgpu-samples)의 WGSL 69개를 그대로 통과시켜 본 결과
 (번역 + **실제 Metal 컴파일**까지):
 
 | 결과 | 수 |
 |---|---|
-| 그대로 통과 | **60 / 67 (89%)** |
-| 호스트가 `constants`를 주면 동작 (`override` 사용) | 4 |
-| 코퍼스 자체가 단독 파일이 아님 (다른 파일과 이어 붙이거나 호스트가 문자열을 치환해 쓰는 조각) | 3 |
+| 그대로 통과 | **61 / 67 (91%)** — 그대로 60 + 같은 폴더 조각을 붙여 1 |
+| 호스트가 `constants`를 주면 동작 (`override` 사용) | 4 (분모에 포함) |
+| 실패 | 2 |
 
-**남은 3건은 트랜스파일러의 빈틈이 아니다**: `cornell/rasterizer.wgsl`과 `skinnedMesh/gltf.wgsl`은
-선언이 다른 `.wgsl` 파일에 있고(샘플이 이어 붙여 쓴다), `cornell/tonemapper.wgsl`은
-`texture_storage_2d<{OUTPUT_FORMAT}, write>`처럼 JS가 치환할 자리를 그대로 담고 있다.
+**남은 2건은 트랜스파일러의 빈틈이 아니다**: `skinnedMesh/gltf.wgsl`은 호스트가 glTF 접근자를 보고
+`VertexInput`을 **런타임 생성**해 붙이고, `wireframe/wireframeBufferView.wgsl`은 `requires buffer_view;`로
+**WGSL 확장**(코어 명세 밖의 `bufferView<T>()`)을 요구한다 — 지원하려면 확장 자체를 구현해야 한다.
 
 재현 방법은 `docs/TESTING.md` §7.
 

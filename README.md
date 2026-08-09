@@ -117,18 +117,18 @@ JS 스레드(터치·타이머 포함)로 번지지 않는다.
 
 ## 실제 WebGPU 셰이더 호환성
 
-공식 [webgpu-samples](https://github.com/webgpu/webgpu-samples)의 WGSL 68개를 **손대지 않고** 통과시켜
+공식 [webgpu-samples](https://github.com/webgpu/webgpu-samples)의 WGSL 69개를 **손대지 않고** 통과시켜
 본 결과 (번역 + 실제 Metal 컴파일까지):
 
 | 결과 | 수 |
 |---|---|
-| 그대로 통과 | **60 / 67 (89%)** |
-| 호스트가 `constants`만 주면 동작 | 4 |
-| 코퍼스 자체가 단독 파일이 아님 | 3 |
+| 그대로 통과 | **61 / 67 (91%)** — 그대로 60 + 같은 폴더 조각을 붙여 1 |
+| 호스트가 `constants`만 주면 동작 | 4 (분모에 포함) |
+| 실패 | 2 |
 
-**남은 3건은 트랜스파일러의 빈틈이 아니다** — 선언이 다른 `.wgsl` 파일에 있어 샘플이 이어 붙여 쓰거나,
-`texture_storage_2d<{OUTPUT_FORMAT}, write>`처럼 JS가 문자열을 치환할 자리를 담고 있는 조각이다.
-런타임 크기 배열(`arrayLength`), 외부 텍스처(`textureSampleBaseClampToEdge`),
+**남은 2건은 코퍼스 셰이더가 파일만으로 완성되지 않는 경우다** — `skinnedMesh/gltf.wgsl`은 호스트가 glTF
+접근자를 보고 `VertexInput`을 런타임 생성해 붙이고, `wireframe/wireframeBufferView.wgsl`은 `requires buffer_view;`로
+**WGSL 확장**을 요구한다 (코어 명세 밖). 런타임 크기 배열(`arrayLength`), 외부 텍스처(`textureSampleBaseClampToEdge`),
 타입 없는 상수식(`vec3(1)`)은 모두 지원한다.
 
 측정은 저장소 안에 하네스로 들어 있어 언제든 다시 잴 수 있다 ([docs/TESTING.md](docs/TESTING.md) §7).
@@ -185,7 +185,11 @@ xcrun simctl launch <device> org.lynxwebgpu.demo -demo particles  # 바로 진�
 
 ## 요구 사항
 
-Xcode 26.2 / Swift 6.2 · iOS 17.0+ · macOS 14.0+ (개발 루프용)
+Xcode 26.2 / Swift 6.2 툴체인 · iOS 17.0+ · macOS 14.0+ (개발 루프용)
+
+매니페스트는 `swift-tools-version: 6.0`이고 컴파일은 **Swift 5 언어 모드**다 — GPU 객체 그래프를
+컴파일러 격리 대신 명시적 락으로 지키기 때문이다 (`Package.swift` 상단 주석 · `docs/ARCHITECTURE.md` §7).
+Swift 6 언어 모드를 쓰는 앱에서도 그대로 링크된다.
 
 **Lynx SDK는 이 패키지가 가져오지 않는다** — 앱이 고른 것을 쓴다 (외부 의존성 0).
 데모 앱은 [xenonClient/Lynx-XCFramework](https://github.com/xenonClient/Lynx-XCFramework)를

@@ -121,19 +121,19 @@ kicks in.
 
 ## Compatibility with real-world WebGPU shaders
 
-We ran all 68 WGSL shaders from the official [webgpu-samples](https://github.com/webgpu/webgpu-samples)
+We ran all 69 WGSL shaders from the official [webgpu-samples](https://github.com/webgpu/webgpu-samples)
 **unmodified** through translation plus an actual Metal compile:
 
 | Result | Count |
 |---|---|
-| Pass as-is | **60 / 67 (89%)** |
-| Work once the host supplies `constants` | 4 |
-| Not standalone files in the corpus itself | 3 |
+| Pass as-is | **61 / 67 (91%)** — 60 as-is + 1 assembled from a same-folder fragment |
+| Work once the host supplies `constants` | 4 (counted in the denominator) |
+| Failing | 2 |
 
-**The remaining 3 are not transpiler gaps** — they are fragments whose declarations live in other `.wgsl` files
-the sample concatenates, or that contain JS string-substitution slots like
-`texture_storage_2d<{OUTPUT_FORMAT}, write>`. Runtime-sized arrays (`arrayLength`), external textures
-(`textureSampleBaseClampToEdge`), and untyped constant expressions (`vec3(1)`) are all supported.
+**The remaining 2 are shaders that are not complete as files** — `skinnedMesh/gltf.wgsl` has the host build
+`VertexInput` at runtime from glTF accessors, and `wireframe/wireframeBufferView.wgsl` opts into a **WGSL
+extension** with `requires buffer_view;` (outside the core spec). Runtime-sized arrays (`arrayLength`), external
+textures (`textureSampleBaseClampToEdge`), and untyped constant expressions (`vec3(1)`) are all supported.
 
 The measurement harness ships in the repo, so the numbers can be re-taken anytime
 ([docs/TESTING.md](docs/TESTING.md) §7).
@@ -190,7 +190,11 @@ xcrun simctl launch <device> org.lynxwebgpu.demo -demo particles  # jump straigh
 
 ## Requirements
 
-Xcode 26.2 / Swift 6.2 · iOS 17.0+ · macOS 14.0+ (for the dev loop)
+Xcode 26.2 / Swift 6.2 toolchain · iOS 17.0+ · macOS 14.0+ (for the dev loop)
+
+The manifest is `swift-tools-version: 6.0` and compilation runs in **Swift 5 language mode** — the GPU object
+graph is guarded by explicit locks rather than compiler isolation (see the comment at the top of
+`Package.swift` and `docs/ARCHITECTURE.md` §7). It links fine into apps that use Swift 6 language mode.
 
 **This package does not pull in the Lynx SDK** — the app supplies it (zero external dependencies).
 The demo app links [xenonClient/Lynx-XCFramework](https://github.com/xenonClient/Lynx-XCFramework)

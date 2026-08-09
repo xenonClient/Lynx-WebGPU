@@ -7,12 +7,13 @@
 `Lynx-WebGPU`는 **외부 의존성이 0이다.** Lynx SDK의 버전과 배포처는 **앱이 정한다** —
 SPM으로 받든, CocoaPods로 이미 쓰고 있든, 사내 배포본을 물리든, 다른 버전이 필요하든 그대로 붙는다.
 
-그래서 패키지가 주는 SPM product는 둘이다:
+패키지가 주는 SPM product는 셋이고, 그중 **연동에 쓰는 것은 위의 둘**이다:
 
 | product | 내용 | 언제 |
 |---|---|---|
 | `LynxWebGPUCore` | 커맨드 스트림의 **계약** — `WebGPURuntime` 프로토콜, 디스크립터·커맨드 디코딩, 오류 모양. GPU 코드가 없다 | 항상 (브리지가 이것만 본다) |
 | `LynxWebGPU` | 기본 런타임 — Metal 백엔드 + WGSL 트랜스파일러 (Lynx 무관) | 기본 엔진을 쓸 때 |
+| `LynxWebGPUConformance` | 런타임 무관 **적합성 스위트**(29검사) — 어떤 `WebGPURuntime`이든 계약을 지키는지 픽셀로 판정한다 | **다른 백엔드를 만들 때만** (앱 연동에는 필요 없다) |
 
 **GPU 백엔드도 앱이 정한다.** 브리지는 `WebGPURuntime`(=`LynxWebGPUCore`)만 알고, 실제
 런타임 객체는 앱이 만들어 `LynxWebGPUHost(runtime:)`에 넣는다 — Lynx SDK를 여기서 가져오지
