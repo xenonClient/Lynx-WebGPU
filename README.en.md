@@ -138,7 +138,7 @@ The measurement harness ships in the repo, so the numbers can be re-taken anytim
 
 ## Verification
 
-364 Swift + 133 JS tests run in seconds — no simulator, no device.
+366 Swift + 133 JS tests run in seconds — no simulator, no device.
 
 - Transpiler tests push the generated MSL through the **actual Metal compiler**.
 - Render tests draw into offscreen textures and **assert pixel values** (triangle, uniforms, indexed draw,
