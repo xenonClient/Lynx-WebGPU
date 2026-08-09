@@ -1,7 +1,6 @@
 import Foundation
 import CoreGraphics
 import ImageIO
-import LynxWebGPUCore
 
 /// 디코딩이 끝난 이미지 — 명세의 `ImageBitmap` 자리다.
 ///
