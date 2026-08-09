@@ -1,16 +1,18 @@
 import Foundation
 import LynxWebGPUCore
 
-/// WGSL 구문 트리를 Metal Shading Language 소스로 방출한다.
+/// Emits Metal Shading Language source from the WGSL syntax tree.
 ///
-/// 두 가지 구조적 변환이 핵심이다:
+/// Two structural transformations are the heart of it:
 ///
-/// 1. **리소스 스레딩** — MSL에는 가변 전역이 없다. WGSL의 모듈 스코프 변수(유니폼/스토리지/텍스처/
-///    샘플러/workgroup/private)는 진입점의 인자로 받아 호출 그래프를 따라 **함수 인자로 내려보낸다**.
-///    (`WGSLReflectionBuilder.transitiveGlobalUsage`가 어느 함수가 무엇을 쓰는지 계산한다.)
-/// 2. **진입점 래핑** — WGSL 진입점의 시그니처를 그대로 두고(`…_inner`), 스테이지 I/O 속성을 붙인
-///    래퍼를 따로 만든다. 구조체를 유니폼 버퍼와 정점 I/O에 동시에 쓰는 셰이더에서
-///    `[[attribute]]`/`[[user]]` 같은 속성이 버퍼 레이아웃을 오염시키지 않게 하기 위해서다.
+/// 1. **Resource threading** — MSL has no mutable globals. WGSL's module-scope variables (uniform,
+///    storage, texture, sampler, workgroup, private) are taken as entry point parameters and **passed
+///    down as function arguments** along the call graph.
+///    (`WGSLReflectionBuilder.transitiveGlobalUsage` computes which function uses what.)
+/// 2. **Entry point wrapping** — the WGSL entry point keeps its signature (`…_inner`) and a separate
+///    wrapper carries the stage I/O attributes. This keeps attributes such as `[[attribute]]` and
+///    `[[user]]` from polluting the buffer layout in shaders that use one struct for both a uniform
+///    buffer and vertex I/O.
 struct MSLEmitter {
     private let module: WGSLModule
     private let reflection: WGSLShaderReflection
@@ -19,45 +21,46 @@ struct MSLEmitter {
     private let usage: [String: Set<String>]
     private let globalsByName: [String: WGSLGlobalVariable]
     private let structNames: Set<String>
-    /// 버퍼 크기 표를 인자로 받아야 하는 함수들 — `arrayLength()`를 쓰거나
-    /// **런타임 크기 배열을 인덱싱**한다 (후자는 범위를 자르려면 상한이 필요하다).
+    /// Functions that must take the buffer size table as an argument — those using `arrayLength()` or
+    /// **indexing a runtime-sized array** (the latter needs the bound to clamp the range).
     private let needsBufferSizes: Set<String>
 
-    /// 버퍼 크기 표 인자 이름.
+    /// Name of the buffer size table argument.
     private static let bufferSizesName = "wgpu_buffer_sizes"
 
-    /// threadgroup 안의 스레드 번호 — `var<workgroup>` 0 초기화가 이 값으로 일을 나눈다.
-    /// 셰이더가 이미 `@builtin(local_invocation_index)`를 받고 있으면 같은 선언이라 합쳐진다.
+    /// The thread number within the threadgroup — `var<workgroup>` zero-initialization splits the work by it.
+    /// If the shader already takes `@builtin(local_invocation_index)`, the declarations merge.
     private static let localInvocationIndexName = "wgpu_bi_local_invocation_index"
 
-    /// WGSL은 정의하는데 C++에서는 **정의되지 않은** 이항 연산 → 프렐류드 헬퍼.
+    /// Binary operations WGSL defines but C++ leaves **undefined** → a prelude helper.
     ///
-    /// - `/`·`%` — 0으로 나누기와 `INT_MIN / -1`
-    /// - `<<`·`>>` — 폭 이상의 시프트
+    /// - `/` and `%` — division by zero and `INT_MIN / -1`
+    /// - `<<` and `>>` — shifts at or beyond the width
     ///
-    /// 셋 다 그대로 두면 드라이버가 무엇을 하든 이상하지 않고, 최적화가 "일어날 수 없는 일"로
-    /// 보고 주변 코드를 지워 버리기도 한다.
+    /// Left alone, any of the three lets the driver do whatever it likes, and optimizers sometimes
+    /// treat them as "cannot happen" and delete the surrounding code.
     private static let guardedBinaryOperators = [
         "%": "wgpu_mod", "/": "wgpu_div", "<<": "wgpu_shl", ">>": "wgpu_shr",
     ]
 
-    /// 현재 함수 스코프에서 이름 → 텍스처 타입 (텍스처 내장 함수를 메서드 호출로 바꿀 때 필요).
+    /// Name → texture type in the current function scope (needed to turn texture builtins into method calls).
     private var textureScope: [String: WGSLTextureType] = [:]
-    /// 현재 함수에 인자로 주입된 전역 이름들.
+    /// Global names injected as parameters into the current function.
     ///
-    /// WGSL은 전역을 가리는 지역 선언이 합법이지만, 주입 때문에 그 전역이 **매개변수**가 되면
-    /// C++에서는 함수 최상위 블록의 재정의라 불법이다. 그래서 겹치는 지역 선언을 리네임한다.
+    /// WGSL allows a local declaration to shadow a global, but once injection turns that global into a
+    /// **parameter**, C++ sees a redefinition in the function's top-level block, which is illegal. So
+    /// colliding local declarations are renamed.
     private var injectedGlobalNames: Set<String> = []
-    /// 활성 섀도잉 리네임 (원래 이름 → 방출 이름). 블록 경계에서 저장/복원된다.
+    /// Active shadowing renames (original name → emitted name). Saved and restored at block boundaries.
     private var localRenames: [String: String] = [:]
-    /// `discard` 뒤의 쓰기를 가리는 합성 전역 이름. 모듈에 `discard`가 없으면 만들지 않는다.
+    /// Name of the synthetic global masking writes after `discard`. Not created when the module has no `discard`.
     private static let discardFlagName = "wgpu_discarded"
-    /// 그 플래그를 인자로 받아야 하는 함수들 (비어 있으면 변환 자체가 꺼진다).
+    /// Functions that must take that flag as an argument (empty turns the transformation off entirely).
     private let discardFlagUsers: Set<String>
-    /// 스토리지 주소 공간 전역 이름 — `discard` 뒤에 쓰기를 가릴 대상을 고를 때 쓴다.
+    /// Names of storage address space globals — used to pick what to mask after `discard`.
     private let storageGlobalNames: Set<String>
 
-    /// 무한 루프 가드 변수 이름이 겹치지 않게 하는 번호 (중첩 루프).
+    /// Counter keeping infinite-loop guard variable names distinct (nested loops).
     private var loopGuardCounter = 0
     private var output = ""
     private var indentLevel = 0
@@ -66,11 +69,12 @@ struct MSLEmitter {
         var module = module
         var usage = WGSLReflectionBuilder.transitiveGlobalUsage(module)
 
-        // `discard` 뒤의 쓰기를 막을 플래그를 **합성 전역으로 끼워 넣는다.**
+        // **Inject the flag masking writes after `discard` as a synthetic global.**
         //
-        // 직접 인자로 흘려보내는 코드를 새로 쓰는 대신, 이미 있는 리소스 스레딩에 태운다 —
-        // `private` 전역은 진입점 안의 지역 변수로 선언되고 호출 그래프를 따라 참조로 내려가므로,
-        // 필요한 것이 "전역 하나와 그것을 쓰는 함수 목록"뿐이다.
+        // Rather than writing new code to thread it as an argument, we put it on the resource threading
+        // that already exists — a `private` global is declared as a local inside the entry point and
+        // passed down the call graph by reference, so all this needs is "one global and the list of
+        // functions that use it".
         let discardUsers = WGSLReflectionBuilder.functionsNeedingDiscardFlag(in: module)
         if !discardUsers.isEmpty {
             module.globals.append(WGSLGlobalVariable(
@@ -92,7 +96,7 @@ struct MSLEmitter {
         self.storageGlobalNames = Set(module.globals.filter { $0.addressSpace == "storage" }.map(\.name))
     }
 
-    // MARK: - 진입
+    // MARK: - Entry
 
     mutating func emit(entryPoints requested: [String]) throws -> String {
         output = ""
@@ -116,10 +120,11 @@ struct MSLEmitter {
             try emitStruct(structure)
         }
 
-        // 요청한 진입점에서 **호출로 닿는** 함수만 내보낸다. 모듈의 함수를 전부 내보내면,
-        // 이 진입점이 부르지도 않는 함수가 참조하는 리소스까지 바인딩 표에 있어야 한다 —
-        // `layout: "auto"`는 쓰는 것만 담으므로 그런 함수는 없는 바인딩을 찾다 실패한다
-        // (`WGSLReflectionBuilder.functionsReachable` 참고).
+        // Emit only the functions **reachable by calls** from the requested entry points. Emitting every
+        // function in the module would require the binding table to hold resources referenced by
+        // functions this entry point never calls — and `layout: "auto"` contains only what is used, so
+        // such a function fails looking for a binding that is not there
+        // (see `WGSLReflectionBuilder.functionsReachable`).
         let reachable = WGSLReflectionBuilder.functionsReachable(from: requested, in: module)
         for function in module.functions where function.stage == nil && reachable.contains(function.name) {
             try emitFunction(function)
@@ -128,7 +133,7 @@ struct MSLEmitter {
         for name in requested {
             guard let function = module.functionNamed(name), function.stage != nil else {
                 throw WGPUError.validation(
-                    "셰이더에 진입점 '\(name)'이(가) 없다 (있는 것: "
+                    "the shader has no entry point '\(name)' (available: "
                         + "\(reflection.entryPoints.map(\.name).joined(separator: ", ")))"
                 )
             }
@@ -137,15 +142,15 @@ struct MSLEmitter {
         return output
     }
 
-    /// 모듈 스코프 상수 / 파이프라인 상수.
+    /// Module-scope constants / pipeline constants.
     ///
-    /// MSL은 `constant auto x = …`를 허용하지 않는다. 타입 주석이 없으면 매크로로 편다 —
-    /// WGSL의 모듈 상수는 컴파일 타임 값이라 의미가 같다.
+    /// MSL does not allow `constant auto x = …`. Without a type annotation we expand to a macro —
+    /// a WGSL module constant is a compile-time value, so the meaning is the same.
     private mutating func emitModuleConstant(_ constant: WGSLModuleConstant) throws {
         guard let value = constant.value else {
             throw WGPUError.validation(
-                "override '\(constant.name)'에 값이 없다 — 파이프라인 생성 시 "
-                    + "`constants: { \(constant.name): … }` 로 넘겨야 한다"
+                "override '\(constant.name)' has no value — it must be supplied at pipeline creation "
+                    + "as `constants: { \(constant.name): … }`"
             )
         }
         if let type = constant.type ?? inferredType(of: value) {
@@ -155,10 +160,11 @@ struct MSLEmitter {
         }
     }
 
-    /// 인자가 전부 **접미사 없는 정수 상수식**인가 (WGSL의 AbstractInt).
+    /// Whether every argument is a **suffix-free integer constant expression** (WGSL's AbstractInt).
     ///
-    /// `vec2(4, 1)`, `vec4(1741651 * 1009, …)` 처럼 성분 타입을 정할 근거가 인자에 없는 경우다.
-    /// `4u`처럼 접미사가 붙었거나 식별자가 섞이면 타입이 정해지므로 템플릿 추론에 맡긴다.
+    /// The case where the arguments give no basis for a component type, as in `vec2(4, 1)` or
+    /// `vec4(1741651 * 1009, …)`. A suffix such as `4u`, or a mixed-in identifier, fixes the type, so
+    /// those are left to template deduction.
     private static func isAbstractIntegerArguments(_ arguments: [WGSLExpression]) -> Bool {
         guard !arguments.isEmpty else { return false }
         return arguments.allSatisfy(isAbstractInteger)
@@ -180,10 +186,10 @@ struct MSLEmitter {
         }
     }
 
-    /// `arrayLength(&buffer)` / `arrayLength(&buffer.member)` → 버퍼 크기 표 조회.
+    /// `arrayLength(&buffer)` / `arrayLength(&buffer.member)` → a buffer size table lookup.
     ///
-    /// Metal 셰이더는 버퍼 크기를 알 수 없다. 런타임이 예약 인덱스에 크기 표를 꽂아 주고,
-    /// 여기서 (표에 담긴 바이트 수 − 배열 시작 오프셋) ÷ 원소 크기로 계산한다.
+    /// A Metal shader cannot know a buffer's size. The runtime plugs a size table into the reserved
+    /// index, and here we compute (bytes in the table − the array's start offset) ÷ element size.
     private func arrayLengthExpression(_ arguments: [WGSLExpression]) throws -> String {
         var target = arguments.first ?? .identifier("")
         if case .addressOf(let inner) = target { target = inner }
@@ -198,14 +204,14 @@ struct MSLEmitter {
             memberName = field
         default:
             throw WGPUError.unsupported(
-                "WGSL: arrayLength()는 스토리지 버퍼 변수(또는 그 멤버)에만 쓸 수 있다"
+                "WGSL: arrayLength() can only be used on a storage buffer variable (or a member of one)"
             )
         }
 
         guard let global = globalsByName[globalName],
               let group = global.group, let binding = global.binding,
               let index = bindings.index(group: group, binding: binding) else {
-            throw WGPUError.validation("arrayLength(): '\(globalName)'은(는) 바인딩된 스토리지 버퍼가 아니다")
+            throw WGPUError.validation("arrayLength(): '\(globalName)' is not a bound storage buffer")
         }
 
         var element: WGSLType
@@ -219,12 +225,12 @@ struct MSLEmitter {
             )
             guard let member = placement.members.first(where: { $0.name == memberName }),
                   case .array(let inner, nil) = member.type else {
-                throw WGPUError.unsupported("WGSL: arrayLength()의 대상이 런타임 크기 배열이 아니다")
+                throw WGPUError.unsupported("WGSL: the target of arrayLength() is not a runtime-sized array")
             }
             element = inner
             offset = member.offset
         } else {
-            throw WGPUError.unsupported("WGSL: arrayLength()의 대상이 런타임 크기 배열이 아니다")
+            throw WGPUError.unsupported("WGSL: the target of arrayLength() is not a runtime-sized array")
         }
 
         let elementType = try MSLTypeMapping.type(element, module: module)
@@ -234,8 +240,8 @@ struct MSLEmitter {
         return "(\(total) / uint(sizeof(\(elementType))))"
     }
 
-    /// 초기값의 **구문**만 보고 타입을 짚어 본다 (타입 추론기가 아니라 생성자 이름을 읽는 것).
-    /// 모듈 상수와 성분 타입이 생략된 `array(…)` 생성자에 쓴다.
+    /// Guesses the type from the initializer's **syntax** alone (reading constructor names, not inferring types).
+    /// Used for module constants and for `array(…)` constructors with the element type omitted.
     private func inferredType(of expression: WGSLExpression) -> WGSLType? {
         switch expression {
         case .floatLiteral:
@@ -254,9 +260,9 @@ struct MSLEmitter {
                 if case .scalar? = typeArguments.first {
                     return .vector(size: size, element: typeArguments[0])
                 }
-                // 성분 타입이 생략되면 인자에서 짚어 본다 (`vec2(-1.0, -1.0)` → vec2<f32>).
-                // 인자가 전부 AbstractInt 상수식이면 방출기가 프록시를 내보내므로 타입을 못 적는다
-                // (매크로/auto 경로로 흘려보내야 문맥에서 굳는다).
+                // With the component type omitted, guess from the arguments (`vec2(-1.0, -1.0)` → vec2<f32>).
+                // If every argument is an AbstractInt constant expression the emitter emits a proxy, so no
+                // type can be written (it must flow through the macro/auto path to freeze from context).
                 if Self.isAbstractIntegerArguments(arguments) { return nil }
                 guard let element = arguments.first.flatMap(inferredType(of:)),
                       case .scalar = element else { return nil }
@@ -273,7 +279,7 @@ struct MSLEmitter {
         }
     }
 
-    // MARK: - 출력 보조
+    // MARK: - Output helpers
 
     private mutating func line(_ text: String = "") {
         if text.isEmpty {
@@ -289,14 +295,14 @@ struct MSLEmitter {
         indentLevel -= 1
     }
 
-    /// 블록 스코프 경계 — 안에서 등록된 섀도잉 리네임이 블록 밖으로 새지 않게 한다.
+    /// Block scope boundary — keeps shadowing renames registered inside from leaking out of the block.
     private mutating func scoped(_ body: (inout MSLEmitter) throws -> Void) rethrows {
         let saved = localRenames
         try indented(body)
         localRenames = saved
     }
 
-    // MARK: - 구조체 (WGSL 배치에 맞춘 패딩)
+    // MARK: - Structs (padded to the WGSL layout)
 
     private mutating func emitStruct(_ structure: WGSLStruct) throws {
         let isUniform = uniformStructs.contains(structure.name)
@@ -324,19 +330,19 @@ struct MSLEmitter {
         line("")
     }
 
-    /// 멤버 한 줄과 그 멤버가 MSL에서 실제로 차지하는 바이트 수.
+    /// One member line and the bytes that member actually occupies in MSL.
     private func memberDeclaration(
         _ member: WGSLLayout.MemberPlacement,
         in structure: WGSLStruct
     ) throws -> (text: String, byteSize: Int) {
-        // 런타임 크기 배열은 MSL에 대응 문법이 없다. 마지막 멤버일 때만 길이 1 배열로 두고
-        // 실제 길이는 호출 측이 보장한다 (docs/WGSL.md §4).
+        // A runtime-sized array has no MSL counterpart. Only as the last member do we emit a length-1
+        // array and let the caller guarantee the real length (docs/WGSL.md §4).
         if case .array(let element, nil) = member.type {
             let elementType = try MSLTypeMapping.type(element, module: module)
             return ("\(elementType) \(MSLTypeMapping.identifier(member.name))[1];", member.size)
         }
         if member.needsPackedVector, case .vector(3, .scalar(let scalar)) = member.type {
-            // WGSL vec3는 크기 12 — MSL float3(16바이트)로는 뒤 멤버 자리를 못 맞춘다.
+            // A WGSL vec3 has size 12 — MSL float3 (16 bytes) cannot line up the members after it.
             return ("packed_\(MSLTypeMapping.scalar(scalar))3 \(MSLTypeMapping.identifier(member.name));", 12)
         }
         let type = try MSLTypeMapping.type(member.type, module: module)
@@ -346,9 +352,9 @@ struct MSLEmitter {
         return ("\(type) \(MSLTypeMapping.identifier(member.name));", member.size)
     }
 
-    // MARK: - 리소스 스레딩
+    // MARK: - Resource threading
 
-    /// 함수가 (전이적으로) 쓰는 모듈 스코프 변수를 결정적 순서로 돌려준다.
+    /// Returns the module-scope variables a function uses (transitively) in deterministic order.
     private func threadedGlobals(for functionName: String) -> [WGSLGlobalVariable] {
         let used = usage[functionName] ?? []
         return module.globals
@@ -359,7 +365,7 @@ struct MSLEmitter {
             }
     }
 
-    /// 전역 변수를 함수 인자로 넘길 때의 선언 (`constant Uniforms& u`).
+    /// The declaration used when passing a global as a function argument (`constant Uniforms& u`).
     private func parameterDeclaration(for global: WGSLGlobalVariable) throws -> String {
         switch global.type {
         case .texture, .sampler:
@@ -371,20 +377,20 @@ struct MSLEmitter {
         let isReadOnly = global.addressSpace == "storage" && (global.access == nil || global.access == "read")
         let qualifier = isReadOnly ? "const \(space)" : space
 
-        // storage 버퍼의 저장 타입이 런타임 배열이면 포인터로 받는다.
+        // When a storage buffer's stored type is a runtime-sized array, take it as a pointer.
         if case .array(let element, nil) = global.type {
             return "\(qualifier) \(try MSLTypeMapping.type(element, module: module))* \(MSLTypeMapping.identifier(global.name))"
         }
         return "\(qualifier) \(try MSLTypeMapping.type(global.type, module: module))& \(MSLTypeMapping.identifier(global.name))"
     }
 
-    /// 진입점에서 리소스를 받을 때 붙는 Metal 인덱스 속성.
+    /// The Metal index attribute attached when an entry point receives a resource.
     private func bindingAttribute(for global: WGSLGlobalVariable) throws -> String {
         guard let group = global.group, let binding = global.binding else { return "" }
         guard let index = bindings.index(group: group, binding: binding) else {
             throw WGPUError.validation(
-                "셰이더가 쓰는 @group(\(group)) @binding(\(binding)) (\(global.name))이(가) "
-                    + "파이프라인 레이아웃에 없다"
+                "@group(\(group)) @binding(\(binding)) (\(global.name)), used by the shader, "
+                    + "is not in the pipeline layout"
             )
         }
         guard let layout = WGSLReflectionBuilder.bindingLayout(for: global) else { return "" }
@@ -395,7 +401,7 @@ struct MSLEmitter {
         }
     }
 
-    // MARK: - 일반 함수
+    // MARK: - Ordinary functions
 
     private mutating func emitFunction(_ function: WGSLFunction) throws {
         let previousScope = textureScope
@@ -435,7 +441,7 @@ struct MSLEmitter {
         }
     }
 
-    // MARK: - 진입점
+    // MARK: - Entry points
 
     private struct EntryInterface {
         var stageInFields: [String] = []
@@ -455,7 +461,7 @@ struct MSLEmitter {
         let innerName = "wgpu_\(function.name)_inner"
         let resources = threadedGlobals(for: function.name)
 
-        // 1) 원래 시그니처를 유지한 내부 함수.
+        // 1) The inner function keeping the original signature.
         var innerParameters = try function.parameters.map { parameter in
             "\(try MSLTypeMapping.type(parameter.type, module: module)) \(MSLTypeMapping.identifier(parameter.name))"
         }
@@ -471,20 +477,21 @@ struct MSLEmitter {
         try indented { emitter in
             try emitter.statements(function.body)
         }
-        // 래퍼 방출은 주입 스코프 밖이다 — 리네임이 새면 wgpu_out 패킹이 엉뚱한 이름을 쓴다.
+        // Wrapper emission is outside the injection scope — a leaked rename would make wgpu_out packing use the wrong name.
         injectedGlobalNames = []
         localRenames = [:]
         line("}")
         line("")
 
-        // 2) 스테이지 I/O 인터페이스.
+        // 2) The stage I/O interface.
         var interface = EntryInterface()
         try buildInputs(of: function, stage: stage, into: &interface)
         try buildOutputs(of: function, stage: stage, into: &interface)
 
-        // WGSL은 `var<workgroup>`의 0 초기화를 **보장한다.** MSL의 threadgroup 저장소는 그렇지
-        // 않아 이전 디스패치의 잔여 값이 그대로 보인다 — 재현이 불규칙해 추적이 매우 어려운
-        // 종류의 버그다. 스레드들이 나눠 0을 채우려면 threadgroup 안의 자기 번호가 필요하다.
+        // WGSL **guarantees** zero-initialization of `var<workgroup>`. MSL's threadgroup storage does
+        // not, so the leftovers of a previous dispatch show through — a bug that reproduces irregularly
+        // and is very hard to track down. Splitting the zeroing across threads needs each thread's
+        // number within the threadgroup.
         let workgroupGlobals = resources.filter { !$0.isResource && $0.addressSpace == "workgroup" }
         if stage == .compute, !workgroupGlobals.isEmpty {
             let declaration = "uint \(Self.localInvocationIndexName) [[thread_index_in_threadgroup]]"
@@ -513,7 +520,7 @@ struct MSLEmitter {
             line("")
         }
 
-        // 3) 래퍼.
+        // 3) The wrapper.
         var wrapperParameters: [String] = []
         if !interface.stageInFields.isEmpty {
             wrapperParameters.append("\(inputStructName) wgpu_in [[stage_in]]")
@@ -523,7 +530,7 @@ struct MSLEmitter {
             wrapperParameters.append("\(try parameterDeclaration(for: global))\(try bindingAttribute(for: global))")
         }
         if needsBufferSizes.contains(function.name) {
-            // 런타임이 바인딩된 버퍼들의 바이트 크기를 이 인덱스에 꽂아 준다.
+            // The runtime plugs the byte sizes of the bound buffers in at this index.
             wrapperParameters.append(
                 "constant uint* \(Self.bufferSizesName) "
                     + "[[buffer(\(WGSLMetalLimits.bufferSizesIndex))]]"
@@ -541,7 +548,7 @@ struct MSLEmitter {
         line("\(qualifier) \(wrapperReturn) \(wrapperName)(\(wrapperParameters.joined(separator: ", ")))")
         line("{")
         try indented { emitter in
-            // workgroup/private 전역은 바인딩이 아니라 진입점 안의 지역 저장소다.
+            // workgroup and private globals are local storage inside the entry point, not bindings.
             for global in resources where !global.isResource {
                 try emitter.emitLocalGlobal(global)
             }
@@ -555,8 +562,8 @@ struct MSLEmitter {
             var arguments = interface.innerArguments + resources.map { MSLTypeMapping.identifier($0.name) }
             if emitter.needsBufferSizes.contains(function.name) { arguments.append(Self.bufferSizesName) }
             let call = "\(innerName)(\(arguments.joined(separator: ", ")))"
-            // 실제 폐기는 **여기서** 한다 — 본문에서는 플래그만 세우고 쓰기를 가렸다.
-            // 마지막에 부르는 것이 요점이다: 같은 쿼드의 이웃이 쓰는 미분값이 살아 있어야 한다.
+            // The actual discard happens **here** — the body only raised the flag and masked writes.
+            // Calling it last is the point: derivatives that neighbours in the same quad use must stay alive.
             let discardTail = !emitter.discardFlagUsers.isEmpty && resources.contains {
                 $0.name == Self.discardFlagName
             }
@@ -575,19 +582,19 @@ struct MSLEmitter {
         line("")
     }
 
-    /// `var<workgroup>` 전역을 0으로 깐다 — 명세가 보장하는 초기 상태를 만든다.
+    /// Zeroes `var<workgroup>` globals — establishing the initial state the spec guarantees.
     ///
-    /// threadgroup 저장소는 브레이스 초기화가 안 되므로 **스레드들이 나눠 채운다.** 그룹의
-    /// 스레드 수만큼 건너뛰며 훑으면 배열이 아무리 커도 한 스레드가 몰아 쓰지 않는다.
-    /// 마지막 배리어가 없으면 다른 스레드가 **아직 안 깔린 자리를 읽는다** — 초기화를 넣고도
-    /// 같은 증상이 남는 흔한 실수 자리다.
+    /// Threadgroup storage cannot be brace-initialized, so **the threads share the work.** Striding by
+    /// the group's thread count keeps any one thread from doing it all, however large the array.
+    /// Without the final barrier another thread **reads a slot not yet zeroed** — a common trap where
+    /// the symptom survives even after adding the initialization.
     private mutating func emitWorkgroupZeroInit(
         _ globals: [WGSLGlobalVariable],
         threadsPerGroup: (Int, Int, Int)
     ) throws {
         let total = max(threadsPerGroup.0 * threadsPerGroup.1 * threadsPerGroup.2, 1)
         let index = Self.localInvocationIndexName
-        line("// WGSL은 var<workgroup>의 0 초기화를 보장한다 (MSL의 threadgroup 저장소는 아니다).")
+        line("// WGSL guarantees zero-initialization of var<workgroup> (MSL threadgroup storage does not).")
         for global in globals {
             let name = MSLTypeMapping.identifier(global.name)
             if case .array(let element, let count) = global.type, let count,
@@ -599,7 +606,7 @@ struct MSLEmitter {
                 }
                 line("}")
             } else {
-                // 배열이 아니면 한 스레드만 쓰면 된다 — 나머지는 배리어에서 만난다.
+                // For a non-array one thread suffices — the rest meet at the barrier.
                 let statement = try Self.zeroStatement(for: global.type, target: name, module: module)
                 line("if (\(index) == 0u) { \(statement) }")
             }
@@ -607,7 +614,7 @@ struct MSLEmitter {
         line("threadgroup_barrier(mem_flags::mem_threadgroup);")
     }
 
-    /// 한 자리를 0으로 만드는 문장. atomic은 대입이 아니라 store로만 쓸 수 있다.
+    /// The statement zeroing one slot. An atomic can only be written with store, not assignment.
     private static func zeroStatement(for type: WGSLType, target: String, module: WGSLModule) throws -> String {
         if case .atomic = type {
             return "atomic_store_explicit(&\(target), 0, memory_order_relaxed);"
@@ -649,8 +656,8 @@ struct MSLEmitter {
             } else {
                 if case .named(let typeName) = parameter.type {
                     throw WGPUError.validation(
-                        "진입점 매개변수 '\(parameter.name)'의 타입 '\(typeName)'을(를) 찾을 수 없다 "
-                            + "— 구조체 선언이 같은 셰이더 모듈 안에 있어야 한다"
+                        "could not find type '\(typeName)' of entry point parameter '\(parameter.name)' "
+                            + "— the struct declaration must be in the same shader module"
                     )
                 }
                 let source = try inputSource(
@@ -664,7 +671,7 @@ struct MSLEmitter {
         }
     }
 
-    /// 입력 하나를 stage_in 필드 또는 builtin 파라미터로 등록하고, 내부 함수에 넘길 식을 돌려준다.
+    /// Registers one input as a stage_in field or a builtin parameter, and returns the expression to pass to the inner function.
     private mutating func inputSource(
         attributes: [WGSLAttribute],
         type: WGSLType,
@@ -682,7 +689,7 @@ struct MSLEmitter {
             return target == builtin.type ? name : "\(target)(\(name))"
         }
         guard let location = attributes.location else {
-            throw WGPUError.validation("진입점 입력에는 @location 또는 @builtin이 필요하다")
+            throw WGPUError.validation("an entry point input needs @location or @builtin")
         }
         let fieldName = "f\(location)"
         let attribute = stage == .vertex ? "[[attribute(\(location))]]" : "[[user(locn\(location))]]"
@@ -726,7 +733,7 @@ struct MSLEmitter {
             return (name, "\(builtin.type) \(name) \(builtin.attribute);")
         }
         guard let location = attributes.location else {
-            throw WGPUError.validation("진입점 출력에는 @location 또는 @builtin이 필요하다")
+            throw WGPUError.validation("an entry point output needs @location or @builtin")
         }
         let name = "f\(location)"
         if stage == .fragment {
@@ -736,7 +743,7 @@ struct MSLEmitter {
         return (name, "\(mslType) \(name) [[user(locn\(location))]]\(interpolation);")
     }
 
-    // MARK: - 문장
+    // MARK: - Statements
 
     private mutating func statements(_ list: [WGSLStatement]) throws {
         for statement in list { try emitStatement(statement) }
@@ -778,7 +785,7 @@ struct MSLEmitter {
                 try scoped { emitter in try emitter.statements(statements) }
                 line("}")
             case .chained(let nested)?:
-                // `else if` — 중첩 if를 else 뒤에 붙인다.
+                // `else if` — attach the nested if after the else.
                 line("else")
                 try scoped { emitter in try emitter.emitStatement(nested) }
             case nil:
@@ -786,7 +793,7 @@ struct MSLEmitter {
             }
 
         case .forStatement(let initializer, let condition, let update, let body):
-            // 헤더 선언의 리네임은 조건·증감·본문까지가 스코프다 — for 문이 끝나면 되돌린다.
+            // A header declaration's rename scopes over the condition, increment and body — undone when the for ends.
             let savedRenames = localRenames
             let initializerText = try initializer.map { try simpleStatement($0) } ?? ""
             let conditionText = try condition.map { try expression($0) } ?? ""
@@ -799,7 +806,7 @@ struct MSLEmitter {
 
         case .whileStatement(let condition, let body):
             let conditionText = try expression(condition)
-            // 조건이 리터럴 `true`면 컴파일러가 보기에 끝나지 않는 루프다 — 가드를 붙인다.
+            // A literal `true` condition looks like a non-terminating loop to the compiler — add a guard.
             let guardName = conditionText == "true" ? declareLoopGuard() : nil
             line("while (\(conditionText))")
             line("{")
@@ -812,7 +819,7 @@ struct MSLEmitter {
         case .loopStatement(let body, let continuing):
             if continuing != nil, containsContinue(body) {
                 throw WGPUError.unsupported(
-                    "WGSL: `continuing` 블록과 `continue`를 함께 쓰는 loop는 지원하지 않는다 (docs/WGSL.md §4)"
+                    "WGSL: a loop using both a `continuing` block and `continue` is not supported (docs/WGSL.md §4)"
                 )
             }
             let guardName = declareLoopGuard()
@@ -839,7 +846,7 @@ struct MSLEmitter {
                     emitter.line("{")
                     try emitter.scoped { inner in
                         try inner.statements(switchCase.body)
-                        // WGSL의 case는 fallthrough 하지 않는다.
+                        // WGSL cases do not fall through.
                         inner.line("break;")
                     }
                     emitter.line("}")
@@ -859,10 +866,11 @@ struct MSLEmitter {
         case .continueStatement:
             line("continue;")
         case .discardStatement:
-            // MSL의 `discard_fragment()`는 **즉시 종료가 아니다** — 뒤의 코드가 계속 돌아
-            // 버려진 프래그먼트가 스토리지 버퍼·텍스처를 오염시킨다. 명세는 이를 금지하므로
-            // 여기서는 표시만 하고, 쓰기는 이 플래그로 가리며, 실제 폐기는 진입점 끝에서 한다.
-            // (즉시 `return`으로 끝내면 같은 쿼드의 이웃 스레드가 쓰는 미분값이 깨진다.)
+            // MSL's `discard_fragment()` is **not an immediate return** — the code after it keeps
+            // running and the discarded fragment corrupts storage buffers and textures. The spec
+            // forbids that, so here we only mark, mask writes with the flag, and discard for real at
+            // the end of the entry point. (Ending with an immediate `return` would break the
+            // derivatives neighbouring threads in the same quad rely on.)
             if discardFlagUsers.isEmpty {
                 line("discard_fragment();")
             } else {
@@ -871,10 +879,10 @@ struct MSLEmitter {
         }
     }
 
-    /// 이 문장이 **`discard` 뒤에는 실행되면 안 되는 쓰기**인가.
+    /// Whether this statement is **a write that must not run after `discard`**.
     ///
-    /// 대상은 명세가 정한 그대로 — 스토리지 버퍼와 텍스처, 그리고 원자 연산이다.
-    /// 지역 변수 쓰기는 이 프래그먼트 밖으로 나가지 않으므로 가리지 않는다.
+    /// The targets are exactly what the spec names — storage buffers, textures and atomics.
+    /// Writes to locals never leave this fragment, so they are not masked.
     private func masksAfterDiscard(_ statement: WGSLStatement) -> Bool {
         guard !discardFlagUsers.isEmpty else { return false }
         switch statement {
@@ -888,7 +896,7 @@ struct MSLEmitter {
         }
     }
 
-    /// 대입 대상의 뿌리 식별자 (`out[i].x` → `out`).
+    /// The root identifier of an assignment target (`out[i].x` → `out`).
     private static func rootIdentifier(of expression: WGSLExpression) -> String? {
         switch expression {
         case .identifier(let name): return name
@@ -898,14 +906,14 @@ struct MSLEmitter {
         }
     }
 
-    /// 끝나지 않을 수 있는 루프에 **탈출 조건을 하나 더** 붙인다.
+    /// Attaches **one more exit condition** to a loop that may not terminate.
     ///
-    /// C++에서 무한 루프는 정의되지 않은 동작이다. 컴파일러는 "이 루프는 언젠가 끝난다"고
-    /// 가정할 수 있고, 그 가정 위에서 주변 코드를 지우거나 순서를 바꾼다 — 실제로는 끝나지
-    /// 않는 루프였을 때 어떤 코드가 나올지 아무 보장이 없다. Tint도 같은 이유로 넣는다.
+    /// An infinite loop is undefined behaviour in C++. The compiler may assume "this loop ends
+    /// eventually" and, on that assumption, delete or reorder the surrounding code — with no guarantee
+    /// about the resulting code when the loop really does not end. Tint adds this for the same reason.
     ///
-    /// 상한은 u32가 셀 수 있는 끝이라 **정상 셰이더의 동작은 바뀌지 않는다** (거기 닿는 루프는
-    /// 이미 GPU를 몇 분씩 멈춰 세우고 있다).
+    /// The bound is where u32 stops counting, so **the behaviour of a correct shader is unchanged**
+    /// (a loop reaching it has already stalled the GPU for minutes).
     private mutating func declareLoopGuard() -> String {
         loopGuardCounter += 1
         let name = "wgpu_loop_guard_\(loopGuardCounter)"
@@ -918,10 +926,11 @@ struct MSLEmitter {
         line("\(name) = \(name) + 1u;")
     }
 
-    /// 세미콜론 없는 단문 (for 헤더에서도 쓴다).
+    /// A simple statement without a semicolon (also used in a for header).
     ///
-    /// 선언은 **초기값을 먼저 방출**한다 — WGSL의 point-of-declaration 규칙상 초기값은
-    /// 바깥(가려지기 전) 이름을 보므로, 리네임 등록이 초기값보다 먼저면 `var v = v;`가 깨진다.
+    /// A declaration **emits its initializer first** — under WGSL's point-of-declaration rule the
+    /// initializer sees the outer (unshadowed) name, so registering the rename before the initializer
+    /// would break `var v = v;`.
     private mutating func simpleStatement(_ statement: WGSLStatement) throws -> String {
         switch statement {
         case .letDeclaration(let name, let type, let value), .constDeclaration(let name, let type, let value):
@@ -932,7 +941,7 @@ struct MSLEmitter {
         case .varDeclaration(let name, let type, let value):
             guard let type else {
                 guard let value else {
-                    throw WGPUError.validation("WGSL: var '\(name)'에 타입도 초기값도 없다")
+                    throw WGPUError.validation("WGSL: var '\(name)' has neither a type nor an initializer")
                 }
                 let valueText = try expression(value)
                 return "auto \(declaredName(name)) = \(valueText)"
@@ -963,15 +972,16 @@ struct MSLEmitter {
         case .expressionStatement(let inner):
             return try expression(inner)
         default:
-            throw WGPUError.validation("WGSL: 이 위치에 올 수 없는 문장")
+            throw WGPUError.validation("WGSL: this statement cannot appear here")
         }
     }
 
-    /// 지역 선언의 방출 이름.
+    /// The emitted name of a local declaration.
     ///
-    /// 주입된 전역(함수 매개변수가 된 이름)과 겹치면 대체 이름을 등록한다 — C++은 함수
-    /// 최상위 블록에서 매개변수 재정의를 허용하지 않고, 호출 시 전역을 넘기는 인자 목록도
-    /// 원래 이름을 참조해야 하기 때문이다. 이후 이 스코프의 참조는 대체 이름으로 나간다.
+    /// When it collides with an injected global (a name that became a function parameter) we register
+    /// a substitute — C++ does not allow redefining a parameter in the function's top-level block, and
+    /// the argument list passing globals at the call site must still refer to the original name.
+    /// References in this scope afterwards use the substitute.
     private mutating func declaredName(_ name: String) -> String {
         guard injectedGlobalNames.contains(name) else { return MSLTypeMapping.identifier(name) }
         let renamed = "wgpu_shadow_\(name)"
@@ -996,14 +1006,14 @@ struct MSLEmitter {
             case .switchStatement(_, let cases):
                 for switchCase in cases where containsContinue(switchCase.body) { return true }
             default:
-                // 중첩된 loop의 continue는 그쪽 loop 소속이다.
+                // A `continue` in a nested loop belongs to that loop.
                 break
             }
         }
         return false
     }
 
-    // MARK: - 표현식
+    // MARK: - Expressions
 
     private mutating func expression(_ expression: WGSLExpression) throws -> String {
         switch expression {
@@ -1019,9 +1029,9 @@ struct MSLEmitter {
         case .unary(let op, let operand):
             return "\(op)\(try self.expression(operand))"
         case .binary(let op, let left, let right):
-            // WGSL이 정의하는데 C++에서는 정의되지 않은 연산들 — 프렐류드 헬퍼로 우회한다.
-            // 어느 타입인지는 여기서 알 수 없으므로 판단을 C++ 오버로드에 넘긴다:
-            // 정수면 가드가 붙고, 부동소수·추상 정수면 그대로 지나간다 (`MSLPrelude`).
+            // Operations WGSL defines but C++ leaves undefined — routed through a prelude helper.
+            // Which type it is cannot be known here, so the judgement goes to C++ overloading:
+            // integers get the guard, floats and abstract ints pass straight through (`MSLPrelude`).
             if let helper = Self.guardedBinaryOperators[op] {
                 return "\(helper)(\(try self.expression(left)), \(try self.expression(right)))"
             }
@@ -1041,16 +1051,16 @@ struct MSLEmitter {
         }
     }
 
-    /// 인덱싱 — **범위를 벗어난 접근을 막는다** (WebGPU 명세의 robustness).
+    /// Indexing — **prevents out-of-range access** (the WebGPU spec's robustness).
     ///
-    /// 인덱스는 대개 유니폼·스토리지에서 오므로 결국 번들(JS)이 정하는 값이다. 그대로 두면
-    /// 셰이더가 인접 GPU 메모리를 읽거나 덮어쓰고, 크게 벗어나면 페이지 폴트로 커맨드 버퍼가
-    /// 죽는다.
+    /// Indices usually come from uniforms or storage, so they are ultimately values the bundle (JS)
+    /// decides. Left alone, a shader reads or overwrites adjacent GPU memory, and a large excursion
+    /// kills the command buffer with a page fault.
     ///
-    /// 상한이 **타입에 있는가**로 두 갈래다:
-    /// - 고정 크기 배열·벡터·행렬 → `wgpu_at`이 C++ 템플릿 인자로 크기를 안다.
-    /// - 런타임 크기 배열(`array<T>`) → 포인터로 내려와 타입에 크기가 없다. 이미 있는
-    ///   **버퍼 크기 표**(`arrayLength()`가 쓰는 것)로 원소 수를 구해 넘긴다.
+    /// It splits on whether the bound is **in the type**:
+    /// - fixed-size arrays, vectors and matrices → `wgpu_at` knows the size as a C++ template argument;
+    /// - runtime-sized arrays (`array<T>`) → they arrive as a pointer with no size in the type, so the
+    ///   element count comes from the existing **buffer size table** (the one `arrayLength()` uses).
     private mutating func indexExpression(
         base: WGSLExpression,
         subscript subscriptExpression: WGSLExpression
@@ -1063,14 +1073,14 @@ struct MSLEmitter {
         return "wgpu_at(\(target), \(index))"
     }
 
-    /// 인덱스 자리로 **쓰는** 문장 (`a[i] = v`, `a[i] += v`).
+    /// A statement **writing** in index position (`a[i] = v`, `a[i] += v`).
     ///
-    /// 읽기와 달리 별도 헬퍼가 필요한 이유는 **벡터 성분** 때문이다 — MSL에서 `v[i]`는 참조로
-    /// 묶을 수 없어(`non-const reference cannot bind to vector element`) 클램프한 참조를
-    /// 돌려주는 방식이 통하지 않는다. 대입 자체를 헬퍼 안에서 끝내면 배열·행렬·포인터까지
-    /// 같은 이름으로 덮인다.
+    /// A separate helper is needed, unlike reads, because of **vector components** — in MSL `v[i]`
+    /// cannot bind to a reference (`non-const reference cannot bind to vector element`), so returning
+    /// a clamped reference does not work. Finishing the assignment inside the helper covers arrays,
+    /// matrices and pointers under the same name.
     ///
-    /// 복합 대입(`+=`)은 읽기 식을 한 번 더 만든다 — 대상이 식별자·멤버라 부작용이 없다.
+    /// A compound assignment (`+=`) builds the read expression once more — the target is an identifier or member, so there is no side effect.
     private mutating func storeStatement(
         base: WGSLExpression,
         subscript subscriptExpression: WGSLExpression,
@@ -1090,10 +1100,10 @@ struct MSLEmitter {
         return "wgpu_store(\(target), \(index), \(valueText))"
     }
 
-    /// 이 표현식이 **런타임 크기 배열**이면 그 원소 수를 구하는 MSL 식.
+    /// The MSL expression for the element count, when this expression is a **runtime-sized array**.
     ///
-    /// `arrayLength(&x)`와 같은 계산이다 — 버퍼의 바이트 수를 원소 크기로 나눈다.
-    /// 그래서 표를 쓰는 함수 목록(`needsBufferSizes`)도 이쪽 사용을 함께 센다.
+    /// The same calculation as `arrayLength(&x)` — the buffer's byte count divided by the element size.
+    /// So the list of functions using the table (`needsBufferSizes`) counts this use as well.
     private func runtimeArrayCount(of expression: WGSLExpression) throws -> String? {
         switch expression {
         case .identifier(let name):
@@ -1110,10 +1120,11 @@ struct MSLEmitter {
         }
     }
 
-    /// 스위즐·인덱싱의 대상으로 쓸 표현식.
+    /// The expression used as the target of a swizzle or index.
     ///
-    /// AbstractInt 상수식 벡터는 보통 프록시로 내보내지만(문맥에서 타입이 굳도록), 프록시에는
-    /// `.xyz` 같은 성분 접근이 없다. 그 자리에서는 f32 벡터로 확정해 내보낸다.
+    /// An AbstractInt constant-expression vector is normally emitted as a proxy (so the type freezes
+    /// from context), but a proxy has no component access such as `.xyz`. In that position it is
+    /// emitted as a settled f32 vector.
     private mutating func concreteExpression(_ expression: WGSLExpression) throws -> String {
         if case .call(let callee, let typeArguments, let arguments) = expression,
            MSLPrelude.inferredVectorConstructors.contains(callee),
@@ -1153,7 +1164,7 @@ struct MSLEmitter {
 
         if callee == "bitcast" {
             guard let target = typeArguments.first, arguments.count == 1 else {
-                throw WGPUError.validation("WGSL: bitcast<T>(x) 형태여야 한다")
+                throw WGPUError.validation("WGSL: the form must be bitcast<T>(x)")
             }
             return "as_type<\(try MSLTypeMapping.type(target, module: module))>(\(try expression(arguments[0])))"
         }
@@ -1182,39 +1193,40 @@ struct MSLEmitter {
 
         let emitted = try arguments.map { try expression($0) }
 
-        // 구조체 생성자는 MSL(C++)에서 집합 초기화다.
+        // A struct constructor is aggregate initialization in MSL (C++).
         if structNames.contains(callee) {
             return "\(MSLTypeMapping.identifier(callee)){\(emitted.joined(separator: ", "))}"
         }
-        // 성분 타입이 생략된 벡터 생성자.
+        // A vector constructor with the component type omitted.
         if MSLPrelude.inferredVectorConstructors.contains(callee), typeArguments.isEmpty {
-            // 인자가 전부 정수 리터럴이면 추론할 근거가 없다. WGSL의 AbstractInt는 문맥 타입을
-            // 따르는데, 벡터 생성자에서는 f32 문맥이 압도적으로 흔하므로 그쪽을 택한다
-            // (`vec3(1)` = 흰색). 정수 벡터가 필요하면 `vec3u(…)`처럼 명시할 것 — docs/WGSL.md §4.
+            // With every argument an integer literal there is no basis to infer. WGSL's AbstractInt
+            // follows the context type, and in a vector constructor an f32 context is overwhelmingly
+            // common, so we choose that (`vec3(1)` = white). Spell out `vec3u(…)` when an integer
+            // vector is needed — docs/WGSL.md §4.
             if Self.isAbstractIntegerArguments(arguments) {
-                // WGSL의 AbstractInt 상수식은 문맥 타입으로 굳는다. 프록시로 내보내
-                // 그 결정을 C++ 변환 연산자에 넘긴다 (docs/WGSL.md §2-1).
+                // WGSL's AbstractInt constant expressions freeze into the context type. Emit a proxy
+                // and hand that decision to C++ conversion operators (docs/WGSL.md §2-1).
                 let size = Int(callee.dropFirst(3)) ?? 4
                 return "wgpu_aint\(size)(\(emitted.joined(separator: ", ")))"
             }
             return "wgpu_\(callee)(\(emitted.joined(separator: ", ")))"
         }
-        // 리터럴 승격이 필요한 내장 함수도 마찬가지 (`max(x, 0)`).
+        // The same goes for builtins needing literal promotion (`max(x, 0)`).
         if let helper = MSLPrelude.redirectedBuiltins[callee] {
             return "\(helper)(\(emitted.joined(separator: ", ")))"
         }
         if callee == "array" {
-            // 성분 타입이 생략되면 첫 인자의 생성자 이름에서 짚어 낸다 (`array(vec2f(…), …)`).
+            // With the element type omitted, guess it from the first argument's constructor name (`array(vec2f(…), …)`).
             let element = typeArguments.first ?? arguments.first.flatMap(inferredType(of:))
             guard let element, let elementType = try? MSLTypeMapping.type(element, module: module) else {
                 throw WGPUError.unsupported(
-                    "WGSL: array(…) 생성자의 성분 타입을 알 수 없다 — `array<T, N>(…)`로 명시할 것"
+                    "WGSL: cannot determine the element type of an array(…) constructor — spell it out as `array<T, N>(…)`"
                 )
             }
             return "array<\(elementType), \(emitted.count)>{\(emitted.joined(separator: ", "))}"
         }
-        // f32 → i32/u32 변환은 WGSL이 **포화**로 정의한다 (C++ 캐스트는 범위 밖이면 UB).
-        // 인자가 하나일 때만 변환이고, 성분을 나열한 생성자는 각 인자가 이미 자기 변환을 지난다.
+        // WGSL defines f32 → i32/u32 conversion as **saturating** (a C++ cast is UB out of range).
+        // Only a single argument is a conversion; a constructor listing components already passed each argument through its own.
         if emitted.count == 1, let helper = Self.saturatingConversion(callee, typeArguments: typeArguments) {
             return "\(helper)(\(emitted[0]))"
         }
@@ -1225,7 +1237,7 @@ struct MSLEmitter {
             return "\(MSLTypeMapping.scalar(callee))(\(emitted.joined(separator: ", ")))"
         }
 
-        // 사용자 함수는 스레딩된 리소스를 뒤에 덧붙여 넘긴다.
+        // User functions take the threaded resources appended at the end.
         if module.functionNamed(callee) != nil {
             var extra = threadedGlobals(for: callee).map { MSLTypeMapping.identifier($0.name) }
             if needsBufferSizes.contains(callee) { extra.append(Self.bufferSizesName) }
@@ -1236,16 +1248,16 @@ struct MSLEmitter {
         return "\(name)(\(emitted.joined(separator: ", ")))"
     }
 
-    /// 정수로 바꾸는 생성자면 포화 변환 헬퍼 이름 (`i32` `u32` `vec3i` `vec2<u32>` …).
+    /// The saturating conversion helper name, when this is an integer-producing constructor (`i32`, `u32`, `vec3i`, `vec2<u32>`, …).
     ///
-    /// 판단을 문자열로 하는 것은 **타입 추론기가 없기 때문**이다. 인자가 실제로 f32인지는
-    /// 여기서 알 수 없으므로 C++ 오버로드에 넘긴다 — f32가 아니면 헬퍼가 그냥 캐스트한다.
+    /// The decision is made on strings **because there is no type inferencer**. Whether the argument
+    /// is really f32 cannot be known here, so it goes to C++ overloading — if it is not f32 the helper just casts.
     private static func saturatingConversion(_ callee: String, typeArguments: [WGSLType]) -> String? {
         func target(_ scalar: String) -> String? {
             scalar == "i32" ? "wgpu_ftoi" : (scalar == "u32" ? "wgpu_ftou" : nil)
         }
         if MSLTypeMapping.scalarConstructors.contains(callee) { return target(callee) }
-        // `vec3i(…)` / `vec3<i32>(…)` — 크기를 템플릿 인자로 넘겨 스칼라 브로드캐스트도 받는다.
+        // `vec3i(…)` / `vec3<i32>(…)` — passing the size as a template argument also accepts scalar broadcast.
         guard callee.hasPrefix("vec"), callee.count >= 4,
               let size = Int(callee.dropFirst(3).prefix(1)) else { return nil }
         let suffix = String(callee.dropFirst(4))
@@ -1266,7 +1278,7 @@ struct MSLEmitter {
     private func vectorOrMatrixConstructor(_ callee: String, typeArguments: [WGSLType]) throws -> String? {
         if callee == "vec2" || callee == "vec3" || callee == "vec4" {
             let size = Int(callee.dropFirst(3))!
-            // `vec3(…)`처럼 성분 타입이 생략되면 f32로 본다 (실제 셰이더에서 가장 흔한 경우).
+            // With the component type omitted, as in `vec3(…)`, treat it as f32 (by far the most common case in real shaders).
             guard case .scalar(let scalar)? = typeArguments.first ?? .scalar("f32") else { return nil }
             return "\(MSLTypeMapping.scalar(scalar))\(size)"
         }
@@ -1284,11 +1296,11 @@ struct MSLEmitter {
         return nil
     }
 
-    // MARK: - 텍스처 / 아토믹 내장 함수
+    // MARK: - Texture / atomic builtins
 
     private mutating func textureCall(callee: String, arguments: [WGSLExpression]) throws -> String {
         guard let first = arguments.first else {
-            throw WGPUError.validation("WGSL: \(callee)()에 텍스처 인자가 없다")
+            throw WGPUError.validation("WGSL: \(callee)() has no texture argument")
         }
         let receiver = try expression(first)
         let texture = textureType(of: first)
@@ -1307,7 +1319,7 @@ struct MSLEmitter {
         switch callee {
         case "textureSample", "textureSampleBias", "textureSampleLevel", "textureSampleGrad":
             guard rest.count >= 2 else {
-                throw WGPUError.validation("WGSL: \(callee)(t, s, coords, …) 형태여야 한다")
+                throw WGPUError.validation("WGSL: the form must be \(callee)(t, s, coords, …)")
             }
             let sampler = rest.removeFirst()
             let coordinates = rest.removeFirst()
@@ -1315,13 +1327,13 @@ struct MSLEmitter {
             if isArrayed, !rest.isEmpty { parameters.append(rest.removeFirst()) }
             switch callee {
             case "textureSampleLevel":
-                guard !rest.isEmpty else { throw WGPUError.validation("WGSL: textureSampleLevel에 level이 없다") }
+                guard !rest.isEmpty else { throw WGPUError.validation("WGSL: textureSampleLevel has no level") }
                 parameters.append("level(\(rest.removeFirst()))")
             case "textureSampleBias":
-                guard !rest.isEmpty else { throw WGPUError.validation("WGSL: textureSampleBias에 bias가 없다") }
+                guard !rest.isEmpty else { throw WGPUError.validation("WGSL: textureSampleBias has no bias") }
                 parameters.append("bias(\(rest.removeFirst()))")
             case "textureSampleGrad":
-                guard rest.count >= 2 else { throw WGPUError.validation("WGSL: textureSampleGrad에 미분값이 없다") }
+                guard rest.count >= 2 else { throw WGPUError.validation("WGSL: textureSampleGrad has no derivatives") }
                 let dx = rest.removeFirst()
                 let dy = rest.removeFirst()
                 parameters.append("gradient2d(\(dx), \(dy))")
@@ -1332,7 +1344,7 @@ struct MSLEmitter {
 
         case "textureSampleCompare", "textureSampleCompareLevel":
             guard rest.count >= 3 else {
-                throw WGPUError.validation("WGSL: \(callee)(t, s, coords, depth_ref) 형태여야 한다")
+                throw WGPUError.validation("WGSL: the form must be \(callee)(t, s, coords, depth_ref)")
             }
             let sampler = rest.removeFirst()
             let coordinates = rest.removeFirst()
@@ -1342,19 +1354,19 @@ struct MSLEmitter {
             return "\(receiver).sample_compare(\(parameters.joined(separator: ", ")))"
 
         case "textureLoad":
-            guard !rest.isEmpty else { throw WGPUError.validation("WGSL: textureLoad에 좌표가 없다") }
+            guard !rest.isEmpty else { throw WGPUError.validation("WGSL: textureLoad has no coordinates") }
             var parameters = [integerCast(rest.removeFirst())]
             parameters += rest
             return "\(receiver).read(\(parameters.joined(separator: ", ")))"
 
         case "textureStore":
             guard rest.count >= 2 else {
-                throw WGPUError.validation("WGSL: textureStore(t, coords, value) 형태여야 한다")
+                throw WGPUError.validation("WGSL: the form must be textureStore(t, coords, value)")
             }
             let coordinates = integerCast(rest.removeFirst())
             let value = rest.removeLast()
             var parameters = [value, coordinates]
-            parameters += rest   // 배열 레이어 인덱스
+            parameters += rest   // the array layer index
             return "\(receiver).write(\(parameters.joined(separator: ", ")))"
 
         case "textureDimensions":
@@ -1371,7 +1383,7 @@ struct MSLEmitter {
 
         case "textureSampleBaseClampToEdge":
             guard rest.count >= 2 else {
-                throw WGPUError.validation("WGSL: textureSampleBaseClampToEdge(t, s, coords) 형태여야 한다")
+                throw WGPUError.validation("WGSL: the form must be textureSampleBaseClampToEdge(t, s, coords)")
             }
             let clampSampler = rest.removeFirst()
             let clampCoordinates = rest.removeFirst()
@@ -1384,7 +1396,7 @@ struct MSLEmitter {
         case "textureNumSamples":
             return "\(receiver).get_num_samples()"
         default:
-            throw WGPUError.unsupported("WGSL: 지원하지 않는 텍스처 내장 함수 \(callee)()")
+            throw WGPUError.unsupported("WGSL: unsupported texture builtin \(callee)()")
         }
     }
 
@@ -1397,7 +1409,7 @@ struct MSLEmitter {
         let emitted = try arguments.map { try expression($0) }
         if let operation = MSLTypeMapping.atomicFetchOperations[callee] {
             guard emitted.count == 2 else {
-                throw WGPUError.validation("WGSL: \(callee)(&atomic, value) 형태여야 한다")
+                throw WGPUError.validation("WGSL: the form must be \(callee)(&atomic, value)")
             }
             return "\(operation)(\(emitted[0]), \(emitted[1]), memory_order_relaxed)"
         }
@@ -1409,7 +1421,7 @@ struct MSLEmitter {
         case "atomicExchange":
             return "atomic_exchange_explicit(\(emitted[0]), \(emitted[1]), memory_order_relaxed)"
         default:
-            throw WGPUError.unsupported("WGSL: 지원하지 않는 아토믹 내장 함수 \(callee)()")
+            throw WGPUError.unsupported("WGSL: unsupported atomic builtin \(callee)()")
         }
     }
 }

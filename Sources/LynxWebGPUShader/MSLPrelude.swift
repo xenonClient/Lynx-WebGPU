@@ -1,20 +1,21 @@
 import Foundation
 
-/// 생성된 MSL 맨 앞에 붙는 헬퍼 모음.
+/// The helper set prepended to every generated MSL source.
 ///
-/// **왜 필요한가** — 이 트랜스파일러는 타입 추론기가 아니라 구문 번역기다. 그래서 WGSL이
-/// 타입으로 결정하는 것들(성분 타입이 생략된 `vec2(a, b)`, `max(x, 0)`의 리터럴 승격,
-/// 부동소수 `%`)을 그대로 옮기면 MSL에서 타입 오류가 나거나 **조용히 틀린 타입**이 된다.
+/// **Why it is needed** — this transpiler is a syntax translator, not a type inferencer. So the
+/// things WGSL settles by type (a `vec2(a, b)` with the component type omitted, literal promotion in
+/// `max(x, 0)`, floating-point `%`) would become type errors in MSL, or **silently the wrong type**,
+/// if carried across as-is.
 ///
-/// C++ 템플릿의 `decltype`에 그 판단을 넘기면 타입 추론 없이도 WGSL과 같은 결과가 나온다.
-/// 인스턴스화되지 않은 템플릿은 코드를 만들지 않으므로 비용도 없다.
+/// Handing that judgement to C++ templates' `decltype` reproduces WGSL's result without any type
+/// inference. An uninstantiated template generates no code, so it costs nothing.
 enum MSLPrelude {
     static let source = """
-    // ─── Lynx-WebGPU 셰이더 프렐류드 ───────────────────────────────────────
-    // WGSL과 MSL의 의미가 어긋나는 지점만 메운다. 자세한 배경은 docs/WGSL.md §1.
+    // ─── Lynx-WebGPU shader prelude ───────────────────────────────────────
+    // Fills only the points where WGSL and MSL semantics diverge. Background: docs/WGSL.md §1.
 
-    // WGSL의 `%`는 부동소수에도 정의되지만(fmod), MSL의 `%`는 정수 전용이다.
-    // 먼저 두 인자의 공통 타입으로 맞춘 뒤(정수/부동소수 혼합 대응) 종류별 구현으로 보낸다.
+    // WGSL's `%` is defined for floating point too (fmod); MSL's `%` is integer-only.
+    // Unify both arguments to a common type first (handling mixed int/float), then dispatch by kind.
     inline int wgpu_mod_same(int a, int b) { return a % b; }
     inline uint wgpu_mod_same(uint a, uint b) { return a % b; }
     inline int2 wgpu_mod_same(int2 a, int2 b) { return a % b; }
@@ -25,15 +26,15 @@ enum MSLPrelude {
     inline uint4 wgpu_mod_same(uint4 a, uint4 b) { return a % b; }
     template<typename T> inline T wgpu_mod_same(T a, T b) { return fmod(a, b); }
 
-    // 정수 나눗셈·나머지의 **정의되지 않은 자리**를 메운다.
+    // Fills the **undefined places** of integer division and remainder.
     //
-    // WGSL은 `x / 0 == x`, `x % 0 == 0`으로 정의하고, `INT_MIN / -1 == INT_MIN`,
-    // `INT_MIN % -1 == 0`도 정의한다. C++에서는 셋 다 **정의되지 않은 동작**이라
-    // 그대로 두면 GPU 드라이버가 무엇을 하든 이상하지 않다.
+    // WGSL defines `x / 0 == x` and `x % 0 == 0`, and also `INT_MIN / -1 == INT_MIN` and
+    // `INT_MIN % -1 == 0`. All three are **undefined behaviour** in C++, so leaving them alone lets a
+    // GPU driver do anything at all.
     //
-    // 두 경우 모두 **나누는 수를 1로 바꾸면** WGSL이 정한 값이 그대로 나온다
-    // (`a / 1 == a`, `a % 1 == 0`). 그래서 분모만 고른다.
-    template<typename A, typename B> inline B wgpu_denom(A, B b) { return b; }   // 부동소수·추상 정수는 그대로
+    // In every case, **replacing the divisor with 1** yields exactly the value WGSL specifies
+    // (`a / 1 == a`, `a % 1 == 0`). So only the denominator is chosen.
+    template<typename A, typename B> inline B wgpu_denom(A, B b) { return b; }   // floats and abstract ints pass through
     inline int wgpu_denom(int a, int b) {
         return (b == 0 || (b == -1 && a == (-2147483647 - 1))) ? 1 : b;
     }
@@ -54,8 +55,8 @@ enum MSLPrelude {
         return T(a) / wgpu_denom(T(a), T(b));
     }
 
-    // 시프트 폭 마스킹 — WGSL은 폭 이상의 시프트를 정의하지 않고, C++에서는 UB다.
-    // Tint와 같은 규칙으로 하위 5비트만 남긴다 (i32·u32 모두 32비트다).
+    // Shift-amount masking — WGSL leaves shifts at or beyond the width undefined, and C++ makes it UB.
+    // Keep the low 5 bits, the same rule as Tint (i32 and u32 are both 32-bit).
     inline uint wgpu_shift_amount(uint b) { return b & 31u; }
     inline int wgpu_shift_amount(int b) { return b & 31; }
     template<int N> inline vec<uint, N> wgpu_shift_amount(vec<uint, N> b) { return b & 31u; }
@@ -64,8 +65,8 @@ enum MSLPrelude {
     template<typename A, typename B> inline auto wgpu_shl(A a, B b) { return a << wgpu_shift_amount(b); }
     template<typename A, typename B> inline auto wgpu_shr(A a, B b) { return a >> wgpu_shift_amount(b); }
 
-    // f32 → i32/u32 변환은 WGSL에서 **포화**한다 (범위를 벗어나면 끝값으로 자른다).
-    // C++의 캐스트는 범위 밖이면 UB다. 비교가 전부 거짓이 되는 NaN은 상한으로 간다 — Tint와 같다.
+    // f32 → i32/u32 conversion **saturates** in WGSL (out-of-range values clamp to the ends).
+    // A C++ cast is UB out of range. NaN, where every comparison is false, goes to the upper bound — as in Tint.
     inline int wgpu_ftoi(float v) {
         return select(2147483647, select(int(v), (-2147483647 - 1), (v < -2147483648.0f)), (v < 2147483520.0f));
     }
@@ -82,12 +83,12 @@ enum MSLPrelude {
                       select(vec<uint, N>(v), vec<uint, N>(0u), (v < 0.0f)),
                       (v < 4294967040.0f));
     }
-    // f32가 아닌 것(정수·bool·f16·추상 정수)은 그냥 변환한다 — 범위를 벗어날 수 없다.
+    // Anything that is not f32 (ints, bool, f16, abstract ints) converts plainly — it cannot go out of range.
     template<typename T> inline int wgpu_ftoi(T v) { return int(v); }
     template<typename T> inline uint wgpu_ftou(T v) { return uint(v); }
-    // 벡터 자리의 변환 — 크기를 명시해 스칼라 브로드캐스트(`vec2i(1.5)`)와 성분 변환을 함께 받는다.
-    // 마지막 대역은 **그냥 생성**한다: f32가 아닌 벡터(`vec2i(someU32Vec)`)까지 성분 변환을
-    // 거치게 하면 벡터를 스칼라로 좁히려다 컴파일이 깨진다.
+    // Conversion in vector position — stating the size accepts scalar broadcast (`vec2i(1.5)`) and
+    // component conversion alike. The last overload **just constructs**: routing non-f32 vectors
+    // (`vec2i(someU32Vec)`) through component conversion would break the compile trying to narrow a vector to a scalar.
     template<int N> inline vec<int, N> wgpu_ftoi_n(vec<float, N> v) { return wgpu_ftoi(v); }
     template<int N> inline vec<int, N> wgpu_ftoi_n(float v) { return vec<int, N>(wgpu_ftoi(v)); }
     template<int N, typename T> inline vec<int, N> wgpu_ftoi_n(T v) { return vec<int, N>(v); }
@@ -95,14 +96,15 @@ enum MSLPrelude {
     template<int N> inline vec<uint, N> wgpu_ftou_n(float v) { return vec<uint, N>(wgpu_ftou(v)); }
     template<int N, typename T> inline vec<uint, N> wgpu_ftou_n(T v) { return vec<uint, N>(v); }
 
-    // 인덱싱 범위 클램프 — WebGPU 명세가 요구하는 robustness.
+    // Index range clamping — the robustness the WebGPU spec requires.
     //
-    // 범위를 벗어난 접근은 같은 프로세스의 **인접 GPU 메모리를 읽거나 덮어쓰고**, 크게 벗어나면
-    // 페이지 폴트로 커맨드 버퍼가 죽는다. 인덱스는 보통 유니폼·스토리지에서 오므로 결국
-    // **번들(JS)이 정하는 값**이다 — 서버에서 내려받는 번들을 전제로 하는 환경에서 특히 중요하다.
+    // An out-of-range access **reads or overwrites adjacent GPU memory** in the same process, and a
+    // large excursion kills the command buffer with a page fault. Indices usually come from uniforms
+    // or storage, so they are ultimately **values the bundle (JS) decides** — which matters most in an
+    // environment that assumes bundles downloaded from a server.
     //
-    // 크기는 C++이 안다 (`array<T,N>`·`vec<T,N>`). 주소 공간마다 참조 타입이 갈려 오버로드가 는다.
-    // 참조를 돌려주므로 읽기·쓰기·`&a[i]` 모두 원래대로 쓸 수 있고, 인덱스는 한 번만 평가된다.
+    // C++ knows the size (`array<T,N>`, `vec<T,N>`). Reference types differ per address space, hence the overloads.
+    // Returning a reference keeps reads, writes and `&a[i]` working as before, and the index is evaluated once.
     template<typename T, size_t N, typename I> inline thread T& wgpu_at(thread array<T, N>& a, I i) { return a[min(uint(i), uint(N - 1))]; }
     template<typename T, size_t N, typename I> inline const thread T& wgpu_at(const thread array<T, N>& a, I i) { return a[min(uint(i), uint(N - 1))]; }
     template<typename T, size_t N, typename I> inline device T& wgpu_at(device array<T, N>& a, I i) { return a[min(uint(i), uint(N - 1))]; }
@@ -111,11 +113,11 @@ enum MSLPrelude {
     template<typename T, size_t N, typename I> inline threadgroup T& wgpu_at(threadgroup array<T, N>& a, I i) { return a[min(uint(i), uint(N - 1))]; }
     template<typename T, size_t N, typename I> inline const threadgroup T& wgpu_at(const threadgroup array<T, N>& a, I i) { return a[min(uint(i), uint(N - 1))]; }
 
-    // 벡터 성분만은 **값으로** 돌려준다. MSL에서 `v[i]`는 참조로 묶을 수 없는 자리라
-    // (`non-const reference cannot bind to vector element`) 참조를 돌려주면 컴파일이 깨진다.
-    // 쓰기는 아래 `wgpu_store`가 맡는다.
-    // `thread` 벡터는 **const 참조 하나만** 둔다 — 값 받기와 const 참조를 함께 두면
-    // 비-const 좌변값에서 둘 다 똑같이 맞아 호출이 모호해진다.
+    // Vector components alone come back **by value**. In MSL `v[i]` is not a place a reference can
+    // bind to (`non-const reference cannot bind to vector element`), so returning one breaks the compile.
+    // Writing is handled by `wgpu_store` below.
+    // A `thread` vector gets **only a const reference** — offering by-value and const-reference
+    // together makes both match equally on a non-const lvalue, so the call becomes ambiguous.
     template<typename T, int N, typename I> inline T wgpu_at(const thread vec<T, N>& v, I i) { return v[min(uint(i), uint(N - 1))]; }
     template<typename T, int N, typename I> inline T wgpu_at(const device vec<T, N>& v, I i) { return v[min(uint(i), uint(N - 1))]; }
     template<typename T, int N, typename I> inline T wgpu_at(device vec<T, N>& v, I i) { return v[min(uint(i), uint(N - 1))]; }
@@ -129,19 +131,20 @@ enum MSLPrelude {
     template<typename T, int C, int R, typename I> inline constant vec<T, R>& wgpu_at(constant matrix<T, C, R>& m, I i) { return m[min(uint(i), uint(C - 1))]; }
     template<typename T, int C, int R, typename I> inline threadgroup vec<T, R>& wgpu_at(threadgroup matrix<T, C, R>& m, I i) { return m[min(uint(i), uint(C - 1))]; }
 
-    // 런타임 크기 배열(`array<T>`)은 포인터로 내려와 크기가 타입에 없다 — 그 자리는 방출기가
-    // 버퍼 크기 표로 상한을 계산해 넘긴다 (`wgpu_at_n`). 표가 없으면 여기로 떨어진다.
+    // A runtime-sized array (`array<T>`) arrives as a pointer with no size in its type — there the
+    // emitter computes the bound from the buffer size table and passes it (`wgpu_at_n`). With no table it falls through to here.
     template<typename T, typename I> inline device T& wgpu_at(device T* p, I i) { return p[uint(i)]; }
     template<typename T, typename I> inline const device T& wgpu_at(const device T* p, I i) { return p[uint(i)]; }
     template<typename T, typename I> inline constant T& wgpu_at(constant T* p, I i) { return p[uint(i)]; }
 
-    // 상한을 밖에서 받는 형태 — 런타임 크기 배열용. `count`가 0이면 0번 자리로 접는다
-    // (그 버퍼에는 읽을 것이 없지만, 주소만은 유효하다).
+    // The form taking the bound from outside — for runtime-sized arrays. A `count` of 0 folds to index 0
+    // (there is nothing to read in that buffer, but the address alone stays valid).
     template<typename T, typename I> inline device T& wgpu_at_n(device T* p, I i, uint count) { return p[count == 0u ? 0u : min(uint(i), count - 1u)]; }
     template<typename T, typename I> inline const device T& wgpu_at_n(const device T* p, I i, uint count) { return p[count == 0u ? 0u : min(uint(i), count - 1u)]; }
 
-    // 인덱스 자리로 **쓰는** 경로. 벡터 성분은 참조로 못 돌려주므로 대입을 함수 안에서 끝낸다.
-    // 배열·행렬·포인터도 같은 이름으로 받아, 방출기가 대상 종류를 따지지 않아도 되게 한다.
+    // The **write** path in index position. Vector components cannot come back by reference, so the
+    // assignment finishes inside the function. Arrays, matrices and pointers take the same name so the
+    // emitter need not distinguish the target kind.
     template<typename C, typename I, typename V> inline void wgpu_store(thread C& c, I i, V value) { wgpu_at(c, i) = value; }
     template<typename C, typename I, typename V> inline void wgpu_store(device C& c, I i, V value) { wgpu_at(c, i) = value; }
     template<typename C, typename I, typename V> inline void wgpu_store(threadgroup C& c, I i, V value) { wgpu_at(c, i) = value; }
@@ -151,11 +154,11 @@ enum MSLPrelude {
     template<typename T, typename I, typename V> inline void wgpu_store(device T* p, I i, V value) { p[uint(i)] = value; }
     template<typename T, typename I, typename V> inline void wgpu_store_n(device T* p, I i, uint count, V value) { p[count == 0u ? 0u : min(uint(i), count - 1u)] = value; }
 
-    // MSL에는 radians/degrees가 없다.
+    // MSL has no radians/degrees.
     template<typename T> inline T wgpu_radians(T d) { return d * T(0.017453292519943295); }
     template<typename T> inline T wgpu_degrees(T r) { return r * T(57.29577951308232); }
 
-    // 성분 타입이 생략된 벡터 생성자 — 인자에서 타입을 추론한다 (`vec2(u, 4)` → uint2).
+    // Vector constructors with the component type omitted — the type is inferred from the arguments (`vec2(u, 4)` → uint2).
     template<typename T> inline vec<T, 2> wgpu_vec2(vec<T, 2> a) { return a; }
     template<typename A> inline vec<A, 2> wgpu_vec2(A a) { return vec<A, 2>(a); }
     template<typename A, typename B> inline auto wgpu_vec2(A a, B b) {
@@ -196,7 +199,7 @@ enum MSLPrelude {
         return vec<decltype(a + b + c + d), 4>(a, b, c, d);
     }
 
-    // WGSL은 리터럴을 문맥 타입으로 승격한다(`max(x, 0)`). MSL은 그 자리에서 오버로드가 갈린다.
+    // WGSL promotes a literal to the context type (`max(x, 0)`). MSL splits the overload right there.
     template<typename A, typename B> inline auto wgpu_max(A a, B b) {
         using T = decltype(a + b);
         return max(T(a), T(b));
@@ -225,8 +228,9 @@ enum MSLPrelude {
         using T = decltype(a + b + c);
         return smoothstep(T(a), T(b), T(c));
     }
-    // WGSL의 정수 상수식(AbstractInt)은 **문맥 타입으로 굳는다** — `vec2(4, 1)`이 uint2 자리에
-    // 오면 uint2, float2 자리에 오면 float2다. 타입 추론 없이 그 결정을 C++ 변환 연산자에 넘긴다.
+    // WGSL's integer constant expressions (AbstractInt) **freeze into the context type** — `vec2(4, 1)`
+    // is uint2 in a uint2 position and float2 in a float2 one. That decision is handed to C++ conversion
+    // operators, with no type inference.
     template<int N> struct wgpu_aint {
         vec<int, N> value;
         template<typename T> operator vec<T, N>() const { return vec<T, N>(value); }
@@ -239,10 +243,10 @@ enum MSLPrelude {
     inline wgpu_aint<4> wgpu_aint4(int x, int y, int z, int w) {
         return wgpu_aint<4>{ int4(x, y, z, w) };
     }
-    // 연산자는 다섯 모양이 필요하다. C++는 벡터 피연산자 하나만 보고 변환 연산자의 T를 추론하지
-    // 못하므로(그래서 그냥 "invalid operands"가 난다) 각 자리를 명시해 준다.
-    // 벡터 쪽이 `vec<T,N>`로 더 특수화되어 있어 스칼라 템플릿 S와 겹쳐도 모호하지 않다.
-    // aint ⊗ aint는 정수 그대로 두어 **상수식이 계속 추상 상태로** 남게 한다.
+    // The operators need five shapes. C++ cannot infer the conversion operator's T from a single vector
+    // operand (it just reports "invalid operands"), so each position is spelled out.
+    // The vector side is more specialized as `vec<T,N>`, so it stays unambiguous against the scalar template S.
+    // aint ⊗ aint stays integral so that **a constant expression remains abstract**.
     template<int N, typename T> inline vec<T,N> operator*(vec<T,N> a, wgpu_aint<N> b) { return a * vec<T,N>(b.value); }
     template<int N, typename T> inline vec<T,N> operator*(wgpu_aint<N> a, vec<T,N> b) { return vec<T,N>(a.value) * b; }
     template<int N, typename S> inline vec<S,N> operator*(S a, wgpu_aint<N> b) { return vec<S,N>(a) * vec<S,N>(b.value); }
@@ -265,7 +269,7 @@ enum MSLPrelude {
     template<int N, typename S> inline vec<S,N> operator/(wgpu_aint<N> a, S b) { return vec<S,N>(a.value) / vec<S,N>(b); }
     template<int N> inline wgpu_aint<N> operator/(wgpu_aint<N> a, wgpu_aint<N> b) { return wgpu_aint<N>{ a.value / b.value }; }
 
-    // `textureSampleBaseClampToEdge` — 밉 0에서, 좌표를 텍셀 절반만큼 안쪽으로 물려 샘플한다.
+    // `textureSampleBaseClampToEdge` — samples at mip 0 with the coordinate pulled half a texel inward.
     template<typename T> inline vec<T,4> wgpu_sample_base_clamp(texture2d<T> tex, sampler smp, float2 coord) {
         float2 size = float2(tex.get_width(), tex.get_height());
         float2 halfTexel = 0.5 / size;
@@ -274,7 +278,7 @@ enum MSLPrelude {
     // ──────────────────────────────────────────────────────────────────────
     """
 
-    /// 프렐류드 헬퍼로 우회시키는 내장 함수 (WGSL 이름 → MSL 헬퍼 이름).
+    /// Builtins routed through a prelude helper (WGSL name → MSL helper name).
     static let redirectedBuiltins: [String: String] = [
         "max": "wgpu_max",
         "min": "wgpu_min",
@@ -287,6 +291,6 @@ enum MSLPrelude {
         "degrees": "wgpu_degrees",
     ]
 
-    /// 성분 타입이 생략된 벡터 생성자.
+    /// Vector constructors with the component type omitted.
     static let inferredVectorConstructors: Set<String> = ["vec2", "vec3", "vec4"]
 }
