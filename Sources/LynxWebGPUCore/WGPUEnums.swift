@@ -1,8 +1,8 @@
 import Foundation
 
-// WebGPU 명세의 열거형은 JS에서 **문자열**로 온다 ("rgba8unorm", "triangle-list" …).
-// raw value는 명세 철자를 그대로 쓴다 — 여기서 이름을 바꾸면 JS 코드가 깨진다.
-// Metal 타입으로의 변환은 백엔드(LynxWebGPU)가 담당한다 (Core는 Metal-free).
+// WebGPU spec enums arrive from JS as **strings** ("rgba8unorm", "triangle-list", …).
+// Raw values keep the spec spelling exactly — renaming one here breaks JS code.
+// Converting to Metal types is the backend's job (LynxWebGPU); Core stays Metal-free.
 
 public enum WGPUTextureFormat: String, CaseIterable, Sendable {
     // 8-bit
@@ -21,8 +21,8 @@ public enum WGPUTextureFormat: String, CaseIterable, Sendable {
     case rgb10a2unorm
     case rgb10a2uint
     case rg11b10ufloat
-    /// 공유 지수 HDR — 채널마다 가수 9비트 + 공통 지수 5비트. 렌더 타깃은 될 수 없고
-    /// **읽기 전용 HDR 소스**로 쓴다 (`rgba16float`의 절반 크기로 같은 동적 범위를 담는다).
+    /// Shared-exponent HDR — 9 mantissa bits per channel plus a 5-bit shared exponent. Cannot be a
+    /// render target; used as a **read-only HDR source** (same dynamic range at half the size of `rgba16float`).
     case rgb9e5ufloat
     // 64-bit
     case rg32uint, rg32sint, rg32float
@@ -37,15 +37,15 @@ public enum WGPUTextureFormat: String, CaseIterable, Sendable {
     case depth32float
     case depth32floatStencil8 = "depth32float-stencil8"
 
-    // --- 블록 압축 (BC / ETC2 / ASTC) ---------------------------------------
+    // --- Block compression (BC / ETC2 / ASTC) --------------------------------
     //
-    // 픽셀이 아니라 **블록** 단위로 저장된다. 크기 계산은 `blockWidth`/`blockHeight`/
-    // `bytesPerBlock`을 쓸 것 — `bytesPerPixel`은 이들 포맷에서 뜻이 없다.
+    // Stored in **blocks**, not pixels. Compute sizes with `blockWidth`/`blockHeight`/
+    // `bytesPerBlock` — `bytesPerPixel` is meaningless for these formats.
     //
-    // 셋 다 명세에서 **선택 기능**이다 (`texture-compression-bc` / `-etc2` / `-astc`).
-    // 기기 지원은 `adapter.features`로 확인한다.
+    // All three are **optional features** in the spec (`texture-compression-bc` / `-etc2` / `-astc`).
+    // Check device support through `adapter.features`.
 
-    // BC (Desktop) — 4x4 블록
+    // BC (desktop) — 4x4 blocks
     case bc1RGBAUnorm = "bc1-rgba-unorm"
     case bc1RGBAUnormSRGB = "bc1-rgba-unorm-srgb"
     case bc2RGBAUnorm = "bc2-rgba-unorm"
@@ -61,7 +61,7 @@ public enum WGPUTextureFormat: String, CaseIterable, Sendable {
     case bc7RGBAUnorm = "bc7-rgba-unorm"
     case bc7RGBAUnormSRGB = "bc7-rgba-unorm-srgb"
 
-    // ETC2 / EAC — 4x4 블록
+    // ETC2 / EAC — 4x4 blocks
     case etc2RGB8Unorm = "etc2-rgb8unorm"
     case etc2RGB8UnormSRGB = "etc2-rgb8unorm-srgb"
     case etc2RGB8A1Unorm = "etc2-rgb8a1unorm"
@@ -73,7 +73,7 @@ public enum WGPUTextureFormat: String, CaseIterable, Sendable {
     case eacRG11Unorm = "eac-rg11unorm"
     case eacRG11Snorm = "eac-rg11snorm"
 
-    // ASTC — 블록 크기가 포맷 이름에 들어 있다 (4x4 ~ 12x12), 전부 16바이트/블록
+    // ASTC — the block size is part of the format name (4x4 through 12x12), all 16 bytes/block
     case astc4x4Unorm = "astc-4x4-unorm"
     case astc4x4UnormSRGB = "astc-4x4-unorm-srgb"
     case astc5x4Unorm = "astc-5x4-unorm"
@@ -103,7 +103,7 @@ public enum WGPUTextureFormat: String, CaseIterable, Sendable {
     case astc12x12Unorm = "astc-12x12-unorm"
     case astc12x12UnormSRGB = "astc-12x12-unorm-srgb"
 
-    /// 깊이/스텐실 어태치먼트로만 쓸 수 있는 포맷인가.
+    /// Whether the format can only be a depth/stencil attachment.
     public var isDepthOrStencil: Bool {
         switch self {
         case .stencil8, .depth16unorm, .depth24plus, .depth24plusStencil8, .depth32float, .depth32floatStencil8:
@@ -127,12 +127,12 @@ public enum WGPUTextureFormat: String, CaseIterable, Sendable {
         }
     }
 
-    /// 블록 압축 포맷인가 — 픽셀이 아니라 **블록** 단위로 저장된다.
+    /// Whether this is a block-compressed format — stored in **blocks**, not pixels.
     public var isCompressed: Bool { blockWidth > 1 || blockHeight > 1 }
 
-    /// 텍셀 블록 하나가 덮는 크기. 비압축은 (1, 1)이다.
+    /// The area one texel block covers. Uncompressed formats are (1, 1).
     ///
-    /// ASTC는 블록 크기가 포맷 이름에 들어 있고(`astc-8x6-unorm` → 8×6), BC·ETC2는 전부 4×4다.
+    /// ASTC carries its block size in the name (`astc-8x6-unorm` → 8×6); BC and ETC2 are all 4×4.
     public var blockSize: (width: Int, height: Int) {
         guard rawValue.hasPrefix("astc-") else {
             switch self {
@@ -148,7 +148,7 @@ public enum WGPUTextureFormat: String, CaseIterable, Sendable {
                 return (1, 1)
             }
         }
-        // "astc-<W>x<H>-unorm[-srgb]" — 이름이 곧 블록 크기다.
+        // "astc-<W>x<H>-unorm[-srgb]" — the name is the block size.
         let dimensions = rawValue.dropFirst("astc-".count).prefix { $0 != "-" }.split(separator: "x")
         guard dimensions.count == 2, let width = Int(dimensions[0]), let height = Int(dimensions[1]) else {
             return (1, 1)
@@ -159,9 +159,9 @@ public enum WGPUTextureFormat: String, CaseIterable, Sendable {
     public var blockWidth: Int { blockSize.width }
     public var blockHeight: Int { blockSize.height }
 
-    /// 블록 하나의 바이트 수. **비압축 포맷에서는 픽셀 1개의 바이트 수와 같다.**
+    /// Bytes in one block. **For uncompressed formats this equals the bytes in one pixel.**
     ///
-    /// 크기 계산은 전부 이 값을 쓴다 — 압축 포맷에 `bytesPerPixel`을 쓰면 조용히 틀린다.
+    /// Every size calculation uses this value — `bytesPerPixel` on a compressed format is silently wrong.
     public var bytesPerBlock: Int {
         switch self {
         case .r8unorm, .r8snorm, .r8uint, .r8sint, .stencil8: return 1
@@ -173,26 +173,26 @@ public enum WGPUTextureFormat: String, CaseIterable, Sendable {
         case .rg32uint, .rg32sint, .rg32float, .rgba16uint, .rgba16sint, .rgba16float,
              .depth24plusStencil8, .depth32floatStencil8: return 8
         case .rgba32uint, .rgba32sint, .rgba32float: return 16
-        // BC1·BC4와 ETC2 RGB8 계열은 블록당 8바이트, 나머지 압축 포맷은 16바이트다.
+        // BC1/BC4 and the ETC2 RGB8 family are 8 bytes per block; every other compressed format is 16.
         case .bc1RGBAUnorm, .bc1RGBAUnormSRGB, .bc4RUnorm, .bc4RSnorm,
              .etc2RGB8Unorm, .etc2RGB8UnormSRGB, .etc2RGB8A1Unorm, .etc2RGB8A1UnormSRGB,
              .eacR11Unorm, .eacR11Snorm:
             return 8
         default:
-            // BC2·BC3·BC5·BC6H·BC7 · ETC2 RGBA8 · EAC RG11 · ASTC 전 종류.
+            // BC2, BC3, BC5, BC6H, BC7, ETC2 RGBA8, EAC RG11 and every ASTC variant.
             return 16
         }
     }
 
-    /// 픽셀 1개의 바이트 수. **비압축 포맷에서만 뜻이 있다** (압축은 `bytesPerBlock`을 쓸 것).
+    /// Bytes in one pixel. **Meaningful only for uncompressed formats** (use `bytesPerBlock` otherwise).
     public var bytesPerPixel: Int { bytesPerBlock }
 
-    /// `width` 픽셀을 담는 데 필요한 한 행의 바이트 수 (블록 단위로 올림).
+    /// Bytes in one row holding `width` pixels (rounded up to whole blocks).
     public func bytesPerRow(width: Int) -> Int {
         (width + blockWidth - 1) / blockWidth * bytesPerBlock
     }
 
-    /// `height` 픽셀에 해당하는 **블록 행** 수.
+    /// Number of **block rows** covering `height` pixels.
     public func blockRows(height: Int) -> Int {
         (height + blockHeight - 1) / blockHeight
     }
@@ -240,10 +240,10 @@ public enum WGPUCompareFunction: String, CaseIterable, Sendable {
     case always
 }
 
-/// 스텐실 테스트/깊이 테스트 결과에 따라 스텐실 값을 어떻게 바꿀지.
+/// How to change the stencil value based on the stencil and depth test results.
 ///
-/// `-clamp`는 0/255에서 멈추고 `-wrap`은 넘어가면 반대쪽으로 감긴다 — 섀도 볼륨처럼
-/// 겹침 횟수를 셀 때 둘의 차이가 결과를 가른다.
+/// `-clamp` stops at 0/255 while `-wrap` wraps around to the other end — when counting overlaps,
+/// as with shadow volumes, that difference decides the result.
 public enum WGPUStencilOperation: String, CaseIterable, Sendable {
     case keep
     case zero
@@ -309,8 +309,8 @@ public enum WGPUVertexFormat: String, CaseIterable, Sendable {
 
 /// `GPUQuerySet.type`.
 ///
-/// 둘은 성격이 아주 다르다. `occlusion`은 "몇 개의 샘플이 살아남았나"라 **결정적**이고,
-/// `timestamp`는 GPU 시계라 같은 입력에도 값이 매번 다르다. 뒤엣것에 값 단언을 걸면 안 된다.
+/// The two behave very differently. `occlusion` ("how many samples survived") is **deterministic**,
+/// while `timestamp` is a GPU clock whose value differs on identical input. Never assert on the latter.
 public enum WGPUQueryType: String, CaseIterable, Sendable {
     case occlusion
     case timestamp
@@ -379,7 +379,7 @@ public enum WGPUCanvasAlphaMode: String, CaseIterable, Sendable {
     case premultiplied
 }
 
-/// `GPUCanvasConfiguration.colorSpace` — 명세가 정의하는 두 가지.
+/// `GPUCanvasConfiguration.colorSpace` — the two the spec defines.
 public enum WGPUPredefinedColorSpace: String, CaseIterable, Sendable {
     case srgb
     case displayP3 = "display-p3"
@@ -387,27 +387,27 @@ public enum WGPUPredefinedColorSpace: String, CaseIterable, Sendable {
 
 /// `GPUCanvasToneMappingMode`.
 ///
-/// `standard`는 표시할 때 SDR 범위(0~1)로 자른다. `extended`는 디스플레이가 SDR 흰색보다
-/// 더 밝게 낼 수 있는 여유(EDR)까지 값을 그대로 내보낸다.
+/// `standard` clips to the SDR range (0...1) on display. `extended` passes values through up to the
+/// headroom (EDR) a display can push beyond SDR white.
 ///
-/// `extended`를 쓰려면 두 가지가 함께 맞아야 한다:
-/// - 캔버스 포맷이 1.0을 넘는 값을 담을 수 있어야 한다 (`rgba16float`).
-/// - 셰이더가 **선형** 값을 써야 한다. 확장 색공간은 선형이므로 sRGB 인코딩을 하면 안 된다.
+/// Using `extended` requires two things to line up:
+/// - the canvas format must hold values above 1.0 (`rgba16float`);
+/// - the shader must emit **linear** values — the extended space is linear, so no sRGB encoding.
 public enum WGPUCanvasToneMappingMode: String, CaseIterable, Sendable {
     case standard
     case extended
 }
 
-/// 셰이더 소스 언어. WebGPU 명세는 WGSL만 정의하지만, 이 구현은 트랜스파일러를 우회해
-/// Metal Shading Language를 직접 넣는 탈출구를 제공한다 (`docs/WGSL.md` §5).
+/// Shader source language. The WebGPU spec defines only WGSL, but this implementation offers an
+/// escape hatch that bypasses the transpiler and takes Metal Shading Language directly (`docs/WGSL.md` §5).
 public enum WGPUShaderLanguage: String, CaseIterable, Sendable {
     case wgsl
     case msl
 }
 
-// MARK: - 비트마스크 플래그
+// MARK: - Bitmask flags
 
-/// `GPUBufferUsage` — JS 상수와 값이 같아야 한다.
+/// `GPUBufferUsage` — values must match the JS constants.
 public struct WGPUBufferUsage: OptionSet, Sendable {
     public let rawValue: Int
     public init(rawValue: Int) { self.rawValue = rawValue }
@@ -436,7 +436,7 @@ public struct WGPUTextureUsage: OptionSet, Sendable {
     public static let renderAttachment = WGPUTextureUsage(rawValue: 0x10)
 }
 
-/// `GPUShaderStage` — 바인드 그룹 레이아웃의 `visibility`.
+/// `GPUShaderStage` — the `visibility` of a bind group layout entry.
 public struct WGPUShaderStage: OptionSet, Sendable {
     public let rawValue: Int
     public init(rawValue: Int) { self.rawValue = rawValue }

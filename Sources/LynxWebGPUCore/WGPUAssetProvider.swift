@@ -1,44 +1,46 @@
 import Foundation
 
-/// JS의 `loadAsset(name)`이 요청한 애셋을 바이트로 바꿔 주는 곳.
+/// Where an asset requested by JS's `loadAsset(name)` is turned into bytes.
 ///
-/// Lynx가 번들 로딩을 `LynxTemplateProvider`로 호스트에 맡기듯, 애셋 해석도 호스트가
-/// 갈아끼울 수 있다 — `LynxWebGPUHost.assetProvider`에 다른 구현을 넣으면 이름 해석
-/// 규칙과 접근 범위를 앱이 정한다 (예: 허용 디렉토리 축소, 핸들 기반 레지스트리).
+/// Just as Lynx hands bundle loading to the host through `LynxTemplateProvider`, asset resolution
+/// is swappable too — put another implementation in `LynxWebGPUHost.assetProvider` and the app
+/// decides the name-resolution rules and the access scope (a narrower directory, a handle-based
+/// registry, and so on).
 ///
-/// 기본값은 `WGPUFileAssetProvider()` — **전체 경로를 허용**한다. 번들(JS)을 신뢰할 수
-/// 없는 앱(서버에서 내려받는 번들 등)은 반드시 `allowedRoots`를 좁히거나 자체 구현으로
-/// 바꿀 것. JS가 읽은 바이트는 JS의 것이 된다 — 밖으로 보낼 수도 있다.
+/// The default is `WGPUFileAssetProvider()`, which **allows any path**. An app that cannot trust
+/// its bundle (one downloaded from a server, say) must narrow `allowedRoots` or swap in its own
+/// implementation. Bytes JS has read belong to JS — it can send them anywhere.
 public protocol WGPUAssetProvider: AnyObject {
-    /// `name`을 바이트로 바꾼다.
+    /// Turns `name` into bytes.
     ///
-    /// JS 스레드에서 불린다 — 파일처럼 느린 소스는 **직접 백그라운드 큐로 넘길 것**.
-    /// 완료 콜백은 아무 스레드에서 불러도 된다 (Lynx가 JS로 되돌린다).
+    /// Called on the JS thread — a slow source such as a file must **move to a background queue
+    /// itself**. The completion callback may come from any thread (Lynx returns it to JS).
     func loadAsset(named name: String, completion: @escaping (Result<Data, WGPUError>) -> Void)
 }
 
-/// 브리지의 `loadAsset` 요청을 공급자에 위임하고 결과를 JS 페이로드로 바꾼다.
+/// Delegates the bridge's `loadAsset` request to the provider and shapes the result as a JS payload.
 ///
-/// Lynx 의존이 없는 이 위치에 두는 이유: 브리지(`WebGPUNativeModule`)는 iOS 전용이라
-/// macOS 테스트가 닿지 않는다 — **"공급자를 갈아끼우면 스코프가 바뀐다"는 계약은
-/// 여기서 검증한다** (`AssetProviderTests`).
+/// Why it lives here, free of any Lynx dependency: the bridge (`WebGPUNativeModule`) is iOS-only,
+/// so macOS tests never reach it — **the contract "swapping the provider changes the scope" is
+/// verified here** (`AssetProviderTests`).
 public enum WGPUAssetLoading {
-    /// - Parameter params: `{"name": String}` — JS `loadAsset(name)`이 보낸 그대로.
-    /// - Parameter callback: `{"ok": true, "data": Data, "byteLength": Int}` 또는
-    ///   `{"ok": false, "errors": [...]}`. `Data`는 Lynx가 `ArrayBuffer`로 바꿔 준다.
+    /// - Parameter params: `{"name": String}` — exactly what JS's `loadAsset(name)` sent.
+    /// - Parameter callback: `{"ok": true, "data": Data, "byteLength": Int}` or
+    ///   `{"ok": false, "errors": [...]}`. Lynx converts `Data` into an `ArrayBuffer`.
     public static func load(
         _ params: [String: Any],
         provider: WGPUAssetProvider,
         callback: @escaping ([String: Any]) -> Void
     ) {
         guard let name = params["name"] as? String else {
-            callback(["ok": false, "errors": [WGPUError.validation("애셋 name이 필요하다").payload]])
+            callback(["ok": false, "errors": [WGPUError.validation("asset name is required").payload]])
             return
         }
         provider.loadAsset(named: name) { result in
             switch result {
             case .success(let data):
-                // `readBuffer`와 같은 규약 — `Data`를 그대로 실으면 Lynx가 `ArrayBuffer`로 바꿔 준다.
+                // Same convention as `readBuffer` — pass `Data` straight through and Lynx turns it
+                // into an `ArrayBuffer`.
                 callback(["ok": true, "data": data, "byteLength": data.count])
             case .failure(let error):
                 callback(["ok": false, "errors": [error.payload]])
@@ -47,16 +49,18 @@ public enum WGPUAssetLoading {
     }
 }
 
-/// 기본 애셋 공급자 — 파일과 등록된 메모리 데이터를 이름 하나로 해석한다.
+/// The default asset provider — resolves files and registered in-memory data under one name.
 ///
-/// 해석 순서:
-/// 1. `register(_:for:)`로 등록된 이름 — 이미지 피커처럼 **파일이 아니라 `Data`로 오는 것**의 통로.
-/// 2. `file://` URL 또는 `/`로 시작하는 절대 경로 — 피커·다운로드가 준 파일 URL을 그대로 쓴다.
-/// 3. 그 외 — 번들 상대 경로 (`"hdr-sample.bin"`, `"LUTs/neutral.cube"`).
+/// Resolution order:
+/// 1. A name registered with `register(_:for:)` — the channel for things that arrive **as `Data`
+///    rather than a file**, such as an image picker.
+/// 2. A `file://` URL or an absolute path starting with `/` — a file URL from a picker or download,
+///    used as-is.
+/// 3. Anything else — a bundle-relative path (`"hdr-sample.bin"`, `"LUTs/neutral.cube"`).
 ///
-/// 접근 범위: 기본은 **전체 허용**이다. `allowedRoots`를 주면 2번(파일 경로)이 그 디렉토리들
-/// 아래로 제한된다 — 심볼릭 링크를 푼 실제 경로로 비교하므로 `..`나 링크로 벗어날 수 없다.
-/// 1번(등록)과 3번(번들)은 호스트가 내용을 통제하므로 제한 대상이 아니다.
+/// Access scope: **everything is allowed by default**. Supplying `allowedRoots` restricts case 2
+/// (file paths) to those directories — the comparison uses symlink-resolved real paths, so `..` or
+/// a link cannot escape. Cases 1 (registered) and 3 (bundle) are host-controlled and unrestricted.
 public final class WGPUFileAssetProvider: WGPUAssetProvider {
     private let bundle: Bundle
     private let allowedRoots: [URL]?
@@ -64,18 +68,18 @@ public final class WGPUFileAssetProvider: WGPUAssetProvider {
     private var registered: [String: Data] = [:]
 
     /// - Parameters:
-    ///   - bundle: 번들 상대 이름을 찾을 곳. 기본은 `Bundle.main` — SPM 라이브러리로
-    ///     동봉한 리소스를 내주려면 그쪽의 `Bundle.module`을 넘긴다.
-    ///   - allowedRoots: 파일 경로 접근을 허용할 디렉토리 목록. `nil`이면 전체 허용.
+    ///   - bundle: where bundle-relative names are looked up. Defaults to `Bundle.main` — pass an
+    ///     SPM library's `Bundle.module` to serve resources shipped alongside it.
+    ///   - allowedRoots: directories file-path access is confined to. `nil` allows everything.
     public init(bundle: Bundle = .main, allowedRoots: [URL]? = nil) {
         self.bundle = bundle
-        // 비교 시점마다 푸는 대신 여기서 한 번 정규화해 둔다.
+        // Normalize once here instead of resolving on every comparison.
         self.allowedRoots = allowedRoots?.map { $0.standardizedFileURL.resolvingSymlinksInPath() }
     }
 
-    // MARK: - 메모리 데이터 등록 (호스트 앱용)
+    // MARK: - Registering in-memory data (for the host app)
 
-    /// 메모리에 있는 바이트를 이름에 묶는다. JS가 같은 이름으로 `loadAsset`을 부르면 이것을 받는다.
+    /// Binds in-memory bytes to a name. JS calling `loadAsset` with that name receives them.
     public func register(_ data: Data, for name: String) {
         lock.lock()
         registered[name] = data
@@ -88,11 +92,11 @@ public final class WGPUFileAssetProvider: WGPUAssetProvider {
         lock.unlock()
     }
 
-    // MARK: - 해석
+    // MARK: - Resolution
 
     public func loadAsset(named name: String, completion: @escaping (Result<Data, WGPUError>) -> Void) {
         guard !name.isEmpty else {
-            completion(.failure(.validation("애셋 name이 필요하다")))
+            completion(.failure(.validation("asset name is required")))
             return
         }
 
@@ -100,14 +104,14 @@ public final class WGPUFileAssetProvider: WGPUAssetProvider {
         let registeredData = registered[name]
         lock.unlock()
         if let registeredData {
-            // 이미 메모리에 있으므로 큐로 넘길 이유가 없다.
+            // Already in memory, so there is no reason to hand it to a queue.
             completion(.success(registeredData))
             return
         }
 
         if let url = Self.fileURL(from: name) {
             guard isAllowed(url) else {
-                completion(.failure(.validation("허용된 디렉토리 밖의 경로다: \(name)")))
+                completion(.failure(.validation("path is outside the allowed directories: \(name)")))
                 return
             }
             readInBackground(url, describedAs: name, completion: completion)
@@ -115,15 +119,15 @@ public final class WGPUFileAssetProvider: WGPUAssetProvider {
         }
 
         guard let url = bundledURL(named: name) else {
-            completion(.failure(.validation("번들에 '\(name)'이(가) 없다")))
+            completion(.failure(.validation("'\(name)' is not in the bundle")))
             return
         }
         readInBackground(url, describedAs: name, completion: completion)
     }
 
-    // MARK: - 파일 경로
+    // MARK: - File paths
 
-    /// 이름이 파일 경로를 뜻하면 URL로 바꾼다. 아니면 `nil` — 번들 이름으로 본다.
+    /// Turns a name into a URL when it denotes a file path. Otherwise `nil` — treated as a bundle name.
     private static func fileURL(from name: String) -> URL? {
         if name.hasPrefix("file://") { return URL(string: name) }
         if name.hasPrefix("/") { return URL(fileURLWithPath: name) }
@@ -132,18 +136,18 @@ public final class WGPUFileAssetProvider: WGPUAssetProvider {
 
     private func isAllowed(_ url: URL) -> Bool {
         guard let allowedRoots else { return true }
-        // 피커가 주는 `/var/...`와 실제 `/private/var/...`처럼 링크로 갈라진 표기를 맞춘다.
+        // Reconciles link-split spellings such as the picker's `/var/...` versus the real `/private/var/...`.
         let resolved = url.standardizedFileURL.resolvingSymlinksInPath().path
         return allowedRoots.contains { root in
             resolved == root.path || resolved.hasPrefix(root.path.hasSuffix("/") ? root.path : root.path + "/")
         }
     }
 
-    // MARK: - 번들 이름
+    // MARK: - Bundle names
 
     private func bundledURL(named name: String) -> URL? {
         let components = name.split(separator: "/")
-        // 번들 안에서는 위로 올라갈 이유가 없다 — `..`과 숨김 이름은 조작으로 본다.
+        // There is no reason to climb out of a bundle — `..` and hidden names count as tampering.
         guard !components.isEmpty,
               !components.contains(where: { $0 == ".." || $0.hasPrefix(".") })
         else { return nil }
@@ -159,19 +163,19 @@ public final class WGPUFileAssetProvider: WGPUAssetProvider {
         )
     }
 
-    // MARK: - 읽기
+    // MARK: - Reading
 
     private func readInBackground(
         _ url: URL,
         describedAs description: String,
         completion: @escaping (Result<Data, WGPUError>) -> Void
     ) {
-        // 파일이 수 MB에 이를 수 있어 JS 스레드에서 동기로 읽지 않는다.
+        // A file can run to several MB, so we never read it synchronously on the JS thread.
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 completion(.success(try Data(contentsOf: url, options: .mappedIfSafe)))
             } catch {
-                completion(.failure(.backend("애셋 '\(description)'을(를) 읽지 못했다: \(error)")))
+                completion(.failure(.backend("could not read asset '\(description)': \(error)")))
             }
         }
     }

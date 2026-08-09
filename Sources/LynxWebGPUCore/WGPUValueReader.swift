@@ -1,10 +1,10 @@
 import Foundation
 
-/// Lynx NativeModule이 넘긴 `[String: Any]`를 타입 안전하게 읽는 리더.
+/// Type-safe reader over the `[String: Any]` a Lynx NativeModule handed us.
 ///
-/// JSON 문자열을 거치지 않는다 — Lynx는 이미 `NSDictionary`/`NSNumber`/`NSString`로 변환해서 주므로
-/// 한 번 더 직렬화하면 프레임당 비용만 늘어난다. 대신 실패 시 **경로가 붙은 오류**를 던져
-/// 커맨드 스트림 어디가 잘못됐는지 JS 쪽에서 바로 알 수 있게 한다.
+/// It never goes through a JSON string — Lynx already converts to `NSDictionary`/`NSNumber`/
+/// `NSString`, and serializing once more would only add per-frame cost. Instead a failure throws
+/// an **error carrying a path**, so JS learns immediately where the command stream went wrong.
 public struct WGPUValueReader {
     public let path: String
     private let dictionary: [String: Any]
@@ -25,10 +25,10 @@ public struct WGPUValueReader {
         path.isEmpty ? key : "\(path).\(key)"
     }
 
-    /// 이 리더 아래 필드 하나의 경로 (`commands[3].indirectOffset`).
+    /// Path of one field under this reader (`commands[3].indirectOffset`).
     ///
-    /// 값을 읽는 쪽이 아니라 **쓰임새를 아는 쪽**이 검증할 때 쓴다 — 리더가 타입만 보고
-    /// 던지는 오류와 달리, "4의 배수여야 한다" 같은 규칙은 호출처만 알기 때문이다.
+    /// Used when validation belongs to **the side that knows the usage**, not the side reading the
+    /// value — unlike a type mismatch, a rule like "must be a multiple of 4" is known only to the caller.
     public func fieldPath(_ key: String) -> String { childPath(key) }
 
     private func value(_ key: String) -> Any? {
@@ -37,18 +37,18 @@ public struct WGPUValueReader {
     }
 
     private func missing(_ key: String) -> WGPUError {
-        .validation("필수 필드 누락", path: childPath(key))
+        .validation("required field missing", path: childPath(key))
     }
 
     private func mismatch(_ key: String, expected: String) -> WGPUError {
-        .validation("\(expected) 이(가) 필요하다", path: childPath(key))
+        .validation("\(expected) required", path: childPath(key))
     }
 
-    // MARK: - 스칼라
+    // MARK: - Scalars
 
     public func requiredInt(_ key: String) throws -> Int {
         guard let raw = value(key) else { throw missing(key) }
-        guard let number = raw as? NSNumber else { throw mismatch(key, expected: "정수") }
+        guard let number = raw as? NSNumber else { throw mismatch(key, expected: "an integer") }
         return number.intValue
     }
 
@@ -62,7 +62,7 @@ public struct WGPUValueReader {
 
     public func requiredDouble(_ key: String) throws -> Double {
         guard let raw = value(key) else { throw missing(key) }
-        guard let number = raw as? NSNumber else { throw mismatch(key, expected: "숫자") }
+        guard let number = raw as? NSNumber else { throw mismatch(key, expected: "a number") }
         return number.doubleValue
     }
 
@@ -76,7 +76,7 @@ public struct WGPUValueReader {
 
     public func requiredString(_ key: String) throws -> String {
         guard let raw = value(key) else { throw missing(key) }
-        guard let string = raw as? String else { throw mismatch(key, expected: "문자열") }
+        guard let string = raw as? String else { throw mismatch(key, expected: "a string") }
         return string
     }
 
@@ -88,7 +88,7 @@ public struct WGPUValueReader {
         value(key) as? String
     }
 
-    // MARK: - 핸들
+    // MARK: - Handles
 
     public func requiredHandle(_ key: String) throws -> WGPUHandle {
         WGPUHandle(try requiredInt(key))
@@ -98,13 +98,13 @@ public struct WGPUValueReader {
         optionalInt(key).map(WGPUHandle.init)
     }
 
-    // MARK: - 열거형 / 플래그
+    // MARK: - Enums / flags
 
     public func requiredEnum<T: RawRepresentable & CaseIterable>(_ key: String, _ type: T.Type) throws -> T
     where T.RawValue == String {
         let raw = try requiredString(key)
         guard let parsed = T(rawValue: raw) else {
-            throw WGPUError.validation("알 수 없는 값 \"\(raw)\" (가능: \(Self.allowed(type)))", path: childPath(key))
+            throw WGPUError.validation("unknown value \"\(raw)\" (allowed: \(Self.allowed(type)))", path: childPath(key))
         }
         return parsed
     }
@@ -135,11 +135,11 @@ public struct WGPUValueReader {
         T(rawValue: try requiredInt(key))
     }
 
-    // MARK: - 중첩 구조
+    // MARK: - Nested structures
 
     public func requiredObject(_ key: String) throws -> WGPUValueReader {
         guard let raw = value(key) else { throw missing(key) }
-        guard let dictionary = raw as? [String: Any] else { throw mismatch(key, expected: "객체") }
+        guard let dictionary = raw as? [String: Any] else { throw mismatch(key, expected: "an object") }
         return WGPUValueReader(dictionary, path: childPath(key))
     }
 
@@ -150,10 +150,10 @@ public struct WGPUValueReader {
 
     public func requiredObjects(_ key: String) throws -> [WGPUValueReader] {
         guard let raw = value(key) else { throw missing(key) }
-        guard let array = raw as? [Any] else { throw mismatch(key, expected: "배열") }
+        guard let array = raw as? [Any] else { throw mismatch(key, expected: "an array") }
         return try array.enumerated().map { index, element in
             guard let dictionary = element as? [String: Any] else {
-                throw WGPUError.validation("객체가 필요하다", path: "\(childPath(key))[\(index)]")
+                throw WGPUError.validation("an object is required", path: "\(childPath(key))[\(index)]")
             }
             return WGPUValueReader(dictionary, path: "\(childPath(key))[\(index)]")
         }
@@ -166,10 +166,10 @@ public struct WGPUValueReader {
 
     public func numbers(_ key: String) throws -> [Double] {
         guard let raw = value(key) else { throw missing(key) }
-        guard let array = raw as? [Any] else { throw mismatch(key, expected: "숫자 배열") }
+        guard let array = raw as? [Any] else { throw mismatch(key, expected: "a number array") }
         return try array.enumerated().map { index, element in
             guard let number = element as? NSNumber else {
-                throw WGPUError.validation("숫자가 필요하다", path: "\(childPath(key))[\(index)]")
+                throw WGPUError.validation("a number is required", path: "\(childPath(key))[\(index)]")
             }
             return number.doubleValue
         }
@@ -179,7 +179,7 @@ public struct WGPUValueReader {
         try numbers(key).map { Int($0) }
     }
 
-    /// `{ "name": 값 }` 형태의 숫자 맵 (파이프라인 상수 `constants`).
+    /// A numeric map of the form `{ "name": value }` (pipeline `constants`).
     public func numberMap(_ key: String) -> [String: Double] {
         guard let raw = value(key) as? [String: Any] else { return [:] }
         return raw.compactMapValues { ($0 as? NSNumber)?.doubleValue }
@@ -189,33 +189,33 @@ public struct WGPUValueReader {
         try integers(key).map(WGPUHandle.init)
     }
 
-    /// 문자열 배열. **`null` 항목은 nil로 남긴다** — 렌더 번들의 `colorFormats`처럼
-    /// "이 슬롯에는 어태치먼트가 없다"를 null로 표현하는 자리가 있다.
+    /// String array. **`null` entries stay nil** — places such as a render bundle's `colorFormats`
+    /// use null to mean "no attachment in this slot".
     public func strings(_ key: String) throws -> [String?] {
         guard let raw = value(key) else { return [] }
-        guard let array = raw as? [Any] else { throw mismatch(key, expected: "문자열 배열") }
+        guard let array = raw as? [Any] else { throw mismatch(key, expected: "a string array") }
         return try array.enumerated().map { index, element in
             if element is NSNull { return nil }
             guard let string = element as? String else {
-                throw WGPUError.validation("문자열이 필요하다", path: "\(childPath(key))[\(index)]")
+                throw WGPUError.validation("a string is required", path: "\(childPath(key))[\(index)]")
             }
             return string
         }
     }
 
-    // MARK: - 바이너리
+    // MARK: - Binary
 
-    /// 바이트열을 읽는다. 세 가지 표현을 모두 받는다:
+    /// Reads a byte sequence. All three representations are accepted:
     ///
-    /// - `NSData` — **JS 셰임이 쓰는 경로.** Lynx가 `ArrayBuffer`를 변환해 준 것이다.
-    /// - base64 문자열 — 손으로 쓰는 커맨드 스트림(테스트 하네스, `RenderHarness.base64`)용.
-    /// - 숫자 배열 — 소량 디버그용.
+    /// - `NSData` — **the path the JS shim uses.** Lynx converted an `ArrayBuffer` into it.
+    /// - a base64 string — for hand-written command streams (test harnesses, `RenderHarness.base64`).
+    /// - a number array — for small debugging cases.
     public func requiredData(_ key: String) throws -> Data {
         guard let raw = value(key) else { throw missing(key) }
         if let data = raw as? Data { return data }
         if let string = raw as? String {
             guard let decoded = Data(base64Encoded: string) else {
-                throw WGPUError.validation("base64 디코딩 실패", path: childPath(key))
+                throw WGPUError.validation("base64 decoding failed", path: childPath(key))
             }
             return decoded
         }
@@ -224,16 +224,16 @@ public struct WGPUValueReader {
             bytes.reserveCapacity(array.count)
             for (index, element) in array.enumerated() {
                 guard let number = element as? NSNumber else {
-                    throw WGPUError.validation("바이트(0~255)가 필요하다", path: "\(childPath(key))[\(index)]")
+                    throw WGPUError.validation("a byte (0...255) is required", path: "\(childPath(key))[\(index)]")
                 }
                 bytes.append(UInt8(truncatingIfNeeded: number.intValue))
             }
             return Data(bytes)
         }
-        throw mismatch(key, expected: "ArrayBuffer · base64 문자열 · 바이트 배열")
+        throw mismatch(key, expected: "an ArrayBuffer, base64 string or byte array")
     }
 
-    /// `requiredData`와 같지만 없거나 읽을 수 없으면 nil.
+    /// Same as `requiredData` but nil when absent or unreadable.
     public func data(_ key: String) -> Data? {
         guard value(key) != nil else { return nil }
         return try? requiredData(key)
@@ -244,9 +244,9 @@ public struct WGPUValueReader {
         return try requiredData(key)
     }
 
-    // MARK: - 복합 값
+    // MARK: - Composite values
 
-    /// `{r,g,b,a}` 또는 `[r,g,b,a]` 두 표기를 모두 받는다 (WebGPU `GPUColor`).
+    /// Accepts both `{r,g,b,a}` and `[r,g,b,a]` (WebGPU `GPUColor`).
     public func color(_ key: String, default fallback: WGPUColor) throws -> WGPUColor {
         guard let raw = value(key) else { return fallback }
         if let dictionary = raw as? [String: Any] {
@@ -261,7 +261,7 @@ public struct WGPUValueReader {
         if let array = raw as? [Any] {
             let components = array.compactMap { ($0 as? NSNumber)?.doubleValue }
             guard components.count >= 3 else {
-                throw WGPUError.validation("색은 성분 3개 이상이 필요하다", path: childPath(key))
+                throw WGPUError.validation("a color needs at least 3 components", path: childPath(key))
             }
             return WGPUColor(
                 red: components[0],
@@ -270,10 +270,10 @@ public struct WGPUValueReader {
                 alpha: components.count > 3 ? components[3] : 1
             )
         }
-        throw mismatch(key, expected: "색 ({r,g,b,a} 또는 [r,g,b,a])")
+        throw mismatch(key, expected: "a color ({r,g,b,a} or [r,g,b,a])")
     }
 
-    /// `{width,height,depthOrArrayLayers}` 또는 `[w,h,d]` (WebGPU `GPUExtent3D`).
+    /// `{width,height,depthOrArrayLayers}` or `[w,h,d]` (WebGPU `GPUExtent3D`).
     public func requiredExtent(_ key: String) throws -> WGPUExtent3D {
         guard let raw = value(key) else { throw missing(key) }
         if let dictionary = raw as? [String: Any] {
@@ -287,7 +287,7 @@ public struct WGPUValueReader {
         if let array = raw as? [Any] {
             let components = array.compactMap { ($0 as? NSNumber)?.intValue }
             guard let width = components.first else {
-                throw WGPUError.validation("크기는 성분 1개 이상이 필요하다", path: childPath(key))
+                throw WGPUError.validation("a size needs at least 1 component", path: childPath(key))
             }
             return WGPUExtent3D(
                 width: width,
@@ -295,16 +295,16 @@ public struct WGPUValueReader {
                 depthOrArrayLayers: components.count > 2 ? components[2] : 1
             )
         }
-        throw mismatch(key, expected: "크기 ({width,height,…} 또는 [w,h,d])")
+        throw mismatch(key, expected: "a size ({width,height,…} or [w,h,d])")
     }
 
-    /// `requiredExtent`와 같지만 없으면 nil — 호출 측이 소스 크기로 기본값을 정할 때 쓴다.
+    /// Same as `requiredExtent` but nil when absent — for callers that default to the source size.
     public func extent(_ key: String) -> WGPUExtent3D? {
         guard value(key) != nil else { return nil }
         return try? requiredExtent(key)
     }
 
-    /// `{x,y,z}` 또는 `[x,y,z]` (WebGPU `GPUOrigin3D`). 없으면 원점.
+    /// `{x,y,z}` or `[x,y,z]` (WebGPU `GPUOrigin3D`). Absent means the origin.
     public func origin(_ key: String) throws -> WGPUOrigin3D {
         guard let raw = value(key) else { return WGPUOrigin3D() }
         if let dictionary = raw as? [String: Any] {
@@ -323,7 +323,7 @@ public struct WGPUValueReader {
                 z: components.count > 2 ? components[2] : 0
             )
         }
-        throw mismatch(key, expected: "원점 ({x,y,z} 또는 [x,y,z])")
+        throw mismatch(key, expected: "an origin ({x,y,z} or [x,y,z])")
     }
 }
 

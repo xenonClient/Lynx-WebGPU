@@ -1,45 +1,46 @@
 import Foundation
 
-/// 커맨드 스트림 op 하나의 **디코딩 결과**.
+/// The **decoded result** of one command-stream op.
 ///
-/// `WGPUDescriptors.swift`가 명세의 `GPU*Descriptor` 딕셔너리를 옮긴다면, 이 파일은
-/// **op 자체의 인자**를 옮긴다 (`draw`의 `vertexCount`, `copyBufferToBuffer`의 오프셋 …).
+/// Where `WGPUDescriptors.swift` carries the spec's `GPU*Descriptor` dictionaries, this file
+/// carries **the op's own arguments** (`draw`'s `vertexCount`, `copyBufferToBuffer`'s offsets, …).
 ///
-/// 왜 나눠 두는가 — 해석기가 리더에서 직접 필드를 읽으면 **디코딩과 백엔드 인코딩이 한 함수에
-/// 붙어 버린다.** 그러면 백엔드를 갈아끼울 때(Dawn 등) 디코딩까지 다시 써야 하고, JS와 Swift가
-/// 쓰는 필드 이름이 코드 곳곳에 흩어져 한쪽만 고쳐도 양쪽 다 컴파일되는 드리프트가 생긴다
-/// (`CLAUDE.md` — "커맨드 스트림의 필드 이름은 타입 검사가 잡아 주지 않는다").
-/// 여기 모아 두면 이름의 출처가 하나이고, 백엔드는 **값만** 받는다.
+/// Why they are separate — if the interpreter read fields straight from the reader, **decoding and
+/// backend encoding would fuse into one function.** Swapping the backend (for Dawn, say) would then
+/// mean rewriting the decoding too, and the field names shared by JS and Swift would scatter across
+/// the code, so fixing one side still compiles on both — silent drift (`CLAUDE.md`: "type checking
+/// does not catch command-stream field names"). Gathered here, names have a single source and the
+/// backend receives **values only**.
 ///
-/// 규칙 두 가지:
-/// - **객체를 봐야 정해지는 기본값은 여기서 채우지 않는다.** `copyBufferToBuffer`의 `size`
-///   (원본의 남은 전부)처럼 레지스트리 조회가 필요한 것은 `nil`로 남기고 해석기가 정한다.
-/// - **명세가 정한 값 변환은 여기서 한다.** WebIDL의 `u32` modulo 변환, 워크그룹 수의 하한처럼
-///   백엔드와 무관한 규칙은 어느 백엔드를 써도 같아야 한다.
+/// Two rules:
+/// - **Defaults that depend on an object are not filled here.** Anything needing a registry lookup
+///   — `copyBufferToBuffer`'s `size` (the rest of the source), say — stays `nil` for the interpreter.
+/// - **Value conversions the spec mandates happen here.** Backend-independent rules such as WebIDL's
+///   `u32` modulo conversion or the workgroup-count floor must be identical on every backend.
 public protocol WGPUCommandFields {
-    /// 커맨드 스트림에서의 위치 (`commands[3]`). 뒤늦은 검증이 오류에 붙일 경로의 뿌리다.
+    /// Position within the command stream (`commands[3]`). The root of the path a late validation attaches.
     var path: String { get }
 }
 
 public extension WGPUCommandFields {
-    /// 이 커맨드 아래 필드 하나의 경로 (`commands[3].size`).
+    /// Path of one field under this command (`commands[3].size`).
     func fieldPath(_ key: String) -> String { path.isEmpty ? key : "\(path).\(key)" }
 }
 
-// MARK: - 객체 생성
+// MARK: - Object creation
 
-/// 커맨드 스트림에서 리더 하나로 만들어지는 디스크립터.
+/// A descriptor buildable from a single reader in the command stream.
 ///
-/// `WGPUCreateCommand`가 이 요구만 보고 디스크립터를 만든다 — 그래서 `create*` op을 하나
-/// 더할 때 해석기에 손댈 것이 없다.
+/// `WGPUCreateCommand` builds descriptors knowing only this requirement — which is why adding a
+/// `create*` op needs no interpreter change.
 public protocol WGPUDecodableDescriptor {
     init(from reader: WGPUValueReader) throws
 }
 
-/// `create*` op 하나 — **JS가 발급한 핸들**과 명세 디스크립터의 짝.
+/// One `create*` op — a **JS-issued handle** paired with the spec descriptor.
 ///
-/// 핸들을 클라이언트가 내는 것이 이 설계의 전제다 (`WGPUHandle` 참고). 그래서 모든 생성 op은
-/// 명세에 없는 `id` 필드를 하나 더 싣는다 — 그 이름이 **여기 한 곳**에만 있게 한다.
+/// Client-issued handles are the premise of this design (see `WGPUHandle`), so every creation op
+/// carries an extra `id` field the spec does not have — and that name lives in **this one place**.
 public struct WGPUCreateCommand<Descriptor: WGPUDecodableDescriptor>: WGPUCommandFields {
     public let id: WGPUHandle
     public let descriptor: Descriptor
@@ -63,7 +64,7 @@ extension WGPUQuerySetDescriptor: WGPUDecodableDescriptor {}
 extension WGPURenderPipelineDescriptor: WGPUDecodableDescriptor {}
 extension WGPUComputePipelineDescriptor: WGPUDecodableDescriptor {}
 
-/// `device.createTextureView()` — 원본 텍스처 핸들이 디스크립터 밖에 따로 붙는다.
+/// `device.createTextureView()` — the source texture handle rides outside the descriptor.
 public struct WGPUCreateTextureViewCommand: WGPUCommandFields {
     public let id: WGPUHandle
     public let texture: WGPUHandle
@@ -78,11 +79,11 @@ public struct WGPUCreateTextureViewCommand: WGPUCommandFields {
     }
 }
 
-/// `bundleEncoder.finish()` — 명령 목록을 **값으로 저장**했다가 렌더 패스에 되풀이한다.
+/// `bundleEncoder.finish()` — **stores the command list as values** and replays it into a render pass.
 ///
-/// 여기만 리더를 그대로 들고 있다. 번들의 계약이 "직접 인코딩과 같은 결과"라 저장 대상이
-/// 디코딩된 값이 아니라 **명령 그 자체**이기 때문이다. 리더는 값 타입이라 되풀이해도
-/// 원본이 바뀌지 않는다.
+/// This is the only place holding readers directly. The bundle contract is "same result as encoding
+/// directly", so what must be stored is **the commands themselves**, not decoded values. Readers are
+/// value types, so replaying never mutates the original.
 public struct WGPUCreateRenderBundleCommand: WGPUCommandFields {
     public let id: WGPUHandle
     public let commands: [WGPUValueReader]
@@ -97,9 +98,9 @@ public struct WGPUCreateRenderBundleCommand: WGPUCommandFields {
     }
 }
 
-// MARK: - 공통 복사 인자
+// MARK: - Shared copy arguments
 
-/// 명세 `GPUTexelCopyTextureInfo` — 복사의 텍스처 쪽 끝.
+/// Spec `GPUTexelCopyTextureInfo` — the texture end of a copy.
 public struct WGPUTexelCopyTextureInfo: WGPUCommandFields {
     public let texture: WGPUHandle
     public let mipLevel: Int
@@ -114,10 +115,10 @@ public struct WGPUTexelCopyTextureInfo: WGPUCommandFields {
     }
 }
 
-/// 명세 `GPUTexelCopyBufferInfo` — 복사의 버퍼 쪽 끝.
+/// Spec `GPUTexelCopyBufferInfo` — the buffer end of a copy.
 ///
-/// `bytesPerRow`·`rowsPerImage`는 생략할 수 있고, 그때의 기본값은 **텍스처 포맷을 알아야**
-/// 나온다 (블록 포맷은 행이 픽셀이 아니라 블록 단위다). 그래서 여기서는 nil로 남긴다.
+/// `bytesPerRow` and `rowsPerImage` may be omitted, and their defaults **require knowing the texture
+/// format** (in block formats a row is blocks, not pixels). So they stay nil here.
 public struct WGPUTexelCopyBufferInfo: WGPUCommandFields {
     public let buffer: WGPUHandle
     public let offset: Int
@@ -134,7 +135,7 @@ public struct WGPUTexelCopyBufferInfo: WGPUCommandFields {
     }
 }
 
-// MARK: - 리소스 · 큐
+// MARK: - Resources and queue
 
 /// `queue.writeBuffer()`.
 public struct WGPUWriteBufferCommand: WGPUCommandFields {
@@ -174,9 +175,9 @@ public struct WGPUWriteTextureCommand: WGPUCommandFields {
     }
 }
 
-/// `queue.copyExternalImageToTexture()`의 소스 (명세 `GPUCopyExternalImageSourceInfo`).
+/// The source of `queue.copyExternalImageToTexture()` (spec `GPUCopyExternalImageSourceInfo`).
 ///
-/// `flipY`는 **복사 시점**의 뒤집기다 — `createImageBitmap`의 `flipY`(디코딩 시점)와 별개다.
+/// `flipY` here flips at **copy time** — separate from `createImageBitmap`'s `flipY` (decode time).
 public struct WGPUExternalImageSource: WGPUCommandFields {
     public let image: WGPUHandle
     public let origin: WGPUOrigin3D
@@ -195,7 +196,7 @@ public struct WGPUExternalImageSource: WGPUCommandFields {
 public struct WGPUCopyExternalImageCommand: WGPUCommandFields {
     public let source: WGPUExternalImageSource
     public let destination: WGPUTexelCopyTextureInfo
-    /// 생략하면 **이미지의 남은 부분 전부**다 — 이미지 크기를 알아야 정해지므로 nil로 남긴다.
+    /// Omitted means **the whole remainder of the image** — that needs the image size, so it stays nil.
     public let copySize: WGPUExtent3D?
     public let path: String
 
@@ -207,7 +208,7 @@ public struct WGPUCopyExternalImageCommand: WGPUCommandFields {
     }
 }
 
-/// 핸들 하나만 받는 op (`destroy`).
+/// An op taking just one handle (`destroy`).
 public struct WGPUDestroyCommand: WGPUCommandFields {
     public let id: WGPUHandle
     public let path: String
@@ -244,7 +245,7 @@ public struct WGPUGetBindGroupLayoutCommand: WGPUCommandFields {
     }
 }
 
-// MARK: - 오류 스코프
+// MARK: - Error scopes
 
 /// `device.pushErrorScope(filter)`.
 public struct WGPUPushErrorScopeCommand: WGPUCommandFields {
@@ -257,7 +258,7 @@ public struct WGPUPushErrorScopeCommand: WGPUCommandFields {
     }
 }
 
-// MARK: - 캔버스
+// MARK: - Canvas
 
 /// `context.getCurrentTexture()`.
 public struct WGPUGetCurrentTextureCommand: WGPUCommandFields {
@@ -272,9 +273,9 @@ public struct WGPUGetCurrentTextureCommand: WGPUCommandFields {
     }
 }
 
-// MARK: - 패스 상태
+// MARK: - Pass state
 
-/// `pass.setPipeline()` — 렌더/컴퓨트 공용이다 (어느 쪽인지는 열려 있는 패스가 정한다).
+/// `pass.setPipeline()` — shared by render and compute (the open pass decides which).
 public struct WGPUSetPipelineCommand: WGPUCommandFields {
     public let pipeline: WGPUHandle
     public let path: String
@@ -295,8 +296,8 @@ public struct WGPUSetBindGroupCommand: WGPUCommandFields {
     public init(from reader: WGPUValueReader) throws {
         index = try reader.requiredInt("index")
         bindGroup = try reader.requiredHandle("bindGroup")
-        // 못 읽으면 **빈 배열로 본다.** 동적 오프셋이 없는 레이아웃이 압도적으로 많고,
-        // 실제로 필요한데 빠졌다면 바인드 그룹 적용에서 "개수가 부족하다"로 잡힌다.
+        // Unreadable means **treat it as empty.** Layouts without dynamic offsets are overwhelmingly
+        // common, and if one really was needed, applying the bind group catches it as "too few".
         dynamicOffsets = (try? reader.integers("dynamicOffsets")) ?? []
         path = reader.path
     }
@@ -324,7 +325,7 @@ public struct WGPUSetIndexBufferCommand: WGPUCommandFields {
     public let offset: Int
     public let path: String
 
-    /// 인덱스 하나의 바이트 수 — `firstIndex`를 바이트 오프셋으로 옮길 때 쓴다.
+    /// Bytes per index — used to turn `firstIndex` into a byte offset.
     public var indexStride: Int { format == .uint16 ? 2 : 4 }
 
     public init(from reader: WGPUValueReader) throws {
@@ -386,9 +387,9 @@ public struct WGPUSetBlendConstantCommand: WGPUCommandFields {
 
 /// `pass.setStencilReference()`.
 public struct WGPUSetStencilReferenceCommand: WGPUCommandFields {
-    /// **WebIDL의 `u32` 변환(modulo)을 여기서 끝낸다.** 비-truncating 이니셜라이저를 쓰면
-    /// `setStencilReference(-1)` 한 줄로 Swift 런타임이 트랩한다 — "잘못된 인자로 프로세스를
-    /// 죽이지 않는다"는 이 라이브러리의 계약(`WGPUError.swift`)에 어긋난다.
+    /// **WebIDL's `u32` conversion (modulo) is completed here.** With a non-truncating initializer a
+    /// single `setStencilReference(-1)` traps the Swift runtime — violating this library's contract
+    /// that "bad arguments never kill the process" (`WGPUError.swift`).
     public let reference: UInt32
     public let path: String
 
@@ -398,7 +399,7 @@ public struct WGPUSetStencilReferenceCommand: WGPUCommandFields {
     }
 }
 
-// MARK: - 드로우 · 디스패치
+// MARK: - Draw and dispatch
 
 /// `pass.draw()`.
 public struct WGPUDrawCommand: WGPUCommandFields {
@@ -436,8 +437,8 @@ public struct WGPUDrawIndexedCommand: WGPUCommandFields {
     }
 }
 
-/// 간접 드로우·디스패치 세 op의 공통 인자 (`drawIndirect` · `drawIndexedIndirect` ·
-/// `dispatchWorkgroupsIndirect`). 실제 인자 값은 GPU 버퍼 안에 있어 여기서는 볼 수 없다.
+/// Shared arguments of the three indirect ops (`drawIndirect`, `drawIndexedIndirect`,
+/// `dispatchWorkgroupsIndirect`). The actual argument values live in a GPU buffer, invisible here.
 public struct WGPUIndirectCommand: WGPUCommandFields {
     public let indirectBuffer: WGPUHandle
     public let indirectOffset: Int
@@ -458,7 +459,7 @@ public struct WGPUDispatchWorkgroupsCommand: WGPUCommandFields {
     public let path: String
 
     public init(from reader: WGPUValueReader) throws {
-        // 0을 넘기면 Metal이 빈 그리드로 단언한다. 명세도 0을 허용하지 않으므로 1로 올린다.
+        // Passing 0 makes Metal assert on an empty grid. The spec disallows 0 too, so we raise it to 1.
         x = max(reader.int("x", default: 1), 1)
         y = max(reader.int("y", default: 1), 1)
         z = max(reader.int("z", default: 1), 1)
@@ -477,7 +478,7 @@ public struct WGPUExecuteBundlesCommand: WGPUCommandFields {
     }
 }
 
-// MARK: - 쿼리
+// MARK: - Queries
 
 /// `pass.beginOcclusionQuery()`.
 public struct WGPUBeginOcclusionQueryCommand: WGPUCommandFields {
@@ -494,7 +495,7 @@ public struct WGPUBeginOcclusionQueryCommand: WGPUCommandFields {
 public struct WGPUResolveQuerySetCommand: WGPUCommandFields {
     public let querySet: WGPUHandle
     public let firstQuery: Int
-    /// 생략하면 **쿼리셋의 남은 전부**다 — 쿼리셋 크기를 알아야 하므로 nil로 남긴다.
+    /// Omitted means **the rest of the query set** — that needs its size, so it stays nil.
     public let queryCount: Int?
     public let destination: WGPUHandle
     public let destinationOffset: Int
@@ -510,7 +511,7 @@ public struct WGPUResolveQuerySetCommand: WGPUCommandFields {
     }
 }
 
-// MARK: - 복사
+// MARK: - Copies
 
 /// `encoder.copyBufferToBuffer()`.
 public struct WGPUCopyBufferToBufferCommand: WGPUCommandFields {
@@ -518,7 +519,7 @@ public struct WGPUCopyBufferToBufferCommand: WGPUCommandFields {
     public let sourceOffset: Int
     public let destination: WGPUHandle
     public let destinationOffset: Int
-    /// 생략하면 **원본의 남은 전부**다 (명세의 짧은 오버로드). 버퍼 크기를 알아야 하므로 nil.
+    /// Omitted means **the rest of the source** (the spec's short overload). Needs the buffer size, so nil.
     public let size: Int?
     public let path: String
 
@@ -536,7 +537,7 @@ public struct WGPUCopyBufferToBufferCommand: WGPUCommandFields {
 public struct WGPUClearBufferCommand: WGPUCommandFields {
     public let buffer: WGPUHandle
     public let offset: Int
-    /// 생략하면 **버퍼 끝까지**다.
+    /// Omitted means **through the end of the buffer**.
     public let size: Int?
     public let path: String
 
@@ -593,7 +594,7 @@ public struct WGPUCopyTextureToTextureCommand: WGPUCommandFields {
     }
 }
 
-// MARK: - 디버그 마커
+// MARK: - Debug markers
 
 /// `pushDebugGroup()`.
 public struct WGPUPushDebugGroupCommand: WGPUCommandFields {

@@ -1,29 +1,30 @@
 import Foundation
 
-/// 커맨드 스트림 op 하나의 **디코딩된 형태** — op 이름과 인자를 케이스 하나로 묶은 것.
+/// One command-stream op in **decoded form** — op name and arguments bound into a single case.
 ///
-/// ## 왜 열거형인가
+/// ## Why an enum
 ///
-/// 개별 인자 파싱은 `WGPUCommands.swift`가 하지만, "어떤 op 이름이 어떤 구조체로 디코딩되는가"
-/// 라는 **분기표 자체**는 오랫동안 Metal 해석기 안에 있었다. 그 표가 백엔드 안에 있으면
-/// 두 가지가 무너진다:
+/// Parsing individual arguments is `WGPUCommands.swift`'s job, but the **dispatch table itself** —
+/// which op name decodes into which struct — lived inside the Metal interpreter for a long time.
+/// With that table inside a backend, two things break down:
 ///
-/// 1. 다른 런타임(Dawn 등)을 만드는 쪽이 51개 분기를 처음부터 다시 쓴다 — 순수 기계적 중복이다.
-/// 2. op을 하나 더할 때 백엔드가 분기를 빠뜨려도 컴파일러가 모른다 (`default`로 샌다).
+/// 1. Anyone building another runtime (Dawn, say) rewrites all 51 branches from scratch — purely
+///    mechanical duplication.
+/// 2. Adding an op and forgetting a branch goes unnoticed by the compiler (it leaks into `default`).
 ///
-/// 여기로 올리면 백엔드는 이 열거형에 대한 **exhaustive switch**(default 없이)만 쓴다 —
-/// 케이스가 늘면 모든 백엔드의 컴파일이 깨져서, 누락이 조용히 지나가지 않는다.
-/// op 목록의 사양은 `docs/COMMAND-STREAM.md` §4다.
+/// Lifted here, a backend writes only an **exhaustive switch** over this enum (no `default`) —
+/// adding a case breaks every backend's compile, so an omission cannot slip through quietly.
+/// The op list is specified in `docs/COMMAND-STREAM.md` §4.
 ///
-/// ## 예외 두 케이스
+/// ## Two exceptional cases
 ///
-/// - `pushErrorScope` — 필터 디코딩이 **실패해도 케이스가 만들어진다** (`filter: nil` +
-///   `decodeFailure`). 스코프 스택 깊이는 실패와 무관하게 맞아야 하기 때문이다
-///   (`WGPUErrorScopeStack.push` 문서). 백엔드는 push부터 하고 `decodeFailure`를 던질 것.
-/// - `createRenderBundle` — 명령 목록을 리더 그대로 운반한다 (`WGPUCreateRenderBundleCommand`
-///   문서). 재생 시점에 이 이니셜라이저로 다시 디코딩한다.
+/// - `pushErrorScope` — the case is built **even when filter decoding fails** (`filter: nil` plus
+///   `decodeFailure`), because the scope stack depth has to stay correct regardless of failure
+///   (see `WGPUErrorScopeStack.push`). A backend pushes first, then throws `decodeFailure`.
+/// - `createRenderBundle` — carries the command list as readers (see
+///   `WGPUCreateRenderBundleCommand`). Replay decodes them again through this initializer.
 public enum WGPUCommand {
-    // MARK: 리소스
+    // MARK: Resources
     case createBuffer(WGPUCreateCommand<WGPUBufferDescriptor>)
     case writeBuffer(WGPUWriteBufferCommand)
     case unmapBuffer(WGPUUnmapBufferCommand)
@@ -43,15 +44,15 @@ public enum WGPUCommand {
     case getBindGroupLayout(WGPUGetBindGroupLayoutCommand)
     case destroy(WGPUDestroyCommand)
 
-    // MARK: 오류 스코프
+    // MARK: Error scopes
     case pushErrorScope(filter: WGPUErrorFilter?, decodeFailure: WGPUError?)
     case popErrorScope
 
-    // MARK: 캔버스
+    // MARK: Canvas
     case configureCanvas(WGPUCanvasConfiguration)
     case getCurrentTexture(WGPUGetCurrentTextureCommand)
 
-    // MARK: 렌더 패스
+    // MARK: Render pass
     case beginRenderPass(WGPURenderPassDescriptor)
     case setPipeline(WGPUSetPipelineCommand)
     case setBindGroup(WGPUSetBindGroupCommand)
@@ -69,35 +70,35 @@ public enum WGPUCommand {
     case beginOcclusionQuery(WGPUBeginOcclusionQueryCommand)
     case endOcclusionQuery
 
-    // MARK: 컴퓨트 패스
+    // MARK: Compute pass
     case beginComputePass(WGPUComputePassDescriptor)
     case dispatchWorkgroups(WGPUDispatchWorkgroupsCommand)
     case dispatchWorkgroupsIndirect(WGPUIndirectCommand)
 
-    // MARK: 패스 공통
+    // MARK: Shared by passes
     case endPass
 
-    // MARK: 복사
+    // MARK: Copies
     case copyBufferToBuffer(WGPUCopyBufferToBufferCommand)
     case clearBuffer(WGPUClearBufferCommand)
     case copyTextureToBuffer(WGPUCopyTextureToBufferCommand)
     case copyBufferToTexture(WGPUCopyBufferToTextureCommand)
     case copyTextureToTexture(WGPUCopyTextureToTextureCommand)
 
-    // MARK: 쿼리
+    // MARK: Queries
     case resolveQuerySet(WGPUResolveQuerySetCommand)
 
-    // MARK: 디버그 마커
+    // MARK: Debug markers
     case pushDebugGroup(WGPUPushDebugGroupCommand)
     case popDebugGroup
     case insertDebugMarker(WGPUInsertDebugMarkerCommand)
 
-    /// op 이름 문자열 → 케이스. 미지 op은 `unsupported`다 — "여기 없는 op은 다른 런타임에서
-    /// 구현되지 않는다"는 계약(`docs/COMMAND-STREAM.md` §7)의 코드 쪽 끝이다.
+    /// Op name string → case. An unknown op is `unsupported` — the code-side end of the contract
+    /// "an op absent from here is implemented by no other runtime" (`docs/COMMAND-STREAM.md` §7).
     public init(from reader: WGPUValueReader) throws {
         let op = try reader.requiredString("op")
         switch op {
-        // 리소스
+        // Resources
         case "createBuffer": self = .createBuffer(try WGPUCreateCommand(from: reader))
         case "writeBuffer": self = .writeBuffer(try WGPUWriteBufferCommand(from: reader))
         case "unmapBuffer": self = .unmapBuffer(try WGPUUnmapBufferCommand(from: reader))
@@ -125,9 +126,9 @@ public enum WGPUCommand {
             self = .getBindGroupLayout(try WGPUGetBindGroupLayoutCommand(from: reader))
         case "destroy": self = .destroy(try WGPUDestroyCommand(from: reader))
 
-        // 오류 스코프
+        // Error scopes
         case "pushErrorScope":
-            // 실패해도 케이스는 만든다 — 깊이 유지 계약 (타입 문서 참고).
+            // Build the case even on failure — the depth-keeping contract (see the type docs).
             do {
                 self = .pushErrorScope(
                     filter: try WGPUPushErrorScopeCommand(from: reader).filter,
@@ -140,12 +141,12 @@ public enum WGPUCommand {
             }
         case "popErrorScope": self = .popErrorScope
 
-        // 캔버스
+        // Canvas
         case "configureCanvas": self = .configureCanvas(try WGPUCanvasConfiguration(from: reader))
         case "getCurrentTexture":
             self = .getCurrentTexture(try WGPUGetCurrentTextureCommand(from: reader))
 
-        // 렌더 패스
+        // Render pass
         case "beginRenderPass": self = .beginRenderPass(try WGPURenderPassDescriptor(from: reader))
         case "setPipeline": self = .setPipeline(try WGPUSetPipelineCommand(from: reader))
         case "setBindGroup": self = .setBindGroup(try WGPUSetBindGroupCommand(from: reader))
@@ -167,7 +168,7 @@ public enum WGPUCommand {
             self = .beginOcclusionQuery(try WGPUBeginOcclusionQueryCommand(from: reader))
         case "endOcclusionQuery": self = .endOcclusionQuery
 
-        // 컴퓨트 패스
+        // Compute pass
         case "beginComputePass":
             self = .beginComputePass(try WGPUComputePassDescriptor(from: reader))
         case "dispatchWorkgroups":
@@ -177,7 +178,7 @@ public enum WGPUCommand {
 
         case "endPass": self = .endPass
 
-        // 복사
+        // Copies
         case "copyBufferToBuffer":
             self = .copyBufferToBuffer(try WGPUCopyBufferToBufferCommand(from: reader))
         case "clearBuffer": self = .clearBuffer(try WGPUClearBufferCommand(from: reader))
@@ -188,25 +189,25 @@ public enum WGPUCommand {
         case "copyTextureToTexture":
             self = .copyTextureToTexture(try WGPUCopyTextureToTextureCommand(from: reader))
 
-        // 쿼리
+        // Queries
         case "resolveQuerySet":
             self = .resolveQuerySet(try WGPUResolveQuerySetCommand(from: reader))
 
-        // 디버그 마커
+        // Debug markers
         case "pushDebugGroup": self = .pushDebugGroup(try WGPUPushDebugGroupCommand(from: reader))
         case "popDebugGroup": self = .popDebugGroup
         case "insertDebugMarker":
             self = .insertDebugMarker(try WGPUInsertDebugMarkerCommand(from: reader))
 
         default:
-            throw WGPUError.unsupported("알 수 없는 명령 '\(op)'", path: reader.fieldPath("op"))
+            throw WGPUError.unsupported("unknown command '\(op)'", path: reader.fieldPath("op"))
         }
     }
 
-    /// 케이스 → op 이름 문자열 (와이어 철자 그대로).
+    /// Case → op name string (the wire spelling exactly).
     ///
-    /// **일부러 exhaustive switch다** — 케이스를 더하고 여기(그리고 위 디코더 표)를 빠뜨리면
-    /// 컴파일이 깨진다. 진단 메시지·문서 대조·번들 허용 목록 비교에 쓴다.
+    /// **Deliberately an exhaustive switch** — add a case and forget this (or the decoder table
+    /// above) and the compile breaks. Used for diagnostics, doc cross-checks and bundle allow-lists.
     public var opName: String {
         switch self {
         case .createBuffer: return "createBuffer"
