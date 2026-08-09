@@ -1,7 +1,7 @@
 import XCTest
 @testable import LynxWebGPUCore
 
-/// 커맨드 스트림 디코딩 — JS가 보내는 형태를 그대로 재현해 검증한다.
+/// Command stream decoding — verified by reproducing exactly what JS sends.
 final class WGPUValueReaderTests: XCTestCase {
     func test_scalarReadsAndDefaults() throws {
         let reader = WGPUValueReader(["size": 128, "label": "vertices", "flag": true])
@@ -23,8 +23,8 @@ final class WGPUValueReaderTests: XCTestCase {
         }
     }
 
-    func test_null은_없는_값으로_취급한다() {
-        // JS의 `undefined`는 Lynx를 거치며 NSNull로 온다.
+    func test_nullIsTreatedAsAbsent() {
+        // JS's `undefined` arrives as NSNull after crossing Lynx.
         let reader = WGPUValueReader(["label": NSNull()])
         XCTAssertFalse(reader.has("label"))
         XCTAssertNil(reader.optionalString("label"))
@@ -39,7 +39,7 @@ final class WGPUValueReaderTests: XCTestCase {
         let bad = WGPUValueReader(["format": "rgba8"])
         XCTAssertThrowsError(try bad.requiredEnum("format", WGPUTextureFormat.self)) { error in
             let message = (error as? WGPUError)?.message ?? ""
-            XCTAssertTrue(message.contains("rgba8unorm"), "가능한 값 목록이 없다: \(message)")
+            XCTAssertTrue(message.contains("rgba8unorm"), "no list of possible values: \(message)")
         }
     }
 
@@ -74,11 +74,11 @@ final class WGPUValueReaderTests: XCTestCase {
     func test_binaryAcceptsDataBase64AndByteArrays() throws {
         let bytes: [UInt8] = [0xDE, 0xAD, 0xBE, 0xEF]
 
-        // JS 셰임이 쓰는 경로 — Lynx가 ArrayBuffer를 NSData로 바꿔 준 것이 그대로 들어온다.
+        // The path the JS shim uses — what Lynx turned from an ArrayBuffer into NSData arrives as-is.
         let native = WGPUValueReader(["data": Data(bytes)])
         XCTAssertEqual(Array(try native.requiredData("data")), bytes)
 
-        // NSData로 들어와도 같다 (브리지가 실제로 넘기는 타입).
+        // The same when it arrives as NSData (the type the bridge actually passes).
         let bridged = WGPUValueReader(["data": NSData(data: Data(bytes))])
         XCTAssertEqual(Array(try bridged.requiredData("data")), bytes)
 
