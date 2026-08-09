@@ -1,44 +1,44 @@
 /**
- * shim이 기대하는 **호스트 런타임 표면**의 선언.
+ * Declarations of the **host runtime surface** the shim expects.
  *
- * 이 파일의 목적은 두 가지다:
- * 1. `NativeModules.WebGPU`의 시그니처를 고정해 브리지 경계에서 오타·인자 누락을 잡는다.
- *    여기 선언은 `Sources/LynxWebGPUBridge/WebGPUNativeModule.swift`의 `methodLookup`과
- *    **짝이 맞아야 한다** — 한쪽만 고치면 런타임에 조용히 깨진다.
- * 2. DOM lib을 켜지 않는다. shim은 브라우저가 아니라 PrimJS 위에서 돌기 때문에,
- *    여기 적히지 않은 전역(`window`, `fetch`, `btoa` 등)을 쓰면 타입 검사에서 걸린다.
+ * This file has two purposes:
+ * 1. It pins the signatures of `NativeModules.WebGPU` so typos and missing arguments are caught at the
+ *    bridge boundary. The declarations here **must match** `methodLookup` in
+ *    `Sources/LynxWebGPUBridge/WebGPUNativeModule.swift` — fixing one side only breaks quietly at runtime.
+ * 2. It does not turn on the DOM lib. The shim runs on PrimJS rather than a browser, so using a global
+ *    not written here (`window`, `fetch`, `btoa`, …) is caught by type checking.
  */
 
-/** 커맨드 실행 중 발생한 오류. */
+/** An error raised during command execution. */
 interface WGPUErrorPayload {
   kind: 'validation' | 'out-of-memory' | 'unsupported' | 'backend';
   message: string;
   path?: string;
   /**
-   * 셰이더 오류에만 붙는 WGSL 소스 줄 번호 (1부터).
-   * `getCompilationInfo()`의 `lineNum`이 이 값을 그대로 쓴다 — `docs/COMMAND-STREAM.md` §2-1.
+   * The WGSL source line number (1-based), attached to shader errors only.
+   * `getCompilationInfo()`'s `lineNum` uses this value as is — `docs/COMMAND-STREAM.md` §2-1.
    */
   line?: number;
 }
 
-/** `execute`의 반환. */
+/** What `execute` returns. */
 interface WGPUExecuteResult {
   ok: boolean;
   commandCount?: number;
   errors?: WGPUErrorPayload[];
-  /** 이번 제출이 건드린 캔버스의 픽셀 크기 — 크기 캐시가 이걸로 갱신된다. */
+  /** The pixel size of the canvases this submission touched — the size cache is refreshed from this. */
   canvases?: Record<string, { width: number; height: number }>;
-  /** 네이티브에 살아 있는 GPU 객체 수 — 프레임마다 늘면 destroy 누락이다. */
+  /** The number of GPU objects alive natively — growing every frame means a missing destroy. */
   objects?: number;
   /**
-   * 이번 배치에서 `popErrorScope`로 닫힌 스코프들의 결과 — **pop한 순서 그대로**다.
-   * shim이 이 순서로 Promise를 푼다. 슬롯은 세 가지다 (`docs/COMMAND-STREAM.md` §2):
-   * `null`(깨끗) · 오류 객체(잡힘) · `{rejected: true}`(`push`와 짝이 없어 **reject**한다).
+   * The results of the scopes closed by `popErrorScope` in this batch — **in the order they were popped**.
+   * The shim resolves Promises in that order. There are three kinds of slot (`docs/COMMAND-STREAM.md` §2):
+   * `null` (clean) · an error object (caught) · `{rejected: true}` (unpaired with a `push`, so it **rejects**).
    */
   errorScopes?: (WGPUErrorPayload | { rejected: true } | null)[];
 }
 
-/** `shaderCompilationInfo`의 반환. */
+/** What `shaderCompilationInfo` returns. */
 interface WGPUShaderCompilationInfo {
   ok?: boolean;
   messages?: {
@@ -52,23 +52,23 @@ interface WGPUShaderCompilationInfo {
   errors?: WGPUErrorPayload[];
 }
 
-/** `adapterInfo`의 반환. */
+/** What `adapterInfo` returns. */
 interface WGPUAdapterInfo {
   ok?: boolean;
-  /** 확장 — 표시명. 명세 밖이라 런타임이 생략할 수 있다 (shim이 `info.description`으로 메꾼다). */
+  /** An extension — the display name. Being outside the spec, a runtime may omit it (the shim fills in from `info.description`). */
   name?: string;
-  /** 확장 — 백엔드 이름 (`'metal'` 등). 명세 밖이라 런타임이 생략할 수 있다. */
+  /** An extension — the backend name (`'metal'` and the like). Being outside the spec, a runtime may omit it. */
   backend?: string;
   limits?: Record<string, number>;
-  /** 확장 — 통합 메모리 여부. 런타임이 모르면 생략한다 (shim은 false로 본다). */
+  /** An extension — whether memory is unified. A runtime that does not know omits it (the shim reads that as false). */
   hasUnifiedMemory?: boolean;
-  /** 명세 `GPUAdapterInfo` (vendor/architecture/device/description …). */
+  /** The spec's `GPUAdapterInfo` (vendor/architecture/device/description …). */
   info?: Record<string, any>;
-  /** 기기마다 갈리는 기능의 명세 철자 (`'timestamp-query'` 등). */
+  /** The spec spellings of device-dependent features (`'timestamp-query'` and the like). */
   features?: string[];
 }
 
-/** `canvasInfo`의 반환. */
+/** What `canvasInfo` returns. */
 interface WGPUCanvasInfo {
   ok?: boolean;
   width?: number;
@@ -77,10 +77,10 @@ interface WGPUCanvasInfo {
 }
 
 /**
- * `readBuffer` 콜백이 받는 값.
+ * The value the `readBuffer` callback receives.
  *
- * `data`는 네이티브가 `Data`로 돌려준 것을 Lynx가 `ArrayBuffer`로 바꿔 준 것이다
- * (base64 문자열이 아니다 — `LynxWebGPUContext.readBuffer` 참고).
+ * `data` is what native returned as `Data`, converted to an `ArrayBuffer` by Lynx
+ * (not a base64 string — see `LynxWebGPUContext.readBuffer`).
  */
 interface WGPUReadBufferResult {
   ok?: boolean;
@@ -90,10 +90,10 @@ interface WGPUReadBufferResult {
 }
 
 /**
- * `loadAsset` 콜백이 받는 값.
+ * The value the `loadAsset` callback receives.
  *
- * `readBuffer`와 같은 규약이다 — `data`는 네이티브가 `Data`로 돌려준 것을 Lynx가
- * `ArrayBuffer`로 바꿔 준 것이다.
+ * The same convention as `readBuffer` — `data` is what native returned as `Data`, converted to an
+ * `ArrayBuffer` by Lynx.
  */
 interface WGPULoadAssetResult {
   ok?: boolean;
@@ -102,7 +102,7 @@ interface WGPULoadAssetResult {
   errors?: WGPUErrorPayload[];
 }
 
-/** `createImageBitmap` 콜백이 받는 값 — 픽셀은 네이티브에 남고 크기만 온다. */
+/** The value the `createImageBitmap` callback receives — the pixels stay native and only the size comes across. */
 interface WGPUDecodeImageResult {
   ok?: boolean;
   width: number;
@@ -110,9 +110,9 @@ interface WGPUDecodeImageResult {
   errors?: WGPUErrorPayload[];
 }
 
-/** `NativeModules.WebGPU` — 커맨드 스트림 입구. */
+/** `NativeModules.WebGPU` — the entrance to the command stream. */
 interface WebGPUNativeModule {
-  /** `present: false` = 프레임 중간의 내부 제출 — 드로어블 present·핸들 만료를 미룬다. */
+  /** `present: false` = an internal mid-frame submission — it defers the drawable present and handle expiry. */
   execute(payload: { commands: Record<string, any>[]; present?: boolean }): WGPUExecuteResult | undefined;
   adapterInfo(): WGPUAdapterInfo | undefined;
   shaderCompilationInfo(params: { module: number }): WGPUShaderCompilationInfo | undefined;
@@ -146,7 +146,7 @@ interface LynxNativeModuleRegistry {
   WebGPU?: WebGPUNativeModule;
 }
 
-/** `webgpu:frame` 전역 이벤트를 받는 데 쓰는 Lynx JS 모듈. */
+/** The Lynx JS module used to receive the `webgpu:frame` global event. */
 interface LynxGlobalEventEmitter {
   addListener(event: string, listener: (...args: any[]) => void): void;
   removeListener(event: string, listener: (...args: any[]) => void): void;
@@ -158,14 +158,14 @@ interface LynxGlobal {
   getJSModule(name: string): unknown;
 }
 
-/** Lynx가 전역에 직접 얹어 주는 경우. 없을 수 있으므로 `typeof`로 확인하고 쓴다. */
+/** The case where Lynx puts it directly on the global. It may be absent, so check with `typeof` before use. */
 declare const NativeModules: LynxNativeModuleRegistry | undefined;
 
-/** Lynx 런타임 네임스페이스. 없을 수 있으므로 `typeof`로 확인하고 쓴다. */
+/** The Lynx runtime namespace. It may be absent, so check with `typeof` before use. */
 declare const lynx: LynxGlobal | undefined;
 
-// --- PrimJS가 제공하는 최소 전역 ------------------------------------------
-// DOM lib을 켜지 않으므로 여기 적힌 것만 쓸 수 있다.
+// --- The minimal globals PrimJS provides ---------------------------------
+// The DOM lib is not on, so only what is written here can be used.
 
 declare const console: {
   log(...args: any[]): void;
@@ -178,11 +178,11 @@ declare function clearInterval(handle: number): void;
 declare function setTimeout(handler: () => void, timeout?: number): number;
 declare function clearTimeout(handle: number): void;
 
-// --- PrimJS 전역 브리지 --------------------------------------------------
-// shim이 모듈 로드 시점에 얹는 lynx* 전역 (docs/JS-AUTHORING.md §10).
-// 번들 쪽 `source.define`이 웹 전역의 bare 식별자를 이 이름들로 바꿔치기한다.
+// --- PrimJS global bridge ------------------------------------------------
+// The lynx* globals the shim installs at module load time (docs/JS-AUTHORING.md §10).
+// On the bundle side, `source.define` swaps the bare identifiers of web globals for these names.
 
-/** 브라우저/Node에는 있고 PrimJS에는 없다 — shim이 폴백을 고를 때만 확인한다. */
+/** Present in a browser/Node but not in PrimJS — the shim only checks it when picking a fallback. */
 declare const performance: { now(): number } | undefined;
 
 declare var lynxNavigator: unknown;

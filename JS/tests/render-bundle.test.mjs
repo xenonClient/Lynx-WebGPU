@@ -1,8 +1,8 @@
 /**
- * 렌더 번들의 커맨드 페이로드와 인코더 경계.
+ * A render bundle's command payload and the encoder boundary.
  *
- * 번들에 담을 수 없는 명령(뷰포트·시저·블렌드 상수·스텐실 참조·중첩 번들)은 **번들 인코더에
- * 메서드 자체가 없어야 한다** — 네이티브까지 가서 거부당하는 것보다 여기서 막히는 편이 낫다.
+ * The commands that cannot go in a bundle (viewport, scissor, blend constant, stencil reference, a nested
+ * bundle) **must have no method on the bundle encoder at all** — better blocked here than rejected all the way at native.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -18,7 +18,7 @@ function bundleCommand(state) {
   return commandsOf(state).find((command) => command.op === 'createRenderBundle');
 }
 
-test('finish가 모아 둔 명령과 패스 모양을 함께 싣는다', async () => {
+test('finish puts the gathered commands and the pass shape on together', async () => {
   const { state, device } = await setUp();
   const encoder = device.createRenderBundleEncoder({
     colorFormats: ['rgba8unorm'],
@@ -31,7 +31,7 @@ test('finish가 모아 둔 명령과 패스 모양을 함께 싣는다', async (
   device.queue.submit([]);
 
   const command = bundleCommand(state);
-  assert.ok(command, 'createRenderBundle 명령이 있어야 한다');
+  assert.ok(command, 'there must be a createRenderBundle command');
   assert.equal(command.id, bundle.id);
   assert.deepEqual(command.colorFormats, ['rgba8unorm']);
   assert.equal(command.depthStencilFormat, 'depth24plus');
@@ -40,11 +40,11 @@ test('finish가 모아 둔 명령과 패스 모양을 함께 싣는다', async (
   assert.deepEqual(
     command.commands.map((entry) => entry.op),
     ['draw'],
-    '번들 안 명령이 그대로 실린다'
+    'the commands inside the bundle ride on as they are'
   );
 });
 
-test('번들 인코더에는 패스 전용 명령이 아예 없다', async () => {
+test('the bundle encoder has no pass-only commands at all', async () => {
   const { device } = await setUp();
   const encoder = device.createRenderBundleEncoder({ colorFormats: ['rgba8unorm'] });
 
@@ -52,17 +52,17 @@ test('번들 인코더에는 패스 전용 명령이 아예 없다', async () =>
     'executeBundles', 'end']) {
     assert.equal(
       typeof (/** @type {any} */ (encoder))[method], 'undefined',
-      `번들 인코더에 ${method}가 있으면 안 된다`
+      `the bundle encoder must not have ${method}`
     );
   }
-  // 담을 수 있는 것들은 그대로 있어야 한다.
+  // What can go in must still be there.
   for (const method of ['setPipeline', 'setBindGroup', 'setVertexBuffer', 'setIndexBuffer',
     'draw', 'drawIndexed', 'drawIndirect', 'drawIndexedIndirect']) {
     assert.equal(typeof (/** @type {any} */ (encoder))[method], 'function', method);
   }
 });
 
-test('번들 명령은 패스 스트림과 섞이지 않는다', async () => {
+test('bundle commands do not mix with the pass stream', async () => {
   const { state, device } = await setUp();
   const commandEncoder = device.createCommandEncoder();
   const view = device.createTexture({ size: { width: 1, height: 1 }, format: 'rgba8unorm', usage: 0x10 })
@@ -81,20 +81,20 @@ test('번들 명령은 패스 스트림과 섞이지 않는다', async () => {
   const stream = commandsOf(state);
   const execute = stream.find((command) => command.op === 'executeBundles');
   assert.deepEqual(execute.bundles, [bundle.id]);
-  // 번들 안의 draw(6)는 패스 스트림이 아니라 createRenderBundle 안에만 있어야 한다.
+  // The draw(6) inside the bundle must be inside createRenderBundle only, not the pass stream.
   const passDraws = stream.filter((command) => command.op === 'draw');
   assert.deepEqual(passDraws.map((command) => command.vertexCount), [3]);
   assert.deepEqual(bundleCommand(state).commands.map((entry) => entry.vertexCount), [6]);
 });
 
-test('createRenderBundle이 executeBundles보다 먼저 스트림에 온다', async () => {
+test('createRenderBundle comes into the stream before executeBundles', async () => {
   const { state, device } = await setUp();
   const commandEncoder = device.createCommandEncoder();
   const view = device.createTexture({ size: { width: 1, height: 1 }, format: 'rgba8unorm', usage: 0x10 })
     .createView();
   const pass = commandEncoder.beginRenderPass({ colorAttachments: [{ view }] });
 
-  // 패스를 이미 연 뒤에 번들을 만든다 — 그래도 네이티브는 번들을 먼저 봐야 한다.
+  // The bundle is built after the pass is already open — native must still see the bundle first.
   const bundleEncoder = device.createRenderBundleEncoder({ colorFormats: ['rgba8unorm'] });
   bundleEncoder.draw(3);
   pass.executeBundles([bundleEncoder.finish()]);
@@ -104,11 +104,11 @@ test('createRenderBundle이 executeBundles보다 먼저 스트림에 온다', as
   const ops = commandsOf(state).map((command) => command.op);
   assert.ok(
     ops.indexOf('createRenderBundle') < ops.indexOf('executeBundles'),
-    `번들이 먼저 등록돼야 한다: ${ops.join(', ')}`
+    `the bundle has to be registered first: ${ops.join(', ')}`
   );
 });
 
-test('finish를 두 번 부르면 거부하고 무효한 번들을 돌려준다', async () => {
+test('calling finish twice is rejected and returns an invalid bundle', async () => {
   const { state, device } = await setUp();
   /** @type {{kind: string, message: string}[]} */
   const reported = [];
@@ -120,17 +120,17 @@ test('finish를 두 번 부르면 거부하고 무효한 번들을 돌려준다'
   const second = encoder.finish();
   device.queue.submit([]);
 
-  // 조용히 빈 번들을 주면 executeBundles가 아무것도 안 그리고 오류도 없어 원인을 못 찾는다.
-  assert.equal(reported.length, 1, `두 번째 finish는 오류다: ${JSON.stringify(reported)}`);
+  // Quietly handing back an empty bundle would make executeBundles draw nothing with no error, and the cause unfindable.
+  assert.equal(reported.length, 1, `the second finish is an error: ${JSON.stringify(reported)}`);
   assert.equal(reported[0].kind, 'validation');
   assert.notEqual(second.id, first.id);
 
   const bundles = commandsOf(state).filter((command) => command.op === 'createRenderBundle');
-  assert.equal(bundles.length, 1, '무효한 번들은 네이티브에 만들지 않는다');
+  assert.equal(bundles.length, 1, 'an invalid bundle is not created natively');
   assert.deepEqual(bundles[0].commands.map((entry) => entry.vertexCount), [3]);
 });
 
-test('번들이 자기가 쓰는 리소스 래퍼를 붙잡는다', async () => {
+test('a bundle holds on to the resource wrappers it uses', async () => {
   const { device } = await setUp();
   const buffer = device.createBuffer({ size: 16, usage: 0x20 });
   const bindGroup = { id: 77 };
@@ -141,18 +141,18 @@ test('번들이 자기가 쓰는 리소스 래퍼를 붙잡는다', async () => 
   encoder.draw(3);
   const bundle = encoder.finish();
 
-  // 기록된 명령이 래퍼보다 오래 사는 유일한 구조다 — 붙잡지 않으면 GC가 destroy를 끼워 넣어
-  // 번들이 조용히 안 그려진다.
-  assert.ok(bundle._retained.includes(buffer), '정점 버퍼를 붙잡아야 한다');
-  assert.ok(bundle._retained.includes(bindGroup), '바인드 그룹을 붙잡아야 한다');
+  // It is the only structure whose recorded commands outlive the wrappers — without holding them, GC slips
+  // in a destroy and the bundle quietly draws nothing.
+  assert.ok(bundle._retained.includes(buffer), 'it must hold the vertex buffer');
+  assert.ok(bundle._retained.includes(bindGroup), 'it must hold the bind group');
   assert.deepEqual(
     device.createRenderBundleEncoder({ colorFormats: ['rgba8unorm'] }).finish()._retained,
     [],
-    '다음 인코더로 새면 안 된다'
+    'it must not leak into the next encoder'
   );
 });
 
-test('번들을 써도 프레임당 브리지 왕복은 1회다', async () => {
+test('the bridge crossings stay at one per frame even with a bundle', async () => {
   const { state, device } = await setUp();
   const bundleEncoder = device.createRenderBundleEncoder({ colorFormats: ['rgba8unorm'] });
   bundleEncoder.draw(3);

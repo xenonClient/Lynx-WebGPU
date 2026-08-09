@@ -1,6 +1,6 @@
 /**
- * `loadAsset`의 계약 — 이름을 그대로 네이티브에 넘기고, 받은 ArrayBuffer를
- * 디코딩 없이 돌려주며, 실패는 첫 오류 메시지로 reject된다.
+ * `loadAsset`'s contract — the name goes to native as is, the received ArrayBuffer comes back undecoded,
+ * and a failure rejects with the first error message.
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import { loadAsset } from '../webgpu.js';
 import { installNativeMock, randomBytes } from './helpers.mjs';
 
-test('이름을 그대로 넘기고 네이티브의 ArrayBuffer를 디코딩 없이 돌려준다', async () => {
+test('passes the name through and returns native\'s ArrayBuffer undecoded', async () => {
   const bytes = randomBytes(64);
   const state = installNativeMock({
     loadAssetResult: { ok: true, data: bytes.buffer, byteLength: bytes.byteLength },
@@ -17,21 +17,21 @@ test('이름을 그대로 넘기고 네이티브의 ArrayBuffer를 디코딩 없
   const buffer = await loadAsset('LUTs/neutral.cube');
 
   assert.deepEqual(state.loadAssetCalls, [{ name: 'LUTs/neutral.cube' }]);
-  assert.equal(buffer, bytes.buffer); // 복사·변환 없이 그 객체 그대로
+  assert.equal(buffer, bytes.buffer); // the same object, with no copy or conversion
 });
 
-test('네이티브가 ok:false를 주면 첫 오류 메시지로 reject된다', async () => {
+test('an ok:false from native rejects with the first error message', async () => {
   installNativeMock({
     loadAssetResult: {
       ok: false,
-      errors: [{ kind: 'validation', message: "번들에 'absent.bin'이(가) 없다" }],
+      errors: [{ kind: 'validation', message: "'absent.bin' is not in the bundle" }],
     },
   });
 
   await assert.rejects(loadAsset('absent.bin'), /absent\.bin/);
 });
 
-test('응답이 아예 없으면(undefined) 이름을 담아 reject된다', async () => {
+test('no response at all (undefined) rejects with the name included', async () => {
   installNativeMock({ loadAssetResult: () => undefined });
 
   await assert.rejects(loadAsset('ghost.bin'), /ghost\.bin/);

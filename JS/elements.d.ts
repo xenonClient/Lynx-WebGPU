@@ -1,7 +1,7 @@
 /**
- * `<webgpu-canvas>` 커스텀 엘리먼트의 TSX 타입 선언.
+ * TSX type declarations for the `<webgpu-canvas>` custom element.
  *
- * rspeedy 프로젝트의 `src/` 아래로 복사하면 TSX에서 태그를 쓸 수 있다.
+ * Copy it under an rspeedy project's `src/` and the tag becomes usable from TSX.
  */
 
 interface LynxTouchLike {
@@ -13,27 +13,27 @@ interface LynxTouchLike {
 }
 
 export interface WebGPUCanvasProps {
-  /** JS가 `gpu.getCanvasContext(id)` / `configure({canvas})`에서 지목할 이름. 페이지 안에서 유일해야 한다. */
+  /** The name JS points at in `gpu.getCanvasContext(id)` / `configure({canvas})`. It must be unique within the page. */
   'canvas-id': string;
-  /** CSS px → 드로어블 픽셀 배율. 생략하면 화면 배율을 쓴다 (성능을 위해 1로 낮출 수 있다). */
+  /** CSS px → drawable pixel scale. Omitted, the screen scale is used (it can be lowered to 1 for performance). */
   'pixel-ratio'?: number;
   /**
-   * UIKit 터치 통과. 기본 꺼짐 — 웹의 캔버스처럼 아래를 가린다.
+   * UIKit touch passthrough. Off by default — it covers what is beneath, like a canvas on the web.
    *
-   * 캔버스가 네이티브 뷰 기반 엘리먼트(`<scroll-view>` 등) **위에 형제로 겹칠 때** 켜면,
-   * 그쪽 제스처(스크롤 팬 등)가 캔버스를 뚫고 내려간다. 캔버스 자신의 Lynx 이벤트
-   * (`bindtouchstart` …)는 계속 온다 — 통과한 제스처가 이기면 `bindtouchcancel`을 받는다.
-   * 스크롤뷰가 캔버스의 **조상**이면 이 prop 없이도 스크롤이 동작한다.
+   * Turn it on when the canvas **overlaps a native-view-based element (`<scroll-view>` and the like) as a
+   * sibling above it**, and that element's gestures (a scroll pan, say) pass down through the canvas. The
+   * canvas's own Lynx events (`bindtouchstart` …) keep arriving — if a passed-through gesture wins, a `bindtouchcancel` follows.
+   * When the scroll view is an **ancestor** of the canvas, scrolling works without this prop.
    */
   'passthrough-touches'?: boolean;
-  /** 드로어블 픽셀 크기가 바뀔 때. 투영행렬·뷰포트를 다시 계산할 지점이다. */
+  /** When the drawable pixel size changes. This is where the projection matrix and viewport get recomputed. */
   bindcanvasresize?: (event: {
     detail: { width: number; height: number; pixelRatio: number };
   }) => void;
   /**
-   * 터치 입력은 **Lynx 표준 이벤트**를 그대로 쓴다 — 이 엘리먼트가 따로 만든 이벤트가 아니다.
-   * 그래야 히트 테스트·버블링·`catch` 접두사·스크롤 제스처가 다른 엘리먼트와 똑같이 동작한다.
-   * `touches[].x/y`는 **엘리먼트 기준 CSS px**이므로, 캔버스 크기로 나누면 0~1이 된다.
+   * Touch input uses **the Lynx standard events** as they are — these are not events this element invented.
+   * That is what makes hit testing, bubbling, the `catch` prefix and scroll gestures behave exactly as on any other element.
+   * `touches[].x/y` are **CSS px relative to the element**, so dividing by the canvas size gives 0~1.
    */
   bindtouchstart?: (event: LynxTouchLike) => void;
   bindtouchmove?: (event: LynxTouchLike) => void;

@@ -1,8 +1,8 @@
 /**
- * JS shim 테스트 공용 헬퍼 — NativeModules.WebGPU 를 손으로 만든 목으로 바꿔치기한다.
+ * Shared helpers for the JS shim tests — they swap NativeModules.WebGPU for a hand-built mock.
  *
- * shim은 네이티브 모듈을 매 호출 시점에 찾으므로(webgpu.js `nativeModule()`),
- * 테스트마다 목을 새로 깔면 호출 횟수·페이로드를 독립적으로 관찰할 수 있다.
+ * The shim looks the native module up at each call (webgpu.js `nativeModule()`), so laying a fresh mock
+ * per test lets call counts and payloads be observed independently.
  */
 import gpu from '../webgpu.js';
 
@@ -17,7 +17,7 @@ export function installNativeMock(overrides = {}) {
     canvasInfoResult:
       overrides.canvasInfoResult ?? { ok: true, width: 300, height: 150, format: 'bgra8unorm' },
     loadAssetCalls: [],
-    // 네이티브는 `Data`를 싣고 Lynx가 ArrayBuffer로 바꿔 준다 — 목도 ArrayBuffer를 준다.
+    // Native puts a `Data` on and Lynx converts it to an ArrayBuffer — the mock gives an ArrayBuffer too.
     readBufferResult: overrides.readBufferResult ?? { ok: true, data: new ArrayBuffer(0) },
     loadAssetResult: overrides.loadAssetResult ?? { ok: true, data: new ArrayBuffer(0) },
     stopFrameLoopCalls: 0,
@@ -69,10 +69,10 @@ export function installNativeMock(overrides = {}) {
 }
 
 /**
- * `startFrameLoop`이 기기에서 실제로 타는 경로 — Lynx의 `GlobalEventEmitter`.
+ * The path `startFrameLoop` really takes on a device — Lynx's `GlobalEventEmitter`.
  *
- * 타이머 폴백과 달리 **동기로 틱을 몰 수 있어** 프레임 경계 검증이 결정적이다
- * (콜백이 던지는 경우도 그 자리에서 받는다).
+ * Unlike the timer fallback it **can drive ticks synchronously**, which makes frame boundary verification
+ * deterministic (a throwing callback is caught right there too).
  */
 export function installFrameEmitter() {
   const listeners = new Map();
@@ -87,7 +87,7 @@ export function installFrameEmitter() {
     }),
   };
   return {
-    /** 틱 하나를 지금 몬다. 핸들러가 던지면 그대로 여기로 올라온다. */
+    /** Drives one tick now. If the handler throws, it comes straight back up here. */
     tick(frame = { timestamp: 0, delta: 16 }) {
       for (const listener of listeners.get('webgpu:frame') || []) listener(frame);
     },
@@ -102,14 +102,14 @@ export async function makeDevice() {
   return adapter.requestDevice();
 }
 
-/** index번째 execute 호출의 커맨드 배열 (음수면 뒤에서부터). */
+/** The command array of the index-th execute call (negative counts from the end). */
 export function commandsOf(state, index = -1) {
   const calls = state.executeCalls;
   const call = calls[index < 0 ? calls.length + index : index];
   return call ? call.commands : [];
 }
 
-/** 결정적 의사 난수 바이트열 — 실패를 재현할 수 있어야 한다. */
+/** A deterministic pseudo-random byte sequence — a failure has to be reproducible. */
 export function randomBytes(length, seed = 1) {
   const bytes = new Uint8Array(length);
   let s = (seed >>> 0) || 1;

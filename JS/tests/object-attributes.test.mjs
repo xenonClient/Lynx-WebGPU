@@ -1,14 +1,14 @@
 /**
- * 명세가 정한 **읽기 전용 속성**들 — 웹 코드가 객체를 받아 스스로 판단할 때 읽는다.
+ * The **read-only properties** the spec fixed — web code reads them when it takes an object and decides for itself.
  *
- * 없으면 `undefined`가 나가고, 그쪽은 "값이 0이다/설정 안 됐다"로 오해해 잘못된 분기를 탄다.
- * (three.js는 밉맵 경로에서 `texture.textureBindingViewDimension`을 읽어 뷰를 만든다.)
+ * Without them `undefined` goes out, and the other side misreads it as "the value is 0 / it was not set" and branches wrongly.
+ * (three.js reads `texture.textureBindingViewDimension` on the mipmap path to build a view.)
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { installNativeMock, makeDevice } from './helpers.mjs';
 
-test('GPUTexture가 명세의 읽기 전용 속성을 갖는다', async () => {
+test('GPUTexture has the spec read-only properties', async () => {
   installNativeMock();
   const device = await makeDevice();
 
@@ -31,7 +31,7 @@ test('GPUTexture가 명세의 읽기 전용 속성을 갖는다', async () => {
   assert.equal(texture.usage, 0x14);
 });
 
-test('명세 기본값이 채워진다 (생략한 것들)', async () => {
+test('the spec defaults are filled in (for what was omitted)', async () => {
   installNativeMock();
   const device = await makeDevice();
 
@@ -42,10 +42,10 @@ test('명세 기본값이 채워진다 (생략한 것들)', async () => {
   assert.equal(texture.depthOrArrayLayers, 1);
   assert.equal(texture.mipLevelCount, 1);
   assert.equal(texture.sampleCount, 1);
-  assert.equal(texture.dimension, '2d', '명세 기본 dimension은 2d다');
+  assert.equal(texture.dimension, '2d', 'the spec default dimension is 2d');
 });
 
-test('textureBindingViewDimension은 레이어 수에서 정해진다', async () => {
+test('textureBindingViewDimension is derived from the layer count', async () => {
   installNativeMock();
   const device = await makeDevice();
 
@@ -57,9 +57,9 @@ test('textureBindingViewDimension은 레이어 수에서 정해진다', async ()
   const layered = device.createTexture({
     size: { width: 8, height: 8, depthOrArrayLayers: 4 }, format: 'rgba8unorm', usage: 0x04,
   });
-  assert.equal(layered.textureBindingViewDimension, '2d-array', '레이어가 있으면 배열 뷰다');
+  assert.equal(layered.textureBindingViewDimension, '2d-array', 'with layers it is an array view');
 
-  // 명시하면 그대로 쓴다 (큐브맵처럼 레이어 수만으로는 못 정하는 경우).
+  // Stated explicitly, it is used as is (for cases the layer count alone cannot decide, like a cube map).
   const cube = device.createTexture({
     size: { width: 8, height: 8, depthOrArrayLayers: 6 },
     format: 'rgba8unorm', usage: 0x04, textureBindingViewDimension: 'cube',
@@ -67,7 +67,7 @@ test('textureBindingViewDimension은 레이어 수에서 정해진다', async ()
   assert.equal(cube.textureBindingViewDimension, 'cube');
 });
 
-test('GPUBuffer.mapState가 세 상태를 그대로 따라간다', async () => {
+test('GPUBuffer.mapState follows the three states', async () => {
   const state = installNativeMock({ readBufferResult: { ok: true, data: new ArrayBuffer(16) } });
   const device = await makeDevice();
 
@@ -75,7 +75,7 @@ test('GPUBuffer.mapState가 세 상태를 그대로 따라간다', async () => {
   assert.equal(buffer.mapState, 'unmapped');
 
   const pending = buffer.mapAsync();
-  assert.equal(buffer.mapState, 'pending', '결과를 기다리는 동안은 pending이다');
+  assert.equal(buffer.mapState, 'pending', 'it is pending while waiting for a result');
 
   await pending;
   assert.equal(buffer.mapState, 'mapped');
@@ -85,7 +85,7 @@ test('GPUBuffer.mapState가 세 상태를 그대로 따라간다', async () => {
   assert.ok(state.readBufferCalls.length > 0);
 });
 
-test('mappedAtCreation 버퍼도 mapState가 mapped다', async () => {
+test('a mappedAtCreation buffer has mapState mapped too', async () => {
   installNativeMock();
   const device = await makeDevice();
 

@@ -1,14 +1,14 @@
 /**
- * `pushErrorScope` / `popErrorScope` — Promise 계약과 브리지 왕복 횟수.
+ * `pushErrorScope` / `popErrorScope` — the Promise contract and the bridge crossing count.
  *
- * 스코프를 여는 것은 **기록만** 하므로 프레임당 왕복 1회 계약을 깨지 않아야 한다.
- * 닫는 쪽은 결과를 기다려야 하므로 `mapAsync`처럼 즉시 제출한다 — 그 차이를 여기서 못 박는다.
+ * Opening a scope **only records**, so it must not break the one-crossing-per-frame contract.
+ * Closing has to wait for a result, so it submits immediately like `mapAsync` — that difference is pinned here.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { installNativeMock, makeDevice, commandsOf } from './helpers.mjs';
 
-/** 스코프 pop마다 정해진 결과를 돌려주는 목. */
+/** A mock that returns a fixed result per scope pop. */
 function mockWithScopes(results) {
   let cursor = 0;
   return installNativeMock({
@@ -21,8 +21,8 @@ function mockWithScopes(results) {
   });
 }
 
-test('popErrorScope가 잡힌 오류를 Promise로 돌려준다', async () => {
-  const captured = { kind: 'validation', message: '없는 핸들' };
+test('popErrorScope returns the caught error as a Promise', async () => {
+  const captured = { kind: 'validation', message: 'no such handle' };
   const state = mockWithScopes([captured]);
   const device = await makeDevice();
 
@@ -37,7 +37,7 @@ test('popErrorScope가 잡힌 오류를 Promise로 돌려준다', async () => {
   assert.equal(commands[commands.length - 1].op, 'popErrorScope');
 });
 
-test('오류가 없으면 null로 풀린다', async () => {
+test('resolves to null when there is no error', async () => {
   mockWithScopes([null]);
   const device = await makeDevice();
 
@@ -45,10 +45,10 @@ test('오류가 없으면 null로 풀린다', async () => {
   assert.equal(await device.popErrorScope(), null);
 });
 
-test('중첩 스코프는 pop한 순서대로 짝지어진다', async () => {
-  const inner = { kind: 'validation', message: '안쪽' };
-  const outer = { kind: 'out-of-memory', message: '바깥' };
-  // 두 pop이 같은 배치에 들어가지 않도록(각 pop이 즉시 제출한다) 순서만 확인한다.
+test('nested scopes pair up in pop order', async () => {
+  const inner = { kind: 'validation', message: 'inner' };
+  const outer = { kind: 'out-of-memory', message: 'outer' };
+  // Only the order is checked, so the two pops do not land in the same batch (each pop submits immediately).
   mockWithScopes([inner, outer]);
   const device = await makeDevice();
 
@@ -57,64 +57,64 @@ test('중첩 스코프는 pop한 순서대로 짝지어진다', async () => {
   const first = await device.popErrorScope();
   const second = await device.popErrorScope();
 
-  assert.deepEqual(first, inner, '먼저 닫은 쪽이 먼저 풀린다');
+  assert.deepEqual(first, inner, 'the one closed first resolves first');
   assert.deepEqual(second, outer);
 });
 
-test('스코프를 열어 두어도 프레임당 왕복은 1회로 유지된다', async () => {
+test('the crossings stay at one per frame even with a scope left open', async () => {
   const state = mockWithScopes([]);
   const device = await makeDevice();
 
   const buffer = device.createBuffer({ size: 16, usage: 0x48 });
 
-  // 스코프를 연 채로 다섯 프레임을 돌린다 — push는 기록만 해야 한다.
+  // Run five frames with a scope open — push must only record.
   device.pushErrorScope('validation');
   for (let frame = 0; frame < 5; frame += 1) {
     device.queue.writeBuffer(buffer, 0, new Float32Array([frame]));
     device.queue.submit([]);
   }
 
-  assert.equal(state.executeCalls.length, 5, 'pushErrorScope가 추가 제출을 만들면 안 된다');
+  assert.equal(state.executeCalls.length, 5, 'pushErrorScope must not create an extra submission');
   const first = commandsOf(state, 0);
   assert.ok(
     first.some((command) => command.op === 'pushErrorScope'),
-    '스코프는 첫 프레임 제출에 실려 나간다'
+    'the scope rides out on the first frame submission'
   );
 });
 
-test('popErrorScope는 submit 없이도 풀린다 (스스로 제출한다)', async () => {
+test('popErrorScope resolves without a submit (it submits itself)', async () => {
   const state = mockWithScopes([null]);
   const device = await makeDevice();
 
   device.pushErrorScope('validation');
-  // submit을 부르지 않는다 — 그래도 Promise가 풀려야 한다. 안 그러면 초기화 진단이 매달린다.
+  // submit is never called — the Promise must resolve anyway. Otherwise initialization diagnostics hang.
   await device.popErrorScope();
 
-  assert.equal(state.executeCalls.length, 1, 'pop이 스스로 제출한다');
+  assert.equal(state.executeCalls.length, 1, 'pop submits by itself');
 });
 
-test('짝이 없는 pop은 OperationError로 reject된다', async () => {
-  // 네이티브는 짝이 맞지 않는 슬롯을 `{rejected: true}`로 표시해 보낸다.
+test('an unpaired pop rejects with an OperationError', async () => {
+  // Native marks an unpaired slot as `{rejected: true}` and sends it.
   mockWithScopes([{ rejected: true }]);
   const device = await makeDevice();
 
-  // 명세는 이 경우 오류를 만들지 않고 Promise만 reject한다. "스코프가 깨끗했다(null)"와
-  // "push/pop 짝이 안 맞았다"를 앱이 구분할 수 있어야 하기 때문이다.
+  // The spec produces no error in this case and only rejects the Promise. An app has to be able to tell
+  // "the scope was clean (null)" apart from "the push/pop were unpaired".
   await assert.rejects(() => device.popErrorScope(), { name: 'OperationError' });
 });
 
-test('알 수 없는 filter는 동기 TypeError다', async () => {
+test('an unknown filter is a synchronous TypeError', async () => {
   const state = installNativeMock();
   const device = await makeDevice();
 
-  // 브라우저(WebIDL enum 변환)와 같은 자리에서 실패해야 한다. 통과시키면 네이티브 스코프
-  // 스택이 밀려 이후 pop이 바깥 스코프를 가져간다.
+  // It must fail at the same place as in a browser (the WebIDL enum conversion). Letting it through shifts
+  // the native scope stack and a later pop takes an outer scope.
   assert.throws(() => device.pushErrorScope('Validation'), TypeError);
   assert.throws(() => device.pushErrorScope('oom'), TypeError);
   assert.equal(
     commandsOf(state).filter((command) => command.op === 'pushErrorScope').length,
     0,
-    '거부한 push가 커맨드로 실리면 안 된다'
+    'a rejected push must not ride out as a command'
   );
 
   for (const filter of ['validation', 'out-of-memory', 'internal']) {
@@ -122,33 +122,33 @@ test('알 수 없는 filter는 동기 TypeError다', async () => {
   }
 });
 
-test('네이티브 호출이 실패해도 기다리던 스코프가 풀린다', async () => {
+test('a waiting scope resolves even when the native call fails', async () => {
   installNativeMock({
     executeResult: () => {
-      throw new Error('브리지가 죽었다');
+      throw new Error('the bridge died');
     },
   });
   const device = await makeDevice();
 
   device.pushErrorScope('validation');
-  // 풀리지 않으면 초기화 진단이 매달리고, 다음 pop이 stale resolver를 가져가 인덱스가 어긋난다.
+  // Without resolving, initialization diagnostics hang and the next pop takes a stale resolver, throwing the indices off.
   assert.equal(await device.popErrorScope(), null);
 });
 
-test('device.destroy가 기다리던 스코프를 null로 닫는다', async () => {
+test('device.destroy closes waiting scopes with null', async () => {
   installNativeMock();
   const device = await makeDevice();
 
-  // flush를 거치지 않고 직접 대기 상태를 만든다 — destroy가 마무리하는지만 본다.
+  // The waiting state is built directly rather than through flush — only whether destroy finishes it matters.
   const pending = new Promise((resolve, reject) => {
     device._recorder.pendingErrorScopes.push({ resolve, reject });
   });
   device.destroy();
 
-  // 안 풀리면 영원히 기다리게 되므로 경주를 붙인다 — 매달림도 실패로 드러나야 한다.
+  // Without resolution it would wait forever, so it is raced — a hang must show as a failure too.
   const settled = await Promise.race([
     pending,
-    new Promise((resolve) => setTimeout(() => resolve('매달림'), 50)),
+    new Promise((resolve) => setTimeout(() => resolve('hung'), 50)),
   ]);
-  assert.equal(settled, null, '풀리지 않는 Promise를 남기면 안 된다');
+  assert.equal(settled, null, 'no unresolved Promise may be left behind');
 });

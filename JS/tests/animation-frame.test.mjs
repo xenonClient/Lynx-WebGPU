@@ -1,16 +1,16 @@
 /**
- * `installAnimationFrame` — 웹 라이브러리가 기대하는 rAF를 전역에 깐다.
+ * `installAnimationFrame` — installs the rAF web libraries expect onto the global.
  *
- * PrimJS에는 rAF가 없어서, 자체 루프를 도는 라이브러리(Three.js 등)가 **오류 없이 영구 정지**한다.
- * 여기서 보는 것은 세 가지다: 예약한 것만 이번 틱에 실행하는가(브라우저와 같은 경계), 아무도
- * 예약하지 않으면 디스플레이 링크를 놓는가(배터리), 이미 rAF가 있으면 안 덮는가.
+ * PrimJS has no rAF, so a library running its own loop (three.js and the like) **stalls forever with no error**.
+ * Three things are checked here: does only what was scheduled run this tick (the same boundary as a
+ * browser), is the display link let go when nobody schedules (battery), and is an existing rAF left alone.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { installNativeMock } from './helpers.mjs';
 import { installAnimationFrame } from '../webgpu.js';
 
-/** `startFrameLoop`가 붙잡는 `webgpu:frame` 이벤트를 손으로 밀어 주는 목. */
+/** A mock that hand-pushes the `webgpu:frame` event `startFrameLoop` latches onto. */
 function installFrameEmitter() {
   const state = installNativeMock();
   /** @type {((frame: {timestamp: number, delta: number}) => void)[]} */
@@ -36,14 +36,14 @@ function installFrameEmitter() {
   return state;
 }
 
-test('rAF 콜백이 프레임 틱에 실행된다', () => {
+test('an rAF callback runs on a frame tick', () => {
   const state = installFrameEmitter();
   const uninstall = installAnimationFrame();
 
   /** @type {number[]} */
   const times = [];
   globalThis.requestAnimationFrame((time) => times.push(time));
-  assert.equal(state.frameLoopRunning, 1, '예약이 있으면 루프가 돈다');
+  assert.equal(state.frameLoopRunning, 1, 'the loop runs while something is scheduled');
 
   state.tick(100);
   assert.deepEqual(times, [100]);
@@ -52,7 +52,7 @@ test('rAF 콜백이 프레임 틱에 실행된다', () => {
   delete globalThis.lynx;
 });
 
-test('콜백 안에서 예약한 것은 다음 틱이다 (브라우저와 같은 경계)', () => {
+test('what is scheduled inside a callback belongs to the next tick (the same boundary as a browser)', () => {
   const state = installFrameEmitter();
   const uninstall = installAnimationFrame();
 
@@ -64,7 +64,7 @@ test('콜백 안에서 예약한 것은 다음 틱이다 (브라우저와 같은
   });
 
   state.tick(1);
-  assert.deepEqual(order, [1], '재예약이 같은 틱에서 돌면 무한 루프가 된다');
+  assert.deepEqual(order, [1], 'rescheduling running in the same tick would be an infinite loop');
   state.tick(2);
   assert.deepEqual(order, [1, 2]);
 
@@ -72,17 +72,17 @@ test('콜백 안에서 예약한 것은 다음 틱이다 (브라우저와 같은
   delete globalThis.lynx;
 });
 
-test('예약이 비면 디스플레이 링크를 놓는다', () => {
+test('lets the display link go when nothing is scheduled', () => {
   const state = installFrameEmitter();
   const uninstall = installAnimationFrame();
 
   globalThis.requestAnimationFrame(() => {});
   assert.equal(state.frameLoopRunning, 1);
 
-  state.tick(1);                       // 콜백이 재예약하지 않았다
-  assert.equal(state.frameLoopRunning, 0, '루프가 계속 돌면 배터리를 먹는다');
+  state.tick(1);                       // the callback did not reschedule
+  assert.equal(state.frameLoopRunning, 0, 'a loop that keeps running eats battery');
 
-  // 다시 예약하면 되살아난다.
+  // Scheduling again brings it back.
   globalThis.requestAnimationFrame(() => {});
   assert.equal(state.frameLoopRunning, 1);
 
@@ -90,24 +90,24 @@ test('예약이 비면 디스플레이 링크를 놓는다', () => {
   delete globalThis.lynx;
 });
 
-test('cancelAnimationFrame이 그 콜백만 뗀다', () => {
+test('cancelAnimationFrame removes only that callback', () => {
   const state = installFrameEmitter();
   const uninstall = installAnimationFrame();
 
   /** @type {string[]} */
   const seen = [];
-  const id = globalThis.requestAnimationFrame(() => seen.push('취소될 것'));
-  globalThis.requestAnimationFrame(() => seen.push('남을 것'));
+  const id = globalThis.requestAnimationFrame(() => seen.push('to be cancelled'));
+  globalThis.requestAnimationFrame(() => seen.push('to remain'));
   globalThis.cancelAnimationFrame(id);
 
   state.tick(1);
-  assert.deepEqual(seen, ['남을 것']);
+  assert.deepEqual(seen, ['to remain']);
 
   uninstall();
   delete globalThis.lynx;
 });
 
-test('uninstall이 전역을 원래대로 되돌린다', () => {
+test('uninstall restores the globals', () => {
   installFrameEmitter();
   const uninstall = installAnimationFrame();
   assert.equal(typeof globalThis.requestAnimationFrame, 'function');
@@ -118,13 +118,13 @@ test('uninstall이 전역을 원래대로 되돌린다', () => {
   delete globalThis.lynx;
 });
 
-test('이미 rAF가 있으면 덮지 않는다', () => {
+test('does not overwrite an existing rAF', () => {
   installFrameEmitter();
   const original = (callback) => { callback(0); return 42; };
   globalThis.requestAnimationFrame = original;
 
   const uninstall = installAnimationFrame();
-  assert.equal(globalThis.requestAnimationFrame, original, '브라우저·러너의 것을 뺏으면 안 된다');
+  assert.equal(globalThis.requestAnimationFrame, original, 'a browser or runner must not have its own taken away');
 
   uninstall();
   delete globalThis.requestAnimationFrame;

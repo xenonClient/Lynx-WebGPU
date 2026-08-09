@@ -1,31 +1,31 @@
 /**
- * 디버그 마커 — 명세의 `GPUDebugCommandsMixin`.
+ * Debug markers — the spec's `GPUDebugCommandsMixin`.
  *
- * 커맨드 인코더와 패스·번들 인코더가 **함께** 가져야 한다. 클래스 계층이 갈려 있어
- * (커맨드 인코더는 패스 인코더를 상속하지 않는다) 한쪽만 넣기 쉬운 자리다.
+ * The command encoder and the pass/bundle encoders must have them **together**. The class hierarchies are
+ * split (a command encoder does not inherit from a pass encoder), so it is an easy place to add to one side only.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { installNativeMock, makeDevice, commandsOf } from './helpers.mjs';
 
-test('커맨드 인코더에 마커를 기록한다', async () => {
+test('records a marker on the command encoder', async () => {
   const state = installNativeMock();
   const device = await makeDevice();
 
   const encoder = device.createCommandEncoder();
-  encoder.pushDebugGroup('업로드');
-  encoder.insertDebugMarker('표식');
+  encoder.pushDebugGroup('upload');
+  encoder.insertDebugMarker('marker');
   encoder.popDebugGroup();
   device.queue.submit([encoder.finish()]);
 
   const ops = commandsOf(state).map((command) => command.op);
   assert.deepEqual(ops, ['pushDebugGroup', 'insertDebugMarker', 'popDebugGroup']);
   const [push, marker] = commandsOf(state);
-  assert.equal(push.groupLabel, '업로드');
-  assert.equal(marker.markerLabel, '표식');
+  assert.equal(push.groupLabel, 'upload');
+  assert.equal(marker.markerLabel, 'marker');
 });
 
-test('렌더 패스 인코더에도 있다', async () => {
+test('the render pass encoder has them too', async () => {
   const state = installNativeMock();
   const device = await makeDevice();
   const texture = device.createTexture({
@@ -36,16 +36,16 @@ test('렌더 패스 인코더에도 있다', async () => {
   const pass = encoder.beginRenderPass({
     colorAttachments: [{ view: texture.createView(), loadOp: 'clear', storeOp: 'store' }],
   });
-  pass.pushDebugGroup('메인 패스');
+  pass.pushDebugGroup('main pass');
   pass.popDebugGroup();
   pass.end();
   device.queue.submit([encoder.finish()]);
 
   const ops = commandsOf(state).map((command) => command.op);
-  assert.ok(ops.indexOf('pushDebugGroup') > ops.indexOf('beginRenderPass'), '패스 안에 들어가야 한다');
+  assert.ok(ops.indexOf('pushDebugGroup') > ops.indexOf('beginRenderPass'), 'it has to go inside the pass');
 });
 
-test('컴퓨트 패스와 번들 인코더에도 있다', async () => {
+test('the compute pass and bundle encoders have them too', async () => {
   installNativeMock();
   const device = await makeDevice();
 
@@ -60,12 +60,12 @@ test('컴퓨트 패스와 번들 인코더에도 있다', async () => {
   assert.equal(typeof bundle.popDebugGroup, 'function');
 });
 
-test('번들에 기록한 마커는 번들 명령에 실린다', async () => {
+test('a marker recorded into a bundle rides on the bundle commands', async () => {
   const state = installNativeMock();
   const device = await makeDevice();
 
   const bundleEncoder = device.createRenderBundleEncoder({ colorFormats: ['rgba8unorm'] });
-  bundleEncoder.pushDebugGroup('번들 구간');
+  bundleEncoder.pushDebugGroup('bundle range');
   bundleEncoder.popDebugGroup();
   bundleEncoder.finish();
   device.queue.submit([]);

@@ -1,16 +1,16 @@
 /**
- * 기록 시점 스냅샷 — 호출 뒤 디스크립터 재사용이 스트림을 오염시키지 못한다.
+ * Record-time snapshots — reusing a descriptor after the call cannot pollute the stream.
  *
- * 브라우저 WebGPU는 호출 시점에 인자를 직렬화한다. three.js는 그 계약에 기대
- * 싱글턴 디스크립터를 인코딩 직후 reset()하는데, shim이 참조를 들고 있으면
- * copySize가 flush 전에 0이 되어 **폭 0짜리 복사가 오류 없이** 나간다
- * (실제로 렌더 타깃 리드백이 전부 (0,0,0)으로 나온 사고다).
+ * Browser WebGPU serializes arguments at call time. three.js relies on that contract and reset()s a
+ * singleton descriptor right after encoding, so with the shim holding a reference copySize becomes 0
+ * before the flush and **a zero-width copy goes out with no error**
+ * (a real incident where render target readbacks all came out as (0,0,0)).
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { installNativeMock, makeDevice, commandsOf } from './helpers.mjs';
 
-test('인코더 명령: 호출 뒤 copySize·origin을 리셋해도 기록은 그대로다', async () => {
+test('encoder commands: resetting copySize and origin after the call leaves the record unchanged', async () => {
   const state = installNativeMock();
   const device = await makeDevice();
 
@@ -19,7 +19,7 @@ test('인코더 명령: 호출 뒤 copySize·origin을 리셋해도 기록은 �
   });
   const buffer = device.createBuffer({ size: 256, usage: 0x09 });
 
-  // three.js 스타일 — 싱글턴 디스크립터를 쓰고 인코딩 직후 리셋한다.
+  // three.js style — a singleton descriptor, reset right after encoding.
   const source = { texture, origin: { x: 4, y: 4, z: 0 } };
   const destination = { buffer, bytesPerRow: 256 };
   const copySize = { width: 1, height: 1, depthOrArrayLayers: 1 };
@@ -34,13 +34,13 @@ test('인코더 명령: 호출 뒤 copySize·origin을 리셋해도 기록은 �
   device.queue.submit([encoder.finish()]);
 
   const command = commandsOf(state).find((entry) => entry.op === 'copyTextureToBuffer');
-  assert.equal(command.copySize.width, 1, '리셋된 width가 스트림에 새면 폭 0짜리 복사가 나간다');
+  assert.equal(command.copySize.width, 1, 'a reset width leaking into the stream sends out a zero-width copy');
   assert.equal(command.copySize.height, 1);
   assert.equal(command.source.origin.x, 4);
   assert.equal(command.source.origin.y, 4);
 });
 
-test('beginRenderPass: 호출 뒤 clearValue를 바꿔도 기록은 그대로다', async () => {
+test('beginRenderPass: changing clearValue after the call leaves the record unchanged', async () => {
   const state = installNativeMock();
   const device = await makeDevice();
 
@@ -62,7 +62,7 @@ test('beginRenderPass: 호출 뒤 clearValue를 바꿔도 기록은 그대로다
   assert.equal(command.colorAttachments[0].clearValue.r, 1);
 });
 
-test('큐 명령: 호출 뒤 writeTexture의 origin·size를 리셋해도 기록은 그대로다', async () => {
+test('queue commands: resetting writeTexture\'s origin and size after the call leaves the record unchanged', async () => {
   const state = installNativeMock();
   const device = await makeDevice();
 
@@ -83,11 +83,11 @@ test('큐 명령: 호출 뒤 writeTexture의 origin·size를 리셋해도 기록
   assert.equal(command.size.width, 2);
 });
 
-test('번들 인코더: 호출 뒤 디스크립터를 리셋해도 어태치먼트가 남는다', async () => {
+test('the bundle encoder: resetting the descriptor after the call keeps the attachments', async () => {
   const state = installNativeMock();
   const device = await makeDevice();
 
-  // three.js의 createBundleEncoder가 정확히 이 모양이다 — 싱글턴을 넘기고 곧바로 리셋한다.
+  // three.js's createBundleEncoder has exactly this shape — it passes a singleton and resets right away.
   const descriptor = { label: 'bundle', colorFormats: ['bgra8unorm'], depthStencilFormat: 'depth32float' };
   const encoder = device.createRenderBundleEncoder(descriptor);
   descriptor.colorFormats = [];
@@ -99,7 +99,7 @@ test('번들 인코더: 호출 뒤 디스크립터를 리셋해도 어태치먼�
   const create = commandsOf(state).find((command) => command.op === 'createRenderBundle');
   assert.deepEqual(
     create.colorFormats, ['bgra8unorm'],
-    '리셋이 새면 어태치먼트 없는 번들이 만들어져 executeBundles에서야 원인이 드러난다'
+    'a leaking reset builds a bundle with no attachments, and the cause only surfaces at executeBundles'
   );
   assert.equal(create.depthStencilFormat, 'depth32float');
 });
