@@ -12,9 +12,7 @@ Swift 6.2 / iOS 17.0+ / macOS 14.0+. **이 패키지는 외부 의존성이 0이
 설계: `docs/ARCHITECTURE.md` · 지원 API: `docs/WEBGPU-API.md` · WGSL 서브셋: `docs/WGSL.md` ·
 Lynx 연동: `docs/LYNX-INTEGRATION.md` · 커맨드 스트림 명세: `docs/COMMAND-STREAM.md` ·
 번들(JS) 작성: `docs/JS-AUTHORING.md` ·
-테스트: `docs/TESTING.md` · 로드맵: `docs/ROADMAP.md` ·
-서드파티 라이선스: `docs/THIRD-PARTY.md` (Dawn = BSD-3-Clause · Lynx = Apache-2.0 ·
-three.js = MIT — **앱 배포 시 고지 의무**가 붙는 자리)
+테스트: `docs/TESTING.md` · 로드맵: `docs/ROADMAP.md`
 
 ## Build & Test
 

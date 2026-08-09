@@ -18,9 +18,7 @@ let project = Project(
     packages: [
         // 루트 SPM 패키지 — 계약(Core)과 증명 수단(Conformance)만 쓴다. Metal 엔진은 링크하지 않는다.
         .local(path: "../.."),
-        // Dawn 프리빌트 (제품 "Dawn", 모듈 "WebGPU" — webgpu.h C API).
-        // 라이선스: BSD-3-Clause (일부 파일 Apache-2.0) — **이 타깃의 산출물을 배포하면
-        // 저작권 고지 재현 의무가 붙는다** (`docs/THIRD-PARTY.md`).
+        // Dawn 프리빌트 (제품 "Dawn", 모듈 "WebGPU" — webgpu.h C API). BSD-3-Clause.
         .remote(
             url: "https://github.com/xenonClient/Dawn-xcFramework",
             requirement: .exact("20260731.171941.0")

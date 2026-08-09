@@ -3,12 +3,9 @@
 [wcandillon/react-native-webgpu](https://github.com/wcandillon/react-native-webgpu)를 확인하고
 (2026-08-09), 그 분할을 이 저장소의 제약에 맞게 옮긴 기록이다.
 
-> **라이선스 — 참고만 했고 코드는 이식하지 않았다.** react-native-webgpu는 MIT
-> (`Copyright 2024-present, William Candillon`)다. 이 문서가 옮긴 것은 **레이어를 어디서
-> 자를지에 대한 판단**이고, 소스·헤더·생성 코드는 한 줄도 가져오지 않았다 —
-> `DawnBackend.swift`는 Dawn 공개 헤더(`webgpu.h`)와 이 저장소의 `WGPUBackend` 프로토콜만
-> 보고 쓴 것이다. 그래서 배포물에 그 저작물이 없고 MIT 고지 의무도 생기지 않는다
-> (`docs/THIRD-PARTY.md` §2). 결론부터: **위층(공유)은
+> **고지.** react-native-webgpu는 MIT (`Copyright 2024-present, William Candillon`)다.
+> 여기서 옮긴 것은 **레이어를 어디서 자를지에 대한 판단**이고, 코드는 이식하지 않았다 —
+> `DawnBackend.swift`는 Dawn 공개 헤더(`webgpu.h`)와 이 저장소의 `WGPUBackend`만 보고 썼다. 결론부터: **위층(공유)은
 브리징과 최소한의 예외처리만, 아래층은 두 갈래** — 렌더링 파이프라인·WGSL→MSL 변환·명세
 검증을 직접 구현한 Metal 쪽과, 그 전부를 Dawn 자신이 처리하는 Dawn 쪽이다. 스위치는
 `WGPUBackendCapabilities.validatesNatively`.

@@ -68,7 +68,6 @@ host.attach(to: lynxView)
 - [docs/LYNX-INTEGRATION.md](docs/LYNX-INTEGRATION.md) — 호스트 앱 연동
 - [docs/COMMAND-STREAM.md](docs/COMMAND-STREAM.md) — 커맨드 스트림 와이어 명세 (**다른 백엔드를 만들 때의 사양서**)
 - [docs/TESTING.md](docs/TESTING.md) — 테스트 전략/하네스/컨벤션
-- [docs/THIRD-PARTY.md](docs/THIRD-PARTY.md) — 서드파티 구성요소와 라이선스
 - [docs/ROADMAP.md](docs/ROADMAP.md) — 다음 기능 계획 (웹 라이브러리 이식 갭 → 이미지 처리 경로)
 - [Examples/HelloTriangle.tsx](Examples/HelloTriangle.tsx) — ReactLynx 최소 예제
 
@@ -189,3 +188,11 @@ Xcode 26.2 / Swift 6.2 · iOS 17.0+ · macOS 14.0+ (개발 루프용)
 데모 앱은 [xenonClient/Lynx-XCFramework](https://github.com/xenonClient/Lynx-XCFramework)를
 직접 물고 있다 (device + simulator 슬라이스 포함) — 이는 **데모의 선택**이지 라이브러리의
 요구사항이 아니다. 다른 저장소·버전으로 바꾸려면 `Projects/WebGPUDemo/Project.swift`만 고치면 된다.
+
+## 참고
+
+- [Dawn](https://dawn.googlesource.com/dawn) (Google의 WebGPU 구현, BSD-3-Clause) — 명세 해석의
+  기준으로 참고했고, `Projects/DawnCheck`가 프리빌트 바이너리를 링크해 **같은 적합성 스위트로
+  교차 검증**한다. 라이브러리 product는 Dawn을 링크하지 않는다.
+- [react-native-webgpu](https://github.com/wcandillon/react-native-webgpu) (MIT) — 레이어 분할을
+  참고했다 (`docs/extra/RN-WEBGPU-LAYERING.md`). 코드는 이식하지 않았다.
