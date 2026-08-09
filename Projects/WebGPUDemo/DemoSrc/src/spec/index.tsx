@@ -273,19 +273,23 @@ function SpecScene() {
       })
 
       // ⑬ core 포맷 2종 — 만들고 복사까지 된다 (팩된 32비트라 픽셀당 4바이트).
+      //
+      // `bytesPerRow`는 **256의 배수**여야 한다 (명세 요구 — 행이 여럿인 복사라 생략도 안 된다).
+      // 픽셀당 4바이트 × 4픽셀 = 16B짜리 촘촘한 행을 그대로 쓰면 브라우저가 거부한다.
       await check(12, async () => {
         const results: string[] = []
+        const bytesPerRow = 256
         for (const format of ['rgb10a2uint', 'rgb9e5ufloat']) {
           const texture = device.createTexture({
             size: { width: 4, height: 4 }, format,
             usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC,
           })
           const buffer = device.createBuffer({
-            size: 4 * 4 * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+            size: bytesPerRow * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
           })
           const encoder = device.createCommandEncoder()
           encoder.copyTextureToBuffer(
-            { texture }, { buffer, bytesPerRow: 4 * 4 }, { width: 4, height: 4 }
+            { texture }, { buffer, bytesPerRow }, { width: 4, height: 4 }
           )
           device.queue.submit([encoder.finish()])
           const bytes = new Uint8Array(await buffer.mapAsync())
