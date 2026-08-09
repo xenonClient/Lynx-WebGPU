@@ -228,6 +228,13 @@ Lynx-WebGPU-Dawn       (별도 저장소)
 
 Swift ↔ Dawn은 **C API(`webgpu.h`)로 충분하다** — C++ interop 불필요, 모듈 맵 하나면 된다.
 
+> **라이선스.** Dawn은 **BSD-3-Clause**(`Copyright 2017-2026 The Dawn & Tint Authors`)이고,
+> LICENSE 안의 일부 디렉터리(generator 템플릿·Android 도구)는 Apache-2.0이다. 우리는 소스를
+> 가져오지 않고 프리빌트 `.xcframework`를 **DawnCheck·DawnDemo 타깃에서만** 링크하므로
+> 라이브러리 product는 영향이 없다. 다만 **BSD 2항은 바이너리 재배포 시 저작권 고지·조건·
+> 면책을 문서나 부속 자료에 재현할 것을 요구**하므로, Dawn을 링크한 앱을 배포한다면 오픈소스
+> 고지에 Dawn을 넣어야 한다. 자세한 것은 `docs/THIRD-PARTY.md`.
+
 ## 4. 비용과 위험 — 정직하게
 
 | 항목 | 내용 |
