@@ -88,12 +88,14 @@ LynxWebGPUBridge  ← Core, Lynx                NativeModule(`NativeModules.WebG
 - **런타임(GPU 백엔드)은 앱이 주입한다.** 브리지는 `WebGPURuntime` 프로토콜만 보고,
   `LynxWebGPUHost(runtime:)`에 구현체가 들어온다 — Lynx SDK를 가져오지 않는 것과 같은 이유다.
   다른 백엔드(Dawn 등)를 붙일 때 **브리지도 JS 번들도 바뀌지 않는다** (`docs/extra/DAWN-BACKEND-REVIEW.md`).
-- **커맨드 스트림의 디코딩·디스패치·와이어 정책은 전부 Core에서 끝난다** (`WGPUDescriptors.swift` =
+- **커맨드 스트림의 디코딩·디스패치·검증·와이어 정책은 전부 Core에서 끝난다** (`WGPUDescriptors.swift` =
   명세 디스크립터, `WGPUCommands.swift` = op 인자, `WGPUCommand.swift` = op 이름 → 케이스 디스패치 표,
   `WGPUErrorScopeStack`/`WGPUBatchResult`/`WGPUDeferredErrorQueue` = 오류 스코프·응답 조립·지연 오류).
-  백엔드는 `WGPUCommand`에 대한 **default 없는 exhaustive switch**만 쓴다 — op을 더하면 컴파일러가
-  모든 백엔드의 누락을 잡고, 필드 이름이 흩어지지 않으며, 백엔드를 갈아끼울 때 다시 쓸 것이
-  "인코딩"으로만 좁혀진다.
+  디스패치(51케이스 exhaustive switch)와 명세 검증·프레임 수명·매핑 게이트·직렬화는
+  **`WGPUBackendEngine`(Core) 한 곳**이 실행하고, 백엔드는 **`WGPUBackend` 동사 프로토콜**만
+  구현한다 — op을 더하면 프로토콜 요구가 늘어 컴파일러가 모든 백엔드의 누락을 잡고,
+  백엔드를 갈아끼울 때 다시 쓸 것이 "인코딩"으로만 좁혀진다 (Metal `WGPUMetalBackend`과
+  Dawn `DawnBackend`가 같은 엔진 위에서 실제로 그렇게 돈다).
 - **Lynx 심볼(`LynxModule`, `LynxUI` 등)은 LynxWebGPUBridge 안에서만** 참조하고 반드시 `#if canImport(Lynx)` 가드 안에 둔다.
   **이 패키지는 Lynx를 의존성으로 가져오지 않는다** — 버전·배포처를 앱이 정하게 하기 위해서다
   (`docs/LYNX-INTEGRATION.md` §1). 그래서 `Sources/LynxWebGPUBridge/`는 **SPM 타깃이 아니고**,
@@ -110,16 +112,20 @@ Sources/
 │                         WGPUCommand(op → 케이스 디스패치 표) / WGPUValueReader
 │                         WGPUHandle / WGPUError / WGPUAssetProvider
 │                         WGPUErrorScopeStack · WGPUBatchResult · WGPUDeferredErrorQueue(와이어 정책)
-│                         WebGPURuntime(백엔드 프로토콜 — 앱이 구현체를 넣는다. processEvents 펌프 포함)
+│                         WebGPURuntime(런타임 프로토콜 — 앱이 구현체를 넣는다. processEvents 펌프 포함)
+│                         WGPUBackend(백엔드 동사 프로토콜) · WGPUBackendEngine(오케스트레이션 —
+│                         디스패치·검증·오류 스코프·프레임 수명·매핑 게이트·직렬화 락) ·
+│                         WGPUEngineObjects(핸들 메타데이터 래퍼) · WGPUImageDecoder(ImageIO)
 │                         WGPUFrameCoordinator(present 시점·in-flight 회계 — 백엔드 무관)
 ├── LynxWebGPUShader/   — WGSLLexer → WGSLParser → WGSLReflection → MSLEmitter
 │                         WGSLLayout(vec3 배치 보정) · WGSLBindings(Metal 인덱스 배정)
 │                         MSLPrelude(타입 추론을 C++ 템플릿에 위임하는 셰이더 프렐류드)
 ├── LynxWebGPU/         — WGPUMetalMapping / WGPUResources / WGPUPipeline / WGPUSurface
-│                         WGPUCommandInterpreter / LynxWebGPUContext(= WebGPURuntime 기본 구현)
-│                         WGPUImageDecoder(ImageIO — createImageBitmap)
+│                         WGPUMetalBackend(= WGPUBackend의 Metal 구현 — 인코딩 동사만)
+│                         LynxWebGPUContext(= 엔진 + Metal 백엔드 조합 — WebGPURuntime 기본 구현)
 ├── LynxWebGPUBridge/   — LynxWebGPUHost / WebGPUNativeModule / WebGPUCanvasUI / WebGPUFrameTicker
-└── (다른 백엔드)        — 이 저장소 밖. `WebGPURuntime`을 구현해 앱이 주입한다
+└── (다른 백엔드)        — 이 저장소 밖. `WGPUBackend` 동사를 구현해 `WGPUBackendEngine`에
+                          얹으면 오케스트레이션 없이 런타임이 된다 (Projects/DawnCheck가 실물)
 Tests/
 ├── LynxWebGPUCoreTests/    — 디스크립터·커맨드 디코딩, 핸들 레지스트리, 와이어 정책, 프레임 회계
 ├── LynxWebGPUShaderTests/  — 트랜스파일 + **실제 Metal 컴파일러 통과 검증**(MetalCompilerHarness)
@@ -131,8 +137,9 @@ Examples/HelloTriangle.tsx  — ReactLynx 최소 예제
 Examples/ExternalRuntime/   — 외부 백엔드 주입 검증 픽스처 (Core+Conformance만 링크하는 중첩 SPM)
 Projects/WebGPUDemo/    — Tuist 데모 호스트 앱 (Sources/) + 데모 번들 rspeedy 소스 (DemoSrc/)
                           Tools/ — 빌드 시점 애셋 변환 (HDR HEIC → GPU가 바로 먹는 바이너리)
-Projects/DawnCheck/     — 진짜 Dawn 위의 WebGPURuntime 시제품 (루트 워크스페이스의 별도 프로젝트,
-                          시뮬레이터 전용). 스킴 둘: DawnCheck(오프스크린 적합성 29검사) ·
+Projects/DawnCheck/     — 진짜 Dawn 위의 백엔드 (루트 워크스페이스의 별도 프로젝트, 시뮬레이터
+                          전용). DawnBackend가 `WGPUBackend`를 구현하고 공유 엔진에 얹힌다.
+                          스킴 둘: DawnCheck(오프스크린 적합성 29검사) ·
                           DawnDemo(화면 실증 앱 — 데모 씬·브리지·JS 무변경, 런타임만 Dawn)
 Tuist.swift · Workspace.swift — 데모 앱 전용. 라이브러리 자체는 SPM만으로 완결된다
 docs/                   — ARCHITECTURE / WEBGPU-API / WGSL / LYNX-INTEGRATION / JS-AUTHORING / TESTING
@@ -202,12 +209,14 @@ git tag -a 0.2.0 -m "0.2.0 — 요약"
 - **커맨드 스트림의 필드 이름은 타입 검사가 잡아 주지 않는다.** JS는 `Record<string, any>`로 싣고
   Swift는 문자열 키로 읽으므로, 이름이 어긋나도 양쪽 다 컴파일된다. op를 추가·수정할 때는
   `.claude/skills/webgpu-command/SKILL.md`의 순서를 그대로 따라 양쪽을 함께 고칠 것.
-- **버퍼를 쓰는 새 op은 `WGPUCommandInterpreter.unmappedBuffer(_:path:)`를 거쳐야 한다.**
-  `registry.lookup(..., as: WGPUBufferObject.self, ...)`를 직접 부르면 매핑 검사를 건너뛰어,
-  `mapAsync` 중인 버퍼에 GPU가 쓰는 경쟁이 그 경로로 샌다 (명세의 "unavailable" 상태).
-  바인드 그룹 경로는 `applyDrawState()`가 `bufferObjects`를 훑어 따로 막는다.
-- **드로우·디스패치 전 상태 확인은 `applyDrawState()` 한 곳에 모여 있다.** 새 드로우 op을
+- **버퍼를 쓰는 새 op은 `WGPUBackendEngine.unmappedBuffer(_:path:)`를 거쳐야 한다.**
+  레지스트리 lookup을 직접 부르면 매핑 검사를 건너뛰어, `mapAsync` 중인 버퍼에 GPU가 쓰는
+  경쟁이 그 경로로 샌다 (명세의 "unavailable" 상태). 바인드 그룹 경로는 엔진의
+  `applyDrawState()`가 그룹 메타데이터의 버퍼 목록을 훑어 따로 막는다.
+- **드로우·디스패치 전 상태 확인은 엔진의 `applyDrawState()` 한 곳에 모여 있다.** 새 드로우 op을
   추가하면 이 함수를 부를 것 — 바인드 그룹·정점 버퍼 완전성과 번들 격리 계약이 여기 걸려 있다.
+  이 검사들은 백엔드가 준 파이프라인 메타데이터(`WGPURenderPipelineInfo`)로 돈다 — nil을 준
+  항목은 "백엔드가 네이티브로 검증한다"는 뜻이다 (Dawn이 그렇게 한다).
 - 트랜스파일러를 고칠 때는 **반드시 `MetalCompilerHarness.assertCompiles`가 붙은 테스트**를 추가한다.
   문자열만 맞고 컴파일이 안 되는 MSL을 막기 위한 장치다.
 - Metal 검증 레이어는 디스크립터 `label`에 nil을 넣으면 단언으로 죽는다. `if let label = …` 로 감쌀 것.

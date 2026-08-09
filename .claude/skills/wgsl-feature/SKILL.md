@@ -88,7 +88,7 @@ XCTAssertEqual(placement.size, 80)
 - 바인드 그룹: 그룹 → 바인딩 오름차순으로 종류별 카운터 0부터.
 - 정점 버퍼: `30 - slot` (테이블 위쪽부터 역순).
 
-이 규칙을 바꾸면 `WGPUCommandInterpreter.setVertexBuffer` / `apply(_:at:dynamicOffsets:layout:)`와
+이 규칙을 바꾸면 `WGPUMetalBackend.applyVertexBuffer` / `applyBindGroup(_:at:dynamicOffsets:)`와
 `WGPURenderPipelineObject.vertexDescriptor`도 **함께** 고친다.
 
 ## 6. 테스트 (필수)

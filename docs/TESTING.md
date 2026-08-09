@@ -123,14 +123,17 @@ arch -arm64 xcodebuild -workspace LynxWebGPUDemo.xcworkspace \
   -derivedDataPath .derivedData-cli test
 ```
 
-기준선 (2026-08-08, 시뮬레이터): **적합성 27/28 통과 · 1 건너뜀 · 0 실패.** 건너뜀은
+기준선 (2026-08-09, 시뮬레이터): **적합성 28/29 통과 · 1 건너뜀 · 0 실패.** 건너뜀은
 `indirect-draw-equivalence` — 시뮬레이터의 간접 드로우가 Metal 단언으로 죽는 경로라
 런타임이 기능을 광고하지 않는다 (실기기에서는 광고해도 된다). 렌더 번들 동치성은
-Metal 런타임의 명령 재생과 달리 **진짜 Dawn 렌더 번들**로 통과한다.
+Metal 백엔드의 엔진 record/replay와 달리 **진짜 Dawn 렌더 번들**로 통과한다.
+Dawn 쪽은 `DawnBackend`(인코딩 동사)만 있고 오케스트레이션은 Metal과 같은
+`WGPUBackendEngine`(Core)이라, 와이어 정책·프레임 수명·펌프 직렬화는 검증할 것도
+공유된다 — 이 스위트가 재는 것은 인코딩 차이뿐이다.
 
 **화면 연동은 같은 프로젝트의 DawnDemo 앱**이 실증한다 — 데모의 씬 목록·런처·`.lynx.bundle`을
 그대로 쓰고, 다른 것은 런타임 주입 한 줄뿐이다 (`LynxWebGPUHost(runtime: try
-DawnWebGPURuntime())` — Metal 엔진 `LynxWebGPU`는 링크하지 않는다). 화면 표면은
+DawnWebGPURuntime())` — Metal 백엔드 `LynxWebGPU`는 링크하지 않는다). 화면 표면은
 `WGPUSurfaceSourceMetalLayer`, in-flight 페이싱은 Core의 `WGPUFrameCoordinator` 그대로다:
 
 ```zsh

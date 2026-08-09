@@ -105,13 +105,17 @@ JS/webgpu.js  ──{op:…}──▶  LynxWebGPUBridge  ──▶  WebGPURuntim
 크기를 앱이 정하게 한다. 브리지는 `LynxWebGPUCore`만 의존하므로 **GPU 백엔드를 링크하지 않고도
 컴파일된다.**
 
-두 구현이 지켜야 할 계약은 `docs/COMMAND-STREAM.md`에 있다. 디코딩과 **디스패치 표**
-(`WGPUCommand` — 백엔드는 default 없는 exhaustive switch만 쓴다), 오류 스코프 스택·응답
-조립·지연 오류 큐 같은 **와이어 정책**까지 `LynxWebGPUCore`가 공유하므로, 백엔드가 다시
-쓰는 것은 정말로 "인코딩"뿐이다. 같은 그림을 그리는지는 적합성 스위트
+두 구현이 지켜야 할 계약은 `docs/COMMAND-STREAM.md`에 있다. 그 계약의 **실행 자체도
+`LynxWebGPUCore`가 공유한다**: `WGPUBackendEngine`이 디코딩·디스패치(51케이스 exhaustive
+switch)·명세 검증·오류 스코프·프레임 수명·매핑 게이트·직렬화 락을 전부 이행하고, 백엔드는
+**`WGPUBackend` 동사 프로토콜**(해석이 끝난 값으로 GPU API를 부르는 좁은 함수들)만 구현한다.
+`LynxWebGPUContext`는 그 엔진에 Metal 백엔드(`WGPUMetalBackend`)를 얹은 조합이고, Dawn
+백엔드(`Projects/DawnCheck`의 `DawnBackend`)도 같은 엔진 위에서 돈다 — 백엔드가 다시 쓰는
+것은 정말로 "인코딩"뿐이고, op을 더하면 프로토콜 요구가 늘어 컴파일러가 모든 백엔드의
+누락을 잡는다. 같은 그림을 그리는지는 적합성 스위트
 (`Sources/LynxWebGPUConformance` — 라이브러리 product)가 픽셀로 확인하고, 외부에서 이
 경계로 런타임을 만들 수 있다는 사실은 `Examples/ExternalRuntime`이 컴파일로 증명한다.
-대체 가능 범위와 선행 작업 검토는 `docs/extra/DAWN-BACKEND-REVIEW.md`.
+대체 가능 범위와 경계 재설계 경위는 `docs/extra/DAWN-BACKEND-REVIEW.md`.
 
 ### 스레딩
 
@@ -207,7 +211,7 @@ false면 `popErrorScope`·`mapAsync`가 결과를 받으려고 흘려보낸 **�
 커밋만 하고 present와 핸들 회수를 뒤따라올 `queue.submit()` 배치로 미룬다. 이 구분이 없으면
 내부 배치가 `writeBuffer` 하나로라도 커맨드 버퍼를 만든 순간, 획득해 둔 드로어블이 그리기도
 전에 present되어 그 프레임의 남은 패스가 통째로 거부된다 (Three.js의 지연 파이프라인 생성이
-정확히 이 모양이었다 — `WGPUCommandInterpreter.finish(present:)` 참고).
+정확히 이 모양이었다 — `WGPUBackendEngine.finish(_:)` 참고).
 
 ## 6. 프레임 루프
 

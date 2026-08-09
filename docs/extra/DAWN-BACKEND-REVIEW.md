@@ -20,7 +20,7 @@ Dawn의 사정권에 드는 것은 Swift 10,387줄 중 **약 5,000줄(≈50%)**�
 | **LynxWebGPUShader** 전체 | 3,498 | **Tint** (`src/tint/lang/wgsl/reader` → `lang/msl/writer`) | **전량 대체** |
 | `WGPUResources` · `WGPUPipeline` · `WGPUMetalMapping` | 1,309 | `dawn::native` Metal 백엔드 | **전량 대체** |
 | `WGPUStagingPool` | 94 | `wgpuQueueWriteBuffer` 내부 업로드 링 | **삭제** |
-| `WGPUCommandInterpreter` | 1,861 | 인코딩 절반만 (`wgpuRenderPassEncoder*` 등) | **절반 대체** |
+| `WGPUCommandInterpreter` (현재는 `WGPUBackendEngine`(Core) + `WGPUMetalBackend`로 분해 — §진행 7) | 1,861 | 인코딩 절반만 (`wgpuRenderPassEncoder*` 등) | **절반 대체** |
 | `WGPUSurface` | 274 | `WGPUSurfaceSourceMetalLayer` + configure/getCurrentTexture/present | **절반 대체** |
 | `LynxWebGPUContext` | 421 | `adapterInfo()`의 limits 손계산 → `wgpuAdapterGetLimits` | **일부 대체** |
 | `WGPUEnums` · `WGPUDescriptors` | 1,276 | 구조체 **모양**은 있으나 문자열 raw value 디코딩은 없다 | **거의 유지** |
@@ -118,12 +118,14 @@ A를 고르는 이유는 하나다: **커맨드 스트림이 이미 직렬화된
 > | 4 | 적합성 스위트 분리 | **완료** — `Sources/LynxWebGPUConformance`(라이브러리 product). **29개 검사** — 프레임 수명(present:false 생존·만료)·readBuffer·resize·컴파일 진단·msl-optional·decodeImage 포함 |
 > | 5 | 프레임 정책 분리 | **완료** — `WGPUFrameCoordinator` · `WGPUFrameBoundary`(Core). GPU 없이 검증된다 |
 > | 5+ | 인터페이스 완결 | **완료 (2026-08-08)** — ① 디스패치 표 `WGPUCommand`(51케이스 열거형 — 백엔드는 default 없는 switch만 쓰고, op 추가 누락은 컴파일이 잡는다) ② 와이어 정책의 Core 이관 (`WGPUErrorScopeStack` · `WGPUBatchResult` · `WGPUDeferredErrorQueue`) ③ 비동기 펌프 훅 `processEvents()` ④ `RenderHarness` 런타임 매개변수화 ⑤ 외부 주입 픽스처 `Examples/ExternalRuntime` (Core+Conformance만 링크한 스텁이 29검사를 전부 판정) |
-> | 6 | 빌드·배포 경로 | **시제품 완료 (2026-08-08)** — 프리빌트는 [Dawn-xcFramework](https://github.com/xenonClient/Dawn-xcFramework)(별도 저장소, SPM binaryTarget)가 제공하고, 그 위의 `WebGPURuntime` 구현 시제품이 `Projects/DawnCheck`에 있다. **시뮬레이터 적합성 27/28 통과 · 1 건너뜀(간접 드로우 — 시뮬레이터 제약으로 미광고) · 0 실패.** 화면 표면(`WGPUSurfaceSourceMetalLayer`)까지 배선되어 **DawnDemo 앱이 데모 씬(triangle·cube)을 브리지·JS 무변경으로 그린다** (wgsl 씬은 §4 동작 발산 사례 — uniformity 위반으로 거부되고 오류 오버레이가 뜬다) — in-flight 페이싱은 `WGPUFrameCoordinator`의 `noteCommitted`/`noteCompleted` 그대로다. **24씬 전체 스위프 결과는 `docs/TESTING.md` §2-1** — 15씬 무오류(three.js 기본 씬 16/16 포함), 발산 4건(전부 씬의 명세 위반), **threelab은 시뮬레이터에서 화면 무출력**(Dawn이 family 3 미만에서 비교 샘플러를 꺼서 — Metal 런타임은 같은 시뮬레이터에서 전부 그린다). 남은 것: 시제품을 실제 배포 저장소(Lynx-WebGPU-Dawn)로 옮기고 **실기기 확인**(threelab·gpudriven이 그 관문이다) |
+> | 6 | 빌드·배포 경로 | **시제품 완료 (2026-08-08)** — 프리빌트는 [Dawn-xcFramework](https://github.com/xenonClient/Dawn-xcFramework)(별도 저장소, SPM binaryTarget)가 제공하고, 그 위의 `WebGPURuntime` 구현 시제품이 `Projects/DawnCheck`에 있다. 화면 표면(`WGPUSurfaceSourceMetalLayer`)까지 배선되어 **DawnDemo 앱이 데모 씬(triangle·cube)을 브리지·JS 무변경으로 그린다** (wgsl 씬은 §4 동작 발산 사례 — uniformity 위반으로 거부되고 오류 오버레이가 뜬다) — in-flight 페이싱은 `WGPUFrameCoordinator`의 `noteCommitted`/`noteCompleted` 그대로다. **24씬 전체 스위프 결과는 `docs/TESTING.md` §2-1** — 15씬 무오류(three.js 기본 씬 16/16 포함), 발산 4건(전부 씬의 명세 위반), **threelab은 시뮬레이터에서 화면 무출력**(Dawn이 family 3 미만에서 비교 샘플러를 꺼서 — Metal 런타임은 같은 시뮬레이터에서 전부 그린다). 남은 것: 실제 배포 저장소(Lynx-WebGPU-Dawn) 분리와 **실기기 확인**(threelab·gpudriven이 그 관문이다) |
+> | 7 | 경계 재설계 (엔진/백엔드) | **완료 (2026-08-09)** — 시제품에서 오케스트레이션 중복이 실제 결함(펌프 경쟁·present 순서·스코프 드레인·크래시성 변환)으로 이어진 뒤, 그 중복을 **`WGPUBackendEngine`(Core)으로 끌어올렸다**: 디스패치·명세 검증·오류 스코프·프레임 수명·매핑 게이트·직렬화 락이 전부 엔진 한 곳이고, 백엔드는 **`WGPUBackend` 동사 프로토콜**(해석 끝난 값 → GPU API 호출)만 구현한다. Metal 해석기(1,800줄)는 `WGPUMetalBackend`(인코딩만)로, `DawnWebGPURuntime`(1,878줄)은 `DawnBackend`(인코딩만)로 포팅됐다 — 둘 다 **같은 엔진** 위다. 판정: Metal 362테스트+29/29 무수정 통과, **Dawn 시뮬레이터 적합성 28/29 통과 · 1 건너뜀(간접 드로우 — 시뮬레이터 제약으로 미광고) · 0 실패** + 하드닝(적대 입력 17종) + DawnDemo triangle·three 화면 확인(three.js 프로브 16/16, 오류 0) |
 >
-> Dawn 런타임이 채워야 할 자리는 이제 **`WebGPURuntime`의 14개 멤버**(기본 no-op인
-> `processEvents` 포함)로 닫혀 있고, 지켜야 할 계약은 `docs/COMMAND-STREAM.md`, 증명 수단은
-> `WebGPUConformance.run(on:)`(29검사), 출발점은 `Examples/ExternalRuntime`의 `StubRuntime`
-> (컴파일 가능성)과 `Projects/DawnCheck`의 `DawnWebGPURuntime`(실물 — 27/28)이다.
+> Dawn이 채워야 할 자리는 이제 **`WGPUBackend`의 동사들**(핸들 해석·검증이 끝난 값을 받는
+> 좁은 함수들)로 닫혀 있고, 지켜야 할 계약은 `docs/COMMAND-STREAM.md`, 증명 수단은
+> `WebGPUConformance.run(on:)`(29검사), 실물은 `Projects/DawnCheck`의 `DawnBackend`
+> (`WGPUBackendEngine<DawnBackend>`로 조립 — 28/29)다. 런타임 수준(`WebGPURuntime`) 대체가
+> 필요하면 `Examples/ExternalRuntime`의 `StubRuntime`이 그 경계의 출발점이다.
 
 ### 1) `WebGPURuntime` 프로토콜 추출 · 소 · 위험 낮음
 
@@ -217,7 +219,7 @@ Lynx-WebGPU            (이 저장소 — 외부 의존성 0 유지)
   └ LynxWebGPUCore / Shader / LynxWebGPU / Bridge(소스)
 
 Lynx-WebGPU-Dawn       (별도 저장소)
-  └ DawnWebGPURuntime  → WebGPURuntime 구현
+  └ DawnBackend        → WGPUBackend 구현 (런타임 조립은 `WGPUBackendEngine<DawnBackend>` 한 줄)
   └ libwebgpu_dawn.xcframework  (CMake로 만든 산출물, ios-arm64 + ios-arm64-simulator)
 ```
 

@@ -11,8 +11,9 @@ JS(`JS/webgpu.js`)와 네이티브 런타임(`WebGPURuntime`) 사이의 **유일
 
 Swift 쪽 디코딩은 전부 `LynxWebGPUCore`에 있다 — 여기 적힌 이름과 1:1이다:
 `WGPUDescriptors.swift`(명세 `GPU*Descriptor`) · `WGPUCommands.swift`(op 인자) ·
-`WGPUCommand.swift`(op 이름 → 케이스 **디스패치 표**). 백엔드는 `WGPUCommand`에 대한
-exhaustive switch만 쓰므로, §4에 op을 더하면 컴파일러가 모든 백엔드의 누락을 잡는다.
+`WGPUCommand.swift`(op 이름 → 케이스 **디스패치 표**). 디스패치와 명세 검증은
+`WGPUBackendEngine`(Core)의 exhaustive switch 한 곳이 실행하고, 백엔드는 `WGPUBackend`
+동사 프로토콜만 구현하므로, §4에 op을 더하면 컴파일러가 모든 백엔드의 누락을 잡는다.
 
 ---
 
@@ -345,9 +346,11 @@ occlusion 쿼리는 중첩할 수 없고, 한 패스에서 같은 인덱스를 �
 
 1. `LynxWebGPUCore/WGPUCommands.swift`에 디코딩 구조체를 더한다 (**이름의 출처**).
 2. `LynxWebGPUCore/WGPUCommand.swift`에 케이스 + 디코더 분기 + `opName`을 더한다 —
-   여기부터는 컴파일러가 안내한다: 케이스가 늘면 **모든 백엔드의 exhaustive switch가 깨져서**
+   여기부터는 컴파일러가 안내한다: 케이스가 늘면 **엔진의 exhaustive switch가 깨져서**
    누락이 조용히 지나가지 않는다. `WGPUCommandDecodeTests`의 픽스처(수 단언 51 포함)도 한 줄.
-3. 해석기의 `dispatch` switch에 케이스 한 줄 — op 함수는 값만 받는다.
+3. `WGPUBackendEngine.dispatch`에 케이스 한 줄 — 명세 검증(범위·usage·상태)은 엔진에,
+   인코딩은 `WGPUBackend`에 동사로 더한다. **동사가 늘면 모든 백엔드가 컴파일에서 깨진다** —
+   Metal(`WGPUMetalBackend`)과 Dawn(`DawnBackend`)을 함께 채울 것.
 4. JS shim이 같은 이름으로 싣는지 확인한다.
 5. **§4의 표에 행을 더한다.** 여기 없는 op은 다른 런타임에서 구현되지 않는다.
 6. 적합성 검사(`Sources/LynxWebGPUConformance`)나 계약 테스트(`Tests/LynxWebGPUTests`)를
