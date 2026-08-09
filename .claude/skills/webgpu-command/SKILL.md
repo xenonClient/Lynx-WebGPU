@@ -137,8 +137,8 @@ class GPURenderPassEncoder extends GPUPassEncoderBase {
 ```swift
 // (1) 동작 — 렌더 결과를 픽셀로 단언 (RenderPipelineTests)
 harness.executeExpectingSuccess([ …, ["op": "fooBar", "target": 3], … ])
-try harness.assertPixel(x: 32, y: 32, equals: (255, 0, 0, 255), "안쪽")
-try harness.assertPixel(x: 1, y: 1, equals: (0, 0, 255, 255), "바깥쪽")
+try harness.assertPixel(x: 32, y: 32, equals: (255, 0, 0, 255), "inside")
+try harness.assertPixel(x: 1, y: 1, equals: (0, 0, 255, 255), "outside")
 
 // (2) 계약 — 잘못 쓰면 크래시가 아니라 오류가 나는가 (CommandInterpreterTests)
 let result = harness.execute([["op": "fooBar", "target": 999]])
@@ -153,11 +153,11 @@ XCTAssertEqual(errors(result).first?["kind"] as? String, "validation")
 
 ```swift
 harness.executeExpectingSuccess(기존경로)
-try harness.assertPixel(x: 32, y: 32, equals: (255, 0, 0, 255), "실제로 그렸는지")
+try harness.assertPixel(x: 32, y: 32, equals: (255, 0, 0, 255), "it really drew")
 let reference = try harness.frameBytes()
 
 harness.executeExpectingSuccess(새경로)
-try harness.assertFrameEquals(reference, "계약은 같은 결과다")
+try harness.assertFrameEquals(reference, "the contract is the same result")
 ```
 
 **구현을 임시로 되돌려 테스트가 실제로 실패하는지 확인할 것.** 통과만 보고 넘어가면

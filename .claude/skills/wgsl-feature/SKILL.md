@@ -97,9 +97,9 @@ XCTAssertEqual(placement.size, 80)
 **반드시 `translate` 헬퍼를 거칠 것** — 그 안에 `MetalCompilerHarness.assertCompiles`가 들어 있다.
 
 ```swift
-func test_새기능이_MSL로_번역된다() throws {
+func test_theNewFeatureIsTranslatedToMSL() throws {
     let msl = try translate(source, entryPoints: ["main"])   // ← Metal 컴파일까지 검증된다
-    XCTAssertTrue(msl.contains("기대하는 조각"))
+    XCTAssertTrue(msl.contains("the expected fragment"))
 }
 ```
 

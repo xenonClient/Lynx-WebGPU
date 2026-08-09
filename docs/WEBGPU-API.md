@@ -293,7 +293,7 @@ const { messages } = await module.getCompilationInfo()   // shaderCompilationInf
 
 - **셰이더 모듈은 컴파일에 실패해도 만들어진다** (명세 모델). 실패는 이 목록과 파이프라인 생성
   실패로 드러나므로, `createShaderModule()`이 돌아온 뒤에도 확인할 값이 있다.
-  핸들이 아예 없으면 이후 명령이 전부 "존재하지 않는다"로만 깨져 **진짜 원인이 사라진다.**
+  핸들이 아예 없으면 이후 명령이 전부 "does not exist"로만 깨져 **진짜 원인이 사라진다.**
 - `lineNum`은 WGSL 소스의 줄 번호(1부터)다. `linePos`·`offset`·`length`는 이 구현이 알지 못해
   **0으로 둔다** — 모르는 값을 지어내면 편집기가 엉뚱한 곳에 밑줄을 긋는다.
 - Metal 런타임 API는 경고를 따로 주지 않으므로 `type`은 항상 `'error'`다.
@@ -453,8 +453,8 @@ encoder.copyTextureToTexture({ texture: a }, { texture: b }, { width, height })
 encoder.clearBuffer(buffer, offset, size)                    // clearBuffer — 0으로 채운다
 
 // 디버그 마커 — 커맨드 인코더와 패스·번들 인코더 모두에 있다
-encoder.pushDebugGroup('프레임')                              // pushDebugGroup
-pass.insertDebugMarker('그림자 직전')                          // insertDebugMarker
+encoder.pushDebugGroup('frame')                              // pushDebugGroup
+pass.insertDebugMarker('just before shadows')                // insertDebugMarker
 encoder.popDebugGroup()                                      // popDebugGroup
 
 device.queue.submit([encoder.finish()])   // ← 여기서 한 번에 네이티브로 넘어간다

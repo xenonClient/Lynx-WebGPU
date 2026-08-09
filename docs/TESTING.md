@@ -21,11 +21,11 @@ GPU 코드는 "돌려 보고 눈으로 확인"에 기대기 쉽다. 이 저장�
 ## 2. 실행
 
 ```zsh
-swift test                                      # 전체 (301개, 약 5초)
+swift test                                      # 전체 (366개, 약 8초)
 swift test --filter LynxWebGPUCoreTests         # 디스크립터/핸들
 swift test --filter LynxWebGPUShaderTests       # 트랜스파일러 (+ Metal 컴파일 검증)
 swift test --filter LynxWebGPUTests             # GPU 렌더 + 해석기
-swift test --filter test_삼각형이_그려지고        # 개별 테스트
+swift test --filter test_theTriangleIsDrawn      # 개별 테스트
 ```
 
 JS 클라이언트(shim) 테스트 — 의존성 없이 node 내장 러너로 돈다.
@@ -176,7 +176,7 @@ xcrun simctl launch <device> org.lynxwebgpu.dawndemo -demo triangle
 
 | 분류 | 씬 |
 |---|---|
-| 무오류 구동 (20) | arraybuffer · bench · blending · bundle · constants · **contracts(10/10)** · cube · dynamic · **hdr** · **images** · interactive · particles · readback · scrollpass · **stencil** · **query** · texture · triangle · **wgsl** · **three** (three.js WebGPURenderer r185 — 자체 검증 16/16 · 60fps). 굵은 씬들은 명세 위반을 고쳐 합류했다 (2026-08-09): stencil·query는 auto 파생 레이아웃 공유 → **명시적 공유 레이아웃**으로, wgsl·hdr은 varying 분기 안 `textureSample` → **균일 흐름으로 끌어올려 select**로, images·contracts는 리드백 `bytesPerRow` 32 → **256**으로. contracts의 번들·역방향 검사는 백엔드 무관 판정으로 바꿨다 (Metal은 실행 시점 한국어 문구, Dawn은 명세대로 finish 시점 영문 — 둘 다 격리 성립) |
+| 무오류 구동 (20) | arraybuffer · bench · blending · bundle · constants · **contracts(10/10)** · cube · dynamic · **hdr** · **images** · interactive · particles · readback · scrollpass · **stencil** · **query** · texture · triangle · **wgsl** · **three** (three.js WebGPURenderer r185 — 자체 검증 16/16 · 60fps). 굵은 씬들은 명세 위반을 고쳐 합류했다 (2026-08-09): stencil·query는 auto 파생 레이아웃 공유 → **명시적 공유 레이아웃**으로, wgsl·hdr은 varying 분기 안 `textureSample` → **균일 흐름으로 끌어올려 select**로, images·contracts는 리드백 `bytesPerRow` 32 → **256**으로. contracts의 번들·역방향 검사는 백엔드 무관 판정으로 바꿨다 (Metal은 실행 시점에 `setIndexBuffer` 문구, Dawn은 명세대로 finish 시점에 `Index buffer` 문구 — 둘 다 격리 성립) |
 | 의도된 오류 수신 (1) | spec — 씬 자체가 validation 오류를 유발해 수신 경로를 검증한다 (3건 수신, 정상) |
 | 의도된 거부 (2) | gpudriven — 간접 드로우를 시뮬레이터 가드가 `unsupported`로 막는다 (실기기 대상 씬) · msl — 선택 기능 거부 (`docs/COMMAND-STREAM.md` §4-1 계약) |
 
@@ -233,8 +233,8 @@ harness.executeExpectingSuccess([
     ["op": "endPass"],
 ])
 
-try harness.assertPixel(x: 32, y: 32, equals: (255, 0, 0, 255), "삼각형 내부")
-try harness.assertPixel(x: 1, y: 1, equals: (0, 0, 255, 255), "삼각형 외부(클리어색)")
+try harness.assertPixel(x: 32, y: 32, equals: (255, 0, 0, 255), "inside the triangle")
+try harness.assertPixel(x: 1, y: 1, equals: (0, 0, 255, 255), "outside the triangle (the clear color)")
 ```
 
 - `executeExpectingSuccess`는 실패 시 오류를 **경로와 함께** 그대로 보여 준다.
@@ -293,7 +293,7 @@ harness.executeExpectingSuccess(직접경로)
 let reference = try harness.frameBytes()
 
 harness.executeExpectingSuccess(간접경로)
-try harness.assertFrameEquals(reference, "간접 드로우는 직접 드로우와 같아야 한다")
+try harness.assertFrameEquals(reference, "an indirect draw must match a direct draw")
 ```
 
 실패하면 **처음 어긋난 픽셀의 좌표와 두 값**이 나온다 ("N바이트 다름"만으로는 못 고친다).
@@ -310,15 +310,15 @@ let values = try harness.readBufferSync(handle: 3, as: Float.self, size: 32)
 기기마다 갈리는 기능은 `supports(_:)`로 나눠 건너뛴다 — GPU 유무만 보던 조건의 확장이다:
 
 ```swift
-try XCTSkipUnless(harness.supports(.timestampQuery), "타임스탬프 카운터를 지원하지 않는 기기")
-try XCTSkipUnless(harness.supports(.indirectArguments), "간접 인자를 지원하지 않는 기기")
+try XCTSkipUnless(harness.supports(.timestampQuery), "this device does not support timestamp counters")
+try XCTSkipUnless(harness.supports(.indirectArguments), "this device does not support indirect arguments")
 ```
 
 ## 5. 컨벤션
 
 - 테스트 파일은 대상 타입/영역당 1개, 각 모듈 `Tests/` 아래.
-- 메서드 명명: `test_<대상동작>_<조건>_<기대결과>` — 한국어.
-  예: `test_vec3뒤_스칼라는_packed벡터와_패딩으로_WGSL배치를_맞춘다`
+- 메서드 명명: `test_<대상동작>_<조건>_<기대결과>` — **영문 lowerCamelCase**.
+  예: `test_aScalarAfterVec3UsesAPackedVectorAndPaddingToMatchTheWGSLLayout`
 - GPU가 필요한 테스트는 `setUpWithError`에서 `XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, …)`.
 - 비동기 경로(`readBuffer`)는 `XCTestExpectation`으로 검증한다.
 - 테스트 더블은 손으로 만든다 (모킹 라이브러리 없음).
@@ -391,9 +391,9 @@ LYNXWEBGPU_WGSL_CORPUS=/tmp/webgpu-samples/sample swift test --filter SampleCorp
 │ constants를 줘야 하는 것 4개: …
 ├─ 실패 2건 ───────────────────────────────
 │ ✗ skinnedMesh/gltf.wgsl
-│     번역[vertexMain]: 진입점 매개변수 'input'의 타입 'VertexInput'을(를) 찾을 수 없다
+│     translate[vertexMain]: could not find type 'VertexInput' of entry point parameter 'input' …
 │ ✗ wireframe/wireframeBufferView.wgsl
-│     파싱: WGSL 파싱 실패 (line 31)
+│     parse: WGSL parse failed (line 31)
 ```
 
 **분모는 "완성된 모듈"이다.** 코퍼스의 `.wgsl`이 모두 그대로 컴파일되는 것은 아니다 —

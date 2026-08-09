@@ -112,7 +112,7 @@ HDR 원본을 8비트로 내릴 때 **그냥 자르면 하이라이트가 뭉갠
 
 | 조건 | 오류 |
 |---|---|
-| `configure` 전 | `validation` — "표면이 아직 configure 되지 않았다" |
+| `configure` 전 | `validation` — "the surface has not been configured yet" |
 | depth/stencil 포맷 표면 | `validation` — 포맷 이름이 메시지에 들어간다 |
 
 depth/stencil을 거부하는 것은 임의의 제약이 아니다. Metal blit은 aspect 지정 없이
@@ -126,7 +126,7 @@ depth/stencil을 한 덩어리로 복사하지 못하고, `depth32float-stencil8
 |---|---|
 | 좌표가 범위 밖 | `validation` |
 | 바이트가 모자람 (`bytesPerRow`가 틀린 경우 등) | `validation` |
-| 채널로 풀 수 없는 포맷 | `validation` — "data를 직접 해석할 것" |
+| 채널로 풀 수 없는 포맷 | `validation` — "cannot be expanded by rgba(x:y:) — interpret data directly" |
 
 마지막 항목은 `rgb10a2unorm`·`rg11b10ufloat`처럼 비트가 채널 경계를 넘어 팩된 포맷과
 정수 포맷(`rgba8uint` 등)이다. **`readPixels` 자체는 이들도 정상적으로 읽는다** — 바이트는
@@ -168,7 +168,7 @@ depth/stencil을 한 덩어리로 복사하지 못하고, `depth32float-stencil8
 - `Tests/LynxWebGPUTests/OffscreenReadbackTests.swift` — 표면 쪽.
   포맷별 행 간격·길이(1~16B/픽셀), depth/stencil 거부, configure 전 거부.
 - `Tests/LynxWebGPUTests/RenderPipelineTests.swift` —
-  `test_rgba16float_표면은_SDR범위_밖의_값을_잃지_않는다`.
+  `test_anRGBA16FloatSurfaceDoesNotLoseValuesOutsideSDR`.
   실제로 `rgba16float` 표면에 그리고 되읽어, 프래그먼트가 쓴 `(2.5, 0.5, -0.25, 1.0)`과
   클리어 값 `(4, 0, 0, 1)`이 살아 있는지 본다.
 

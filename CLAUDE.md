@@ -243,7 +243,7 @@ git tag -a 0.2.0 -m "0.2.0 — 요약"
   **선언과 사용처가 같은 `MSLTypeMapping.identifier(_:)`를 거쳐야** 한다 — 한쪽만 고치면 조용히 깨진다.
 - 데모 앱에 **소스나 리소스 파일을 추가/삭제한 뒤에는 반드시 `mise exec -- tuist generate`** 로 재생성한다.
   소스를 빠뜨리면 "cannot find type in scope"로 깨지고, **번들(.lynx.bundle)을 빠뜨리면 앱이 조용히
-  "번들이 없다"를 띄운다** — glob은 생성 시점에 펼쳐진다. 라이브러리 쪽은 SPM이라 재생성이 필요 없다.
+  "…lynx.bundle is not in the app bundle"을 띄운다** — glob은 생성 시점에 펼쳐진다. 라이브러리 쪽은 SPM이라 재생성이 필요 없다.
 - **iOS 시뮬레이터는 간접 드로우·디스패치를 지원하지 않는다** (Apple GPU family 2로 보고 —
   Metal은 family 3 이상을 요구). `gpudriven` 씬처럼 `drawIndirect` 계열을 쓰는 경로는
   시뮬레이터에서 `unsupported` 오류가 나고, **실기기(A12 이상)에서는 정상 동작**한다.
