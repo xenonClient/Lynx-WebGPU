@@ -3,12 +3,12 @@ import Metal
 import LynxWebGPUCore
 @testable import LynxWebGPU
 
-/// WGSL → MSL → Metal 파이프라인 전체를 GPU에서 돌려 **픽셀로** 검증한다.
+/// Runs the whole WGSL → MSL → Metal pipeline on the GPU and verifies it **by pixel**.
 final class RenderPipelineTests: XCTestCase {
     private var harness: RenderHarness!
 
     override func setUpWithError() throws {
-        try XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, "Metal 디바이스 없음")
+        try XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, "no Metal device")
         harness = try XCTUnwrap(RenderHarness.make())
     }
 
@@ -17,7 +17,7 @@ final class RenderPipelineTests: XCTestCase {
         super.tearDown()
     }
 
-    // MARK: - 삼각형
+    // MARK: - Triangle
 
     private static let triangleShader = """
     struct VertexOutput {
@@ -40,7 +40,7 @@ final class RenderPipelineTests: XCTestCase {
     """
 
     func test_theTriangleIsDrawnAndDistinctFromTheClearColor() throws {
-        // 위치(x, y) + 색(r, g, b) 인터리브 — stride 20B
+        // Interleaved position (x, y) + color (r, g, b) — stride 20B
         let vertices: [Float] = [
             -0.5, -0.5, 1, 0, 0,
              0.5, -0.5, 1, 0, 0,
@@ -79,9 +79,9 @@ final class RenderPipelineTests: XCTestCase {
             ["op": "endPass"],
         ])
 
-        // 중앙은 삼각형 안 → 빨강. 좌상단 구석은 밖 → 클리어색(파랑).
-        try harness.assertPixel(x: 32, y: 32, equals: (255, 0, 0, 255), "삼각형 내부")
-        try harness.assertPixel(x: 1, y: 1, equals: (0, 0, 255, 255), "삼각형 외부(클리어색)")
+        // The center is inside the triangle → red. The top-left corner is outside → the clear color (blue).
+        try harness.assertPixel(x: 32, y: 32, equals: (255, 0, 0, 255), "inside the triangle")
+        try harness.assertPixel(x: 1, y: 1, equals: (0, 0, 255, 255), "outside the triangle (the clear color)")
     }
 
     func test_aUniformBufferReachesTheFragmentOutput() throws {
@@ -91,7 +91,7 @@ final class RenderPipelineTests: XCTestCase {
 
         @vertex
         fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f {
-            // 화면 전체를 덮는 삼각형 (정점 버퍼 없이 vertex_index만으로)
+            // A triangle covering the whole screen (no vertex buffer, driven by vertex_index alone)
             var positions = array<vec2f, 3>(
                 vec2f(-1.0, -1.0),
                 vec2f( 3.0, -1.0),
@@ -105,7 +105,7 @@ final class RenderPipelineTests: XCTestCase {
             return tint.color;
         }
         """
-        let tint: [Float] = [0.0, 1.0, 0.0, 1.0]   // 초록
+        let tint: [Float] = [0.0, 1.0, 0.0, 1.0]   // green
 
         harness.executeExpectingSuccess([
             ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
@@ -130,18 +130,19 @@ final class RenderPipelineTests: XCTestCase {
             ["op": "endPass"],
         ])
 
-        try harness.assertPixel(x: 32, y: 32, equals: (0, 255, 0, 255), "유니폼 색")
-        try harness.assertPixel(x: 5, y: 60, equals: (0, 255, 0, 255), "전체 화면을 덮어야 한다")
+        try harness.assertPixel(x: 32, y: 32, equals: (0, 255, 0, 255), "the uniform color")
+        try harness.assertPixel(x: 5, y: 60, equals: (0, 255, 0, 255), "it must cover the whole screen")
     }
 
-    /// 정수 `vec3` 유니폼의 배치를 **GPU가 읽은 값으로** 확인한다.
+    /// Checks the layout of an integer `vec3` uniform **by the value the GPU read**.
     ///
-    /// WGSL `vec3<i32>`는 12바이트, MSL `int3`는 16바이트다. 방출기가 `packed_int3`를 쓰지
-    /// 않으면 뒤 필드가 4바이트씩 밀려 **오류 없이 다른 값**이 읽힌다 — 트랜스파일러 테스트는
-    /// "문자열이 맞고 컴파일된다"까지만 보므로, 실제로 같은 자리를 가리키는지는 여기서 본다.
+    /// WGSL `vec3<i32>` is 12 bytes; MSL `int3` is 16. Without the emitter using `packed_int3`, the
+    /// following fields shift by 4 bytes and **a different value is read with no error** — transpiler
+    /// tests only reach "the string matches and it compiles", so whether it really points at the same
+    /// place is checked here.
     ///
-    /// (`packed_int3`/`packed_uint3`는 MSL에 있는 타입이고 12바이트다. 이름만 맞고 크기가
-    /// 16이면 이 테스트가 깨진다.)
+    /// (`packed_int3`/`packed_uint3` exist in MSL and are 12 bytes. If the name matched but the size
+    /// were 16, this test would break.)
     func test_anIntegerVec3UniformReadsAtTheWGSLOffsets() throws {
         let shader = """
         struct Counts {
@@ -166,7 +167,7 @@ final class RenderPipelineTests: XCTestCase {
             return vec4f(f32(a) / 255.0, f32(b) / 255.0, f32(c) / 255.0, 1.0);
         }
         """
-        // offsets(1,2,3) total 4 · sizes(5,6,7) stride 8 — WGSL 오프셋 그대로 채운다.
+        // offsets(1,2,3) total 4 · sizes(5,6,7) stride 8 — filled at the WGSL offsets exactly.
         let values: [Int32] = [1, 2, 3, 4, 5, 6, 7, 8]
         let data = values.withUnsafeBufferPointer { Data(buffer: $0).base64EncodedString() }
 
@@ -194,8 +195,8 @@ final class RenderPipelineTests: XCTestCase {
         ])
 
         // r = 1+2+3+4 = 10 · g = 5+6+7+8 = 26 · b = 3*10 + 6 = 36.
-        // 배치가 밀리면 이 셋이 **전부** 달라진다.
-        try harness.assertPixel(x: 32, y: 32, equals: (10, 26, 36, 255), "정수 vec3 배치")
+        // A shifted layout changes **all three** of these.
+        try harness.assertPixel(x: 32, y: 32, equals: (10, 26, 36, 255), "integer vec3 layout")
     }
 
     func test_anIndexedDrawFillsTheQuad() throws {
@@ -238,7 +239,7 @@ final class RenderPipelineTests: XCTestCase {
             ["op": "endPass"],
         ])
 
-        // 노랑(1,1,0)으로 화면 전체가 채워져야 한다.
+        // The whole screen must fill with yellow (1,1,0).
         try harness.assertPixel(x: 32, y: 32, equals: (255, 255, 0, 255))
         try harness.assertPixel(x: 2, y: 61, equals: (255, 255, 0, 255))
     }
@@ -278,16 +279,16 @@ final class RenderPipelineTests: XCTestCase {
             ["op": "endPass"],
         ])
 
-        // 빨강 50% over 파랑 → (0.5, 0, 0.5)
+        // Red at 50% over blue → (0.5, 0, 0.5)
         try harness.assertPixel(x: 32, y: 32, equals: (128, 0, 128, 255), tolerance: 3)
     }
 
-    /// 데모(`blending` 씬)와 **같은 블렌드 설정·같은 색**으로 두 겹을 쌓고,
-    /// 미리 곱해진 알파 src-over 공식이 내는 값과 픽셀이 일치하는지 본다.
+    /// Stacks two layers with **the same blend settings and colors as the demo** (the `blending` scene)
+    /// and checks the pixels match what the premultiplied-alpha src-over formula produces.
     ///
     ///   result = src·a + dst·(1 − a)
     ///
-    /// 겹친 색이 "이상해 보인다"는 판단은 눈으로 하면 틀리기 쉬우므로 수치로 고정한다.
+    /// Judging "that blend looks off" by eye is easy to get wrong, so it is pinned numerically.
     func test_premultipliedAlphaCompositingMatchesTheFormula() throws {
         let shader = """
         struct Layer { color: vec4f };
@@ -301,11 +302,11 @@ final class RenderPipelineTests: XCTestCase {
 
         @fragment
         fn fs_main() -> @location(0) vec4f {
-            // 데모와 같이 RGB에 알파를 미리 곱해 내보낸다.
+            // As in the demo, alpha is premultiplied into RGB on output.
             return vec4f(layer.color.rgb * layer.color.a, layer.color.a);
         }
         """
-        // 데모의 색·배경 그대로.
+        // The demo's colors and background exactly.
         let background: [Double] = [0.043, 0.055, 0.08]
         let first: [Float] = [1.0, 0.25, 0.3, 0.55]
         let second: [Float] = [0.25, 0.9, 0.45, 0.55]
@@ -340,14 +341,14 @@ final class RenderPipelineTests: XCTestCase {
             ["op": "setPipeline", "pipeline": 4],
             ["op": "setBindGroup", "index": 0, "bindGroup": 6],
             ["op": "draw", "vertexCount": 3],
-            // 오른쪽 절반에만 둘째 겹을 올린다 — 한 패스에서 1겹/2겹을 같이 본다.
+            // The second layer goes only over the right half — one pass shows 1-layer and 2-layer together.
             ["op": "setScissorRect", "x": 32, "y": 0, "width": 32, "height": 64],
             ["op": "setBindGroup", "index": 0, "bindGroup": 7],
             ["op": "draw", "vertexCount": 3],
             ["op": "endPass"],
         ])
 
-        /// src-over(미리 곱해진 알파)를 CPU에서 계산한다.
+        /// Computes src-over (premultiplied alpha) on the CPU.
         func over(_ source: [Float], on destination: [Double]) -> [Double] {
             let alpha = Double(source[3])
             return (0..<3).map { Double(source[$0]) * alpha + destination[$0] * (1 - alpha) }
@@ -360,16 +361,16 @@ final class RenderPipelineTests: XCTestCase {
         let oneLayer = over(first, on: background)
         let twoLayers = over(second, on: oneLayer)
 
-        // 한 겹: 빨강 55% over 배경 → (145, 41, 51)
-        try harness.assertPixel(x: 16, y: 32, equals: bytes(oneLayer), "한 겹")
-        // 두 겹: 초록 55% over 그 결과 → (100, 145, 86)
-        try harness.assertPixel(x: 48, y: 32, equals: bytes(twoLayers), "두 겹")
+        // One layer: red at 55% over the background → (145, 41, 51)
+        try harness.assertPixel(x: 16, y: 32, equals: bytes(oneLayer), "one layer")
+        // Two layers: green at 55% over that result → (100, 145, 86)
+        try harness.assertPixel(x: 48, y: 32, equals: bytes(twoLayers), "two layers")
 
-        // 불투명 배경 위에 그렸으므로 알파는 1로 남아야 한다 (캔버스가 비쳐 보이면 안 된다).
+        // Drawn over an opaque background, so alpha must stay 1 (the canvas must not show through).
         XCTAssertEqual(try harness.pixel(x: 48, y: 32).a, 255)
     }
 
-    // MARK: - 컴퓨트
+    // MARK: - Compute
 
     func test_aComputeShaderComputesIntoAStorageBuffer() throws {
         let shader = """
@@ -407,9 +408,9 @@ final class RenderPipelineTests: XCTestCase {
         XCTAssertEqual(output, [2, 4, 6, 8, 10, 12, 14, 16])
     }
 
-    func test_arrayLength가_바인딩된_크기를_돌려준다() throws {
-        // 셰이더는 버퍼 크기를 알 수 없으므로 런타임이 예약 인덱스에 크기 표를 꽂아 준다.
-        // 여기서 보는 것: (1) 전체 바인딩, (2) 일부만 바인딩, (3) 구조체 말미 배열.
+    func test_arrayLengthReturnsTheBoundSize() throws {
+        // A shader cannot know a buffer's size, so the runtime plugs a size table into the reserved index.
+        // What is checked here: (1) a whole binding, (2) a partial binding, (3) an array at the end of a struct.
         let shader = """
         struct Particles {
             count: u32,
@@ -430,11 +431,11 @@ final class RenderPipelineTests: XCTestCase {
         """
         harness.executeExpectingSuccess([
             ["op": "createShaderModule", "id": 1, "code": shader],
-            // 10개 f32 = 40바이트 → 길이 10
+            // 10 f32 = 40 bytes → length 10
             ["op": "createBuffer", "id": 2, "size": 40, "usage": TestUsage.storage],
-            // 96바이트 버퍼지만 48바이트만 바인딩 → vec4f 3개
+            // A 96-byte buffer with only 48 bytes bound → 3 vec4f
             ["op": "createBuffer", "id": 3, "size": 96, "usage": TestUsage.storage],
-            // count(4) + 패딩(12) + vec4f 2개(32) = 48바이트 → items 길이 2
+            // count(4) + padding(12) + 2 vec4f(32) = 48 bytes → items length 2
             ["op": "createBuffer", "id": 4, "size": 48, "usage": TestUsage.storage],
             ["op": "createBuffer", "id": 5, "size": 16,
              "usage": TestUsage.storage | TestUsage.copySrc],
@@ -458,7 +459,7 @@ final class RenderPipelineTests: XCTestCase {
         XCTAssertEqual(Array(lengths.prefix(3)), [10, 3, 2])
     }
 
-    // MARK: - 텍스처
+    // MARK: - Textures
 
     func test_textureSamplingWorks() throws {
         let shader = """
@@ -484,7 +485,7 @@ final class RenderPipelineTests: XCTestCase {
             return textureSample(tex, samp, in.uv);
         }
         """
-        // 2x2 텍스처를 전부 자홍색으로 채운다 (샘플 위치와 무관하게 결과가 같도록).
+        // Fill the whole 2x2 texture with magenta (so the result is the same wherever it samples).
         let texels = [UInt8](repeating: 0, count: 16).enumerated().map { index, _ -> UInt8 in
             switch index % 4 {
             case 0: return 255   // R
@@ -523,13 +524,13 @@ final class RenderPipelineTests: XCTestCase {
             ["op": "endPass"],
         ])
 
-        try harness.assertPixel(x: 32, y: 32, equals: (255, 0, 255, 255), "샘플링한 텍셀 색")
+        try harness.assertPixel(x: 32, y: 32, equals: (255, 0, 255, 255), "the sampled texel color")
     }
 
     func test_samplesAnExternalTextureWithEdgeClamping() throws {
-        // `textureSampleBaseClampToEdge`는 좌표를 텍셀 절반만큼 안쪽으로 물린다. 그래서 uv가
-        // 0이나 1로 가도 **반대쪽 텍셀이 섞이지 않는다** — 비디오 프레임 경계가 번지는 것을 막는 장치다.
-        // 여기서는 일부러 repeat 샘플러를 써서, 클램프가 없으면 반대쪽이 섞이는 상황을 만든다.
+        // `textureSampleBaseClampToEdge` pulls the coordinate half a texel inward. So even at uv 0 or 1
+        // **the opposite texel does not blend in** — the mechanism that stops video frame edges bleeding.
+        // Here a repeat sampler is used deliberately, creating the situation where the opposite side blends without the clamp.
         let shader = """
         @group(0) @binding(0) var frame: texture_external;
         @group(0) @binding(1) var samp: sampler;
@@ -544,7 +545,7 @@ final class RenderPipelineTests: XCTestCase {
             var positions = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
             var out: Out;
             out.position = vec4f(positions[index], 0.0, 1.0);
-            // 화면 전체를 uv 1.0(오른쪽 아래 끝)으로 채운다.
+            // Fill the whole screen with uv 1.0 (the bottom-right corner).
             out.uv = vec2f(1.0, 1.0);
             return out;
         }
@@ -554,8 +555,8 @@ final class RenderPipelineTests: XCTestCase {
             return textureSampleBaseClampToEdge(frame, samp, in.uv);
         }
         """
-        // 2x2: (0,0) 빨강, 나머지는 파랑. uv=1.0에서 클램프가 동작하면 순수 파랑이 나오고,
-        // 없으면 repeat로 감싸며 빨강이 1/4 섞인다.
+        // 2x2: (0,0) red, the rest blue. With the clamp working at uv=1.0 pure blue comes out;
+        // without it, repeat wraps around and a quarter of red mixes in.
         let texels: [UInt8] = [
             255, 0, 0, 255,   0, 0, 255, 255,
             0, 0, 255, 255,   0, 0, 255, 255,
@@ -591,10 +592,10 @@ final class RenderPipelineTests: XCTestCase {
             ["op": "endPass"],
         ])
 
-        try harness.assertPixel(x: 32, y: 32, equals: (0, 0, 255, 255), "가장자리 텍셀만 나와야 한다")
+        try harness.assertPixel(x: 32, y: 32, equals: (0, 0, 255, 255), "only the edge texel must come out")
     }
 
-    // MARK: - 깊이 버퍼
+    // MARK: - Depth buffer
 
     func test_theDepthTestHidesTheTriangleBehind() throws {
         let shader = """
@@ -611,7 +612,7 @@ final class RenderPipelineTests: XCTestCase {
             return vec4f(u.r, u.g, u.b, 1.0);
         }
         """
-        // 앞(깊이 0.2, 빨강) → 뒤(깊이 0.8, 초록) 순서로 그린다. 깊이 테스트가 뒤를 버려야 한다.
+        // Draw front (depth 0.2, red) then back (depth 0.8, green). The depth test must discard the back one.
         let near: [Float] = [0.2, 1, 0, 0]
         let far: [Float] = [0.8, 0, 1, 0]
 
@@ -650,14 +651,14 @@ final class RenderPipelineTests: XCTestCase {
             ["op": "endPass"],
         ])
 
-        try harness.assertPixel(x: 32, y: 32, equals: (255, 0, 0, 255), "앞쪽(빨강)이 남아야 한다")
+        try harness.assertPixel(x: 32, y: 32, equals: (255, 0, 0, 255), "the front one (red) must remain")
     }
 
-    // MARK: - HDR 되읽기
+    // MARK: - HDR readback
 
-    func test_rgba16float_표면은_SDR범위_밖의_값을_잃지_않는다() throws {
-        // 삼각형 안쪽은 프래그먼트가 쓴 값, 바깥쪽은 클리어 값 — 둘 다 1.0을 넘겨서 확인한다.
-        // 8비트 표면이라면 여기서 전부 1.0으로 잘려 나간다.
+    func test_anRGBA16FloatSurfaceDoesNotLoseValuesOutsideSDR() throws {
+        // Inside the triangle is what the fragment wrote, outside is the clear value — both go past 1.0.
+        // On an 8-bit surface everything here would clip to 1.0.
         let shader = """
         @vertex
         fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f {
@@ -689,23 +690,23 @@ final class RenderPipelineTests: XCTestCase {
 
         let readback = try harness.readback()
         XCTAssertEqual(readback.format, .rgba16float)
-        XCTAssertEqual(readback.bytesPerRow, 64 * 8, "픽셀당 8바이트여야 한다")
+        XCTAssertEqual(readback.bytesPerRow, 64 * 8, "it must be 8 bytes per pixel")
         XCTAssertEqual(readback.data.count, 64 * 64 * 8)
 
         try harness.assertPixelFloat(
             x: 32, y: 32, equals: SIMD4<Float>(2.5, 0.5, -0.25, 1),
-            "삼각형 내부 — 1.0 초과와 음수가 그대로 살아야 한다"
+            "inside the triangle — values above 1.0 and negatives must survive"
         )
         try harness.assertPixelFloat(
-            x: 1, y: 1, equals: SIMD4<Float>(4, 0, 0, 1), "클리어 값도 잘리지 않아야 한다"
+            x: 1, y: 1, equals: SIMD4<Float>(4, 0, 0, 1), "the clear value must not clip either"
         )
     }
 
-    // MARK: - 전역 섀도잉 (스코프 해석이 값까지 옳은지)
+    // MARK: - Global shadowing (whether scope resolution is right down to the value)
 
     func test_theScopeOfALocalShadowingAGlobalIsCorrectAtRuntime() throws {
-        // 선언 앞의 base는 전역(초록), 뒤의 base는 지역(빨강)이다. 스코프 해석이나
-        // 리네임 참조 치환이 틀리면 빨강이 나온다 — 컴파일 성공만으로는 못 잡는 부분이다.
+        // base before the declaration is the global (green); after it, the local (red). A mistake in scope
+        // resolution or rename substitution yields red — something a successful compile cannot catch.
         let shader = """
         var<private> base : vec4f;
 
@@ -749,6 +750,6 @@ final class RenderPipelineTests: XCTestCase {
             ["op": "endPass"],
         ])
 
-        try harness.assertPixel(x: 32, y: 32, equals: (0, 255, 0, 255), "선언 앞의 참조는 전역을 봐야 한다")
+        try harness.assertPixel(x: 32, y: 32, equals: (0, 255, 0, 255), "a reference before the declaration must see the global")
     }
 }
