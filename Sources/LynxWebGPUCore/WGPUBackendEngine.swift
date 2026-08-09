@@ -162,6 +162,10 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         boundGroups.removeAll()
         dirtyGroups.removeAll()
         indexBinding = nil
+        // 정점 바인딩도 함께 비운다 — 다음 `beginRenderPass`의 `resetPassBindings()`가
+        // 어차피 덮지만, 여기서 안 놓으면 `destroy`된 버퍼를 그때까지 붙들고 있다.
+        vertexBindings.removeAll()
+        dirtyVertexSlots.removeAll()
         passFormats = nil
         passOcclusionQuerySet = nil
         passDepthReadOnly = false
@@ -807,7 +811,10 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
     /// 내려보내므로, 인코더의 수명을 양쪽에서 맞출 이유가 없다. 네이티브 번들을 가진 백엔드는
     /// 여기서 바로 기록까지 끝내고, 아니면 리더를 저장해 두었다가 실행 때 되풀이한다.
     private func createRenderBundle(_ command: WGPUCreateRenderBundleCommand) throws {
-        if specValidation { try WGPUEngineRenderBundle<B>.validateOps(command.commands) }
+        // **`specValidation`과 무관하게 돈다.** "이 op을 번들에 담을 수 있는가"는 와이어 계약이지
+        // 백엔드가 아는 사실이 아니다 — 네이티브 검증기는 번들 인코더에 없는 op을 받으면
+        // 자기 방식대로 깨질 뿐이고, replay 백엔드는 그냥 실행해 버린다.
+        try WGPUEngineRenderBundle<B>.validateOps(command.commands)
         let native: B.RenderBundle?
         if backend.capabilities.supportsNativeRenderBundles {
             let decoded = try command.commands.map { try WGPUCommand(from: $0) }
@@ -1766,18 +1773,22 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
             }
             encoderDebugDepth -= 1
             backend.popDebugGroup(scope: .pass)
-        } else if backend.hasPendingWork {
+        } else {
             guard specValidation else {
                 bufferDebugDepth = max(0, bufferDebugDepth - 1)
-                backend.popDebugGroup(scope: .frame)
+                // 백엔드 호출은 커맨드 버퍼가 있을 때만 — 없으면 붙일 자리가 없다.
+                if backend.hasPendingWork { backend.popDebugGroup(scope: .frame) }
                 return
             }
+            // **보고는 `hasPendingWork`와 무관하다.** 예전에는 커맨드 버퍼가 없으면 이 갈래가
+            // 통째로 조용히 지나가, 짝 없는 pop을 잡는 것이 일인 함수가 정작 "아직 아무 작업도
+            // 없는데 pop부터 한" 가장 흔한 실수를 놓쳤다.
             guard bufferDebugDepth > 0 else {
                 record(.validation("popDebugGroup: 짝이 맞는 pushDebugGroup이 없다"))
                 return
             }
             bufferDebugDepth -= 1
-            backend.popDebugGroup(scope: .frame)
+            if backend.hasPendingWork { backend.popDebugGroup(scope: .frame) }
         }
     }
 

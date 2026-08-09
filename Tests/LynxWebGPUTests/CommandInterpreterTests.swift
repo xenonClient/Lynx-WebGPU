@@ -706,6 +706,20 @@ final class CommandInterpreterTests: XCTestCase {
         )
     }
 
+    /// **GPU 작업이 아직 하나도 없을 때**의 짝 없는 pop도 알려야 한다.
+    ///
+    /// 커맨드 버퍼가 없으면 백엔드에 내릴 것은 없지만, 보고까지 건너뛰면 "아직 아무것도 안
+    /// 했는데 pop부터 한" 가장 흔한 실수가 조용히 지나간다 — 짝을 세는 것이 이 함수의 일이다.
+    func test_작업이_없을_때의_짝없는_popDebugGroup도_오류다() {
+        let result = harness.execute([["op": "popDebugGroup"]])
+
+        XCTAssertEqual(errors(result).first?["kind"] as? String, "validation", "\(result)")
+        XCTAssertTrue(
+            ((errors(result).first?["message"] as? String) ?? "").contains("짝이 맞는"),
+            "\(errors(result))"
+        )
+    }
+
     /// 열린 채로 패스가 끝나도 Metal이 죽는다 — 닫아 주고 오류로 알린다.
     func test_열린_채_끝난_디버그_그룹은_닫아_주고_오류로_알린다() {
         let result = harness.execute([
