@@ -183,7 +183,7 @@ shim의 `snapshotValue`가 기록 시점에 깊은 복사를 한다. 브라우�
 
 | op | 필드 |
 |---|---|
-| `writeBuffer` | `buffer` · `data` · `bufferOffset`(0) |
+| `writeBuffer` | `buffer` · `data` · `bufferOffset`(0). 대상은 `COPY_DST`여야 하고 offset·크기는 **4의 배수**여야 한다 |
 | `writeTexture` | `texture` · `data` · `mipLevel`(0) · `origin` · `size`(extent) · `bytesPerRow`(포맷에서 유도) · `rowsPerImage`(블록 행 수) |
 | `copyExternalImageToTexture` | `source:{source(ImageBitmap 핸들), origin?, flipY?}` · `destination:{texture, mipLevel?, origin?}` · `copySize`(생략 시 이미지의 남은 전부) |
 | `unmapBuffer` | `buffer` — `mapAsync` 상태를 푼다 |
@@ -195,11 +195,17 @@ shim의 `snapshotValue`가 기록 시점에 깊은 복사를 한다. 브라우�
 
 | op | 필드 |
 |---|---|
-| `copyBufferToBuffer` | `source` · `sourceOffset`(0) · `destination` · `destinationOffset`(0) · `size`(생략 시 원본의 남은 전부) |
+| `copyBufferToBuffer` | `source` · `sourceOffset`(0) · `destination` · `destinationOffset`(0) · `size`(생략 시 원본의 남은 전부). 원본은 `COPY_SRC`, 대상은 `COPY_DST`여야 하고 오프셋·크기는 전부 **4의 배수**여야 한다 |
 | `clearBuffer` | `buffer` · `offset`(0) · `size`(생략 시 버퍼 끝까지). 둘 다 4의 배수여야 한다 |
 | `copyTextureToBuffer` | `source:{texture, mipLevel?, origin?}` · `destination:{buffer, offset?, bytesPerRow?, rowsPerImage?}` · `copySize` |
 | `copyBufferToTexture` | `source:{buffer, offset?, bytesPerRow?, rowsPerImage?}` · `destination:{texture, mipLevel?, origin?}` · `copySize` |
 | `copyTextureToTexture` | `source:{texture, mipLevel?, origin?}` · `destination:{…}` · `copySize` |
+
+버퍼가 한쪽 끝인 두 복사(`copyTextureToBuffer`·`copyBufferToTexture`)에서 `bytesPerRow`는
+**256의 배수**여야 하고, 복사가 여러 블록 행·레이어에 걸치면 **생략할 수 없다**.
+`queue.writeTexture`에는 이 제약이 없다 — 명세가 큐 업로드와 인코더 복사를 다르게 정한다.
+Metal은 둘 다 느슨해서, 안 막으면 브라우저·Dawn에서만 거부되는 코드가 나온다
+(데모 씬 둘이 실제로 이 자리에서 32를 쓰고 있었다).
 
 ### 4-5. 캔버스
 
@@ -304,7 +310,7 @@ occlusion 쿼리는 중첩할 수 없고, 한 패스에서 같은 인덱스를 �
 | `detachCanvas` | **임의** | 엘리먼트 deinit이 부른다 — 표면 등록부는 락 필수 |
 | `reset` | 메인 | `execute`와 동시 진입 가능 |
 | `readBuffer` · `decodeImage` 콜백 | 임의 · **동기 가능** | 이미 끝난 작업이면 호출 스레드에서 즉시 와도 계약 위반이 아니다 |
-| `isReadyForNextFrame` · `processEvents` | 메인 (틱마다) | 저비용·논블로킹. 펌프는 준비 게이트 **앞**에서 불리고 **`execute`와 동시에** 불린다 — 백엔드가 스레드 안전하지 않으면 구현이 직렬화할 것 (적합성 `pump-concurrency`가 판정) |
+| `isReadyForNextFrame` · `processEvents` | 메인 (틱마다) | 저비용·논블로킹. 펌프는 준비 게이트 **앞**에서 불리고 **`execute`와 동시에** 불린다 — 백엔드가 스레드 안전하지 않으면 구현이 직렬화할 것 (적합성 `pump-concurrency`가 판정). 직렬화하면서 논블로킹이려면 **락을 시도만 하고, 잡혀 있으면 그 틱을 거른다** |
 
 - `configureCanvas`의 레이어 반영은 **비동기여도 된다** — 첫 프레임이 이전 설정으로 나갈 수
   있고, 그래서 `getCurrentTexture`는 캐시가 아니라 실제 드로어블의 포맷을 보고해야 한다.

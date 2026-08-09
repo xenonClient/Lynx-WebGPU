@@ -446,6 +446,9 @@ encoder.copyBufferToBuffer(src, dst, size)                   // 앞에서 size �
 encoder.copyBufferToBuffer(src, 0, dst, 0, size)             // 오프셋까지 지정 (size 생략 가능)
 encoder.copyTextureToBuffer({ texture }, { buffer, bytesPerRow }, { width, height })
 encoder.copyBufferToTexture({ buffer, bytesPerRow }, { texture }, { width, height })
+// ↑ 버퍼 쪽 `bytesPerRow`는 **256의 배수**여야 한다 (명세 요구 — Metal은 더 느슨해서 직접 막는다).
+//   행이 촘촘하지 않으므로 되읽을 때 `row * 256 + x * 4`로 픽셀을 찾는다.
+//   `queue.writeTexture`에는 이 제약이 없다 — 거기서는 촘촘한 행 그대로 올린다.
 encoder.copyTextureToTexture({ texture: a }, { texture: b }, { width, height })
 encoder.clearBuffer(buffer, offset, size)                    // clearBuffer — 0으로 채운다
 

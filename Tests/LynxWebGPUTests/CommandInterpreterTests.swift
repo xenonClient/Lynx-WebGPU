@@ -462,6 +462,20 @@ final class CommandInterpreterTests: XCTestCase {
     /// 한 배치에서 (1) 렌더 패스가 텍스처를 빨강으로 칠하고 (2) 그 **뒤에** writeTexture가
     /// 초록을 올린다. 스트림 순서대로면 최종 내용은 초록이다 — writeTexture가 자체 커맨드
     /// 버퍼를 먼저 완주시키던 구 방식에서는 빨강이 남는다.
+    /// 버퍼↔텍스처 복사의 `bytesPerRow`는 **256의 배수**여야 한다 (명세 요구 — 엔진이 막는다).
+    /// 그래서 리드백 버퍼는 행마다 패딩이 끼고, 촘촘한 픽셀만 다시 추려야 한다.
+    private static let copyRowStride = 256
+
+    /// 256 스트라이드로 받은 바이트에서 행별 유효 구간만 이어 붙인다.
+    private func packedRows(
+        _ bytes: [UInt8], rowBytes: Int, rows: Int, offset: Int = 0
+    ) -> [UInt8] {
+        (0..<rows).flatMap { row -> [UInt8] in
+            let start = offset + row * Self.copyRowStride
+            return Array(bytes[start..<(start + rowBytes)])
+        }
+    }
+
     func test_writeTexture는_같은_배치의_앞선_렌더패스_뒤에_실행된다() throws {
         let green = [UInt8]([0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255])
         harness.executeExpectingSuccess([
@@ -473,21 +487,28 @@ final class CommandInterpreterTests: XCTestCase {
                 "clearValue": ["r": 1, "g": 0, "b": 0, "a": 1],
             ]]],
             ["op": "endPass"],
+            // `queue.writeTexture`에는 256 제약이 없다 — 촘촘한 8B 행 그대로 올린다.
             ["op": "writeTexture", "texture": 1, "data": Data(green).base64EncodedString(),
              "size": ["width": 2, "height": 2], "bytesPerRow": 8],
-            ["op": "createBuffer", "id": 3, "size": 16, "usage": TestUsage.copyDst | TestUsage.mapRead],
+            ["op": "createBuffer", "id": 3, "size": 512, "usage": TestUsage.copyDst | TestUsage.mapRead],
             ["op": "copyTextureToBuffer",
-             "source": ["texture": 1], "destination": ["buffer": 3, "bytesPerRow": 8],
+             "source": ["texture": 1],
+             "destination": ["buffer": 3, "bytesPerRow": Self.copyRowStride],
              "copySize": ["width": 2, "height": 2]],
         ])
 
         let bytes = Array(try harness.readBufferSync(handle: 3))
-        XCTAssertEqual(bytes, green, "스트림에서 나중에 온 writeTexture가 최종 내용이어야 한다")
+        XCTAssertEqual(
+            packedRows(bytes, rowBytes: 8, rows: 2), green,
+            "스트림에서 나중에 온 writeTexture가 최종 내용이어야 한다"
+        )
     }
 
     func test_writeTexture가_배열_텍스처_레이어를_슬라이스별로_올린다() throws {
         let red = [UInt8]([255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255])
         let blue = [UInt8]([0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255])
+        // 레이어 하나가 2행 × 256B = 512B를 차지한다.
+        let layerBytes = 2 * Self.copyRowStride
         harness.executeExpectingSuccess([
             ["op": "createTexture", "id": 1,
              "size": ["width": 2, "height": 2, "depthOrArrayLayers": 2], "format": "rgba8unorm",
@@ -496,20 +517,23 @@ final class CommandInterpreterTests: XCTestCase {
             ["op": "writeTexture", "texture": 1, "data": Data(red + blue).base64EncodedString(),
              "size": ["width": 2, "height": 2, "depthOrArrayLayers": 2],
              "bytesPerRow": 8, "rowsPerImage": 2],
-            ["op": "createBuffer", "id": 2, "size": 32, "usage": TestUsage.copyDst | TestUsage.mapRead],
+            ["op": "createBuffer", "id": 2, "size": 2 * layerBytes,
+             "usage": TestUsage.copyDst | TestUsage.mapRead],
             ["op": "copyTextureToBuffer",
              "source": ["texture": 1, "origin": ["x": 0, "y": 0, "z": 0]],
-             "destination": ["buffer": 2, "bytesPerRow": 8, "offset": 0],
+             "destination": ["buffer": 2, "bytesPerRow": Self.copyRowStride, "offset": 0],
              "copySize": ["width": 2, "height": 2]],
             ["op": "copyTextureToBuffer",
              "source": ["texture": 1, "origin": ["x": 0, "y": 0, "z": 1]],
-             "destination": ["buffer": 2, "bytesPerRow": 8, "offset": 16],
+             "destination": ["buffer": 2, "bytesPerRow": Self.copyRowStride, "offset": layerBytes],
              "copySize": ["width": 2, "height": 2]],
         ])
 
         let bytes = Array(try harness.readBufferSync(handle: 2))
-        XCTAssertEqual(Array(bytes.prefix(16)), red, "레이어 0")
-        XCTAssertEqual(Array(bytes.suffix(16)), blue, "레이어 1")
+        XCTAssertEqual(packedRows(bytes, rowBytes: 8, rows: 2), red, "레이어 0")
+        XCTAssertEqual(
+            packedRows(bytes, rowBytes: 8, rows: 2, offset: layerBytes), blue, "레이어 1"
+        )
     }
 
     // MARK: - 간접 드로우 계약

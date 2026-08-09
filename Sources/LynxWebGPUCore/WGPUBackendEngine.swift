@@ -469,6 +469,21 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
                     "writeBuffer 범위 초과 — offset \(offset) + \(data.count)B > 버퍼 크기 \(target.size)B"
                 )
             }
+            guard target.usage.contains(.copyDst) else {
+                throw WGPUError.validation(
+                    "writeBuffer의 대상은 GPUBufferUsage.COPY_DST로 만들어야 한다",
+                    path: command.fieldPath("buffer")
+                )
+            }
+            // 4의 배수 요구는 명세 규칙이다. Metal은 바이트 단위 blit도 받아 주므로 안 막으면
+            // 브라우저에서만 거부되는 코드가 나온다 (`clearBuffer`와 같은 이유).
+            guard offset % 4 == 0, data.count % 4 == 0 else {
+                throw WGPUError.validation(
+                    "writeBuffer의 bufferOffset·크기는 4의 배수여야 한다 "
+                        + "(받은 값 \(offset), \(data.count)B)",
+                    path: command.fieldPath("bufferOffset")
+                )
+            }
         }
         guard !data.isEmpty else { return }   // 크기 0은 no-op
         try requireNoOpenPass()
@@ -644,6 +659,43 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
             throw WGPUError.validation(
                 "\(label): 압축 텍스처의 복사 크기는 블록 배수이거나 밉 레벨 끝에 닿아야 한다 "
                 + "(\(size.width)x\(size.height) @ 레벨 \(mipLevel) 크기 \(levelWidth)x\(levelHeight))"
+            )
+        }
+    }
+
+    /// 버퍼↔텍스처 복사의 행 배치 규칙 (명세 "validating GPUTexelCopyBufferInfo" ·
+    /// "validating linear texture data").
+    ///
+    /// **`bytesPerRow`는 256의 배수여야 한다.** Metal은 훨씬 느슨해서(행 크기만 맞으면 받는다)
+    /// 여기서 안 막으면 브라우저와 Dawn에서만 거부되는 코드가 통과한다 — 실제로 데모 씬 둘이
+    /// 이 자리에서 32를 쓰다가 Dawn 연동 때 드러났다 (`docs/TESTING.md`의 데모 씬 표).
+    ///
+    /// `queue.writeTexture`에는 이 제약이 **없다** (명세가 큐 업로드와 인코더 복사를 다르게
+    /// 정한다). 그래서 이 검사는 두 복사 op에만 붙는다.
+    private func validateTexelCopyBufferLayout(
+        bytesPerRow: Int?,
+        format: WGPUTextureFormat,
+        size: WGPUExtent3D,
+        label: String,
+        path: String?
+    ) throws {
+        let blockRows = format.blockRows(height: size.height)
+        let layers = max(size.depthOrArrayLayers, 1)
+        // 행이 여럿이면 스트라이드를 유도할 수 없다 — 명세가 명시를 요구한다.
+        guard let bytesPerRow else {
+            guard blockRows <= 1, layers <= 1 else {
+                throw WGPUError.validation(
+                    "\(label): 복사가 여러 행·레이어에 걸치면 bytesPerRow를 줘야 한다 "
+                        + "(블록 행 \(blockRows), 레이어 \(layers))",
+                    path: path
+                )
+            }
+            return
+        }
+        guard bytesPerRow % 256 == 0 else {
+            throw WGPUError.validation(
+                "\(label): bytesPerRow는 256의 배수여야 한다 (받은 값 \(bytesPerRow))",
+                path: path
             )
         }
     }
@@ -1482,6 +1534,27 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
                     path: command.fieldPath("size")
                 )
             }
+            guard source.usage.contains(.copySrc) else {
+                throw WGPUError.validation(
+                    "copyBufferToBuffer의 원본은 GPUBufferUsage.COPY_SRC로 만들어야 한다",
+                    path: command.fieldPath("source")
+                )
+            }
+            guard destination.usage.contains(.copyDst) else {
+                throw WGPUError.validation(
+                    "copyBufferToBuffer의 대상은 GPUBufferUsage.COPY_DST로 만들어야 한다",
+                    path: command.fieldPath("destination")
+                )
+            }
+            // 명세 규칙 — Metal의 blit은 바이트 단위로도 복사해 주므로 여기서 안 막으면
+            // 브라우저에서만 거부되는 코드가 나온다.
+            guard sourceOffset % 4 == 0, destinationOffset % 4 == 0, size % 4 == 0 else {
+                throw WGPUError.validation(
+                    "copyBufferToBuffer의 오프셋·크기는 4의 배수여야 한다 "
+                    + "(받은 값 \(sourceOffset), \(destinationOffset), \(size))",
+                    path: command.fieldPath("size")
+                )
+            }
         }
         if size == 0 { return }   // 0바이트 복사는 no-op
         // 음수는 조용히 삼키지 않는다 — Metal 경로는 위 검사가 먼저 던져 도달하지 않고,
@@ -1556,6 +1629,10 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
             try validateBlockAlignment(format: format, origin: source.origin, size: size,
                                        textureSize: texture.size, mipLevel: source.mipLevel,
                                        label: "copyTextureToBuffer")
+            try validateTexelCopyBufferLayout(
+                bytesPerRow: destination.bytesPerRow, format: format, size: size,
+                label: "copyTextureToBuffer", path: destination.fieldPath("bytesPerRow")
+            )
         }
         try requireNoOpenPass()
         try backend.copyTextureToBuffer(
@@ -1581,6 +1658,10 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
             try validateBlockAlignment(format: format, origin: destination.origin, size: size,
                                        textureSize: texture.size, mipLevel: destination.mipLevel,
                                        label: "copyBufferToTexture")
+            try validateTexelCopyBufferLayout(
+                bytesPerRow: source.bytesPerRow, format: format, size: size,
+                label: "copyBufferToTexture", path: source.fieldPath("bytesPerRow")
+            )
         }
         try requireNoOpenPass()
         try backend.copyBufferToTexture(
