@@ -281,10 +281,16 @@ public final class WGPUMetalBackend: WGPUBackend {
         try WGPUSamplerObject(device: device, descriptor: descriptor)
     }
 
-    public func makeShaderModule(_ descriptor: WGPUShaderModuleDescriptor) -> WGPUShaderModuleCreation<WGPUMetalBackend> {
+    public func makeShaderModule(
+        _ descriptor: WGPUShaderModuleDescriptor, fieldPath: (String) -> String?
+    ) -> WGPUShaderModuleCreation<WGPUMetalBackend> {
         let object = WGPUShaderModuleObject(descriptor: descriptor)
         let failure = object.isValid ? nil : object.compilationMessages.first
         return WGPUShaderModuleCreation(module: object, failure: failure)
+    }
+
+    public func unmapBuffer(_ buffer: WGPUBufferObject) {
+        // Metal 경로의 매핑은 와이어 상태뿐이다 (shared 메모리 직접 읽기) — 풀 것이 없다.
     }
 
     public func compilationMessages(of module: WGPUShaderModuleObject) -> [WGPUCompilationMessage] {

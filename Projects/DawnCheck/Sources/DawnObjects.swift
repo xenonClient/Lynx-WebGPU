@@ -15,9 +15,8 @@ final class DawnBufferObject {
     let buffer: WGPUBuffer
     let size: Int
     let usage: LynxWebGPUCore.WGPUBufferUsage
-    /// 와이어 계약의 매핑 상태 — `mapAsync`(readBuffer)부터 `unmapBuffer` op까지 true.
-    var isMapped = false
     /// Dawn 수준에서 실제로 매핑돼 있는가 (mappedAtCreation·직접 map 경로).
+    /// 와이어 계약의 매핑 상태는 엔진(`WGPUEngineBuffer.isMapped`)이 관리한다.
     var dawnMapped = false
 
     init(buffer: WGPUBuffer, size: Int, usage: LynxWebGPUCore.WGPUBufferUsage) {
@@ -120,19 +119,6 @@ final class DawnRenderBundleObject {
     let bundle: WGPURenderBundle
     init(bundle: WGPURenderBundle) { self.bundle = bundle }
     deinit { wgpuRenderBundleRelease(bundle) }
-}
-
-/// `createImageBitmap` 결과 — 디코딩된 RGBA8 픽셀 (GPU 객체가 아니라 CPU 바이트).
-final class DawnImageBitmapObject {
-    let data: Data
-    let width: Int
-    let height: Int
-
-    init(data: Data, width: Int, height: Int) {
-        self.data = data
-        self.width = width
-        self.height = height
-    }
 }
 
 /// 캔버스 표면 — 화면(`DawnLayerCanvas`) 또는 오프스크린(`DawnOffscreenCanvas`).

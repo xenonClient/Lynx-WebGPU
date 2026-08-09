@@ -101,6 +101,10 @@ public protocol WGPUBackend: AnyObject {
     func makeBuffer(_ descriptor: WGPUBufferDescriptor) throws -> Buffer
     func writeBuffer(_ buffer: Buffer, offset: Int, data: Data) throws
 
+    /// `unmap()` — 와이어 매핑 상태는 엔진이 관리하고, **실제 매핑을 가진 백엔드**(Dawn의
+    /// `mappedAtCreation`)만 여기서 자기 매핑을 푼다. 그런 것이 없으면 no-op이다.
+    func unmapBuffer(_ buffer: Buffer)
+
     /// 버퍼 내용을 읽는다 — 앞서 제출한 GPU 작업이 끝난 뒤의 값을 보장할 것.
     /// `deliver`는 임의 스레드에서, 이미 끝났으면 동기로도 부를 수 있다.
     func readBuffer(_ buffer: Buffer, offset: Int, length: Int,
@@ -120,9 +124,11 @@ public protocol WGPUBackend: AnyObject {
 
     func makeSampler(_ descriptor: WGPUSamplerDescriptor) throws -> Sampler
 
-    /// 명세에서 셰이더 모듈은 **컴파일에 실패해도 만들어진다** — 그래서 던지지 않고,
-    /// 실패 진단을 결과에 실어 준다 (엔진이 등록은 하되 진단을 그 자리에서 보고한다).
-    func makeShaderModule(_ descriptor: WGPUShaderModuleDescriptor) -> WGPUShaderModuleCreation<Self>
+    /// 명세에서 셰이더 모듈은 **컴파일에 실패해도 만들어진다** — 컴파일 진단은 던지지 않고
+    /// 결과의 `failure`에 실어 준다 (엔진이 등록은 하되 진단을 그 자리에서 보고한다).
+    /// 던지는 것은 **모듈 자체를 만들 수 없는 경우**뿐이다 (지원하지 않는 언어 등).
+    func makeShaderModule(_ descriptor: WGPUShaderModuleDescriptor,
+                          fieldPath: (String) -> String?) throws -> WGPUShaderModuleCreation<Self>
 
     /// `getCompilationInfo()` — 지금까지 쌓인 진단 (파이프라인 생성 실패 포함).
     func compilationMessages(of module: ShaderModule) -> [WGPUCompilationMessage]

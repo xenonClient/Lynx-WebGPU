@@ -412,16 +412,22 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
 
     private func createBuffer(_ command: WGPUCreateCommand<WGPUBufferDescriptor>) throws {
         let raw = try backend.makeBuffer(command.descriptor)
-        registry.insert(
-            WGPUEngineBuffer<B>(raw: raw, size: command.descriptor.size, usage: command.descriptor.usage),
-            at: command.id
+        let object = WGPUEngineBuffer<B>(
+            raw: raw, size: command.descriptor.size, usage: command.descriptor.usage
         )
+        // 명세: mappedAtCreation 버퍼는 unmap 전까지 "unavailable"이다.
+        // (JS shim은 이 플래그를 클라이언트에서 접어 initialData로 보낸다 — 이 경로는
+        //  커맨드 스트림을 직접 만드는 네이티브 사용자의 것이다.)
+        object.isMapped = command.descriptor.mappedAtCreation
+        registry.insert(object, at: command.id)
     }
 
     private func unmapBuffer(_ command: WGPUUnmapBufferCommand) throws {
-        try registry.lookup(
+        let object = try registry.lookup(
             command.buffer, as: WGPUEngineBuffer<B>.self, kind: "GPUBuffer"
-        ).isMapped = false
+        )
+        object.isMapped = false
+        backend.unmapBuffer(object.raw)
     }
 
     private func writeBuffer(_ command: WGPUWriteBufferCommand) throws {
@@ -632,7 +638,7 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
     /// 핸들이 아예 없으면 이후 명령이 전부 "존재하지 않는다"로만 깨져 **진짜 원인(파싱 실패)이
     /// 화면에서 사라진다.** 여기서는 원인도 그 자리에서 보고한다.
     private func createShaderModule(_ command: WGPUCreateCommand<WGPUShaderModuleDescriptor>) throws {
-        let creation = backend.makeShaderModule(command.descriptor)
+        let creation = try backend.makeShaderModule(command.descriptor, fieldPath: { command.fieldPath($0) })
         registry.insert(WGPUEngineShaderModule<B>(raw: creation.module), at: command.id)
         if let failure = creation.failure {
             throw WGPUError(
@@ -748,9 +754,17 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
                 ).raw
             },
             buffer: { handle, path in
-                try registry.lookup(
+                let object = try registry.lookup(
                     handle, as: WGPUEngineBuffer<B>.self, kind: "GPUBuffer", path: path
-                ).raw
+                )
+                guard !object.isMapped else {
+                    throw WGPUError.validation(
+                        "매핑 중인 GPUBuffer \(handle)은(는) 큐 작업에 쓸 수 없다 "
+                            + "(mapAsync로 읽은 뒤 unmap()을 부를 것)",
+                        path: path
+                    )
+                }
+                return object.raw
             }
         )
     }
