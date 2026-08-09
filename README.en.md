@@ -35,7 +35,7 @@ Browser WebGPU code and WGSL shaders port over almost verbatim.
 
 ```swift
 // Package.swift
-.package(url: "https://github.com/xenonClient/Lynx-WebGPU", from: "0.4.0")
+.package(url: "https://github.com/xenonClient/Lynx-WebGPU", from: "0.5.0")
 ```
 
 That gives you the **engine** (`LynxWebGPU`). Types that touch Lynx — such as `LynxWebGPUHost` below —
@@ -43,10 +43,11 @@ come from the **four files in `Sources/LynxWebGPUBridge/`, which you add to a ta
 so that your app picks the Lynx SDK's version and distribution channel
 (see `docs/LYNX-INTEGRATION.md` §2; the demo app is the worked example).
 
-Wiring up the host app takes three steps:
+Wiring up the host app takes three steps. **The app supplies the runtime (the GPU backend)** — the bridge
+knows only the `WebGPURuntime` protocol, so swapping in another backend leaves the bridge and the JS bundle untouched:
 
 ```swift
-let host = try LynxWebGPUHost()
+let host = LynxWebGPUHost(runtime: try LynxWebGPUContext())   // the default engine (Metal)
 let lynxView = LynxView { builder in
     let config = LynxConfig(provider: provider)
     LynxWebGPU.register(in: config, host: host)   // NativeModules.WebGPU + <webgpu-canvas>
