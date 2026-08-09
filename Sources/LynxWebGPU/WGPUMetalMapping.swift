@@ -360,27 +360,13 @@ public enum WGPUDeviceCapability {
         device.supportsFamily(.apple3) || device.supportsFamily(.mac2)
     }
 
-    /// 포맷이 속한 압축 계열 — 명세의 선택 기능 이름과 1:1로 대응한다.
-    public enum CompressionFamily {
-        case none, bc, etc2, astc
+    /// 포맷이 속한 압축 계열 — 계열 분류 자체는 명세 사실이라 Core에 있다
+    /// (`WGPUTextureCompressionFamily`, 엔진의 생성 검증도 같은 것을 쓴다).
+    /// 예전 철자를 그대로 쓸 수 있게 별칭과 전달자를 남긴다.
+    public typealias CompressionFamily = WGPUTextureCompressionFamily
 
-        /// `adapter.features`에 싣는 이름 (명세 철자 그대로).
-        public var featureName: String? {
-            switch self {
-            case .none: return nil
-            case .bc: return "texture-compression-bc"
-            case .etc2: return "texture-compression-etc2"
-            case .astc: return "texture-compression-astc"
-            }
-        }
-    }
-
-    /// ETC2와 EAC는 명세에서 **같은 기능 비트**다 (`texture-compression-etc2`).
     public static func compressionFamily(_ format: WGPUTextureFormat) -> CompressionFamily {
-        guard format.isCompressed else { return .none }
-        if format.rawValue.hasPrefix("bc") { return .bc }
-        if format.rawValue.hasPrefix("astc-") { return .astc }
-        return .etc2
+        format.compressionFamily
     }
 
     /// 블록 압축 포맷을 이 기기가 지원하는가.

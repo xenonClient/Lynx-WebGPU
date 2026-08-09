@@ -35,48 +35,12 @@ public final class WGPUPipelineLayoutObject {
     }
 }
 
-/// 바인드 그룹이 실제로 가리키는 Metal 객체.
+/// 바인드 그룹이 실제로 가리키는 Metal 객체 (`WGPUMetalBindGroup.Binding`이 담는다).
 enum WGPUResolvedBinding {
     /// `boundSize`는 이 바인딩이 보는 바이트 수 — `arrayLength()`가 이 값을 쓴다.
     case buffer(MTLBuffer, offset: Int, boundSize: Int)
     case sampler(MTLSamplerState)
     case texture(MTLTexture)
-}
-
-/// `GPUBindGroup`.
-public final class WGPUBindGroupObject {
-    let layout: WGPUBindGroupLayoutObject
-    let bindings: [(binding: Int, visibility: WGPUShaderStage, resource: WGPUResolvedBinding)]
-    /// 이 그룹이 물고 있는 버퍼 객체 — 드로우 직전에 "매핑 중인가"를 보려면 필요하다
-    /// (바인딩은 `MTLBuffer`만 들고 있어서 매핑 상태를 알 수 없다).
-    let bufferObjects: [WGPUBufferObject]
-
-    init(layout: WGPUBindGroupLayoutObject, descriptor: WGPUBindGroupDescriptor, registry: WGPUObjectRegistry) throws {
-        self.layout = layout
-        var buffers: [WGPUBufferObject] = []
-        self.bindings = try descriptor.entries.map { entry in
-            guard let layoutEntry = layout.entry(binding: entry.binding) else {
-                throw WGPUError.validation("바인드 그룹 레이아웃에 binding \(entry.binding)이 없다")
-            }
-            let resolved: WGPUResolvedBinding
-            switch entry.resource {
-            case .buffer(let handle, let offset, let size):
-                let object = try registry.lookup(handle, as: WGPUBufferObject.self, kind: "GPUBuffer")
-                buffers.append(object)
-                resolved = .buffer(
-                    object.buffer, offset: offset, boundSize: size ?? max(object.size - offset, 0)
-                )
-            case .sampler(let handle):
-                let object = try registry.lookup(handle, as: WGPUSamplerObject.self, kind: "GPUSampler")
-                resolved = .sampler(object.sampler)
-            case .textureView(let handle):
-                let object = try registry.lookup(handle, as: WGPUTextureViewObject.self, kind: "GPUTextureView")
-                resolved = .texture(object.texture)
-            }
-            return (entry.binding, layoutEntry.visibility, resolved)
-        }
-        self.bufferObjects = buffers
-    }
 }
 
 /// `GPURenderPipeline`.
@@ -304,124 +268,12 @@ public final class WGPUComputePipelineObject {
     }
 }
 
-/// `GPURenderBundle` — 명령 목록을 그대로 들고 있다가 렌더 패스에 되풀이한다.
-///
-/// Metal에는 대응하는 객체가 없다 (`MTLIndirectCommandBuffer`는 제약이 훨씬 크고 용도가 다르다).
-/// 하지만 번들의 계약이 애초에 **"직접 인코딩과 같은 결과"**이므로, 명령을 저장했다가 현재
-/// 인코더에 다시 흘리는 것으로 계약을 그대로 만족시킨다. 재사용해도 안전한 이유도 같다 —
-/// 저장된 것은 값 타입인 리더뿐이라 실행이 원본을 바꾸지 않는다.
-public final class WGPURenderBundleObject {
-    /// 번들 안에서 쓸 수 있는 명령. 명세가 정한 목록 그대로다 — 뷰포트·시저·블렌드 상수·
-    /// 스텐실 참조·복사·중첩 번들은 번들에 담을 수 없다.
-    ///
-    /// 디버그 마커는 **담을 수 있다** — 명세의 `GPURenderBundleEncoder`가
-    /// `GPUDebugCommandsMixin`을 포함한다. 빠뜨리면 마커를 하나 넣은 것만으로 번들 전체가
-    /// 거부되고, 사용자는 마커가 원인이라고 생각하기 어렵다.
-    static let allowedOps: Set<String> = [
-        "setPipeline", "setBindGroup", "setVertexBuffer", "setIndexBuffer",
-        "draw", "drawIndexed", "drawIndirect", "drawIndexedIndirect",
-        "pushDebugGroup", "popDebugGroup", "insertDebugMarker",
-    ]
-
-    let commands: [WGPUValueReader]
-    let descriptor: WGPURenderBundleDescriptor
-
-    init(commands: [WGPUValueReader], descriptor: WGPURenderBundleDescriptor) throws {
-        for command in commands {
-            let op = try command.requiredString("op")
-            guard Self.allowedOps.contains(op) else {
-                throw WGPUError.validation(
-                    "렌더 번들에는 '\(op)'을(를) 담을 수 없다 "
-                        + "(가능: \(Self.allowedOps.sorted().joined(separator: ", ")))",
-                    path: command.fieldPath("op")
-                )
-            }
-        }
-        self.commands = commands
-        self.descriptor = descriptor
-    }
-
-    /// 이 번들이 지금 패스에서 실행될 수 있는가.
-    ///
-    /// 번들은 "어떤 모양의 패스에서 쓸 것"이라고 선언하고 만들어진다. 그 선언과 실제 패스가
-    /// 어긋나면 브라우저는 오류를 내지만, 이 구현은 명령을 되풀이할 뿐이라 Metal이 못 잡는다
-    /// (파이프라인이 패스와 맞기만 하면 그냥 그려진다). 여기서 막지 않으면 브라우저에서만
-    /// 깨지는 코드가 나간다.
-    func checkCompatibility(
-        color: [WGPUTextureFormat],
-        depthStencil: WGPUTextureFormat?,
-        sampleCount: Int,
-        depthReadOnly: Bool,
-        stencilReadOnly: Bool
-    ) throws {
-        // 명세의 "render pass layout equals"는 **후행 null을 무시하고** colorFormats를 비교한다.
-        // 자르지 않으면 `['bgra8unorm', null]` 번들이 컬러 1개짜리 패스에서 오탐으로 거부된다.
-        let bundleFormats = Self.trimmingTrailingNulls(descriptor.colorFormats)
-        guard bundleFormats.count == color.count else {
-            throw WGPUError.validation(
-                "번들의 컬러 어태치먼트 수(\(bundleFormats.count))가 "
-                    + "패스(\(color.count))와 다르다"
-            )
-        }
-        for (index, expected) in bundleFormats.enumerated() where expected != color[index] {
-            throw WGPUError.validation(
-                "번들의 colorFormats[\(index)]가 패스와 다르다 — "
-                    + "번들 \(expected?.rawValue ?? "null"), 패스 \(color[index].rawValue)"
-            )
-        }
-        guard descriptor.depthStencilFormat == depthStencil else {
-            throw WGPUError.validation(
-                "번들의 depthStencilFormat이 패스와 다르다 — "
-                    + "번들 \(descriptor.depthStencilFormat?.rawValue ?? "없음"), "
-                    + "패스 \(depthStencil?.rawValue ?? "없음")"
-            )
-        }
-        guard descriptor.sampleCount == sampleCount else {
-            throw WGPUError.validation(
-                "번들의 sampleCount(\(descriptor.sampleCount))가 패스(\(sampleCount))와 다르다"
-            )
-        }
-        // 한 방향만 요구한다 — read-only 패스에는 read-only 번들만 넣을 수 있지만,
-        // 쓰기가 가능한 패스에 read-only 번들을 넣는 것은 문제가 없다.
-        guard !depthReadOnly || descriptor.depthReadOnly else {
-            throw WGPUError.validation(
-                "depthReadOnly 패스에서는 depthReadOnly: true로 만든 번들만 실행할 수 있다"
-            )
-        }
-        guard !stencilReadOnly || descriptor.stencilReadOnly else {
-            throw WGPUError.validation(
-                "stencilReadOnly 패스에서는 stencilReadOnly: true로 만든 번들만 실행할 수 있다"
-            )
-        }
-    }
-
-    /// 후행 `null` 슬롯을 잘라낸다 — 명세의 레이아웃 동치 비교가 이것들을 무시한다.
-    private static func trimmingTrailingNulls(_ formats: [WGPUTextureFormat?]) -> [WGPUTextureFormat?] {
-        var trimmed = formats
-        while let last = trimmed.last, last == nil { trimmed.removeLast() }
-        return trimmed
-    }
-}
-
 // MARK: - 레이아웃 유도
 
 enum WGPUPipelineLayoutResolver {
-    /// 명시적 레이아웃이면 핸들을 찾고, `"auto"`면 셰이더 선언에서 유도한다.
-    static func resolve(
-        _ reference: WGPUPipelineLayoutRef,
-        stages: [(module: WGPUShaderModuleObject, entryPoints: [String])],
-        registry: WGPUObjectRegistry
-    ) throws -> WGPUPipelineLayoutObject {
-        switch reference {
-        case .explicit(let handle):
-            return try registry.lookup(handle, as: WGPUPipelineLayoutObject.self, kind: "GPUPipelineLayout")
-        case .auto:
-            return try WGPUPipelineLayoutObject(groups: try derivedGroups(stages: stages))
-        }
-    }
-
-    /// 여러 셰이더 모듈의 선언을 (그룹, 바인딩)으로 합친다. visibility는 합집합이다.
-    private static func derivedGroups(
+    /// `layout: "auto"` — 여러 셰이더 모듈의 선언을 (그룹, 바인딩)으로 합친다.
+    /// visibility는 합집합이다. (명시적 레이아웃의 핸들 해석은 엔진이 끝내고 온다.)
+    static func derivedGroups(
         stages: [(module: WGPUShaderModuleObject, entryPoints: [String])]
     ) throws -> [WGPUBindGroupLayoutObject] {
         var merged: [Int: [Int: WGPUBindGroupLayoutEntry]] = [:]
