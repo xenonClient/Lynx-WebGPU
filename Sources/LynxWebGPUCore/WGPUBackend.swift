@@ -96,6 +96,17 @@ public protocol WGPUBackend: AnyObject {
     ///   담는다 — 엔진이 지연 오류 큐로 흘려 다음 배치에 보고한다.
     func submit(present: Bool, onCompleted: @escaping (WGPUError?) -> Void)
 
+    /// present하지 않기로 한 획득분을 돌려준다 — 드로어블은 얻었는데 **제출할 GPU 작업이
+    /// 하나도 안 생긴 채** 프레임이 끝났을 때 엔진이 부른다 (첫 인코더 전에 검증 오류가 난
+    /// 프레임이 이 모양이다).
+    ///
+    /// 그냥 붙들고 있으면 스왑체인 풀이 마르고, 화면 표면에서는 **다음 획득이 JS 스레드를
+    /// 최대 1초까지 세운 뒤** 영구히 실패한다. 그리지도 않은 드로어블을 present할 수는 없으니
+    /// (빈 화면이 나간다) 내보내지 말고 놓아 주는 것이 유일한 출구다.
+    ///
+    /// 획득한 것이 없으면 no-op이다. `submit(present: true)`가 이미 비운 뒤에 불려도 안전해야 한다.
+    func discardAcquiredFrames()
+
     // MARK: - 리소스
 
     func makeBuffer(_ descriptor: WGPUBufferDescriptor) throws -> Buffer

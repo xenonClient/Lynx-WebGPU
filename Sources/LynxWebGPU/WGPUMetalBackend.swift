@@ -141,6 +141,13 @@ public final class WGPUMetalBackend: WGPUBackend {
         self.commandBuffer = nil
     }
 
+    /// 그리지 못한 드로어블을 놓는다 — present 없이 프레임이 끝났을 때 엔진이 부른다.
+    /// `CAMetalDrawable`은 마지막 참조가 사라지면 풀로 돌아간다. 붙들고 있으면 세 프레임
+    /// 만에 풀이 말라 `nextDrawable()`이 JS 스레드를 세운다.
+    public func discardAcquiredFrames() {
+        acquiredDrawables.removeAll()
+    }
+
     /// 실패한 커맨드 버퍼를 보고 가능한 오류로 바꾼다.
     static func commandBufferError(_ buffer: MTLCommandBuffer) -> WGPUError {
         .backend("GPU 작업이 실패했다: \(buffer.error?.localizedDescription ?? "원인 불명")")

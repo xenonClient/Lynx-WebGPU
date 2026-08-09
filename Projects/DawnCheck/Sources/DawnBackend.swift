@@ -194,6 +194,13 @@ final class DawnBackend: WGPUBackend {
         _ = wgpuQueueOnSubmittedWorkDone(queue, callbackInfo)
     }
 
+    /// 그리지 못한 획득분을 놓는다 — present 없이 프레임이 끝났을 때 엔진이 부른다.
+    /// 표면 텍스처 자체는 엔진이 프레임 스코프 핸들을 만료시키며 놓으므로, 여기서는
+    /// present 대상 목록만 비운다 — 남겨 두면 다음 프레임이 지난 프레임의 표면을 내보낸다.
+    func discardAcquiredFrames() {
+        presentTargets.removeAll()
+    }
+
     private final class WorkDoneBox {
         let body: (WGPUError?) -> Void
         init(_ body: @escaping (WGPUError?) -> Void) { self.body = body }
