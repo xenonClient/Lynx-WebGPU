@@ -196,3 +196,6 @@ Xcode 26.2 / Swift 6.2 · iOS 17.0+ · macOS 14.0+ (개발 루프용)
   교차 검증**한다. 라이브러리 product는 Dawn을 링크하지 않는다.
 - [react-native-webgpu](https://github.com/wcandillon/react-native-webgpu) (MIT) — 레이어 분할을
   참고했다 (`docs/extra/RN-WEBGPU-LAYERING.md`). 코드는 이식하지 않았다.
+
+데모·검증 앱을 배포할 때 실을 오픈소스 고지 원문은 [Projects/NOTICES.md](Projects/NOTICES.md)에
+모아 두었다 (라이브러리 product만 쓰면 해당 없음 — 외부 의존성 0).

@@ -200,3 +200,7 @@ Point it at a different repo or version by editing `Projects/WebGPUDemo/Project.
   implementation against the same conformance suite**. The library products do not link Dawn.
 - [react-native-webgpu](https://github.com/wcandillon/react-native-webgpu) (MIT) — its layering informed
   ours (`docs/extra/RN-WEBGPU-LAYERING.md`). No code was ported.
+
+The open-source notices to ship with the demo/verification apps are collected in
+[Projects/NOTICES.md](Projects/NOTICES.md) (not applicable if you only use the library products —
+zero external dependencies).
