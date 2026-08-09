@@ -2,36 +2,38 @@ import Foundation
 import CoreGraphics
 import QuartzCore
 
-/// GPU 백엔드가 구현하는 **동사(verb) 프로토콜** — `WGPUBackendEngine`의 반대편.
+/// The **verb protocol** a GPU backend implements — the far side of `WGPUBackendEngine`.
 ///
-/// ## 왜 이 모양인가
+/// ## Why it looks like this
 ///
-/// `WebGPURuntime`은 와이어(커맨드 스트림) 전체를 받는 계약이라, 구현체가 배치 루프·오류
-/// 스코프·프레임 수명·매핑 게이트·직렬화까지 전부 다시 만들어야 했다. Dawn 시제품에서 실제로
-/// 터진 결함(펌프 경쟁, present 순서, 스코프 드레인 누락, 크래시성 변환)은 **전부 그 중복
-/// 구현에서** 나왔다 — 인코딩이 아니라 오케스트레이션이 문제였다.
+/// `WebGPURuntime` is a contract over the whole wire (the command stream), so every implementation
+/// had to rebuild the batch loop, error scopes, frame lifetime, the mapping gate and serialization
+/// from scratch. Every defect that actually bit in the Dawn prototype — pump races, present order,
+/// a missed scope drain, crash-prone conversions — **came out of that duplicated orchestration**,
+/// not out of encoding.
 ///
-/// 그래서 오케스트레이션을 `WGPUBackendEngine`(Core) 한 곳으로 끌어올리고, 백엔드에는
-/// **이미 검증·해석이 끝난 값으로 GPU API를 부르는 일**만 남긴다:
+/// So orchestration was lifted into one place, `WGPUBackendEngine` (Core), leaving the backend only
+/// **the job of calling its GPU API with values that are already validated and resolved**:
 ///
-/// - 핸들 → 객체 해석은 엔진이 끝낸다. 동사는 `Buffer`·`Texture` 같은 **자기 타입**을 받는다.
-/// - 명세 수준 검증(범위·정렬·usage·완전성·번들 격리·occlusion 중첩)은 엔진이 끝낸다.
-///   동사에 도착한 값은 이미 명세를 통과한 값이다 — 백엔드 고유의 제약(기기 능력,
-///   API별 변환 한계)만 동사 안에서 던진다.
-/// - 디코딩·디스패치는 엔진의 exhaustive switch 한 곳이다. **op을 더하면 이 프로토콜에
-///   동사를 더하게 되고, 컴파일러가 모든 백엔드의 누락을 잡는다** — 예전에 백엔드마다
-///   두던 switch와 같은 보장을 프로토콜 요구사항이 대신한다.
+/// - Handle → object resolution is done by the engine. A verb receives **its own types**, `Buffer`,
+///   `Texture` and so on.
+/// - Spec-level validation (ranges, alignment, usage, completeness, bundle isolation, occlusion
+///   nesting) is done by the engine. Values reaching a verb have already cleared the spec — a verb
+///   throws only for backend-specific limits (device capability, API conversion limits).
+/// - Decoding and dispatch live in the engine's one exhaustive switch. **Adding an op means adding
+///   a verb to this protocol, and the compiler catches the omission in every backend** — the
+///   protocol requirement now gives the guarantee a per-backend switch used to.
 ///
-/// ## 스레딩
+/// ## Threading
 ///
-/// 모든 동사는 엔진의 실행 락 아래에서 불린다 — `execute`(JS 스레드)·`pumpEvents`(메인
-/// 틱)·`readBuffer` 등록이 전부 같은 락으로 직렬화된다 (`docs/COMMAND-STREAM.md` §5-1의
-/// 펌프 동시성 계약을 엔진이 대신 이행한다). 백엔드가 자체 락을 둘 필요는 없지만,
-/// 완료 콜백(`submit`·`readBuffer`의 클로저)은 **임의 스레드에서** 부를 수 있다 —
-/// 엔진 쪽 래퍼가 자기 락을 다시 잡는다.
+/// Every verb is called under the engine's execution lock — `execute` (JS thread), `pumpEvents`
+/// (main tick) and `readBuffer` registration are all serialized by that one lock (the engine
+/// discharges the pump-concurrency contract of `docs/COMMAND-STREAM.md` §5-1 on the backend's
+/// behalf). A backend needs no lock of its own, but completion callbacks (the closures of `submit`
+/// and `readBuffer`) may be invoked **from any thread** — the engine-side wrapper retakes its lock.
 public protocol WGPUBackend: AnyObject {
 
-    // MARK: - 핸들 타입
+    // MARK: - Handle types
 
     associatedtype Buffer
     associatedtype Texture
@@ -47,119 +49,126 @@ public protocol WGPUBackend: AnyObject {
     associatedtype RenderBundle
     associatedtype Surface
 
-    // MARK: - 능력
+    // MARK: - Capabilities
 
     var capabilities: WGPUBackendCapabilities { get }
 
-    /// 이 기기가 해당 압축 계열을 지원하는가 — 엔진의 압축 텍스처 생성 검증이 묻는다.
+    /// Whether this device supports that compression family — asked by the engine's compressed
+    /// texture creation check.
     func supportsTextureCompression(_ format: WGPUTextureFormat) -> Bool
 
-    /// 간접 드로우·디스패치를 못 하는 기기면 **백엔드가 자기 문맥이 담긴 오류로** 던진다
-    /// (Metal: 시뮬레이터 = Apple GPU family 2 안내). 나머지 간접 인자 검증(정렬·범위·
-    /// usage)은 엔진이 한다.
+    /// On a device that cannot do indirect draw/dispatch, **the backend throws with its own
+    /// context** (Metal: the simulator = Apple GPU family 2 note). The rest of indirect-argument
+    /// validation (alignment, range, usage) is the engine's.
     func ensureIndirectSupported() throws
 
-    /// `navigator.gpu.requestAdapter()`가 쓰는 정보·한계값·기능. 키는 명세 철자 그대로
-    /// (`WebGPURuntime.adapterInfo` 문서 참고). 값 전부가 기기·API 고유라 통째로 동사다.
+    /// Info, limits and features used by `navigator.gpu.requestAdapter()`. Keys use the spec
+    /// spelling (see `WebGPURuntime.adapterInfo`). Every value is device- and API-specific, so the
+    /// whole thing is a verb.
     func adapterInfo() -> [String: Any]
 
-    /// 비동기 완료 펌프 (`WebGPURuntime.processEvents`). 엔진 락 아래에서 불린다.
+    /// Asynchronous completion pump (`WebGPURuntime.processEvents`). Called under the engine lock.
     func pumpEvents()
 
-    /// 디바이스를 버릴 때 (`reset`) — 프레임 중간 상태(드로어블·마지막 커맨드 버퍼 등)를 버린다.
+    /// On discarding the device (`reset`) — drop mid-frame state (drawables, last command buffer, …).
     func reset()
 
-    // MARK: - 배치 수명
+    // MARK: - Batch lifetime
 
-    /// 배치 시작 — 배치 단위 진단 수집이 필요한 백엔드의 자리다 (Dawn: 디바이스 오류
-    /// 스코프 push). Metal처럼 완료 핸들러로 실패가 오는 백엔드는 할 일이 없다.
+    /// Batch start — the seat for backends needing per-batch diagnostic collection (Dawn: push a
+    /// device error scope). A backend whose failures arrive by completion handler, like Metal, has
+    /// nothing to do.
     func beginBatch()
 
-    /// 배치가 제출된 뒤, 백엔드가 이 배치에서 모은 진단을 내놓는다 (Dawn: 스코프 pop +
-    /// 펌프 + 오류 회수). 엔진이 오류 스코프/배치 결과로 흘려보낸다.
+    /// After the batch is submitted, the backend hands over the diagnostics it gathered (Dawn: pop
+    /// the scope, pump, collect errors). The engine routes them into error scopes / the batch result.
     func collectBatchDiagnostics() -> [WGPUError]
 
-    /// 이 배치에서 제출할 GPU 작업이 만들어졌는가 (Metal: 커맨드 버퍼 존재).
-    /// 엔진이 present·회계·프레임 만료를 이 값으로 판단한다.
+    /// Whether GPU work to submit was produced in this batch (Metal: a command buffer exists).
+    /// The engine decides present, accounting and frame expiry from this value.
     var hasPendingWork: Bool { get }
 
-    /// 명령 없이 present만 해야 하는 배치(틱의 마무리)를 위해 빈 제출 거리를 만든다.
-    /// 실패해도 조용히 넘어간다 — 다음 배치가 다시 시도한다.
+    /// Produces empty submittable work for a batch that must present without commands (a tick's
+    /// tail). Failure passes silently — the next batch tries again.
     func ensureSubmittableWork()
 
-    /// 배치의 GPU 작업을 제출한다. `hasPendingWork`가 참일 때만 불린다.
+    /// Submits the batch's GPU work. Called only when `hasPendingWork` is true.
     ///
-    /// - present가 참이면 이번 프레임에 획득한 표면 텍스처를 **백엔드 규칙에 맞는 시점**에
-    ///   화면으로 보낸다 (Metal: commit 전에 `present(drawable)`, Dawn: submit 후
-    ///   `wgpuSurfacePresent`). 보낸 뒤에는 백엔드가 들고 있던 획득 목록을 비운다.
-    /// - `onCompleted`는 GPU 실행이 끝났을 때 **임의 스레드에서** 부른다. 실패면 오류를
-    ///   담는다 — 엔진이 지연 오류 큐로 흘려 다음 배치에 보고한다.
+    /// - When present is true, send the surface textures acquired this frame to screen **at the
+    ///   moment the backend's rules require** (Metal: `present(drawable)` before commit; Dawn:
+    ///   `wgpuSurfacePresent` after submit). Afterwards the backend clears the acquired list it held.
+    /// - `onCompleted` is called **from any thread** when GPU execution finishes, carrying an error
+    ///   on failure — the engine routes it through the deferred error queue into the next batch.
     func submit(present: Bool, onCompleted: @escaping (WGPUError?) -> Void)
 
-    /// present하지 않기로 한 획득분을 돌려준다 — 드로어블은 얻었는데 **제출할 GPU 작업이
-    /// 하나도 안 생긴 채** 프레임이 끝났을 때 엔진이 부른다 (첫 인코더 전에 검증 오류가 난
-    /// 프레임이 이 모양이다).
+    /// Hands back an acquisition we decided not to present — called by the engine when a drawable
+    /// was obtained but the frame ended with **no GPU work to submit at all** (a frame that hit a
+    /// validation error before the first encoder looks like this).
     ///
-    /// 그냥 붙들고 있으면 스왑체인 풀이 마르고, 화면 표면에서는 **다음 획득이 JS 스레드를
-    /// 최대 1초까지 세운 뒤** 영구히 실패한다. 그리지도 않은 드로어블을 present할 수는 없으니
-    /// (빈 화면이 나간다) 내보내지 말고 놓아 주는 것이 유일한 출구다.
+    /// Simply holding on drains the swapchain pool, and on an on-screen surface **the next
+    /// acquisition stalls the JS thread for up to a second** and then fails permanently. A drawable
+    /// that was never drawn cannot be presented (a blank frame would go out), so releasing it
+    /// without presenting is the only way out.
     ///
-    /// 획득한 것이 없으면 no-op이다. `submit(present: true)`가 이미 비운 뒤에 불려도 안전해야 한다.
+    /// A no-op when nothing was acquired. Must stay safe when called after `submit(present: true)`
+    /// already cleared the list.
     func discardAcquiredFrames()
 
-    // MARK: - 리소스
+    // MARK: - Resources
 
     func makeBuffer(_ descriptor: WGPUBufferDescriptor) throws -> Buffer
     func writeBuffer(_ buffer: Buffer, offset: Int, data: Data) throws
 
-    /// `unmap()` — 와이어 매핑 상태는 엔진이 관리하고, **실제 매핑을 가진 백엔드**(Dawn의
-    /// `mappedAtCreation`)만 여기서 자기 매핑을 푼다. 그런 것이 없으면 no-op이다.
+    /// `unmap()` — the wire mapping state is the engine's; only a backend with **real mapping**
+    /// (Dawn's `mappedAtCreation`) releases its own here. A no-op where there is none.
     func unmapBuffer(_ buffer: Buffer)
 
-    /// 버퍼 내용을 읽는다 — 앞서 제출한 GPU 작업이 끝난 뒤의 값을 보장할 것.
-    /// `deliver`는 임의 스레드에서, 이미 끝났으면 동기로도 부를 수 있다.
+    /// Reads buffer contents — guarantee the values are those after previously submitted GPU work.
+    /// `deliver` may be called from any thread, and synchronously when the work already finished.
     func readBuffer(_ buffer: Buffer, offset: Int, length: Int,
                     deliver: @escaping (Result<Data, WGPUError>) -> Void)
 
     func makeTexture(_ descriptor: WGPUTextureDescriptor) throws -> Texture
 
-    /// CPU 데이터를 텍스처로 올린다 — `writeTexture`와 `copyExternalImageToTexture`가
-    /// 여기로 수렴한다 (후자는 엔진이 디코딩·잘라내기·flipY를 끝내고 픽셀만 넘긴다).
-    /// `bytesPerRow`·`rowsPerImage`의 생략 기본값은 엔진이 채워서 온다.
+    /// Uploads CPU data into a texture — `writeTexture` and `copyExternalImageToTexture` converge
+    /// here (for the latter the engine finishes decoding, cropping and flipY and passes pixels only).
+    /// Omitted defaults for `bytesPerRow`/`rowsPerImage` arrive already filled in by the engine.
     func writeTexture(_ texture: Texture, data: Data, origin: WGPUOrigin3D, size: WGPUExtent3D,
                       mipLevel: Int, bytesPerRow: Int, rowsPerImage: Int) throws
 
-    /// `format`은 엔진이 확정한 뷰 포맷 (`descriptor.format ?? 원본 포맷`).
+    /// `format` is the view format the engine settled on (`descriptor.format ?? source format`).
     func makeTextureView(_ texture: Texture, descriptor: WGPUTextureViewDescriptor,
                          format: WGPUTextureFormat) throws -> TextureView
 
     func makeSampler(_ descriptor: WGPUSamplerDescriptor) throws -> Sampler
 
-    /// 명세에서 셰이더 모듈은 **컴파일에 실패해도 만들어진다** — 컴파일 진단은 던지지 않고
-    /// 결과의 `failure`에 실어 준다 (엔진이 등록은 하되 진단을 그 자리에서 보고한다).
-    /// 던지는 것은 **모듈 자체를 만들 수 없는 경우**뿐이다 (지원하지 않는 언어 등).
+    /// In the spec a shader module **is created even when compilation fails** — compilation
+    /// diagnostics are not thrown but carried in the result's `failure` (the engine registers the
+    /// module and reports the diagnostic on the spot). Throw only when **the module itself cannot
+    /// be created** (an unsupported language, say).
     func makeShaderModule(_ descriptor: WGPUShaderModuleDescriptor,
                           fieldPath: (String) -> String?) throws -> WGPUShaderModuleCreation<Self>
 
-    /// `getCompilationInfo()` — 지금까지 쌓인 진단 (파이프라인 생성 실패 포함).
+    /// `getCompilationInfo()` — diagnostics accumulated so far (including pipeline creation failure).
     func compilationMessages(of module: ShaderModule) -> [WGPUCompilationMessage]
 
     func makeBindGroupLayout(_ entries: [WGPUBindGroupLayoutEntry]) throws -> BindGroupLayout
     func makePipelineLayout(_ groups: [BindGroupLayout]) throws -> PipelineLayout
 
-    /// 리소스 해석(핸들 → 객체, `boundSize` 기본값, 레이아웃 항목 매칭)은 엔진이 끝냈다.
-    /// `layoutEntry`는 레이아웃 항목을 아는 경우에만 온다 — 네이티브 파생 레이아웃
-    /// (`getBindGroupLayout`이 항목을 못 주는 백엔드)에서는 nil이다.
+    /// Resource resolution (handle → object, the `boundSize` default, layout entry matching) is done
+    /// by the engine. `layoutEntry` arrives only when the layout entries are known — it is nil for a
+    /// native derived layout (a backend whose `getBindGroupLayout` cannot hand back entries).
     func makeBindGroup(layout: BindGroupLayout,
                        entries: [WGPUResolvedBindGroupEntry<Self>]) throws -> BindGroup
 
     func makeQuerySet(_ descriptor: WGPUQuerySetDescriptor) throws -> QuerySet
 
-    /// 진입점 해석(생략 시 유일 진입점)은 **백엔드 몫**이다 — Metal은 WGSL 리플렉션으로,
-    /// Dawn은 네이티브 기본 규칙으로 한다. `info`에는 엔진의 드로우 전 검사가 쓸 메타데이터를
-    /// 담는다 — 백엔드가 스스로 검증하는 항목은 nil로 두면 엔진 검사가 빠진다.
-    /// `fieldPath`는 오류에 붙일 커맨드 스트림 경로를 만든다 (`fieldPath("vertex.entryPoint")`
-    /// → `commands[3].vertex.entryPoint`) — 백엔드가 세부 필드 단위 진단을 보낼 때 쓴다.
+    /// Entry-point resolution (the sole entry point when omitted) is **the backend's job** — Metal
+    /// does it through WGSL reflection, Dawn through its native default rule. `info` carries the
+    /// metadata the engine's pre-draw checks use — leaving an item nil drops that engine check
+    /// (meaning the backend validates it natively). `fieldPath` builds the command-stream path to
+    /// attach to errors (`fieldPath("vertex.entryPoint")` → `commands[3].vertex.entryPoint`) — used
+    /// when a backend reports a diagnostic down to the individual field.
     func makeRenderPipeline(_ descriptor: WGPURenderPipelineDescriptor,
                             vertexModule: ShaderModule, fragmentModule: ShaderModule?,
                             layout: WGPUResolvedPipelineLayout<Self>,
@@ -169,54 +178,58 @@ public protocol WGPUBackend: AnyObject {
                              layout: WGPUResolvedPipelineLayout<Self>,
                              fieldPath: (String) -> String?) throws -> WGPUComputePipelineCreation<Self>
 
-    /// `pipeline.getBindGroupLayout(index)`. 그 자리에 그룹이 없으면 nil을 돌려준다 —
-    /// 엔진이 명세 문구의 오류로 바꾼다. `entries`를 알면 함께 준다 (엔진의 바인드 그룹
-    /// 항목 매칭이 쓴다).
+    /// `pipeline.getBindGroupLayout(index)`. Return nil when no group sits at that index — the
+    /// engine turns it into the spec-worded error. Supply `entries` when known (the engine's bind
+    /// group entry matching uses them).
     func bindGroupLayout(of pipeline: WGPUResolvedPipeline<Self>,
                          index: Int) throws -> WGPUBindGroupLayoutCreation<Self>?
 
-    /// 네이티브 렌더 번들 생성 — `capabilities.supportsNativeRenderBundles`가 참인 백엔드만
-    /// 불린다. 명령은 엔진이 디코딩을 끝낸 값이고, 안에 든 핸들은 `resolver`로 푼다.
-    /// 거짓인 백엔드(Metal)에서는 엔진이 record/replay로 대신한다 — 불릴 일이 없다.
+    /// Native render bundle creation — called only on a backend whose
+    /// `capabilities.supportsNativeRenderBundles` is true. The commands are values the engine already
+    /// decoded, and handles inside them are resolved through `resolver`. Where it is false (Metal)
+    /// the engine does record/replay instead and this is never called.
     func makeRenderBundle(_ descriptor: WGPURenderBundleDescriptor, commands: [WGPUCommand],
                           resolver: WGPUBundleResolver<Self>) throws -> RenderBundle
 
-    // MARK: - 표면
+    // MARK: - Surfaces
 
-    /// `CAMetalLayer`는 두 백엔드의 공통분모다 — Dawn도 Apple 플랫폼에서 같은 레이어를 받는다
-    /// (`WebGPURuntime.attachCanvas` 문서).
+    /// `CAMetalLayer` is the common denominator of both backends — on Apple platforms Dawn takes the
+    /// same layer (see `WebGPURuntime.attachCanvas`).
     func makeLayerSurface(identifier: String, layer: CAMetalLayer) -> WGPUSurfaceCreation<Self>
     func makeOffscreenSurface(identifier: String, size: CGSize) throws -> WGPUSurfaceCreation<Self>
     func configureSurface(_ surface: Surface, configuration: WGPUCanvasConfiguration) throws
-    /// 메인 스레드에서 온다 (레이아웃 변경).
+    /// Arrives from the main thread (a layout change).
     func resizeSurface(_ surface: Surface, size: CGSize)
-    /// 현재 픽셀 크기·포맷 실측값 — `canvasInfo`와 배치 결과의 `canvases` 보고가 쓴다.
+    /// Measured current pixel size and format — used by `canvasInfo` and the batch result's
+    /// `canvases` report.
     func surfaceReport(_ surface: Surface) -> WGPUSurfaceReport
 
-    /// 이번 프레임에 그릴 표면 텍스처를 얻는다. nil이면 엔진이 "크기가 0이거나 드로어블
-    /// 고갈" 오류로 바꾼다. present 대상 기억은 백엔드 몫이다 (`submit(present:)`가 쓴다).
+    /// Obtains the surface texture to draw this frame. Nil becomes the engine's "size is zero or
+    /// drawables exhausted" error. Remembering the present target is the backend's job (used by
+    /// `submit(present:)`).
     func acquireFrameTexture(_ surface: Surface) throws -> WGPUAcquiredSurfaceTexture<Self>?
 
-    /// 오프스크린 표면의 픽셀 읽기 — 아닌 표면이면 백엔드가 자기 문구로 던진다.
+    /// Reads an offscreen surface's pixels — on any other surface the backend throws in its own words.
     func readPixels(_ surface: Surface, identifier: String) throws -> WGPUPixelReadback
 
-    // MARK: - 패스
+    // MARK: - Passes
 
     func beginRenderPass(_ pass: WGPUResolvedRenderPass<Self>) throws
     func beginComputePass(_ pass: WGPUResolvedComputePass<Self>) throws
-    /// 열려 있는 패스/내부 인코더를 닫는다. 여러 번 불려도 안전해야 한다.
+    /// Closes the open pass and any internal encoder. Must be safe to call repeatedly.
     func endPass()
 
-    /// 패스가 열려 있을 때만 불린다 (엔진이 보장). 파이프라인 교체에 따르는 백엔드 상태
-    /// (컬링·와인딩·깊이 상태 등)도 여기서 함께 올린다.
+    /// Called only while a pass is open (the engine guarantees it). Backend state that follows a
+    /// pipeline change (culling, winding, depth state, …) is applied here too.
     func setRenderPipeline(_ pipeline: RenderPipeline)
     func setComputePipeline(_ pipeline: ComputePipeline)
 
-    /// 드로우 직전, 엔진의 그림자 상태에서 **더러워진 그룹만** 내려온다 — 번들 경계의
-    /// 바인딩 무효화가 엔진 그림자 상태로 표현되기 때문이다 (`WGPUBackendEngine` 문서).
+    /// Right before a draw, **only the dirty groups** come down from the engine's shadow state —
+    /// because binding invalidation at bundle boundaries is expressed in that shadow state (see
+    /// `WGPUBackendEngine`).
     func applyBindGroup(_ group: BindGroup, at index: Int, dynamicOffsets: [Int]) throws
-    /// 드로우 직전, 더러워진 슬롯만 내려온다. `validatesNatively` 백엔드는 slot·offset을
-    /// 스스로 안전 변환할 것 (엔진 범위 검사가 빠진다).
+    /// Right before a draw, only the dirty slots come down. A `validatesNatively` backend must
+    /// convert slot and offset safely itself (the engine's range check is skipped).
     func applyVertexBuffer(_ buffer: Buffer, offset: Int, slot: Int) throws
 
     func setViewport(_ command: WGPUSetViewportCommand) throws
@@ -224,23 +237,24 @@ public protocol WGPUBackend: AnyObject {
     func setBlendConstant(_ color: WGPUColor) throws
     func setStencilReference(_ reference: UInt32) throws
 
-    /// `index`는 엔진이 범위·중첩·재사용을 확인한 값이다.
+    /// `index` is a value the engine already checked for range, nesting and reuse.
     func beginOcclusionQuery(index: Int) throws
     func endOcclusionQuery(index: Int) throws
 
-    /// 네이티브 번들 실행 — `supportsNativeRenderBundles`가 참인 백엔드만 불린다.
-    /// 호환성 검증은 엔진이 먼저 끝냈다.
+    /// Native bundle execution — called only on a backend where `supportsNativeRenderBundles` is
+    /// true. The engine finished compatibility validation first.
     func executeBundles(_ bundles: [RenderBundle]) throws
 
-    /// `scope`는 명세의 두 층 그대로다 — 패스 안(.pass)이냐 프레임 구간(.frame)이냐.
-    /// 짝 맞추기(깊이 계산)는 엔진이 한다.
+    /// `scope` mirrors the spec's two layers — inside a pass (.pass) or the frame region (.frame).
+    /// Pairing them up (the depth count) is the engine's job.
     func pushDebugGroup(_ label: String, scope: WGPUDebugScope) throws
     func popDebugGroup(scope: WGPUDebugScope)
-    /// 제출 직전, 프레임 구간에 열린 채 남은 그룹을 이만큼 닫는다 (엔진이 오류로 알린 뒤).
+    /// Right before submit, close this many groups left open in the frame region (after the engine
+    /// has reported the error).
     func popFrameDebugGroups(count: Int)
     func insertDebugMarker(_ label: String, scope: WGPUDebugScope) throws
 
-    // MARK: - 드로우 / 디스패치
+    // MARK: - Draw / dispatch
 
     func draw(_ command: WGPUDrawCommand) throws
     func drawIndexed(_ command: WGPUDrawIndexedCommand, index: WGPUResolvedIndexBinding<Self>) throws
@@ -249,11 +263,11 @@ public protocol WGPUBackend: AnyObject {
     func dispatchWorkgroups(_ command: WGPUDispatchWorkgroupsCommand) throws
     func dispatchWorkgroupsIndirect(buffer: Buffer, offset: Int) throws
 
-    // MARK: - 복사
+    // MARK: - Copies
 
     func copyBufferToBuffer(source: Buffer, sourceOffset: Int,
                             destination: Buffer, destinationOffset: Int, size: Int) throws
-    /// `range`는 엔진이 정렬·범위를 확인했고 비어 있지 않다. 0으로 채운다.
+    /// `range` has been checked by the engine for alignment and bounds, and is non-empty. Fill with zeros.
     func clearBuffer(_ buffer: Buffer, range: Range<Int>) throws
     func copyTextureToBuffer(texture: Texture, slice: Int, mipLevel: Int, origin: WGPUOrigin3D,
                              size: WGPUExtent3D, buffer: Buffer, offset: Int,
@@ -265,37 +279,39 @@ public protocol WGPUBackend: AnyObject {
                               sourceOrigin: WGPUOrigin3D,
                               destination: Texture, destinationSlice: Int, destinationMipLevel: Int,
                               destinationOrigin: WGPUOrigin3D, size: WGPUExtent3D) throws
-    /// 종류(occlusion/timestamp)에 따른 blit 선택은 백엔드 몫이다. 범위·정렬·usage는
-    /// 엔진이 확인했고 `count > 0`이다.
+    /// Choosing the blit by kind (occlusion/timestamp) is the backend's job. Range, alignment and
+    /// usage were checked by the engine, and `count > 0`.
     func resolveQuerySet(_ querySet: QuerySet, first: Int, count: Int,
                          destination: Buffer, destinationOffset: Int) throws
 }
 
-// MARK: - 능력
+// MARK: - Capabilities
 
 public struct WGPUBackendCapabilities {
-    /// 렌더 번들을 백엔드가 네이티브로 기록·실행하는가.
-    /// 거짓이면 엔진이 record/replay로 대신한다 (Metal — 대응 객체가 없다).
+    /// Whether the backend records and executes render bundles natively.
+    /// False makes the engine do record/replay instead (Metal — it has no corresponding object).
     public let supportsNativeRenderBundles: Bool
-    /// 정점 버퍼 슬롯 수 상한 — 엔진의 `setVertexBuffer` 슬롯 검사가 쓴다
-    /// (Metal은 인자 테이블 배정 규칙에서, Dawn은 명세 기본값 8에서 나온다).
+    /// Cap on vertex buffer slots — used by the engine's `setVertexBuffer` slot check (Metal derives
+    /// it from its argument table assignment rules, Dawn from the spec default of 8).
     public let maxVertexBufferSlots: Int
-    /// 비동기 완료가 `pumpEvents()`에서만 나오는 백엔드인가 (Dawn의
-    /// `wgpuInstanceProcessEvents`). 참이면 엔진이 **미결 리드백이 있는 동안 자가 펌프**를
-    /// 돌린다 — 프레임 티커가 없는 구성(정적 씬·헤드리스)에서도 완료가 도착해야 한다는
-    /// `WebGPURuntime.processEvents` 계약의 이행 지점이다. Metal처럼 완료가 스스로
-    /// 도착하는 백엔드는 거짓으로 두면 비용이 없다.
+    /// Whether asynchronous completions arrive only from `pumpEvents()` (Dawn's
+    /// `wgpuInstanceProcessEvents`). True makes the engine run a **self-pump while readbacks are
+    /// outstanding** — the place where `WebGPURuntime.processEvents`'s contract, that completions
+    /// must arrive even with no frame ticker (static scenes, headless), is discharged. Leaving it
+    /// false on a backend like Metal, whose completions arrive on their own, costs nothing.
     public let needsEventPump: Bool
-    /// 백엔드가 WebGPU 명세 검증기를 **통째로** 갖고 있는가 (Dawn — 브라우저와 같은 검증기).
+    /// Whether the backend carries a **complete** WebGPU spec validator (Dawn — the same validator
+    /// browsers use).
     ///
-    /// 참이면 엔진은 명세 수준 검사(범위·정렬·usage·occlusion 중첩·번들 호환성·압축 제약)를
-    /// 건너뛰고 **브리징과 최소한의 예외처리**만 남긴다 — 핸들 조회, 와이어 매핑 상태,
-    /// 패스 상태 가드, CPU 경로 보호. 잘못된 값은 백엔드가 자기 검증기(디바이스 오류
-    /// 스코프)로 거부하고, 트랩 방지는 백엔드의 안전 변환(`dawnU32` 계열)이 맡는다 —
-    /// react-native-webgpu가 Dawn을 쓰는 방식과 같은 분할이다 (`docs/extra/RN-WEBGPU-LAYERING.md`).
+    /// True makes the engine skip spec-level checks (range, alignment, usage, occlusion nesting,
+    /// bundle compatibility, compression limits) and keep only **bridging and minimal exception
+    /// handling** — handle lookup, wire mapping state, pass state guards, CPU path protection. Bad
+    /// values are rejected by the backend's own validator (its device error scope), and trap
+    /// prevention falls to the backend's safe conversions (the `dawnU32` family) — the same split
+    /// react-native-webgpu uses over Dawn (`docs/extra/RN-WEBGPU-LAYERING.md`).
     ///
-    /// 거짓이면(Metal — 관대한 API 위의 직접 구현) 엔진의 명세 검사가 전부 돈다 —
-    /// 그 검사들은 개념적으로 **직접 구현 쪽의 일부**다.
+    /// False (Metal — a direct implementation over a permissive API) runs all of the engine's spec
+    /// checks — conceptually those checks are **part of the direct implementation**.
     public let validatesNatively: Bool
 
     public init(supportsNativeRenderBundles: Bool, maxVertexBufferSlots: Int,
@@ -307,9 +323,9 @@ public struct WGPUBackendCapabilities {
     }
 }
 
-// MARK: - 동사 인자 값 타입
+// MARK: - Verb argument value types
 
-/// 디버그 그룹·마커의 스코프 — 패스 안 구간과 프레임 구간 (`docs/COMMAND-STREAM.md`).
+/// Scope of a debug group or marker — inside a pass, or the frame region (`docs/COMMAND-STREAM.md`).
 public enum WGPUDebugScope {
     case pass
     case frame
@@ -317,7 +333,7 @@ public enum WGPUDebugScope {
 
 public struct WGPUShaderModuleCreation<B: WGPUBackend> {
     public let module: B.ShaderModule
-    /// 모듈을 쓸 수 없게 하는 진단 (파싱 실패 등). 있어도 모듈은 등록된다.
+    /// A diagnostic that makes the module unusable (a parse failure, say). The module is registered anyway.
     public let failure: WGPUError?
 
     public init(module: B.ShaderModule, failure: WGPUError? = nil) {
@@ -326,7 +342,7 @@ public struct WGPUShaderModuleCreation<B: WGPUBackend> {
     }
 }
 
-/// `getCompilationInfo()`의 메시지 하나 — 명세 `GPUCompilationMessage` 모양.
+/// One `getCompilationInfo()` message — the shape of the spec's `GPUCompilationMessage`.
 public struct WGPUCompilationMessage {
     public let message: String
     /// `"error"` / `"warning"` / `"info"`.
@@ -347,14 +363,14 @@ public struct WGPUCompilationMessage {
     }
 }
 
-/// 엔진의 드로우/디스패치 전 검사가 쓰는 파이프라인 메타데이터.
-/// **nil은 "백엔드가 스스로 검증한다"는 뜻**이다 — 그 항목의 엔진 검사가 빠진다.
+/// Pipeline metadata used by the engine's pre-draw/dispatch checks.
+/// **Nil means "the backend validates this itself"** — that engine check is skipped.
 public struct WGPURenderPipelineInfo {
-    /// 드로우 전에 바인드되어 있어야 하는 그룹 인덱스 (빈 그룹은 제외).
+    /// Group indices that must be bound before a draw (empty groups excluded).
     public let requiredGroups: Set<Int>?
-    /// 드로우 전에 바인드되어 있어야 하는 정점 버퍼 슬롯 (`vertex.buffers` 선언).
+    /// Vertex buffer slots that must be bound before a draw (declared by `vertex.buffers`).
     public let requiredVertexSlots: Set<Int>?
-    /// `depthReadOnly`/`stencilReadOnly` 패스에서 거부할 때 쓴다.
+    /// Used when rejecting in a `depthReadOnly`/`stencilReadOnly` pass.
     public let writesDepth: Bool?
     public let writesStencil: Bool?
 
@@ -397,8 +413,9 @@ public struct WGPUComputePipelineCreation<B: WGPUBackend> {
 
 public struct WGPUBindGroupLayoutCreation<B: WGPUBackend> {
     public let layout: B.BindGroupLayout
-    /// 레이아웃 항목을 알면 준다 — 엔진의 바인드 그룹 항목 매칭·visibility 판정이 쓴다.
-    /// 네이티브 파생 레이아웃이라 항목을 모르면 nil (그 검사는 백엔드 검증에 맡겨진다).
+    /// Supplied when the layout entries are known — used by the engine's bind group entry matching
+    /// and visibility decision. Nil for a native derived layout with unknown entries (that check is
+    /// then left to backend validation).
     public let entries: [WGPUBindGroupLayoutEntry]?
 
     public init(layout: B.BindGroupLayout, entries: [WGPUBindGroupLayoutEntry]?) {
@@ -419,15 +436,16 @@ public enum WGPUResolvedPipeline<B: WGPUBackend> {
 
 public struct WGPUResolvedBindGroupEntry<B: WGPUBackend> {
     public enum Resource {
-        /// `boundSize`는 이 바인딩이 보는 바이트 수 — 생략 기본값(`버퍼 끝까지`)은 엔진이 채웠다.
+        /// `boundSize` is how many bytes this binding sees — the omitted default (to the end of the
+        /// buffer) was filled in by the engine.
         case buffer(B.Buffer, offset: Int, boundSize: Int)
         case sampler(B.Sampler)
         case textureView(B.TextureView)
     }
 
     public let binding: Int
-    /// 매칭된 레이아웃 항목 — visibility·dynamic offset 여부가 여기 있다.
-    /// 항목을 모르는 레이아웃(네이티브 파생)이면 nil.
+    /// The matched layout entry — visibility and whether it has a dynamic offset live here.
+    /// Nil for a layout with unknown entries (natively derived).
     public let layoutEntry: WGPUBindGroupLayoutEntry?
     public let resource: Resource
 
@@ -442,7 +460,7 @@ public struct WGPUResolvedIndexBinding<B: WGPUBackend> {
     public let buffer: B.Buffer
     public let offset: Int
     public let format: WGPUIndexFormat
-    /// 인덱스 하나의 바이트 수 — `drawIndexed`의 `firstIndex` 바이트 환산에 쓴다.
+    /// Bytes per index — used to convert `drawIndexed`'s `firstIndex` into bytes.
     public let stride: Int
 
     public init(buffer: B.Buffer, offset: Int, format: WGPUIndexFormat, stride: Int) {
@@ -465,7 +483,7 @@ public struct WGPUResolvedTimestampWrites<B: WGPUBackend> {
     }
 }
 
-/// 핸들이 전부 백엔드 객체로 풀린 렌더 패스 — `beginRenderPass` 동사의 인자.
+/// A render pass with every handle resolved into backend objects — the argument of the `beginRenderPass` verb.
 public struct WGPUResolvedRenderPass<B: WGPUBackend> {
     public struct ColorAttachment {
         public let view: B.TextureView
@@ -486,9 +504,9 @@ public struct WGPUResolvedRenderPass<B: WGPUBackend> {
 
     public struct DepthStencilAttachment {
         public let view: B.TextureView
-        /// 뷰의 WebGPU 포맷 — 백엔드가 깊이/스텐실 aspect 유무를 가를 때 쓴다.
+        /// The view's WebGPU format — used by the backend to tell depth/stencil aspects apart.
         public let format: WGPUTextureFormat
-        /// readOnly면 nil이다 — 내용을 그대로 읽고 그대로 남긴다 (load/store에 해당).
+        /// Nil when readOnly — read the contents as they are and leave them (matching load/store).
         public let depthLoadOp: WGPULoadOp?
         public let depthStoreOp: WGPUStoreOp?
         public let depthClearValue: Double
@@ -542,11 +560,12 @@ public struct WGPUResolvedComputePass<B: WGPUBackend> {
     }
 }
 
-// MARK: - 표면 값 타입
+// MARK: - Surface value types
 
 public struct WGPUSurfaceCreation<B: WGPUBackend> {
     public let surface: B.Surface
-    /// 드로어블 풀이 있어 밀릴 수 있는 표면인가 — 프레임 회계(`WGPUFrameCoordinator`) 대상.
+    /// Whether the surface has a drawable pool and can fall behind — the subject of frame accounting
+    /// (`WGPUFrameCoordinator`).
     public let pacesFrames: Bool
 
     public init(surface: B.Surface, pacesFrames: Bool) {
@@ -569,7 +588,8 @@ public struct WGPUSurfaceReport {
 
 public struct WGPUAcquiredSurfaceTexture<B: WGPUBackend> {
     public let texture: B.Texture
-    /// 실제 텍스처의 포맷 — 캔버스 설정 반영이 한 프레임 늦을 수 있어 설정값이 아니라 실측이다.
+    /// The actual texture's format — canvas configuration can land a frame late, so this is measured,
+    /// not the configured value.
     public let format: WGPUTextureFormat
     public let width: Int
     public let height: Int
@@ -585,8 +605,8 @@ public struct WGPUAcquiredSurfaceTexture<B: WGPUBackend> {
     }
 }
 
-/// 네이티브 번들 기록 중 명령 안의 핸들을 푸는 조회 창구 — 엔진 레지스트리를 백엔드에
-/// 통째로 주지 않기 위한 좁은 통로다.
+/// The lookup window for resolving handles inside commands while recording a native bundle — a
+/// narrow channel so the engine registry is not handed to the backend wholesale.
 public struct WGPUBundleResolver<B: WGPUBackend> {
     public let renderPipeline: (WGPUHandle, String?) throws -> B.RenderPipeline
     public let bindGroup: (WGPUHandle, String?) throws -> B.BindGroup
@@ -601,14 +621,14 @@ public struct WGPUBundleResolver<B: WGPUBackend> {
     }
 }
 
-// MARK: - 압축 계열
+// MARK: - Compression families
 
-/// 포맷이 속한 압축 계열 — 명세의 선택 기능 이름과 1:1로 대응한다.
-/// (기기 지원 여부는 백엔드가 안다 — `WGPUBackend.supportsTextureCompression`.)
+/// The compression family a format belongs to — 1:1 with the spec's optional feature names.
+/// (Whether the device supports it is the backend's knowledge — `WGPUBackend.supportsTextureCompression`.)
 public enum WGPUTextureCompressionFamily {
     case none, bc, etc2, astc
 
-    /// `adapter.features`에 싣는 이름 (명세 철자 그대로).
+    /// The name carried in `adapter.features` (the spec spelling exactly).
     public var featureName: String? {
         switch self {
         case .none: return nil
@@ -620,7 +640,7 @@ public enum WGPUTextureCompressionFamily {
 }
 
 public extension WGPUTextureFormat {
-    /// ETC2와 EAC는 명세에서 **같은 기능 비트**다 (`texture-compression-etc2`).
+    /// ETC2 and EAC are **the same feature bit** in the spec (`texture-compression-etc2`).
     var compressionFamily: WGPUTextureCompressionFamily {
         guard isCompressed else { return .none }
         if rawValue.hasPrefix("bc") { return .bc }

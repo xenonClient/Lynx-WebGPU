@@ -116,7 +116,7 @@ final class ExternalImageTests: XCTestCase {
     /// 깨진 데이터는 **오류로** 온다 — 조용히 빈 이미지를 만들면 화면이 검게 나오고 원인은 사라진다.
     func test_디코딩할_수_없는_데이터는_오류다() {
         XCTAssertThrowsError(try WGPUImageDecoder.decode(Data([0x00, 0x01, 0x02, 0x03]))) { error in
-            XCTAssertTrue("\(error)".contains("디코딩"), "\(error)")
+            XCTAssertTrue("\(error)".contains("decode"), "\(error)")
         }
         XCTAssertThrowsError(try WGPUImageDecoder.decode(Data()))
     }
@@ -315,7 +315,7 @@ final class ExternalImageTests: XCTestCase {
              "copySize": ["width": 8, "height": 8]],
         ])
         XCTAssertEqual(result["ok"] as? Bool, false)
-        XCTAssertTrue(harness.describeErrors(result).contains("이미지를 넘는다"), harness.describeErrors(result))
+        XCTAssertTrue(harness.describeErrors(result).contains("exceeds the image"), harness.describeErrors(result))
     }
 
     /// 압축 텍스처로는 올릴 수 없다 — GPU에 블록 인코더가 없다.
@@ -334,7 +334,7 @@ final class ExternalImageTests: XCTestCase {
              "source": ["source": 40], "destination": ["texture": 2]],
         ])
         XCTAssertEqual(result["ok"] as? Bool, false)
-        XCTAssertTrue(harness.describeErrors(result).contains("압축"), harness.describeErrors(result))
+        XCTAssertTrue(harness.describeErrors(result).contains("compressed"), harness.describeErrors(result))
     }
 
     /// 4바이트가 아닌 포맷은 조용히 어긋나느니 거부한다.
@@ -349,7 +349,7 @@ final class ExternalImageTests: XCTestCase {
              "source": ["source": 40], "destination": ["texture": 2]],
         ])
         XCTAssertEqual(result["ok"] as? Bool, false)
-        XCTAssertTrue(harness.describeErrors(result).contains("4바이트"), harness.describeErrors(result))
+        XCTAssertTrue(harness.describeErrors(result).contains("4-byte"), harness.describeErrors(result))
     }
 
     func test_없는_이미지_핸들은_분명한_오류다() throws {

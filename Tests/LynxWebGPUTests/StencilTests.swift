@@ -415,7 +415,7 @@ final class StencilTests: XCTestCase {
             ])
             let message = (result["errors"] as? [[String: Any]])?.first?["message"] as? String ?? ""
             XCTAssertTrue(
-                message.contains("스텐실 성분"),
+                message.contains("stencil aspect"),
                 "\(format) + 비기본 stencilFront는 거부되어야 한다 — 받은 것: \(message)"
             )
         }
@@ -519,7 +519,7 @@ final class StencilTests: XCTestCase {
         ])
 
         XCTAssertTrue(
-            ((errors(result).first?["message"] as? String) ?? "").contains("함께 줄 수 없다"),
+            ((errors(result).first?["message"] as? String) ?? "").contains("cannot be combined"),
             harness.describeErrors(result)
         )
     }

@@ -265,7 +265,7 @@ final class QuerySetTests: XCTestCase {
         ])
 
         XCTAssertTrue(
-            ((errors(result).first?["message"] as? String) ?? "").contains("중첩"),
+            ((errors(result).first?["message"] as? String) ?? "").contains("cannot nest"),
             harness.describeErrors(result)
         )
     }
@@ -280,7 +280,7 @@ final class QuerySetTests: XCTestCase {
         ])
 
         XCTAssertEqual(errors(result).first?["kind"] as? String, "validation")
-        XCTAssertTrue(((errors(result).first?["message"] as? String) ?? "").contains("범위"))
+        XCTAssertTrue(((errors(result).first?["message"] as? String) ?? "").contains("query range out of bounds"))
     }
 
     func test_QUERY_RESOLVE_usage가_없는_버퍼에는_내릴_수_없다() {
@@ -370,7 +370,7 @@ final class QuerySetTests: XCTestCase {
         ])
 
         XCTAssertTrue(
-            ((errors(result).first?["message"] as? String) ?? "").contains("최소 하나"),
+            ((errors(result).first?["message"] as? String) ?? "").contains("at least one"),
             harness.describeErrors(result)
         )
     }
@@ -396,7 +396,7 @@ final class QuerySetTests: XCTestCase {
         ])
 
         XCTAssertTrue(
-            ((errors(result).first?["message"] as? String) ?? "").contains("서로 달라야"),
+            ((errors(result).first?["message"] as? String) ?? "").contains("must differ"),
             harness.describeErrors(result)
         )
     }
@@ -415,7 +415,7 @@ final class QuerySetTests: XCTestCase {
         ])
 
         XCTAssertTrue(
-            ((errors(result).first?["message"] as? String) ?? "").contains("열린 채로"),
+            ((errors(result).first?["message"] as? String) ?? "").contains("still open"),
             harness.describeErrors(result)
         )
     }
@@ -438,7 +438,7 @@ final class QuerySetTests: XCTestCase {
         ])
 
         XCTAssertTrue(
-            ((errors(result).first?["message"] as? String) ?? "").contains("이미 썼다"),
+            ((errors(result).first?["message"] as? String) ?? "").contains("already used"),
             harness.describeErrors(result)
         )
     }

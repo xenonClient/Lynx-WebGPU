@@ -154,7 +154,7 @@ final class CompressedTextureTests: XCTestCase {
              "format": "astc-4x4-unorm", "usage": TestUsage.renderAttachment],
         ])
         XCTAssertEqual(result["ok"] as? Bool, false)
-        XCTAssertTrue(harness.describeErrors(result).contains("렌더 타깃"), harness.describeErrors(result))
+        XCTAssertTrue(harness.describeErrors(result).contains("render target"), harness.describeErrors(result))
     }
 
     func test_압축_텍스처의_어긋난_origin을_거부한다() throws {
@@ -171,7 +171,7 @@ final class CompressedTextureTests: XCTestCase {
              "origin": ["x": 2, "y": 0], "size": ["width": 4, "height": 4], "bytesPerRow": 16],
         ])
         XCTAssertEqual(result["ok"] as? Bool, false)
-        XCTAssertTrue(harness.describeErrors(result).contains("블록 경계"), harness.describeErrors(result))
+        XCTAssertTrue(harness.describeErrors(result).contains("block boundary"), harness.describeErrors(result))
     }
 
     /// 가장자리 블록은 잘려 있으므로, **밉 레벨 끝에 닿는** 크기는 블록 배수가 아니어도 된다.

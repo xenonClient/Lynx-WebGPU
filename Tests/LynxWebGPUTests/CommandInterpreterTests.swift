@@ -343,11 +343,11 @@ final class CommandInterpreterTests: XCTestCase {
         ])
 
         for (command, expected) in [
-            (["op": "copyBufferToBuffer", "source": 1, "destination": 2, "size": 16], "대상 범위"),
-            (["op": "copyBufferToBuffer", "source": 1, "sourceOffset": 12, "destination": 2, "size": 8], "원본 범위"),
+            (["op": "copyBufferToBuffer", "source": 1, "destination": 2, "size": 16], "destination range exceeds"),
+            (["op": "copyBufferToBuffer", "source": 1, "sourceOffset": 12, "destination": 2, "size": 8], "source range exceeds"),
             (["op": "copyBufferToBuffer", "source": 1, "destination": 2,
-              "destinationOffset": 4, "size": 8], "대상 범위"),
-            (["op": "copyBufferToBuffer", "source": 1, "destination": 2, "size": -4], "음수"),
+              "destinationOffset": 4, "size": 8], "destination range exceeds"),
+            (["op": "copyBufferToBuffer", "source": 1, "destination": 2, "size": -4], "cannot be negative"),
         ] as [([String: Any], String)] {
             let result = harness.execute([command])
             XCTAssertTrue(
@@ -385,7 +385,7 @@ final class CommandInterpreterTests: XCTestCase {
         ] as [[String: Any]] {
             let result = harness.execute([command])
             XCTAssertTrue(
-                ((errors(result).first?["message"] as? String) ?? "").contains("매핑 중인"),
+                ((errors(result).first?["message"] as? String) ?? "").contains("is mapped"),
                 "\(command["op"] ?? "?")이(가) 통과했다: \(harness.describeErrors(result))"
             )
         }
@@ -432,7 +432,7 @@ final class CommandInterpreterTests: XCTestCase {
             ["op": "writeBuffer", "buffer": 1, "bufferOffset": 4,
              "data": [Float](repeating: 0, count: 4).base64],
         ])
-        XCTAssertTrue(((errors(result).first?["message"] as? String) ?? "").contains("범위 초과"))
+        XCTAssertTrue(((errors(result).first?["message"] as? String) ?? "").contains("out of range"))
     }
 
     func test_실행_응답에_live_객체_수가_실린다() {
@@ -575,7 +575,7 @@ final class CommandInterpreterTests: XCTestCase {
 
         XCTAssertEqual(errors(result).first?["kind"] as? String, "validation")
         XCTAssertEqual(errors(result).first?["path"] as? String, "commands[\(setup.count)].indirectOffset")
-        XCTAssertTrue(((errors(result).first?["message"] as? String) ?? "").contains("범위"))
+        XCTAssertTrue(((errors(result).first?["message"] as? String) ?? "").contains("exceed the buffer"))
     }
 
     func test_INDIRECT_usage가_없는_버퍼는_간접_디스패치에_못_쓴다() {
@@ -617,7 +617,7 @@ final class CommandInterpreterTests: XCTestCase {
         // ① 원인이 그 자리에서 보고된다 (줄 번호까지).
         let first = errors(result).first
         XCTAssertEqual(first?["kind"] as? String, "validation")
-        XCTAssertTrue(((first?["message"] as? String) ?? "").contains("파싱 실패"))
+        XCTAssertTrue(((first?["message"] as? String) ?? "").contains("parse"))
         XCTAssertEqual(first?["line"] as? Int, 3, "줄 번호가 숫자로도 실려야 편집기가 점프할 수 있다")
 
         // ② 그래도 모듈은 있고, 진단을 돌려준다.
@@ -640,7 +640,7 @@ final class CommandInterpreterTests: XCTestCase {
 
         let messages = errors(result).compactMap { $0["message"] as? String }
         XCTAssertTrue(
-            messages.contains { $0.contains("컴파일에 실패했다") },
+            messages.contains { $0.contains("compil") },
             "파이프라인 오류가 원인을 안 담고 있다: \(messages)"
         )
     }
@@ -701,7 +701,7 @@ final class CommandInterpreterTests: XCTestCase {
 
         XCTAssertEqual(errors(result).first?["kind"] as? String, "validation")
         XCTAssertTrue(
-            ((errors(result).first?["message"] as? String) ?? "").contains("짝이 맞는"),
+            ((errors(result).first?["message"] as? String) ?? "").contains("no matching pushDebugGroup"),
             "\(errors(result))"
         )
     }
@@ -715,7 +715,7 @@ final class CommandInterpreterTests: XCTestCase {
 
         XCTAssertEqual(errors(result).first?["kind"] as? String, "validation", "\(result)")
         XCTAssertTrue(
-            ((errors(result).first?["message"] as? String) ?? "").contains("짝이 맞는"),
+            ((errors(result).first?["message"] as? String) ?? "").contains("no matching pushDebugGroup"),
             "\(errors(result))"
         )
     }
@@ -736,7 +736,7 @@ final class CommandInterpreterTests: XCTestCase {
 
         XCTAssertEqual(errors(result).first?["kind"] as? String, "validation")
         XCTAssertTrue(
-            ((errors(result).first?["message"] as? String) ?? "").contains("열린 채"),
+            ((errors(result).first?["message"] as? String) ?? "").contains("still open"),
             "\(errors(result))"
         )
         // 그리고 프로세스가 살아 있다 — 이 단언에 도달한 것 자체가 증거다.
@@ -817,14 +817,14 @@ final class CommandInterpreterTests: XCTestCase {
             ["op": "createBuffer", "id": 2, "size": 16, "usage": TestUsage.copyDst],
             ["op": "clearBuffer", "buffer": 2, "offset": 2, "size": 4],
         ])
-        XCTAssertTrue(((errors(misaligned).first?["message"] as? String) ?? "").contains("4의 배수"))
+        XCTAssertTrue(((errors(misaligned).first?["message"] as? String) ?? "").contains("multiples of 4"))
 
         // ③ 범위를 넘으면 거부.
         let overflow = harness.execute([
             ["op": "createBuffer", "id": 3, "size": 16, "usage": TestUsage.copyDst],
             ["op": "clearBuffer", "buffer": 3, "offset": 8, "size": 16],
         ])
-        XCTAssertTrue(((errors(overflow).first?["message"] as? String) ?? "").contains("범위"))
+        XCTAssertTrue(((errors(overflow).first?["message"] as? String) ?? "").contains("exceeds the buffer"))
     }
 
     // MARK: - 진입점 해석 (명세의 "get the entry point")
@@ -920,7 +920,7 @@ final class CommandInterpreterTests: XCTestCase {
 
         XCTAssertEqual(errors(result).first?["kind"] as? String, "unsupported")
         XCTAssertTrue(
-            ((errors(result).first?["message"] as? String) ?? "").contains("시뮬레이터"),
+            ((errors(result).first?["message"] as? String) ?? "").contains("simulator"),
             "어디서 왜 안 되는지 알려 줘야 한다: \(errors(result))"
         )
     }
@@ -946,7 +946,7 @@ final class CommandInterpreterTests: XCTestCase {
         XCTAssertEqual(errors(renderResult).first?["kind"] as? String, "validation")
         XCTAssertTrue(
             ((errors(renderResult).first?["message"] as? String) ?? "")
-                .contains("drawIndirect 전에 setPipeline"),
+                .contains("setPipeline is required before drawIndirect"),
             "op 이름(drawIndirect)이 든 메시지여야 한다: \(errors(renderResult))"
         )
 
@@ -956,7 +956,7 @@ final class CommandInterpreterTests: XCTestCase {
         ])
         XCTAssertTrue(
             ((errors(computeResult).first?["message"] as? String) ?? "")
-                .contains("dispatchWorkgroupsIndirect 전에 setPipeline"),
+                .contains("setPipeline is required before dispatchWorkgroupsIndirect"),
             "op 이름(dispatchWorkgroupsIndirect)이 든 메시지여야 한다: \(errors(computeResult))"
         )
     }

@@ -2,39 +2,43 @@ import Foundation
 import CoreGraphics
 import QuartzCore
 
-/// 커맨드 스트림 오케스트레이션 엔진 — `WebGPURuntime`의 **백엔드 무관 구현**.
+/// The command-stream orchestration engine — the **backend-independent implementation** of `WebGPURuntime`.
 ///
-/// JS가 보낸 한 프레임 분량의 명령 배열을 해석해 `WGPUBackend` 동사 호출로 옮긴다.
-/// 백엔드(Metal 직접·Dawn 등)가 무엇이든 **와이어 계약과 명세 검증은 여기서 한 번만** 이행된다:
+/// It interprets one frame's worth of commands from JS and turns them into `WGPUBackend` verb calls.
+/// Whatever the backend (Metal directly, Dawn, …), **the wire contract and spec validation are
+/// discharged here exactly once**:
 ///
-/// - 배치 루프·디코딩·디스패치 (exhaustive switch — op 추가 누락은 컴파일러가 잡는다)
-/// - 오류 수집(프레임을 죽이지 않는다)·오류 스코프·지연 GPU 오류·응답 조립(`WGPUBatchResult`)
-/// - 프레임 수명: 드로어블 핸들의 present 시점 만료, in-flight 회계(`WGPUFrameCoordinator`)
-/// - 매핑 게이트(mapAsync 중 버퍼의 큐 사용 금지), 범위·정렬·usage·완전성 검증
-/// - 드로우 상태 그림자(바인드 그룹·정점 버퍼) — 번들 경계의 바인딩 무효화가 여기 산다
-/// - 렌더 번들 record/replay (네이티브 번들이 없는 백엔드용)
-/// - 직렬화: `execute`(JS 스레드)·`processEvents`(메인 틱)·`readBuffer` 등록이 전부
-///   하나의 실행 락 아래 돈다 — 펌프 동시성 계약(`docs/COMMAND-STREAM.md` §5-1)의 이행 지점.
+/// - the batch loop, decoding and dispatch (an exhaustive switch — a missing op is a compile error);
+/// - error collection (never killing the frame), error scopes, deferred GPU errors, response
+///   assembly (`WGPUBatchResult`);
+/// - frame lifetime: expiring drawable handles at present, in-flight accounting (`WGPUFrameCoordinator`);
+/// - the mapping gate (no queue use of a buffer during mapAsync), range/alignment/usage/completeness checks;
+/// - draw-state shadowing (bind groups, vertex buffers) — binding invalidation at bundle boundaries lives here;
+/// - render bundle record/replay (for backends without native bundles);
+/// - serialization: `execute` (JS thread), `processEvents` (main tick) and `readBuffer` registration
+///   all run under one execution lock — the discharge point of the pump-concurrency contract
+///   (`docs/COMMAND-STREAM.md` §5-1).
 ///
-/// 백엔드에는 이미 해석·검증이 끝난 값으로 자기 GPU API를 부르는 일만 남는다
-/// (`WGPUBackend` 문서). Dawn 시제품에서 오케스트레이션 중복이 실제 결함(펌프 경쟁,
-/// present 순서, 스코프 드레인)으로 이어진 뒤, 그 중복을 없애려고 이 층을 올렸다.
+/// The backend is left only with calling its own GPU API on values already resolved and validated
+/// (see `WGPUBackend`). This layer was raised after duplicated orchestration in the Dawn prototype
+/// turned into real defects — pump races, present order, scope drains.
 public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
     public let backend: B
-    /// in-flight 프레임 회계 — present 시점·포화 판단. 백엔드와 무관한 정책이라 엔진이 몬다.
+    /// In-flight frame accounting — present timing and saturation. Backend-independent policy, so the engine drives it.
     public let frameCoordinator: WGPUFrameCoordinator
 
     private let registry = WGPUObjectRegistry()
-    /// 실행 직렬화 락. **재귀 락**이다 — `readBuffer`의 완료가 등록 도중 동기로 도착하는
-    /// 백엔드(이미 끝난 작업)에서 완료 래퍼가 같은 락을 다시 잡기 때문이다.
+    /// The execution serialization lock. **Recursive** — on a backend where `readBuffer`'s completion
+    /// arrives synchronously during registration (work already finished), the completion wrapper
+    /// retakes the same lock.
     private let executionLock = NSRecursiveLock()
     private let canvasLock = NSLock()
 
-    // MARK: 배치 상태 — 한 배치의 수명 동안만 유효하다
+    // MARK: Batch state — valid only for the lifetime of one batch
 
     private enum PassState { case render, compute }
     private var passState: PassState?
-    /// 현재 인코더 / 프레임 구간에서 연 디버그 그룹 수 — 짝이 안 맞으면 백엔드가 단언으로 죽는다.
+    /// Debug groups opened on the current encoder / in the frame region — a mismatch kills the backend with an assertion.
     private var encoderDebugDepth = 0
     private var bufferDebugDepth = 0
     private var currentRenderPipeline: WGPUEngineRenderPipeline<B>?
@@ -42,42 +46,44 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
     private var boundGroups: [Int: (group: WGPUEngineBindGroup<B>, offsets: [Int])] = [:]
     private var dirtyGroups: Set<Int> = []
     private var indexBinding: (buffer: WGPUEngineBuffer<B>, offset: Int, format: WGPUIndexFormat, stride: Int)?
-    /// 슬롯별 정점 버퍼 바인딩. **백엔드에 직행하지 않고 여기 모아 두었다가** 드로우 직전에
-    /// 내린다. 그래야 `resetPassBindings()`가 번들 경계에서 바인딩을 실제로 무효화할 수 있다 —
-    /// 백엔드 인코더에는 "바인딩 해제"가 없으므로, 무효화는 그림자 상태로만 표현된다.
+    /// Vertex buffer bindings per slot. **They do not go straight to the backend**; they gather here
+    /// and go down right before a draw. That is what lets `resetPassBindings()` genuinely invalidate
+    /// bindings at a bundle boundary — a backend encoder has no "unbind", so invalidation can only
+    /// be expressed in shadow state.
     private var vertexBindings: [Int: (buffer: WGPUEngineBuffer<B>, offset: Int)] = [:]
     private var dirtyVertexSlots: Set<Int> = []
-    /// 지금 렌더 패스의 어태치먼트 모양 — 렌더 번들이 이 패스에서 유효한지 볼 때 쓴다.
+    /// The current render pass's attachment shape — used to decide whether a render bundle is valid here.
     private var passFormats: (color: [WGPUTextureFormat], depthStencil: WGPUTextureFormat?, sampleCount: Int)?
-    /// 지금 렌더 패스가 깊이/스텐실을 **쓰지 않겠다**고 선언했는가 (`depthReadOnly`/`stencilReadOnly`).
+    /// Whether the current render pass declared it **will not write** depth/stencil (`depthReadOnly`/`stencilReadOnly`).
     private var passDepthReadOnly = false
     private var passStencilReadOnly = false
     private var passOcclusionQuerySet: WGPUEngineQuerySet<B>?
-    /// 열려 있는 occlusion 쿼리 인덱스 — 중첩·미종료를 잡는다.
+    /// The open occlusion query index — catches nesting and non-termination.
     private var openOcclusionQuery: Int?
-    /// 지금 패스에서 이미 쓴 occlusion 쿼리 인덱스 — 명세는 같은 패스에서 재사용을 금지한다.
+    /// Occlusion query indices already used in this pass — the spec forbids reuse within a pass.
     private var usedOcclusionQueries: Set<Int> = []
-    /// 이번 프레임에 드로어블을 내준 (핸들, 캔버스 id) — present 시 만료·회계 대상이다.
+    /// The (handle, canvas id) pairs handed a drawable this frame — subject to expiry and accounting at present.
     private var acquiredFrames: [(handle: WGPUHandle, canvas: String)] = []
-    /// **이번 배치에서** 드로어블을 내준 캔버스. 한 배치 안의 반복 획득(같은 프레임)과
-    /// 배치를 건너뛴 반복 획득(새 프레임)을 가르는 데 쓴다 — `getCurrentTexture` 참고.
+    /// Canvases handed a drawable **in this batch**. Used to tell a repeat acquisition within one
+    /// batch (same frame) from one across batches (a new frame) — see `getCurrentTexture`.
     private var acquiredThisBatch: Set<String> = []
-    /// 프레임이 끝나면 무효해지는 핸들 (드로어블 텍스처와 그 뷰).
+    /// Handles that become invalid once the frame ends (the drawable texture and its views).
     private var frameScopedHandles: [WGPUHandle] = []
     private var touchedCanvases: [String: B.Surface] = [:]
     private var errors: [WGPUError] = []
 
-    /// 앞선 배치의 GPU 실행이 실패했다는 보고 — 완료 콜백(임의 스레드)이 채우고
-    /// 다음 배치가 비운다 (`WGPUDeferredErrorQueue` 문서).
+    /// Report that a previous batch's GPU execution failed — filled by the completion callback
+    /// (arbitrary thread) and drained by the next batch (see `WGPUDeferredErrorQueue`).
     private let gpuFailures = WGPUDeferredErrorQueue()
-    /// 열려 있는 오류 스코프 — 규칙은 전부 `WGPUErrorScopeStack` 문서에 있다.
+    /// Open error scopes — all the rules live in `WGPUErrorScopeStack`.
     private var errorScopes = WGPUErrorScopeStack()
-    /// 이번 배치에서 pop된 스코프의 결과 (pop 순서 — JS의 Promise 순서와 1:1로 맞춘다).
+    /// Results of scopes popped this batch (in pop order — matched 1:1 with the JS promise order).
     private var poppedScopes: [WGPUPoppedErrorScope] = []
 
-    /// 엔진이 명세 검사를 수행하는가 — 검증기를 통째로 가진 백엔드(Dawn)에서는 거짓이 되어,
-    /// 위층에는 브리징과 **최소한의 예외처리**(핸들 조회·와이어 매핑 상태·패스 상태 가드·
-    /// CPU 경로 보호)만 남는다 (`WGPUBackendCapabilities.validatesNatively`).
+    /// Whether the engine performs spec checks — false on a backend carrying a complete validator
+    /// (Dawn), leaving this layer with bridging and **minimal exception handling** only (handle
+    /// lookup, wire mapping state, pass state guards, CPU path protection)
+    /// (`WGPUBackendCapabilities.validatesNatively`).
     private let specValidation: Bool
 
     public init(backend: B, frameCoordinator: WGPUFrameCoordinator = WGPUFrameCoordinator()) {
@@ -86,7 +92,7 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         self.specValidation = !backend.capabilities.validatesNatively
     }
 
-    // MARK: - WebGPURuntime: 실행
+    // MARK: - WebGPURuntime: execution
 
     public func execute(_ payload: [String: Any]) -> [String: Any] {
         executionLock.lock()
@@ -107,7 +113,7 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
     private func run(_ commands: [WGPUValueReader], present: Bool) -> [String: Any] {
         resetBatchState()
 
-        // 앞선 배치의 GPU 실행 실패를 먼저 흘려보낸다 — 오류 스코프가 열려 있으면 그쪽이 잡는다.
+        // Flush the previous batch's GPU execution failures first — an open error scope catches them.
         for failure in gpuFailures.drain() { record(failure) }
         backend.beginBatch()
 
@@ -115,8 +121,8 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
             do {
                 try perform(command)
             } catch let error as WGPUError {
-                // 경로만 채우고 나머지는 **그대로 옮긴다** — 여기서 필드를 빠뜨리면
-                // (줄 번호처럼) 아래 계층이 애써 붙인 단서가 조용히 사라진다.
+                // Fill in the path and **carry everything else across unchanged** — dropping a field
+                // here (the line number, say) silently loses a clue a lower layer worked to attach.
                 record(WGPUError(
                     kind: error.kind,
                     message: error.message,
@@ -128,11 +134,11 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
             }
         }
 
-        // 명령이 비어 있는데 present라면 **틱의 마무리 배치**다 (프레임 루프 콜백의 끝).
+        // No commands but present means **the tick's closing batch** (the end of a frame-loop callback).
         finish(WGPUFrameBoundary(requestedPresent: present, commandCount: commands.count))
 
-        // 배치 단위 백엔드 진단 (Dawn의 디바이스 스코프 등) — 제출 후에 회수해야
-        // 이 배치의 GPU 검증 오류까지 담긴다.
+        // Per-batch backend diagnostics (Dawn's device scope, …) — collected after submit so this
+        // batch's GPU validation errors are included too.
         for diagnostic in backend.collectBatchDiagnostics() { record(diagnostic) }
 
         return WGPUBatchResult(
@@ -147,7 +153,7 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         ).payload
     }
 
-    /// 오류 하나를 가장 안쪽의 맞는 스코프에 넣거나, 없으면 배치 결과로 내보낸다.
+    /// Files one error with the innermost matching scope, or emits it in the batch result if there is none.
     private func record(_ error: WGPUError) {
         if errorScopes.capture(error) { return }
         errors.append(error)
@@ -162,8 +168,8 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         boundGroups.removeAll()
         dirtyGroups.removeAll()
         indexBinding = nil
-        // 정점 바인딩도 함께 비운다 — 다음 `beginRenderPass`의 `resetPassBindings()`가
-        // 어차피 덮지만, 여기서 안 놓으면 `destroy`된 버퍼를 그때까지 붙들고 있다.
+        // Clear the vertex bindings too — the next `beginRenderPass`'s `resetPassBindings()` would
+        // overwrite them anyway, but not releasing here holds a `destroy`ed buffer until then.
         vertexBindings.removeAll()
         dirtyVertexSlots.removeAll()
         passFormats = nil
@@ -176,78 +182,82 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         acquiredThisBatch.removeAll()
         errors.removeAll()
         poppedScopes.removeAll()
-        // `errorScopes`는 일부러 비우지 않는다 — 디바이스 상태이므로 배치를 넘어 이어진다.
-        // `acquiredFrames`·`frameScopedHandles`도 마찬가지다 — 프레임의 경계는 배치가
-        // 아니라 **present**이고, 한 프레임이 배치 여러 개로 쪼개질 수 있다 (아래 finish() 참고).
+        // `errorScopes` is deliberately not cleared — it is device state and spans batches.
+        // The same goes for `acquiredFrames` and `frameScopedHandles` — a frame's boundary is
+        // **present**, not the batch, and one frame can be split across several (see finish() below).
     }
 
-    /// 배치 하나를 마무리한다.
+    /// Finishes one batch.
     ///
-    /// `present`가 false면 프레임 **중간**의 내부 제출이다 — shim의 `popErrorScope`·`mapAsync`가
-    /// 결과를 받으려고 미리 흘려보낸 배치. GPU 작업은 제출하되(리드백이 완료를 기다린다),
-    /// 드로어블 present와 프레임 스코프 핸들 만료는 **뒤따라올 진짜 프레임 제출로 미룬다.**
-    /// 안 미루면: 그 배치가 `writeBuffer` 하나로라도 GPU 작업을 만든 경우, 방금 획득한
-    /// 드로어블이 그리기도 전에 present되고 핸들이 만료되어, 이어지는 `beginRenderPass`가
-    /// "GPUTextureView가 존재하지 않는다"로 통째로 거부된다 — Three.js의 지연 파이프라인
-    /// 생성(pop 즉시 flush)이 정확히 이 경로를 밟았다.
+    /// `present: false` means an internal submit from the **middle** of a frame — a batch the shim
+    /// flushed early to collect a `popErrorScope`/`mapAsync` result. Submit the GPU work (readback
+    /// waits on the completion) but **defer the drawable present and frame-scoped handle expiry to
+    /// the real frame submit that follows.** Without deferring: if that batch produced GPU work from
+    /// even a single `writeBuffer`, the just-acquired drawable is presented before anything is drawn
+    /// and its handle expires, so the following `beginRenderPass` is rejected outright with
+    /// "GPUTextureView does not exist" — Three.js's lazy pipeline creation (flush right after pop)
+    /// walked exactly this path.
     private func finish(_ boundary: WGPUFrameBoundary) {
         let present = boundary.presents
         closePass()
-        // 프레임 구간에 연 그룹도 제출 전에 닫는다 (인코더와 같은 이유 — Metal이 단언으로 죽는다).
-        // 네이티브 검증 백엔드는 Finish에서 스스로 오류를 낸다 — 닫아 주지 않는다.
+        // Groups opened in the frame region are closed before submit too (same reason as encoders —
+        // Metal dies on an assertion). A natively-validating backend raises its own error at Finish,
+        // so we do not close for it.
         if specValidation, backend.hasPendingWork, bufferDebugDepth > 0 {
             record(.validation(
-                "디버그 그룹 \(bufferDebugDepth)개가 열린 채로 제출됐다 (popDebugGroup을 빠뜨렸다)"
+                "\(bufferDebugDepth) debug group(s) were still open at submit (a popDebugGroup is missing)"
             ))
             backend.popFrameDebugGroups(count: bufferDebugDepth)
         }
         bufferDebugDepth = 0
-        // 틱의 마무리 배치는 명령이 없어도 **드로어블을 내보내야 한다** — 제출 거리가
-        // 없다고 지나가면 화면이 멈춘 채 아무 말이 없다.
+        // A tick's closing batch must **put the drawable out** even with no commands — passing over
+        // it for lack of submittable work freezes the screen with nothing said.
         //
-        // 조건을 "명령이 비어 있을 때"로 좁힌 것이 중요하다. 명령은 있는데 GPU 작업이
-        // 안 생긴 배치(드로어블만 얻고 끝난 경우 등)는 present하지 않는다 —
-        // 그리지도 않은 드로어블을 내보내면 그 프레임이 빈 화면으로 나간다.
+        // Narrowing the condition to "no commands" matters. A batch that has commands but produced no
+        // GPU work (one that only acquired a drawable, say) does not present — putting out a drawable
+        // that was never drawn ships that frame as a blank screen.
         if boundary.closesFrame, !backend.hasPendingWork, !acquiredFrames.isEmpty {
             backend.ensureSubmittableWork()
         }
-        // 제출거리가 없으면 present할 것도 없다. 획득해 둔 드로어블은 **그대로 남긴다** —
-        // 이 상태는 "프레임이 실패했다"가 아니라 "아직 진행 중이다"일 수 있고(Three.js의
-        // 지연 파이프라인 생성이 그렇다), 여기서 놓으면 뒤따라올 `beginRenderPass`가
-        // "없는 핸들"로 깨진다. 붙들린 드로어블은 다음 프레임의 획득이 거둔다
-        // (`getCurrentTexture` 참고).
+        // With nothing to submit there is nothing to present. The acquired drawable **stays as it is**
+        // — this state may mean "the frame is still going", not "the frame failed" (Three.js's lazy
+        // pipeline creation does exactly this), and releasing here would break the following
+        // `beginRenderPass` with a "missing handle". A drawable held this way is reclaimed by the
+        // next frame's acquisition (see `getCurrentTexture`).
         guard backend.hasPendingWork else { return }
 
-        // in-flight 회계 — 프레임 티커가 이 수를 보고 포화 시 틱을 건너뛴다.
-        // present하지 않는 배치는 프레임이 아니므로 세지 않는다.
+        // In-flight accounting — the frame ticker reads this count and skips a tick when saturated.
+        // A batch that does not present is not a frame, so it is not counted.
         let presentedCanvases = present ? uniquePresentedCanvases() : []
         let coordinator = frameCoordinator
         for canvas in presentedCanvases { coordinator.noteCommitted(canvas: canvas) }
-        // 완료 콜백은 엔진이 아니라 값(큐·코디네이터)을 잡는다 — 엔진이 먼저 해제되어도 안전하다.
+        // The completion callback captures values (the queue and coordinator), not the engine — safe
+        // even if the engine is released first.
         let failures = gpuFailures
         backend.submit(present: present) { failure in
             if let failure { failures.report(failure) }
             for canvas in presentedCanvases { coordinator.noteCompleted(canvas: canvas) }
         }
-        // 드로어블 텍스처와 그 뷰는 **present할 때** 무효해진다 (명세의 "Expire the current
-        // texture"가 정한 시점). 배치가 끝날 때마다 회수하면 프레임 중간 제출이 그 프레임의
-        // 스왑체인 핸들을 지워 버려 뒤이은 `beginRenderPass`가 "없는 핸들"로 깨진다.
-        // (드로어블 자체는 `submit(present: true)`이 내보내며 이미 놓았다.)
+        // The drawable texture and its views become invalid **at present** (the moment the spec's
+        // "Expire the current texture" fixes). Reclaiming at the end of every batch would let a
+        // mid-frame submit erase that frame's swapchain handles and break the following
+        // `beginRenderPass` with a "missing handle". (The drawable itself was already released by
+        // `submit(present: true)` as it put it out.)
         if present, !acquiredFrames.isEmpty { expireFrame() }
     }
 
-    /// 프레임이 끝났다 — 드로어블 텍스처와 그 뷰의 핸들을 만료시킨다
-    /// (명세 `GPUCanvasContext`의 "Expire the current texture").
+    /// The frame ended — expire the drawable texture and view handles (the spec's
+    /// "Expire the current texture" in `GPUCanvasContext`).
     ///
-    /// present한 프레임과 **제출거리 없이 끝난 프레임**이 같은 것을 해야 해서 뽑아 두었다.
-    /// 한쪽만 고치면 다른 쪽에서 핸들이 영영 살아남는다.
+    /// Factored out because a presented frame and **a frame that ended with nothing to submit** must
+    /// do the same thing. Fix only one and handles live forever on the other path.
     private func expireFrame() {
         for handle in frameScopedHandles { registry.remove(handle) }
         frameScopedHandles.removeAll()
         acquiredFrames.removeAll()
     }
 
-    /// 이번 프레임에 드로어블을 내준 캔버스들 (중복 제거 — 한 표면에서 여러 번 얻어도 프레임은 하나다).
+    /// Canvases handed a drawable this frame (deduplicated — several acquisitions on one surface are still one frame).
     private func uniquePresentedCanvases() -> [String] {
         var seen = Set<String>()
         var canvases: [String] = []
@@ -257,18 +267,19 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         return canvases
     }
 
-    /// 열려 있는 패스를 닫는다 — occlusion 미종료·디버그 그룹 잔여를 오류로 알리되
-    /// **닫아 주고 계속 간다.** 여기서 백엔드 단언으로 죽으면 진단할 기회조차 없다.
+    /// Closes the open pass — reports an unterminated occlusion query or leftover debug groups as
+    /// errors but **closes them and carries on.** Dying on a backend assertion here would remove any
+    /// chance to diagnose.
     private func closePass() {
         if passState == .render {
-            // 명세는 패스를 닫을 때 열려 있는 occlusion 쿼리가 없기를 요구한다. Metal은 그냥
-            // 값을 써 주므로 여기서 안 잡으면 **값까지 정상으로 보이고**, 브라우저에서만 프레임이
-            // 통째로 날아간다. 패스는 이미 닫히는 중이라 throw 대신 기록한다.
-            // (네이티브 검증 백엔드는 End 시점에 스스로 오류를 낸다.)
+            // The spec requires no occlusion query to be open when a pass closes. Metal simply writes
+            // the value, so not catching it here leaves **even the value looking correct** while a
+            // browser drops the whole frame. The pass is already closing, so we record instead of
+            // throwing. (A natively-validating backend raises its own error at End.)
             if specValidation, let index = openOcclusionQuery {
                 record(.validation(
-                    "occlusion 쿼리 \(index)이(가) 열린 채로 렌더 패스가 끝났다 "
-                        + "(endOcclusionQuery를 빠뜨렸다)"
+                    "occlusion query \(index) was still open when the render pass ended "
+                        + "(an endOcclusionQuery is missing)"
                 ))
             }
             openOcclusionQuery = nil
@@ -278,11 +289,11 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
             passDepthReadOnly = false
             passStencilReadOnly = false
         }
-        // 디버그 그룹이 열린 채 인코더를 닫으면 Metal이 단언으로 죽는다 — 닫아 주고 오류로 알린다.
-        // (네이티브 검증 백엔드는 닫지 않아도 End/Finish에서 오류로 처리한다 — 죽지 않는다.)
+        // Closing an encoder with debug groups open kills Metal with an assertion — close them and report.
+        // (A natively-validating backend turns it into an error at End/Finish without dying.)
         if specValidation, passState != nil, encoderDebugDepth > 0 {
             record(.validation(
-                "디버그 그룹 \(encoderDebugDepth)개가 열린 채로 패스가 끝났다 (popDebugGroup을 빠뜨렸다)"
+                "\(encoderDebugDepth) debug group(s) were still open when the pass ended (a popDebugGroup is missing)"
             ))
             while encoderDebugDepth > 0 {
                 backend.popDebugGroup(scope: .pass)
@@ -294,18 +305,19 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         backend.endPass()
     }
 
-    // MARK: - 명령 분기
+    // MARK: - Command dispatch
 
-    /// 디코딩과 분기표는 `WGPUCommand`가 끝낸다 — 여기는 디코딩된 값을 검증·해석해 백엔드
-    /// 동사로 옮기는 **exhaustive switch**만 남는다 (`default` 없음). op을 더할 때 케이스를
-    /// 빠뜨리면 컴파일이 깨진다 — 백엔드 누락은 `WGPUBackend`의 프로토콜 요구가 잡는다.
+    /// Decoding and the branch table are finished by `WGPUCommand` — what remains here is the
+    /// **exhaustive switch** (no `default`) that validates and resolves decoded values into backend
+    /// verbs. Forget a case when adding an op and the compile breaks — a missing backend verb is
+    /// caught by `WGPUBackend`'s protocol requirements.
     private func perform(_ command: WGPUValueReader) throws {
         try dispatch(WGPUCommand(from: command))
     }
 
     private func dispatch(_ command: WGPUCommand) throws {
         switch command {
-        // 리소스
+        // Resources
         case .createBuffer(let c): try createBuffer(c)
         case .writeBuffer(let c): try writeBuffer(c)
         case .unmapBuffer(let c): try unmapBuffer(c)
@@ -325,18 +337,18 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         case .getBindGroupLayout(let c): try getBindGroupLayout(c)
         case .destroy(let c): registry.remove(c.id)
 
-        // 오류 스코프
+        // Error scopes
         case .pushErrorScope(let filter, let decodeFailure):
-            // 실패해도 push부터 한다 — 깊이 유지 계약 (`WGPUCommand` 문서 참고).
+            // Push first even on failure — the depth-keeping contract (see `WGPUCommand`).
             errorScopes.push(filter)
             if let decodeFailure { throw decodeFailure }
         case .popErrorScope: poppedScopes.append(errorScopes.pop())
 
-        // 캔버스
+        // Canvas
         case .configureCanvas(let c): try configureCanvas(c)
         case .getCurrentTexture(let c): try getCurrentTexture(c)
 
-        // 렌더 패스
+        // Render pass
         case .beginRenderPass(let c): try beginRenderPass(c)
         case .setPipeline(let c): try setPipeline(c)
         case .setBindGroup(let c): try setBindGroup(c)
@@ -362,24 +374,24 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         case .beginOcclusionQuery(let c): try beginOcclusionQuery(c)
         case .endOcclusionQuery: try endOcclusionQuery()
 
-        // 컴퓨트 패스
+        // Compute pass
         case .beginComputePass(let c): try beginComputePass(c)
         case .dispatchWorkgroups(let c): try dispatchWorkgroups(c)
         case .dispatchWorkgroupsIndirect(let c): try dispatchWorkgroupsIndirect(c)
 
         case .endPass: closePass()
 
-        // 복사
+        // Copies
         case .copyBufferToBuffer(let c): try copyBufferToBuffer(c)
         case .clearBuffer(let c): try clearBuffer(c)
         case .copyTextureToBuffer(let c): try copyTextureToBuffer(c)
         case .copyBufferToTexture(let c): try copyBufferToTexture(c)
         case .copyTextureToTexture(let c): try copyTextureToTexture(c)
 
-        // 쿼리
+        // Queries
         case .resolveQuerySet(let c): try resolveQuerySet(c)
 
-        // 디버그 마커
+        // Debug markers
         case .pushDebugGroup(let c): try pushDebugGroup(c)
         case .popDebugGroup: popDebugGroup()
         case .insertDebugMarker(let c):
@@ -387,25 +399,25 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         }
     }
 
-    // MARK: - 조회 헬퍼
+    // MARK: - Lookup helpers
 
     private func buffer(_ handle: WGPUHandle, path: String? = nil) throws -> WGPUEngineBuffer<B> {
         try registry.lookup(handle, as: WGPUEngineBuffer<B>.self, kind: "GPUBuffer", path: path)
     }
 
-    /// 큐 작업에 쓸 버퍼를 꺼낸다 — **매핑 중이면 거부한다.**
+    /// Fetches a buffer for queue work — **rejects it while mapped.**
     ///
-    /// 명세는 `mapAsync`가 버퍼를 "unavailable"로 만들어 `unmap()` 전까지 큐 작업에 못 쓰게 해
-    /// 경쟁 자체를 없앤다. 읽기가 GPU 완료를 기다리는 동안 다음 프레임의 쓰기가 같은 메모리에
-    /// 겹치면 **JS가 받는 값이 어느 프레임 것인지 보장되지 않는다.**
+    /// The spec makes `mapAsync` mark a buffer "unavailable" so it cannot be used in queue work until
+    /// `unmap()`, removing the race entirely. If a write from the next frame overlaps the same memory
+    /// while a read waits on GPU completion, **which frame's values JS receives is not guaranteed.**
     ///
-    /// 버퍼를 쓰는 모든 명령이 이 함수를 지나야 한다 — 한 곳이라도 빠지면 그 경로로 경쟁이 샌다.
+    /// Every command that uses a buffer must pass through here — miss one and the race leaks in by that path.
     private func unmappedBuffer(_ handle: WGPUHandle, path: String? = nil) throws -> WGPUEngineBuffer<B> {
         let object = try buffer(handle, path: path)
         guard !object.isMapped else {
             throw WGPUError.validation(
-                "매핑 중인 GPUBuffer \(handle)은(는) 큐 작업에 쓸 수 없다 "
-                    + "(mapAsync로 읽은 뒤 unmap()을 부를 것)",
+                "GPUBuffer \(handle) is mapped and cannot be used in queue work "
+                    + "(read it with mapAsync, then call unmap())",
                 path: path
             )
         }
@@ -422,35 +434,36 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
 
     private func requireRenderPass() throws {
         guard passState == .render else {
-            throw WGPUError.validation("렌더 패스가 시작되지 않았다 (beginRenderPass 먼저)")
+            throw WGPUError.validation("no render pass has begun (call beginRenderPass first)")
         }
     }
 
     private func requireComputePass() throws {
         guard passState == .compute else {
-            throw WGPUError.validation("컴퓨트 패스가 시작되지 않았다 (beginComputePass 먼저)")
+            throw WGPUError.validation("no compute pass has begun (call beginComputePass first)")
         }
     }
 
-    /// 복사·업로드는 패스 밖에서만 — 커맨드 인코더 수준 명령이다 (JS shim도 그렇게만 보낸다).
-    /// 네이티브 검증 백엔드에서는 백엔드 검증기가 잡는다 (인코더 복사 — Dawn Finish 시점).
+    /// Copies and uploads only outside a pass — they are command-encoder-level commands (and the JS
+    /// shim only sends them that way). On a natively-validating backend the backend's validator
+    /// catches it (encoder copies — at Dawn's Finish).
     private func requireNoOpenPass() throws {
         guard specValidation else { return }
         guard passState == nil else {
-            throw WGPUError.validation("렌더/컴퓨트 패스 안에서는 복사·업로드 명령을 쓸 수 없다")
+            throw WGPUError.validation("copy and upload commands cannot be used inside a render/compute pass")
         }
     }
 
-    // MARK: - 리소스 생성
+    // MARK: - Resource creation
 
     private func createBuffer(_ command: WGPUCreateCommand<WGPUBufferDescriptor>) throws {
         let raw = try backend.makeBuffer(command.descriptor)
         let object = WGPUEngineBuffer<B>(
             raw: raw, size: command.descriptor.size, usage: command.descriptor.usage
         )
-        // 명세: mappedAtCreation 버퍼는 unmap 전까지 "unavailable"이다.
-        // (JS shim은 이 플래그를 클라이언트에서 접어 initialData로 보낸다 — 이 경로는
-        //  커맨드 스트림을 직접 만드는 네이티브 사용자의 것이다.)
+        // Spec: a mappedAtCreation buffer is "unavailable" until unmap.
+        // (The JS shim folds this flag on the client and sends initialData instead — this path
+        //  belongs to native users building the command stream directly.)
         object.isMapped = command.descriptor.mappedAtCreation
         registry.insert(object, at: command.id)
     }
@@ -470,26 +483,26 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         if specValidation {
             guard offset >= 0, offset + data.count <= target.size else {
                 throw WGPUError.validation(
-                    "writeBuffer 범위 초과 — offset \(offset) + \(data.count)B > 버퍼 크기 \(target.size)B"
+                    "writeBuffer out of range — offset \(offset) + \(data.count)B > buffer size \(target.size)B"
                 )
             }
             guard target.usage.contains(.copyDst) else {
                 throw WGPUError.validation(
-                    "writeBuffer의 대상은 GPUBufferUsage.COPY_DST로 만들어야 한다",
+                    "the destination of writeBuffer must be created with GPUBufferUsage.COPY_DST",
                     path: command.fieldPath("buffer")
                 )
             }
-            // 4의 배수 요구는 명세 규칙이다. Metal은 바이트 단위 blit도 받아 주므로 안 막으면
-            // 브라우저에서만 거부되는 코드가 나온다 (`clearBuffer`와 같은 이유).
+            // The multiple-of-4 requirement is a spec rule. Metal accepts byte-granular blits too, so
+            // leaving it unchecked ships code that is rejected only in a browser (same as `clearBuffer`).
             guard offset % 4 == 0, data.count % 4 == 0 else {
                 throw WGPUError.validation(
-                    "writeBuffer의 bufferOffset·크기는 4의 배수여야 한다 "
-                        + "(받은 값 \(offset), \(data.count)B)",
+                    "writeBuffer's bufferOffset and size must be multiples of 4 "
+                        + "(got \(offset), \(data.count)B)",
                     path: command.fieldPath("bufferOffset")
                 )
             }
         }
-        guard !data.isEmpty else { return }   // 크기 0은 no-op
+        guard !data.isEmpty else { return }   // a zero-size write is a no-op
         try requireNoOpenPass()
         try backend.writeBuffer(target.raw, offset: offset, data: data)
     }
@@ -512,13 +525,13 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         )
     }
 
-    /// `GPUTextureDescriptor`의 수치 제약 (명세 "validating GPUTextureDescriptor").
+    /// Numeric constraints of `GPUTextureDescriptor` (the spec's "validating GPUTextureDescriptor").
     ///
-    /// **음수가 프로세스를 죽인다.** JS는 어떤 정수든 실어 보낼 수 있는데, 음수 `mipLevelCount`가
-    /// Metal 디스크립터의 부호 없는 필드로 넘어가면 `UInt.max`로 접혀
-    /// `MTLTextureDescriptor requests 18446744073709551615 mipmap levels`라는 **단언으로
-    /// 프로세스가 종료된다.** 앱은 이유를 남길 기회조차 없다. 크기·샘플 수도 같은 모양이라
-    /// 함께 막는다 — 전부 명세가 이미 정한 규칙이다.
+    /// **A negative value kills the process.** JS can send any integer, and a negative `mipLevelCount`
+    /// crossing into an unsigned Metal descriptor field folds to `UInt.max`, ending the process with
+    /// the assertion `MTLTextureDescriptor requests 18446744073709551615 mipmap levels` — the app
+    /// never gets a chance to say why. Size and sample count have the same shape, so they are guarded
+    /// together — all of these are rules the spec already fixed.
     private func validateTextureDescriptor(
         _ descriptor: WGPUTextureDescriptor,
         path: (String) -> String
@@ -526,27 +539,27 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         let size = descriptor.size
         guard size.width >= 1, size.height >= 1, size.depthOrArrayLayers >= 1 else {
             throw WGPUError.validation(
-                "텍스처 크기는 각 축이 1 이상이어야 한다 "
+                "every axis of a texture size must be at least 1 "
                     + "(\(size.width)x\(size.height)x\(size.depthOrArrayLayers))",
                 path: path("size")
             )
         }
-        // 명세: 1 ≤ mipLevelCount ≤ 이 크기가 담을 수 있는 최대 레벨 수.
+        // Spec: 1 <= mipLevelCount <= the maximum number of levels this size can hold.
         let largest = descriptor.dimension == .threeD
             ? max(size.width, size.height, size.depthOrArrayLayers)
             : max(size.width, size.height)
         let maxLevels = Int(log2(Double(largest))) + 1
         guard descriptor.mipLevelCount >= 1, descriptor.mipLevelCount <= maxLevels else {
             throw WGPUError.validation(
-                "mipLevelCount는 1~\(maxLevels) 범위여야 한다 "
-                    + "(받은 값 \(descriptor.mipLevelCount), 크기 \(size.width)x\(size.height))",
+                "mipLevelCount must be between 1 and \(maxLevels) "
+                    + "(got \(descriptor.mipLevelCount), size \(size.width)x\(size.height))",
                 path: path("mipLevelCount")
             )
         }
-        // 명세가 정한 값은 1과 4뿐이다.
+        // The spec allows only 1 and 4.
         guard descriptor.sampleCount == 1 || descriptor.sampleCount == 4 else {
             throw WGPUError.validation(
-                "sampleCount는 1 또는 4여야 한다 (받은 값 \(descriptor.sampleCount))",
+                "sampleCount must be 1 or 4 (got \(descriptor.sampleCount))",
                 path: path("sampleCount")
             )
         }
@@ -554,38 +567,38 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
             guard descriptor.mipLevelCount == 1, descriptor.dimension == .twoD,
                   size.depthOrArrayLayers == 1 else {
                 throw WGPUError.validation(
-                    "멀티샘플 텍스처는 2d·밉 1단계·레이어 1장이어야 한다 "
+                    "a multisample texture must be 2d with 1 mip level and 1 layer "
                         + "(mipLevelCount \(descriptor.mipLevelCount), "
-                        + "\(descriptor.dimension.rawValue), 레이어 \(size.depthOrArrayLayers))",
+                        + "\(descriptor.dimension.rawValue), \(size.depthOrArrayLayers) layer(s))",
                     path: path("sampleCount")
                 )
             }
         }
     }
 
-    /// 블록 압축 텍스처의 제약. **백엔드가 단언으로 죽는 조합**이라 여기서 미리 잡아
-    /// 명세대로 검증 오류로 돌려준다.
+    /// Limits on block-compressed textures. **These combinations kill the backend with an assertion**,
+    /// so we catch them first and return the spec's validation error instead.
     private func validateCompressedTexture(_ descriptor: WGPUTextureDescriptor) throws {
         let format = descriptor.format
         guard format.isCompressed else { return }
         guard backend.supportsTextureCompression(format) else {
             let feature = format.compressionFamily.featureName ?? "?"
             throw WGPUError.validation(
-                "이 기기는 \(format.rawValue)를 지원하지 않는다 — adapter.features의 '\(feature)'를 먼저 확인할 것"
+                "this device does not support \(format.rawValue) — check adapter.features for '\(feature)' first"
             )
         }
-        // 압축 포맷은 샘플링·복사만 된다 (명세: RENDER_ATTACHMENT·STORAGE_BINDING 금지).
+        // Compressed formats can only be sampled and copied (spec: no RENDER_ATTACHMENT or STORAGE_BINDING).
         let forbidden: WGPUTextureUsage = [.renderAttachment, .storageBinding]
         guard descriptor.usage.isDisjoint(with: forbidden) else {
             throw WGPUError.validation(
-                "압축 텍스처(\(format.rawValue))는 렌더 타깃이나 스토리지로 쓸 수 없다 (usage \(descriptor.usage))"
+                "a compressed texture (\(format.rawValue)) cannot be a render target or storage (usage \(descriptor.usage))"
             )
         }
         guard descriptor.dimension == .twoD else {
-            throw WGPUError.validation("압축 텍스처는 2d만 된다 (\(descriptor.dimension.rawValue) 요청)")
+            throw WGPUError.validation("compressed textures must be 2d (\(descriptor.dimension.rawValue) requested)")
         }
         guard descriptor.sampleCount == 1 else {
-            throw WGPUError.validation("압축 텍스처는 멀티샘플이 될 수 없다 (sampleCount \(descriptor.sampleCount))")
+            throw WGPUError.validation("a compressed texture cannot be multisampled (sampleCount \(descriptor.sampleCount))")
         }
     }
 
@@ -594,9 +607,9 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         let data = command.data
         let size = command.size
         let format = target.format
-        // 생략된 스트라이드의 기본값은 **포맷을 알아야** 나온다 — 압축 포맷에서 행은 픽셀이
-        // 아니라 **블록** 단위이기 때문이다 (명세 GPUTexelCopyBufferLayout). 그래서 디코딩이
-        // 아니라 여기서 채운다.
+        // The default for an omitted stride **requires knowing the format** — in a compressed format
+        // a row is measured in **blocks**, not pixels (spec GPUTexelCopyBufferLayout). So it is filled
+        // in here rather than during decoding.
         let bytesPerRow = command.bytesPerRow ?? format.bytesPerRow(width: size.width)
         let blockRows = format.blockRows(height: size.height)
         let rowsPerImage = command.rowsPerImage ?? blockRows
@@ -609,7 +622,7 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
             let layers = max(size.depthOrArrayLayers, 1)
             let required = bytesPerImage * (layers - 1) + bytesPerRow * blockRows
             guard data.count >= required else {
-                throw WGPUError.validation("writeTexture 데이터가 부족하다 (\(data.count)B, 최소 \(required)B 필요)")
+                throw WGPUError.validation("writeTexture data is too short (\(data.count)B, at least \(required)B needed)")
             }
         }
         try requireNoOpenPass()
@@ -619,10 +632,10 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         )
     }
 
-    /// 디코딩해 둔 이미지(`ImageBitmap`)를 텍스처로 올린다 — 명세
+    /// Uploads an already-decoded image (`ImageBitmap`) into a texture — the spec's
     /// `queue.copyExternalImageToTexture()`.
     ///
-    /// 픽셀은 이미 RGBA8이라 여기서는 잘라내서 `writeTexture` 동사로 수렴시키는 일만 한다.
+    /// The pixels are already RGBA8, so all that happens here is cropping and converging on the `writeTexture` verb.
     private func copyExternalImageToTexture(_ command: WGPUCopyExternalImageCommand) throws {
         let bitmap = try registry.lookup(
             command.source.image, as: WGPUImageBitmapObject.self, kind: "ImageBitmap",
@@ -631,39 +644,40 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         let target = try texture(command.destination.texture, path: command.destination.fieldPath("texture"))
         guard !target.format.isCompressed else {
             throw WGPUError.validation(
-                "copyExternalImageToTexture는 압축 텍스처에 쓸 수 없다 (\(target.format.rawValue)) "
-                + "— GPU에는 블록 인코더가 없다"
+                "copyExternalImageToTexture cannot target a compressed texture (\(target.format.rawValue)) "
+                + "— the GPU has no block encoder"
             )
         }
-        // 명세는 소스와 대상의 바이트 폭이 같기를 요구한다. 디코딩 결과가 RGBA8이므로
-        // 4바이트 포맷만 받는다 — 그 밖은 화면이 조용히 어긋나느니 여기서 막는 편이 낫다.
+        // The spec requires the source and destination byte widths to match. The decode result is
+        // RGBA8, so only 4-byte formats are accepted — better to stop here than to let the screen go
+        // quietly wrong.
         guard target.format.bytesPerBlock == 4, !target.format.rawValue.hasPrefix("depth"),
               !target.format.rawValue.hasPrefix("stencil") else {
             throw WGPUError.validation(
-                "copyExternalImageToTexture의 대상은 4바이트 컬러 포맷이어야 한다 "
-                + "(\(target.format.rawValue)) — 그 밖은 writeTexture로 직접 올릴 것"
+                "the destination of copyExternalImageToTexture must be a 4-byte color format "
+                + "(\(target.format.rawValue)) — upload anything else directly with writeTexture"
             )
         }
 
         let sourceOrigin = command.source.origin
-        // 생략된 복사 크기는 **이미지의 남은 부분 전부**다 — 이미지 크기를 알아야 나오므로 여기서 채운다.
+        // An omitted copy size means **the whole remainder of the image** — that needs the image size, so it is filled here.
         let size = command.copySize
             ?? WGPUExtent3D(width: bitmap.width - sourceOrigin.x, height: bitmap.height - sourceOrigin.y)
         guard size.width > 0, size.height > 0 else { return }   // no-op
         guard sourceOrigin.x + size.width <= bitmap.width,
               sourceOrigin.y + size.height <= bitmap.height else {
             throw WGPUError.validation(
-                "복사 영역이 이미지를 넘는다 — (\(sourceOrigin.x), \(sourceOrigin.y)) + "
+                "the copy region exceeds the image — (\(sourceOrigin.x), \(sourceOrigin.y)) + "
                 + "\(size.width)x\(size.height) > \(bitmap.width)x\(bitmap.height)"
             )
         }
 
-        // 명세 `GPUCopyExternalImageSourceInfo.flipY` — **복사 시점**에 위아래를 뒤집는다.
-        // (`createImageBitmap`의 flipY는 디코딩 시점이라 별개다. 웹 라이브러리는 이쪽을 쓴다 —
-        // three.js의 `Texture.flipY`가 기본 true라, 무시하면 텍스처가 조용히 뒤집힌다.)
+        // Spec `GPUCopyExternalImageSourceInfo.flipY` — flips top to bottom **at copy time**.
+        // (`createImageBitmap`'s flipY happens at decode time and is separate. Web libraries use this
+        // one — three.js's `Texture.flipY` defaults to true, so ignoring it flips textures silently.)
         let flipY = command.source.flipY
 
-        // 필요한 만큼만 잘라 싣는다. 전체 폭을 그대로 쓰면 부분 복사에서 bytesPerRow가 맞지 않는다.
+        // Copy only what is needed. Using the full width would make bytesPerRow wrong for a partial copy.
         let rowBytes = size.width * 4
         var slice = Data(count: rowBytes * size.height)
         bitmap.pixels.withUnsafeBytes { source in
@@ -689,11 +703,12 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         )
     }
 
-    /// 압축 텍스처 복사의 블록 정렬 (명세 "validating texel copy range").
+    /// Block alignment for compressed texture copies (the spec's "validating texel copy range").
     ///
-    /// origin은 블록 경계에 있어야 하고, 크기는 블록 배수이거나 **밉 레벨의 끝에 닿아야** 한다
-    /// (가장자리 블록은 잘려 있으므로 예외다). 어기면 백엔드가 단언으로 죽어서 여기서 먼저 막는다.
-    /// 비압축 포맷은 블록이 1×1이라 이 검사가 항상 통과한다.
+    /// The origin must sit on a block boundary, and the size must be a multiple of the block size or
+    /// **reach the end of the mip level** (edge blocks are cut off, hence the exception). Violations
+    /// kill the backend with an assertion, so we stop them first. Uncompressed formats have 1×1
+    /// blocks, so this check always passes for them.
     private func validateBlockAlignment(
         format: WGPUTextureFormat,
         origin: WGPUOrigin3D,
@@ -706,8 +721,8 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         let (blockWidth, blockHeight) = format.blockSize
         guard origin.x % blockWidth == 0, origin.y % blockHeight == 0 else {
             throw WGPUError.validation(
-                "\(label): 압축 텍스처의 origin은 블록 경계여야 한다 "
-                + "(\(origin.x), \(origin.y)) / 블록 \(blockWidth)x\(blockHeight)"
+                "\(label): the origin of a compressed texture must be on a block boundary "
+                + "(\(origin.x), \(origin.y)) / block \(blockWidth)x\(blockHeight)"
             )
         }
         let levelWidth = max(textureSize.width >> mipLevel, 1)
@@ -715,21 +730,22 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         guard size.width % blockWidth == 0 || origin.x + size.width == levelWidth,
               size.height % blockHeight == 0 || origin.y + size.height == levelHeight else {
             throw WGPUError.validation(
-                "\(label): 압축 텍스처의 복사 크기는 블록 배수이거나 밉 레벨 끝에 닿아야 한다 "
-                + "(\(size.width)x\(size.height) @ 레벨 \(mipLevel) 크기 \(levelWidth)x\(levelHeight))"
+                "\(label): a compressed copy size must be a multiple of the block size or reach the mip level's end "
+                + "(\(size.width)x\(size.height) @ level \(mipLevel), size \(levelWidth)x\(levelHeight))"
             )
         }
     }
 
-    /// 버퍼↔텍스처 복사의 행 배치 규칙 (명세 "validating GPUTexelCopyBufferInfo" ·
+    /// Row layout rules for buffer↔texture copies (the spec's "validating GPUTexelCopyBufferInfo" and
     /// "validating linear texture data").
     ///
-    /// **`bytesPerRow`는 256의 배수여야 한다.** Metal은 훨씬 느슨해서(행 크기만 맞으면 받는다)
-    /// 여기서 안 막으면 브라우저와 Dawn에서만 거부되는 코드가 통과한다 — 실제로 데모 씬 둘이
-    /// 이 자리에서 32를 쓰다가 Dawn 연동 때 드러났다 (`docs/TESTING.md`의 데모 씬 표).
+    /// **`bytesPerRow` must be a multiple of 256.** Metal is far looser (it takes anything whose row
+    /// size fits), so leaving it unchecked lets code through that only a browser or Dawn rejects — two
+    /// demo scenes really did use 32 here until the Dawn work exposed it (the demo scene table in
+    /// `docs/TESTING.md`).
     ///
-    /// `queue.writeTexture`에는 이 제약이 **없다** (명세가 큐 업로드와 인코더 복사를 다르게
-    /// 정한다). 그래서 이 검사는 두 복사 op에만 붙는다.
+    /// `queue.writeTexture` carries **no such limit** (the spec treats queue uploads and encoder
+    /// copies differently), so this check attaches to the two copy ops only.
     private func validateTexelCopyBufferLayout(
         bytesPerRow: Int?,
         format: WGPUTextureFormat,
@@ -739,12 +755,12 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
     ) throws {
         let blockRows = format.blockRows(height: size.height)
         let layers = max(size.depthOrArrayLayers, 1)
-        // 행이 여럿이면 스트라이드를 유도할 수 없다 — 명세가 명시를 요구한다.
+        // With several rows the stride cannot be derived — the spec requires it to be stated.
         guard let bytesPerRow else {
             guard blockRows <= 1, layers <= 1 else {
                 throw WGPUError.validation(
-                    "\(label): 복사가 여러 행·레이어에 걸치면 bytesPerRow를 줘야 한다 "
-                        + "(블록 행 \(blockRows), 레이어 \(layers))",
+                    "\(label): bytesPerRow is required when a copy spans several rows or layers "
+                        + "(\(blockRows) block rows, \(layers) layer(s))",
                     path: path
                 )
             }
@@ -752,7 +768,7 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         }
         guard bytesPerRow % 256 == 0 else {
             throw WGPUError.validation(
-                "\(label): bytesPerRow는 256의 배수여야 한다 (받은 값 \(bytesPerRow))",
+                "\(label): bytesPerRow must be a multiple of 256 (got \(bytesPerRow))",
                 path: path
             )
         }
@@ -766,7 +782,7 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
             WGPUEngineTextureView<B>(raw: raw, format: format, sampleCount: source.sampleCount),
             at: command.id
         )
-        // 드로어블 텍스처의 뷰는 프레임과 함께 만료된다 (명세 "Expire the current texture").
+        // Views of a drawable texture expire with the frame (the spec's "Expire the current texture").
         if source.isDrawable { frameScopedHandles.append(command.id) }
     }
 
@@ -775,11 +791,12 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         registry.insert(WGPUEngineSampler<B>(raw: raw), at: command.id)
     }
 
-    /// 명세에서 **셰이더 모듈은 컴파일에 실패해도 만들어진다** — 오류는 `getCompilationInfo()`와
-    /// 파이프라인 생성 실패로 드러난다. 그래서 파싱이 깨져도 등록하고 진단을 담아 둔다.
+    /// In the spec **a shader module is created even when compilation fails** — the error surfaces
+    /// through `getCompilationInfo()` and a pipeline creation failure. So we register it even on a
+    /// broken parse and carry the diagnostic.
     ///
-    /// 핸들이 아예 없으면 이후 명령이 전부 "존재하지 않는다"로만 깨져 **진짜 원인(파싱 실패)이
-    /// 화면에서 사라진다.** 여기서는 원인도 그 자리에서 보고한다.
+    /// With no handle at all, every later command breaks with only "does not exist" and **the real
+    /// cause (the parse failure) vanishes from view.** Here the cause is reported on the spot too.
     private func createShaderModule(_ command: WGPUCreateCommand<WGPUShaderModuleDescriptor>) throws {
         let creation = try backend.makeShaderModule(command.descriptor, fieldPath: { command.fieldPath($0) })
         registry.insert(WGPUEngineShaderModule<B>(raw: creation.module), at: command.id)
@@ -815,12 +832,12 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         )
         var buffers: [WGPUEngineBuffer<B>] = []
         let entries: [WGPUResolvedBindGroupEntry<B>] = try command.descriptor.entries.map { entry in
-            // 항목을 아는 레이아웃이면 매칭을 검사한다. 네이티브 검증 백엔드와
-            // 파생 레이아웃(항목 미상)은 백엔드 검증에 맡긴다 — visibility도 백엔드가 스스로 안다.
+            // Check matching when the layout's entries are known. A natively-validating backend and a
+            // derived layout (entries unknown) are left to backend validation — it knows visibility itself.
             let layoutEntry: WGPUBindGroupLayoutEntry?
             if specValidation, layout.entries != nil {
                 guard let matched = layout.entry(binding: entry.binding) else {
-                    throw WGPUError.validation("바인드 그룹 레이아웃에 binding \(entry.binding)이 없다")
+                    throw WGPUError.validation("the bind group layout has no binding \(entry.binding)")
                 }
                 layoutEntry = matched
             } else {
@@ -859,15 +876,16 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         )
     }
 
-    /// `bundleEncoder.finish()` — JS가 모아 둔 명령 목록을 번들 객체로 등록한다.
+    /// `bundleEncoder.finish()` — registers the command list JS gathered as a bundle object.
     ///
-    /// 번들 인코더 자체는 와이어에 없다. JS가 명령을 배열에 모으고 `finish()`에서 한 번에
-    /// 내려보내므로, 인코더의 수명을 양쪽에서 맞출 이유가 없다. 네이티브 번들을 가진 백엔드는
-    /// 여기서 바로 기록까지 끝내고, 아니면 리더를 저장해 두었다가 실행 때 되풀이한다.
+    /// The bundle encoder itself is not on the wire. JS gathers commands into an array and sends them
+    /// down at once in `finish()`, so there is no reason to align the encoder's lifetime on both
+    /// sides. A backend with native bundles finishes recording right here; otherwise we store the
+    /// readers and repeat them at execution.
     private func createRenderBundle(_ command: WGPUCreateRenderBundleCommand) throws {
-        // **`specValidation`과 무관하게 돈다.** "이 op을 번들에 담을 수 있는가"는 와이어 계약이지
-        // 백엔드가 아는 사실이 아니다 — 네이티브 검증기는 번들 인코더에 없는 op을 받으면
-        // 자기 방식대로 깨질 뿐이고, replay 백엔드는 그냥 실행해 버린다.
+        // **Runs regardless of `specValidation`.** "Can this op go in a bundle?" is wire contract, not
+        // something the backend knows — a native validator handed an op absent from its bundle encoder
+        // simply breaks in its own way, and a replay backend just executes it.
         try WGPUEngineRenderBundle<B>.validateOps(command.commands)
         let native: B.RenderBundle?
         if backend.capabilities.supportsNativeRenderBundles {
@@ -905,8 +923,8 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
                 )
                 guard !object.isMapped else {
                     throw WGPUError.validation(
-                        "매핑 중인 GPUBuffer \(handle)은(는) 큐 작업에 쓸 수 없다 "
-                            + "(mapAsync로 읽은 뒤 unmap()을 부를 것)",
+                        "GPUBuffer \(handle) is mapped and cannot be used in queue work "
+                            + "(read it with mapAsync, then call unmap())",
                         path: path
                     )
                 }
@@ -967,7 +985,7 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         }
     }
 
-    /// `pipeline.getBindGroupLayout(index)` — `layout: "auto"`로 유도된 레이아웃을 핸들로 꺼낸다.
+    /// `pipeline.getBindGroupLayout(index)` — pulls out a layout derived by `layout: "auto"` as a handle.
     private func getBindGroupLayout(_ command: WGPUGetBindGroupLayoutCommand) throws {
         let pipelineHandle = command.pipeline
         let pipeline: WGPUResolvedPipeline<B>
@@ -982,20 +1000,20 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
             ).raw)
         }
         guard let creation = try backend.bindGroupLayout(of: pipeline, index: command.index) else {
-            throw WGPUError.validation("파이프라인에 바인드 그룹 \(command.index)이(가) 없다")
+            throw WGPUError.validation("the pipeline has no bind group \(command.index)")
         }
         registry.insert(
             WGPUEngineBindGroupLayout<B>(raw: creation.layout, entries: creation.entries), at: command.id
         )
     }
 
-    // MARK: - 캔버스 (커맨드 스트림)
+    // MARK: - Canvas (command stream)
 
     private func configureCanvas(_ configuration: WGPUCanvasConfiguration) throws {
         guard let entry = surfaceEntry(for: configuration.canvasId) else {
             throw WGPUError.validation(
-                "캔버스 '\(configuration.canvasId)'이(가) 등록되지 않았다 "
-                    + "(<webgpu-canvas canvas-id=\"…\">가 화면에 붙어 있는지 확인)"
+                "canvas '\(configuration.canvasId)' is not registered "
+                    + "(check that <webgpu-canvas canvas-id=\"…\"> is attached on screen)"
             )
         }
         try backend.configureSurface(entry.raw, configuration: configuration)
@@ -1006,19 +1024,20 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         let handle = command.id
         let canvasId = command.canvas
         guard let entry = surfaceEntry(for: canvasId) else {
-            throw WGPUError.validation("캔버스 '\(canvasId)'이(가) 등록되지 않았다")
+            throw WGPUError.validation("canvas '\(canvasId)' is not registered")
         }
-        // **앞 배치**에서 얻은 드로어블이 present되지 못한 채 이 캔버스가 또 요청됐다면,
-        // 그 프레임은 끝난 것이다 — 여기서 거둔다.
+        // If a drawable obtained in **a previous batch** was never presented and this canvas is asked
+        // again, that frame is over — reclaim it here.
         //
-        // 제출 없이 끝난 배치가 드로어블을 남기는 것 자체는 의도된 것이다: 프레임이 아직
-        // 진행 중일 수 있다 (`finish()` 참고 — Three.js의 지연 파이프라인 생성). 문제는 그
-        // 프레임이 **영영 안 그려질 때**로, 첫 인코더 전에 검증 오류가 나면 그렇게 된다.
-        // 거두지 않으면 프레임마다 하나씩 쌓여 화면 표면에서는 세 번 만에 드로어블 풀이
-        // 마르고, 그 뒤로는 획득이 JS 스레드를 최대 1초씩 세운 뒤 영영 실패한다.
+        // A batch ending without a submit leaving its drawable behind is intentional: the frame may
+        // still be going (see `finish()` — Three.js's lazy pipeline creation). The problem is a frame
+        // that will **never be drawn**, which is what happens when a validation error hits before the
+        // first encoder. Without reclaiming, one piles up per frame and an on-screen surface drains
+        // its drawable pool in three, after which acquisition stalls the JS thread up to a second and
+        // then fails forever.
         //
-        // **한 배치 안의 반복 획득은 제외한다** — 그건 같은 프레임이고(명세도 같은 텍스처를
-        // 돌려주라고 한다), 앞서 내준 뷰가 아직 그 프레임에서 쓰인다.
+        // **Repeat acquisition within one batch is excluded** — that is the same frame (the spec says
+        // to return the same texture), and the view already handed out is still in use that frame.
         if !acquiredThisBatch.contains(canvasId),
            acquiredFrames.contains(where: { $0.canvas == canvasId }) {
             backend.discardAcquiredFrames()
@@ -1028,7 +1047,7 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         touchedCanvases[canvasId] = entry.raw
         guard let acquired = try backend.acquireFrameTexture(entry.raw) else {
             throw WGPUError.validation(
-                "캔버스 '\(canvasId)'의 드로어블을 얻지 못했다 (크기가 0이거나 드로어블이 고갈됨)"
+                "could not obtain a drawable for canvas '\(canvasId)' (size is zero, or drawables are exhausted)"
             )
         }
         registry.insert(
@@ -1045,7 +1064,7 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         frameScopedHandles.append(handle)
     }
 
-    // MARK: - 렌더 패스
+    // MARK: - Render pass
 
     private func beginRenderPass(_ descriptor: WGPURenderPassDescriptor) throws {
         closePass()
@@ -1077,8 +1096,8 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         if let depth = descriptor.depthStencilAttachment {
             let view = try textureView(depth.view)
             depthStencilFormat = view.format
-            // 깊이 뷰도 패스 레이아웃의 sampleCount에 반영한다 — 컬러 어태치먼트가 없는 MSAA 패스
-            // (그림자 맵·깊이 프리패스)에서 이걸 빠뜨리면 올바르게 선언한 번들이 거부된다.
+            // The depth view feeds the pass layout's sampleCount too — omit it and an MSAA pass with no
+            // color attachment (a shadow map or depth prepass) rejects a correctly declared bundle.
             sampleCount = max(sampleCount, view.sampleCount)
             depthStencil = WGPUResolvedRenderPass<B>.DepthStencilAttachment(
                 view: view.raw,
@@ -1096,7 +1115,7 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
             stencilReadOnly = depth.stencilReadOnly
         }
 
-        // occlusion 쿼리는 **패스를 열 때만** 붙일 수 있다 (WebGPU와 백엔드들이 같은 제약).
+        // An occlusion query set can only be attached **when opening the pass** (WebGPU and the backends agree).
         var occlusionQuerySet: WGPUEngineQuerySet<B>?
         if let handle = descriptor.occlusionQuerySet {
             let querySet = try registry.lookup(
@@ -1105,7 +1124,7 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
             if specValidation {
                 guard querySet.type == .occlusion else {
                     throw WGPUError.validation(
-                        "occlusionQuerySet은 type: \"occlusion\"이어야 한다 (받은 것: \(querySet.type.rawValue))"
+                        "occlusionQuerySet must be type: \"occlusion\" (got: \(querySet.type.rawValue))"
                     )
                 }
             }
@@ -1134,28 +1153,28 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         resetPassBindings()
     }
 
-    /// 타임스탬프 쓰기 자리를 확인한다.
+    /// Checks where timestamps are written.
     private func resolveTimestampWrites(_ writes: WGPUPassTimestampWrites) throws -> WGPUResolvedTimestampWrites<B> {
         let querySet = try registry.lookup(writes.querySet, as: WGPUEngineQuerySet<B>.self, kind: "GPUQuerySet")
         if specValidation {
             guard querySet.type == .timestamp else {
                 throw WGPUError.validation(
-                    "timestampWrites의 쿼리셋은 type: \"timestamp\"여야 한다 (받은 것: \(querySet.type.rawValue))"
+                    "the query set for timestampWrites must be type: \"timestamp\" (got: \(querySet.type.rawValue))"
                 )
             }
-            // 둘 다 생략하면 **조용한 no-op 패스**가 된다. 오류 없이 쿼리셋 초기값(0)이 resolve되므로
-            // 앱은 GPU 시간을 0ns로 읽는다.
+            // Omitting both makes it a **silent no-op pass**. The query set's initial value (0) resolves
+            // without error, so the app reads a GPU time of 0ns.
             guard writes.beginningOfPassWriteIndex != nil || writes.endOfPassWriteIndex != nil else {
                 throw WGPUError.validation(
-                    "timestampWrites는 beginningOfPassWriteIndex와 endOfPassWriteIndex 중 "
-                        + "최소 하나를 줘야 한다",
+                    "timestampWrites must supply at least one of beginningOfPassWriteIndex "
+                        + "and endOfPassWriteIndex",
                     path: "timestampWrites"
                 )
             }
-            // 같은 슬롯을 가리키면 나중 샘플이 앞의 것을 덮어 델타가 의미를 잃는다.
+            // Pointing both at the same slot lets the later sample overwrite the earlier, so the delta loses meaning.
             if let begin = writes.beginningOfPassWriteIndex, begin == writes.endOfPassWriteIndex {
                 throw WGPUError.validation(
-                    "timestampWrites의 두 인덱스는 서로 달라야 한다 (둘 다 \(begin))",
+                    "the two timestampWrites indices must differ (both are \(begin))",
                     path: "timestampWrites"
                 )
             }
@@ -1185,7 +1204,7 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         dirtyGroups.removeAll()
     }
 
-    // MARK: - 파이프라인·바인딩 상태
+    // MARK: - Pipeline and binding state
 
     private func setPipeline(_ command: WGPUSetPipelineCommand) throws {
         let handle = command.pipeline
@@ -1195,18 +1214,18 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
                 handle, as: WGPUEngineRenderPipeline<B>.self, kind: "GPURenderPipeline",
                 path: command.fieldPath("pipeline")
             )
-            // read-only로 선언한 어태치먼트를 쓰는 파이프라인은 여기서 막는다 — 백엔드가 그냥
-            // 써 버리면, read-only라고 적어 둔 깊이 버퍼가 실제로 변조된다. 메타데이터를 주지
-            // 않는 백엔드(nil)는 스스로 검증한다.
+            // A pipeline that writes an attachment declared read-only is stopped here — let the backend
+            // just write and the depth buffer marked read-only is genuinely modified. A backend that
+            // supplies no metadata (nil) validates this itself.
             guard !passDepthReadOnly || !(pipeline.info.writesDepth ?? false) else {
                 throw WGPUError.validation(
-                    "depthReadOnly 패스에서는 depthWriteEnabled: true 파이프라인을 쓸 수 없다"
+                    "a depthReadOnly pass cannot use a pipeline with depthWriteEnabled: true"
                 )
             }
             guard !passStencilReadOnly || !(pipeline.info.writesStencil ?? false) else {
                 throw WGPUError.validation(
-                    "stencilReadOnly 패스에서는 스텐실을 쓰는 파이프라인을 쓸 수 없다 "
-                        + "(failOp·depthFailOp·passOp가 모두 \"keep\"이어야 한다)"
+                    "a stencilReadOnly pass cannot use a pipeline that writes stencil "
+                        + "(failOp, depthFailOp and passOp must all be \"keep\")"
                 )
             }
             backend.setRenderPipeline(pipeline.raw)
@@ -1219,9 +1238,9 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
             backend.setComputePipeline(pipeline.raw)
             currentComputePipeline = pipeline
         case nil:
-            throw WGPUError.validation("setPipeline은 패스 안에서만 쓸 수 있다")
+            throw WGPUError.validation("setPipeline can only be used inside a pass")
         }
-        // 파이프라인이 바뀌면 레이아웃이 달라질 수 있으므로 바인드 그룹을 다시 적용한다.
+        // A pipeline change can change the layout, so bind groups are applied again.
         dirtyGroups = Set(boundGroups.keys)
     }
 
@@ -1234,12 +1253,13 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         dirtyGroups.insert(command.index)
     }
 
-    /// 파이프라인·바인드 그룹·정점/인덱스 버퍼 바인딩을 "지정되지 않음"으로 되돌린다.
+    /// Returns pipeline, bind group and vertex/index buffer bindings to "unspecified".
     ///
-    /// 패스를 새로 열 때와 `executeBundles` 앞뒤에 쓴다. 명세는 번들 실행이 **이전 상태를
-    /// 복원하는 것이 아니라 무효화한다**고 정한다 — 번들은 패스 상태를 물려받지 않고,
-    /// 실행이 끝나면 패스도 번들이 남긴 상태를 물려받지 않는다. 그래서 양쪽 다 초기화한다.
-    /// (뷰포트·시저·블렌드 상수·스텐실 참조는 이 목록에 없다 — 그대로 남는다.)
+    /// Used when opening a pass and on both sides of `executeBundles`. The spec states that executing
+    /// a bundle **invalidates the previous state rather than restoring it** — a bundle does not
+    /// inherit pass state, and once it finishes the pass does not inherit what the bundle left. So
+    /// both sides are reset. (Viewport, scissor, blend constant and stencil reference are not on this
+    /// list — they persist.)
     private func resetPassBindings() {
         currentRenderPipeline = nil
         boundGroups.removeAll()
@@ -1249,47 +1269,48 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         dirtyVertexSlots.removeAll()
     }
 
-    /// 드로우·디스패치 직전에 파이프라인이 요구하는 상태를 전부 확인하고 백엔드에 내린다.
+    /// Right before a draw or dispatch, verifies every piece of state the pipeline requires and sends it down.
     ///
-    /// 바인드 그룹과 정점 버퍼를 한자리에서 다루는 이유는, 둘 다 **번들 경계에서 무효화되는
-    /// 상태**라 검사 시점이 같아야 하기 때문이다. 새 드로우 op을 추가할 때 이 함수 하나만
-    /// 부르면 격리 계약이 자동으로 따라온다.
+    /// Bind groups and vertex buffers are handled in one place because both are **state invalidated at
+    /// bundle boundaries**, so they must be checked at the same moment. Calling this one function when
+    /// adding a new draw op brings the isolation contract along automatically.
     ///
-    /// 파이프라인 가드는 각 드로우 op이 자기 이름이 든 메시지로 **이 함수보다 먼저** 세운다 —
-    /// 아래의 같은 검사는 그 가드를 빠뜨린 op을 위한 안전망이라 메시지가 일반형이다.
+    /// Each draw op raises its own pipeline guard, with its name in the message, **before** this
+    /// function — the identical check below is a safety net for an op that forgot that guard, which is
+    /// why its message is generic.
     private func applyDrawState() throws {
         let requiredGroups: Set<Int>?
         if passState == .render {
             guard let pipeline = currentRenderPipeline else {
-                throw WGPUError.validation("draw 전에 setPipeline이 필요하다")
+                throw WGPUError.validation("setPipeline is required before draw")
             }
             requiredGroups = pipeline.info.requiredGroups
         } else {
             guard let pipeline = currentComputePipeline else {
-                throw WGPUError.validation("dispatch 전에 setPipeline이 필요하다")
+                throw WGPUError.validation("setPipeline is required before dispatch")
             }
             requiredGroups = pipeline.info.requiredGroups
         }
 
-        // 레이아웃이 요구하는 그룹이 전부 바인드되어 있어야 한다. 이 검사가 없으면 번들이
-        // 남긴 바인딩(또는 패스가 미리 올려 둔 바인딩)으로 조용히 그려진다 — 인코더에는
-        // "바인딩 해제"가 없으므로 `resetPassBindings()`만으로는 실제로 격리되지 않는다.
-        // (메타데이터를 주지 않는 백엔드는 스스로 검증한다.)
+        // Every group the layout requires must be bound. Without this check a draw silently uses
+        // bindings a bundle left behind (or ones the pass set up earlier) — an encoder has no
+        // "unbind", so `resetPassBindings()` alone does not actually isolate.
+        // (A backend that supplies no metadata validates this itself.)
         if let requiredGroups {
             for groupIndex in requiredGroups.sorted() where boundGroups[groupIndex] == nil {
                 throw WGPUError.validation(
-                    "파이프라인 레이아웃이 요구하는 @group(\(groupIndex))이 바인드되지 않았다 "
-                        + "(번들 실행 앞뒤로는 바인딩이 무효화된다 — setBindGroup을 다시 할 것)"
+                    "@group(\(groupIndex)) required by the pipeline layout is not bound "
+                        + "(bindings are invalidated around bundle execution — call setBindGroup again)"
                 )
             }
         }
 
-        // 바인드 그룹이 물고 있는 버퍼가 매핑 중이면 이 드로우도 큐 작업이므로 거부한다.
-        // (그룹은 만들 때 버퍼를 고정하므로, 만든 뒤에 매핑된 경우가 여기서 걸린다.)
+        // If a buffer held by a bind group is mapped, this draw is queue work too, so it is rejected.
+        // (A group pins its buffers at creation, so a buffer mapped afterwards is caught here.)
         for (_, bound) in boundGroups {
             for buffer in bound.group.buffers where buffer.isMapped {
                 throw WGPUError.validation(
-                    "매핑 중인 버퍼를 물고 있는 바인드 그룹으로는 그릴 수 없다 (unmap()을 먼저 부를 것)"
+                    "cannot draw with a bind group holding a mapped buffer (call unmap() first)"
                 )
             }
         }
@@ -1303,18 +1324,18 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         try applyVertexBuffers()
     }
 
-    /// 드로우 직전에 파이프라인이 요구하는 정점 버퍼가 다 있는지 보고 백엔드에 내린다.
+    /// Right before a draw, checks the vertex buffers the pipeline requires are present and sends them down.
     ///
-    /// 명세는 "`vertex.buffers[slot]`이 null이 아니면 `[[vertex_buffers]]`가 그 슬롯을 담아야
-    /// 한다"고 정한다. 이 검사가 없으면 패스가 미리 올려 둔 정점 버퍼로 번들이 그려지고,
-    /// 번들이 올린 것으로 패스가 그려진다 — 브라우저에서는 둘 다 무효인 코드다.
+    /// The spec states that "if `vertex.buffers[slot]` is not null, `[[vertex_buffers]]` must contain
+    /// that slot". Without this check a bundle draws with vertex buffers the pass set up earlier, and
+    /// the pass draws with what the bundle set — both invalid code in a browser.
     private func applyVertexBuffers() throws {
         guard passState == .render, let pipeline = currentRenderPipeline else { return }
         if let required = pipeline.info.requiredVertexSlots {
             for slot in required.sorted() where vertexBindings[slot] == nil {
                 throw WGPUError.validation(
-                    "파이프라인이 요구하는 정점 버퍼 슬롯 \(slot)이 바인드되지 않았다 "
-                        + "(번들 실행 앞뒤로는 바인딩이 무효화된다 — setVertexBuffer를 다시 할 것)"
+                    "vertex buffer slot \(slot) required by the pipeline is not bound "
+                        + "(bindings are invalidated around bundle execution — call setVertexBuffer again)"
                 )
             }
         }
@@ -1333,16 +1354,16 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         if specValidation {
             let maxSlots = backend.capabilities.maxVertexBufferSlots
             guard slot >= 0, slot < maxSlots else {
-                throw WGPUError.validation("정점 버퍼 슬롯은 0~\(maxSlots - 1) 범위다")
+                throw WGPUError.validation("vertex buffer slots range from 0 to \(maxSlots - 1)")
             }
             guard offset >= 0, offset <= buffer.size else {
                 throw WGPUError.validation(
-                    "정점 버퍼 offset(\(offset))이 버퍼 크기(\(buffer.size)B)를 벗어난다",
+                    "vertex buffer offset (\(offset)) is outside the buffer size (\(buffer.size)B)",
                     path: command.fieldPath("offset")
                 )
             }
         }
-        // 백엔드에 바로 내리지 않는다 — 드로우 직전에 내려야 번들 경계의 무효화가 성립한다.
+        // Not sent to the backend immediately — sending right before the draw is what makes bundle-boundary invalidation hold.
         vertexBindings[slot] = (buffer, offset)
         dirtyVertexSlots.insert(slot)
     }
@@ -1362,14 +1383,14 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         )
     }
 
-    // MARK: - 드로우 / 디스패치
+    // MARK: - Draw / dispatch
 
     private func draw(_ command: WGPUDrawCommand) throws {
         try requireRenderPass()
-        // 파이프라인 가드는 `applyDrawState()`보다 **먼저** 둔다 — 그 안의 같은 검사가 먼저
-        // 던지면 이 op 이름이 든 메시지가 영영 나가지 못하는 죽은 코드가 된다 (아래 draw 계열 공통).
+        // The pipeline guard sits **before** `applyDrawState()` — if the identical check inside it
+        // threw first, this op-named message would be dead code that never ships (same for the draw family below).
         guard currentRenderPipeline != nil else {
-            throw WGPUError.validation("draw 전에 setPipeline이 필요하다")
+            throw WGPUError.validation("setPipeline is required before draw")
         }
         try applyDrawState()
         try backend.draw(command)
@@ -1378,21 +1399,22 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
     private func drawIndexed(_ command: WGPUDrawIndexedCommand) throws {
         try requireRenderPass()
         guard currentRenderPipeline != nil else {
-            throw WGPUError.validation("drawIndexed 전에 setPipeline이 필요하다")
+            throw WGPUError.validation("setPipeline is required before drawIndexed")
         }
         guard let indexBinding else {
-            throw WGPUError.validation("drawIndexed 전에 setIndexBuffer가 필요하다")
+            throw WGPUError.validation("setIndexBuffer is required before drawIndexed")
         }
         try applyDrawState()
         try backend.drawIndexed(command, index: resolvedIndexBinding(indexBinding))
     }
 
-    /// 간접 인자 버퍼를 찾고 오프셋을 검증한다.
+    /// Finds the indirect argument buffer and validates the offset.
     ///
-    /// - 4바이트 정렬과 범위는 **백엔드가 단언(=프로세스 종료)으로 처리**할 수 있으므로 여기서 잡는다.
-    /// - `INDIRECT` usage는 백엔드에 대응하는 개념이 없을 수 있어 백엔드가 봐 주지 않는다.
-    ///   확인하지 않으면 여기서는 돌고 브라우저에서만 깨지는 코드가 나온다.
-    /// - 기기 능력은 백엔드가 먼저 자기 문맥이 담긴 오류로 거른다 (`ensureIndirectSupported`).
+    /// - 4-byte alignment and range are caught here because **the backend may handle them with an
+    ///   assertion (process death)**.
+    /// - `INDIRECT` usage is not checked by the backend, which may have no corresponding concept.
+    ///   Unchecked, code that runs here but breaks only in a browser ships.
+    /// - Device capability is filtered first by the backend with its own context (`ensureIndirectSupported`).
     private func indirectArguments(
         _ command: WGPUIndirectCommand,
         argumentSize: Int
@@ -1403,20 +1425,20 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         if specValidation {
             guard offset >= 0, offset % 4 == 0 else {
                 throw WGPUError.validation(
-                    "indirectOffset은 4의 배수여야 한다 (받은 값 \(offset))",
+                    "indirectOffset must be a multiple of 4 (got \(offset))",
                     path: command.fieldPath("indirectOffset")
                 )
             }
             guard offset + argumentSize <= object.size else {
                 throw WGPUError.validation(
-                    "간접 인자 \(argumentSize)B가 버퍼 범위를 넘는다 — "
-                        + "offset \(offset) + \(argumentSize)B > 버퍼 크기 \(object.size)B",
+                    "\(argumentSize)B of indirect arguments exceed the buffer — "
+                        + "offset \(offset) + \(argumentSize)B > buffer size \(object.size)B",
                     path: command.fieldPath("indirectOffset")
                 )
             }
             guard object.usage.contains(.indirect) else {
                 throw WGPUError.validation(
-                    "간접 드로우/디스패치의 인자 버퍼는 GPUBufferUsage.INDIRECT로 만들어야 한다",
+                    "the argument buffer of an indirect draw/dispatch must be created with GPUBufferUsage.INDIRECT",
                     path: command.fieldPath("indirectBuffer")
                 )
             }
@@ -1426,12 +1448,12 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
 
     private func drawIndirect(_ command: WGPUIndirectCommand) throws {
         try requireRenderPass()
-        // 인자 검증을 `applyDrawState()`보다 **먼저** 한다 — 거부할 명령이 인코더 상태를
-        // 이미 바꿔 놓는 일이 없어야 한다 (오류는 프레임을 죽이지 않고 누적되므로 더 그렇다).
-        // vertexCount, instanceCount, firstVertex, firstInstance — u32 4개.
+        // Argument validation runs **before** `applyDrawState()` — a command that will be rejected must
+        // not have already changed encoder state (all the more so because errors accumulate without
+        // killing the frame). vertexCount, instanceCount, firstVertex, firstInstance — four u32s.
         let arguments = try indirectArguments(command, argumentSize: 16)
         guard currentRenderPipeline != nil else {
-            throw WGPUError.validation("drawIndirect 전에 setPipeline이 필요하다")
+            throw WGPUError.validation("setPipeline is required before drawIndirect")
         }
         try applyDrawState()
         try backend.drawIndirect(buffer: arguments.buffer, offset: arguments.offset)
@@ -1439,13 +1461,13 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
 
     private func drawIndexedIndirect(_ command: WGPUIndirectCommand) throws {
         try requireRenderPass()
-        // indexCount, instanceCount, firstIndex, baseVertex(i32), firstInstance — 5칸.
+        // indexCount, instanceCount, firstIndex, baseVertex(i32), firstInstance — five slots.
         let arguments = try indirectArguments(command, argumentSize: 20)
         guard currentRenderPipeline != nil else {
-            throw WGPUError.validation("drawIndexedIndirect 전에 setPipeline이 필요하다")
+            throw WGPUError.validation("setPipeline is required before drawIndexedIndirect")
         }
         guard let indexBinding else {
-            throw WGPUError.validation("drawIndexedIndirect 전에 setIndexBuffer가 필요하다")
+            throw WGPUError.validation("setIndexBuffer is required before drawIndexedIndirect")
         }
         try applyDrawState()
         try backend.drawIndexedIndirect(
@@ -1457,7 +1479,7 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
     private func dispatchWorkgroups(_ command: WGPUDispatchWorkgroupsCommand) throws {
         try requireComputePass()
         guard currentComputePipeline != nil else {
-            throw WGPUError.validation("dispatchWorkgroups 전에 setPipeline이 필요하다")
+            throw WGPUError.validation("setPipeline is required before dispatchWorkgroups")
         }
         try applyDrawState()
         try backend.dispatchWorkgroups(command)
@@ -1465,16 +1487,16 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
 
     private func dispatchWorkgroupsIndirect(_ command: WGPUIndirectCommand) throws {
         try requireComputePass()
-        // x, y, z — u32 3개.
+        // x, y, z — three u32s.
         let arguments = try indirectArguments(command, argumentSize: 12)
         guard currentComputePipeline != nil else {
-            throw WGPUError.validation("dispatchWorkgroupsIndirect 전에 setPipeline이 필요하다")
+            throw WGPUError.validation("setPipeline is required before dispatchWorkgroupsIndirect")
         }
         try applyDrawState()
         try backend.dispatchWorkgroupsIndirect(buffer: arguments.buffer, offset: arguments.offset)
     }
 
-    // MARK: - occlusion 쿼리
+    // MARK: - Occlusion queries
 
     private func beginOcclusionQuery(_ command: WGPUBeginOcclusionQueryCommand) throws {
         try requireRenderPass()
@@ -1482,18 +1504,18 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         if specValidation {
             guard let querySet = passOcclusionQuerySet else {
                 throw WGPUError.validation(
-                    "beginOcclusionQuery를 쓰려면 beginRenderPass에 occlusionQuerySet을 줘야 한다"
+                    "to use beginOcclusionQuery, beginRenderPass must be given an occlusionQuerySet"
                 )
             }
             guard openOcclusionQuery == nil else {
-                throw WGPUError.validation("occlusion 쿼리는 중첩할 수 없다 (앞의 것을 endOcclusionQuery로 닫을 것)")
+                throw WGPUError.validation("occlusion queries cannot nest (close the previous one with endOcclusionQuery)")
             }
             try querySet.checkRange(first: index, count: 1, path: command.fieldPath("queryIndex"))
-            // 한 패스에서 같은 인덱스를 두 번 쓰면 두 구간이 같은 8바이트 슬롯을 나눠 쓴다 —
-            // 최종 값이 백엔드의 누적/덮어쓰기 동작에 달린 값이 되어 브라우저와 결과가 갈린다.
+            // Using the same index twice in one pass makes two regions share one 8-byte slot — the final
+            // value then depends on the backend's accumulate/overwrite behaviour and diverges from a browser.
             guard usedOcclusionQueries.insert(index).inserted else {
                 throw WGPUError.validation(
-                    "occlusion 쿼리 인덱스 \(index)은(는) 이 패스에서 이미 썼다",
+                    "occlusion query index \(index) was already used in this pass",
                     path: command.fieldPath("queryIndex")
                 )
             }
@@ -1507,18 +1529,18 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
     private func endOcclusionQuery() throws {
         try requireRenderPass()
         guard let index = openOcclusionQuery else {
-            throw WGPUError.validation("endOcclusionQuery: 열려 있는 occlusion 쿼리가 없다")
+            throw WGPUError.validation("endOcclusionQuery: no occlusion query is open")
         }
         try backend.endOcclusionQuery(index: index)
         openOcclusionQuery = nil
     }
 
-    // MARK: - 렌더 번들 실행
+    // MARK: - Render bundle execution
 
     private func executeBundles(_ command: WGPUExecuteBundlesCommand) throws {
         try requireRenderPass()
         guard let formats = passFormats else {
-            throw WGPUError.validation("executeBundles는 렌더 패스 안에서만 쓸 수 있다")
+            throw WGPUError.validation("executeBundles can only be used inside a render pass")
         }
         let bundles = try command.bundles.map {
             try registry.lookup(
@@ -1538,21 +1560,21 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
                 )
             }
         }
-        // 명세의 "Reset the render pass binding state"(step 4)는 호환성 검증만 통과하면 **무조건**
-        // 실행된다. 번들 명령 하나가 실패해 throw해도 마찬가지다 — 여기서 빠뜨리면 그 뒤의 패스 명령이
-        // 번들이 남긴 파이프라인·바인드 그룹을 물고 그려져 잘못된 픽셀이 나간다.
+        // The spec's "Reset the render pass binding state" (step 4) runs **unconditionally** once
+        // compatibility validation passes — including when a bundle command throws. Omit it here and the
+        // pass commands that follow draw holding the pipeline and bind groups the bundle left, shipping wrong pixels.
         defer { resetPassBindings() }
 
         if backend.capabilities.supportsNativeRenderBundles {
             let natives = try bundles.map { bundle -> B.RenderBundle in
                 guard let native = bundle.native else {
-                    throw WGPUError.backend("네이티브 렌더 번들이 없다 (백엔드가 바뀐 채 재사용된 핸들)")
+                    throw WGPUError.backend("no native render bundle (a handle reused across a backend change)")
                 }
                 return native
             }
             try backend.executeBundles(natives)
         } else {
-            // 하나라도 맞지 않으면 아무것도 실행하지 않는다 — 절반만 그려진 프레임을 남기지 않는다.
+            // If even one does not match, nothing runs — we do not leave a half-drawn frame behind.
             for bundle in bundles {
                 resetPassBindings()
                 for bundleCommand in bundle.commands {
@@ -1562,68 +1584,69 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         }
     }
 
-    // MARK: - 복사
+    // MARK: - Copies
 
     private func copyBufferToBuffer(_ command: WGPUCopyBufferToBufferCommand) throws {
         let source = try unmappedBuffer(command.source, path: command.fieldPath("source"))
         let destination = try unmappedBuffer(command.destination, path: command.fieldPath("destination"))
         let sourceOffset = command.sourceOffset
         let destinationOffset = command.destinationOffset
-        // 명세의 짧은 형태 `copyBufferToBuffer(src, dst)`는 "원본의 남은 전부"다.
-        // JS shim이 채워 보내지만, 커맨드 스트림을 직접 만드는 쪽(네이티브 단독 사용)에도
-        // 같은 기본값을 준다 — `clearBuffer`와 규칙을 맞춘다.
+        // The spec's short form `copyBufferToBuffer(src, dst)` means "the rest of the source".
+        // The JS shim fills it in, but the same default is given to anyone building the command stream
+        // directly (native-only use) — matching the rule of `clearBuffer`.
         let size = command.size ?? max(0, source.size - sourceOffset)
         if specValidation {
-            // 범위를 넘는 복사는 **Metal이 단언으로 죽인다.** 여기서 검증 오류로 바꾼다.
+            // A copy past the end **kills Metal with an assertion.** Turn it into a validation error here.
             guard sourceOffset >= 0, destinationOffset >= 0, size >= 0 else {
                 throw WGPUError.validation(
-                    "copyBufferToBuffer의 오프셋·크기는 음수일 수 없다 "
+                    "copyBufferToBuffer offsets and size cannot be negative "
                     + "(sourceOffset \(sourceOffset), destinationOffset \(destinationOffset), size \(size))"
                 )
             }
             guard sourceOffset + size <= source.size else {
                 throw WGPUError.validation(
-                    "copyBufferToBuffer 원본 범위가 버퍼를 넘는다 — "
-                    + "\(sourceOffset) + \(size)B > 크기 \(source.size)B",
+                    "copyBufferToBuffer source range exceeds the buffer — "
+                    + "\(sourceOffset) + \(size)B > size \(source.size)B",
                     path: command.fieldPath("size")
                 )
             }
             guard destinationOffset + size <= destination.size else {
                 throw WGPUError.validation(
-                    "copyBufferToBuffer 대상 범위가 버퍼를 넘는다 — "
-                    + "\(destinationOffset) + \(size)B > 크기 \(destination.size)B",
+                    "copyBufferToBuffer destination range exceeds the buffer — "
+                    + "\(destinationOffset) + \(size)B > size \(destination.size)B",
                     path: command.fieldPath("size")
                 )
             }
             guard source.usage.contains(.copySrc) else {
                 throw WGPUError.validation(
-                    "copyBufferToBuffer의 원본은 GPUBufferUsage.COPY_SRC로 만들어야 한다",
+                    "the source of copyBufferToBuffer must be created with GPUBufferUsage.COPY_SRC",
                     path: command.fieldPath("source")
                 )
             }
             guard destination.usage.contains(.copyDst) else {
                 throw WGPUError.validation(
-                    "copyBufferToBuffer의 대상은 GPUBufferUsage.COPY_DST로 만들어야 한다",
+                    "the destination of copyBufferToBuffer must be created with GPUBufferUsage.COPY_DST",
                     path: command.fieldPath("destination")
                 )
             }
-            // 명세 규칙 — Metal의 blit은 바이트 단위로도 복사해 주므로 여기서 안 막으면
-            // 브라우저에서만 거부되는 코드가 나온다.
+            // A spec rule — Metal's blit copies at byte granularity too, so leaving it unchecked ships
+            // code that only a browser rejects.
             guard sourceOffset % 4 == 0, destinationOffset % 4 == 0, size % 4 == 0 else {
                 throw WGPUError.validation(
-                    "copyBufferToBuffer의 오프셋·크기는 4의 배수여야 한다 "
-                    + "(받은 값 \(sourceOffset), \(destinationOffset), \(size))",
+                    "copyBufferToBuffer offsets and size must be multiples of 4 "
+                    + "(got \(sourceOffset), \(destinationOffset), \(size))",
                     path: command.fieldPath("size")
                 )
             }
         }
-        if size == 0 { return }   // 0바이트 복사는 no-op
-        // 음수는 조용히 삼키지 않는다 — Metal 경로는 위 검사가 먼저 던져 도달하지 않고,
-        // 네이티브 검증 경로는 여기서 같은 문구로 거부한다 (음수를 GPU 인자 폭으로 옮기는
-        // 순간이 트랩이라, 이 거부는 검증 주체와 무관한 최소한의 예외처리다).
+        if size == 0 { return }   // a zero-byte copy is a no-op
+        // Negatives are not swallowed quietly — the Metal path never reaches here because the check
+        // above throws first, and the natively-validating path rejects with the same wording (moving a
+        // negative into a GPU argument width is the trap, so this rejection is minimal exception
+        // handling regardless of who validates).
         guard sourceOffset >= 0, destinationOffset >= 0, size > 0 else {
             throw WGPUError.validation(
-                "copyBufferToBuffer의 오프셋·크기는 음수일 수 없다 "
+                "copyBufferToBuffer offsets and size cannot be negative "
                 + "(sourceOffset \(sourceOffset), destinationOffset \(destinationOffset), size \(size))"
             )
         }
@@ -1634,44 +1657,45 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         )
     }
 
-    /// `clearBuffer` — 버퍼의 한 구간을 0으로 채운다.
+    /// `clearBuffer` — fills a range of a buffer with zeros.
     ///
-    /// `writeBuffer`로 0을 밀어 넣는 것과 결과는 같지만 **CPU에서 0 배열을 만들어 브리지로
-    /// 실어 보내지 않는다.** 큰 스토리지 버퍼를 프레임마다 초기화하는 컴퓨트 경로에서 차이가 크다.
+    /// The result matches pushing zeros through `writeBuffer`, but **it never builds a zero array on
+    /// the CPU and ships it across the bridge.** That difference is large on a compute path clearing a
+    /// big storage buffer every frame.
     private func clearBuffer(_ command: WGPUClearBufferCommand) throws {
         let object = try unmappedBuffer(command.buffer, path: command.fieldPath("buffer"))
         let offset = command.offset
-        // 명세: size를 생략하면 버퍼 끝까지다.
+        // Spec: omitting size means through the end of the buffer.
         let size = command.size ?? max(0, object.size - offset)
 
         if specValidation {
             guard object.usage.contains(.copyDst) else {
                 throw WGPUError.validation(
-                    "clearBuffer의 대상은 GPUBufferUsage.COPY_DST로 만들어야 한다",
+                    "the destination of clearBuffer must be created with GPUBufferUsage.COPY_DST",
                     path: command.fieldPath("buffer")
                 )
             }
-            // 4의 배수 요구는 명세 규칙이다. Metal은 바이트 단위로도 채워 주므로 안 막으면
-            // 브라우저에서만 거부되는 코드가 나온다.
+            // The multiple-of-4 requirement is a spec rule. Metal fills at byte granularity too, so
+            // leaving it unchecked ships code that only a browser rejects.
             guard offset % 4 == 0, size % 4 == 0 else {
                 throw WGPUError.validation(
-                    "clearBuffer의 offset·size는 4의 배수여야 한다 (받은 값 \(offset), \(size))",
+                    "clearBuffer's offset and size must be multiples of 4 (got \(offset), \(size))",
                     path: command.fieldPath("offset")
                 )
             }
             guard offset >= 0, size >= 0, offset + size <= object.size else {
                 throw WGPUError.validation(
-                    "clearBuffer 범위가 버퍼를 넘는다 — offset \(offset) + \(size)B > 크기 \(object.size)B",
+                    "clearBuffer range exceeds the buffer — offset \(offset) + \(size)B > size \(object.size)B",
                     path: command.fieldPath("size")
                 )
             }
         }
         if size == 0 { return }   // no-op
-        // Range 구성 자체가 음수에서 트랩이다 — 트랩 방지는 검증 주체와 무관하게 여기 몫이다
-        // (Metal 경로는 위 검사가 먼저 던져 도달하지 않는다).
+        // Building the Range itself traps on a negative — trap prevention is ours regardless of who
+        // validates (the Metal path never reaches here because the check above throws first).
         guard offset >= 0, size > 0 else {
             throw WGPUError.validation(
-                "clearBuffer의 offset·size는 음수일 수 없다 (받은 값 \(offset), \(size))"
+                "clearBuffer's offset and size cannot be negative (got \(offset), \(size))"
             )
         }
         try requireNoOpenPass()
@@ -1701,8 +1725,8 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
             origin: source.origin, size: size,
             buffer: buffer.raw, offset: destination.offset,
             bytesPerRow: bytesPerRow,
-            // 한 슬라이스만 복사하므로 `rowsPerImage`는 쓰이지 않는다
-            // (`docs/COMMAND-STREAM.md`의 알려진 차이).
+            // Only one slice is copied, so `rowsPerImage` goes unused
+            // (a known difference in `docs/COMMAND-STREAM.md`).
             bytesPerImage: bytesPerRow * format.blockRows(height: size.height)
         )
     }
@@ -1753,7 +1777,7 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         )
     }
 
-    /// 쿼리 결과를 버퍼로 내린다.
+    /// Resolves query results into a buffer.
     private func resolveQuerySet(_ command: WGPUResolveQuerySetCommand) throws {
         let querySet = try registry.lookup(
             command.querySet, as: WGPUEngineQuerySet<B>.self, kind: "GPUQuerySet",
@@ -1761,37 +1785,37 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         )
         let destination = try unmappedBuffer(command.destination, path: command.fieldPath("destination"))
         let first = command.firstQuery
-        // 생략하면 쿼리셋의 남은 전부 — 쿼리셋 크기를 알아야 하므로 여기서 채운다.
+        // Omitted means the rest of the query set — that needs its size, so it is filled here.
         let count = command.queryCount ?? (querySet.count - first)
         let offset = command.destinationOffset
         if specValidation {
             try querySet.checkRange(first: first, count: count, path: command.fieldPath("firstQuery"))
 
-            // 명세가 요구하는 정렬. Metal은 이보다 느슨해서 여기서 안 막으면 브라우저에서만 깨진다.
+            // Alignment the spec requires. Metal is looser, so leaving it unchecked breaks only in a browser.
             guard offset >= 0, offset % 256 == 0 else {
                 throw WGPUError.validation(
-                    "destinationOffset은 256의 배수여야 한다 (받은 값 \(offset))",
+                    "destinationOffset must be a multiple of 256 (got \(offset))",
                     path: command.fieldPath("destinationOffset")
                 )
             }
             let byteCount = count * WGPUEngineQuerySet<B>.resultStride
             guard offset + byteCount <= destination.size else {
                 throw WGPUError.validation(
-                    "쿼리 결과 \(byteCount)B가 버퍼 범위를 넘는다 — "
-                        + "offset \(offset) + \(byteCount)B > 버퍼 크기 \(destination.size)B",
+                    "\(byteCount)B of query results exceed the buffer — "
+                        + "offset \(offset) + \(byteCount)B > buffer size \(destination.size)B",
                     path: command.fieldPath("destinationOffset")
                 )
             }
             guard destination.usage.contains(.queryResolve) else {
                 throw WGPUError.validation(
-                    "resolveQuerySet의 목적지 버퍼는 GPUBufferUsage.QUERY_RESOLVE로 만들어야 한다",
+                    "the destination buffer of resolveQuerySet must be created with GPUBufferUsage.QUERY_RESOLVE",
                     path: command.fieldPath("destination")
                 )
             }
         }
-        if count == 0 { return }   // no-op (0바이트 복사는 백엔드가 거부한다)
-        // 음수 count는 넘긴다 — Metal 경로는 위 checkRange가 먼저 던졌고,
-        // 네이티브 검증 경로는 백엔드의 안전 변환(dawnU32)이 validation으로 거른다.
+        if count == 0 { return }   // no-op (the backend rejects a zero-byte copy)
+        // A negative count passes through — the Metal path already threw in checkRange above, and the
+        // natively-validating path filters it as validation in the backend's safe conversion (dawnU32).
         try requireNoOpenPass()
         try backend.resolveQuerySet(
             querySet.raw, first: first, count: count,
@@ -1799,7 +1823,7 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         )
     }
 
-    // MARK: - 디버그 마커
+    // MARK: - Debug markers
 
     private func pushDebugGroup(_ command: WGPUPushDebugGroupCommand) throws {
         if passState != nil {
@@ -1811,9 +1835,9 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         }
     }
 
-    /// 짝이 맞지 않는 `pop`은 **Metal이 단언으로 프로세스를 죽인다.** 그래서 깊이를 세어
-    /// 여기서 막는다 — 명세도 이 경우를 오류로 정하므로 동작이 같고, 앱은 살아남는다.
-    /// 네이티브 검증 백엔드는 죽지 않고 오류를 내므로 그대로 흘려보낸다.
+    /// An unmatched `pop` **kills the process with a Metal assertion.** So we count the depth and stop
+    /// it here — the spec also defines this case as an error, so behaviour matches and the app
+    /// survives. A natively-validating backend raises an error instead of dying, so we pass it through.
     private func popDebugGroup() {
         if passState != nil {
             guard specValidation else {
@@ -1822,7 +1846,7 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
                 return
             }
             guard encoderDebugDepth > 0 else {
-                record(.validation("popDebugGroup: 짝이 맞는 pushDebugGroup이 없다 (패스 안)"))
+                record(.validation("popDebugGroup: no matching pushDebugGroup (inside a pass)"))
                 return
             }
             encoderDebugDepth -= 1
@@ -1830,15 +1854,15 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         } else {
             guard specValidation else {
                 bufferDebugDepth = max(0, bufferDebugDepth - 1)
-                // 백엔드 호출은 커맨드 버퍼가 있을 때만 — 없으면 붙일 자리가 없다.
+                // Call the backend only when a command buffer exists — otherwise there is nothing to attach to.
                 if backend.hasPendingWork { backend.popDebugGroup(scope: .frame) }
                 return
             }
-            // **보고는 `hasPendingWork`와 무관하다.** 예전에는 커맨드 버퍼가 없으면 이 갈래가
-            // 통째로 조용히 지나가, 짝 없는 pop을 잡는 것이 일인 함수가 정작 "아직 아무 작업도
-            // 없는데 pop부터 한" 가장 흔한 실수를 놓쳤다.
+            // **Reporting does not depend on `hasPendingWork`.** Previously, with no command buffer this
+            // branch passed over entirely, so a function whose job is catching unmatched pops missed the
+            // most common mistake of all: popping before any work has been done.
             guard bufferDebugDepth > 0 else {
-                record(.validation("popDebugGroup: 짝이 맞는 pushDebugGroup이 없다"))
+                record(.validation("popDebugGroup: no matching pushDebugGroup"))
                 return
             }
             bufferDebugDepth -= 1
@@ -1846,7 +1870,7 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         }
     }
 
-    // MARK: - WebGPURuntime: 조회·비동기
+    // MARK: - WebGPURuntime: queries and async
 
     public func adapterInfo() -> [String: Any] {
         executionLock.lock()
@@ -1854,7 +1878,7 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         return backend.adapterInfo()
     }
 
-    /// `GPUShaderModule.getCompilationInfo()` — 그 모듈의 컴파일 진단.
+    /// `GPUShaderModule.getCompilationInfo()` — that module's compilation diagnostics.
     public func shaderCompilationInfo(handle: Int) -> [String: Any] {
         executionLock.lock()
         defer { executionLock.unlock() }
@@ -1863,7 +1887,7 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
             WGPUHandle(handle), as: WGPUEngineShaderModule<B>.self, kind: "GPUShaderModule"
         ) else {
             return ["ok": false, "errors": [
-                WGPUError.validation("GPUShaderModule #\(handle)이(가) 없다").payload,
+                WGPUError.validation("GPUShaderModule #\(handle) does not exist").payload,
             ]]
         }
         let messages = backend.compilationMessages(of: module.raw).map { message -> [String: Any] in
@@ -1879,10 +1903,10 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         return ["ok": true, "messages": messages]
     }
 
-    /// 버퍼 내용을 읽는다 (`GPUBuffer.mapAsync` + `getMappedRange`에 해당).
+    /// Reads buffer contents (corresponding to `GPUBuffer.mapAsync` + `getMappedRange`).
     ///
-    /// 읽는 동안 이 버퍼는 "unavailable"이다 — 다음 프레임의 쓰기가 같은 메모리에 겹치면
-    /// JS가 받는 값이 어느 프레임 것인지 보장되지 않는다 (`WGPUEngineBuffer.isMapped`).
+    /// While reading, this buffer is "unavailable" — if a write from the next frame overlaps the same
+    /// memory, which frame's values JS receives is not guaranteed (`WGPUEngineBuffer.isMapped`).
     public func readBuffer(
         handle: Int,
         offset: Int = 0,
@@ -1906,7 +1930,7 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
             completion([
                 "ok": false,
                 "errors": [WGPUError.validation(
-                    "GPUBuffer \(WGPUHandle(handle))은(는) 이미 매핑 중이다 (unmap()을 먼저 부를 것)"
+                    "GPUBuffer \(WGPUHandle(handle)) is already mapped (call unmap() first)"
                 ).payload],
             ])
             return
@@ -1915,20 +1939,21 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
 
         let length = size ?? (target.size - offset)
         guard offset >= 0, length >= 0, offset + length <= target.size else {
-            // 실패했으면 매핑을 세우지 않는다 — 명세도 실패한 mapAsync는 버퍼를 매핑하지 않는다.
+            // On failure we do not set up the mapping — a failed mapAsync leaves the buffer unmapped in the spec too.
             target.isMapped = false
             executionLock.unlock()
             completion([
                 "ok": false,
                 "errors": [WGPUError.validation(
-                    "readBuffer 범위 초과 — offset \(offset) + \(length)B > 버퍼 크기 \(target.size)B"
+                    "readBuffer out of range — offset \(offset) + \(length)B > buffer size \(target.size)B"
                 ).payload],
             ])
             return
         }
 
-        // 앞서 제출한 GPU 작업 완료 대기는 백엔드 몫이다. 완료는 임의 스레드에서 오므로
-        // 래퍼가 락을 다시 잡는다 — 등록 도중 동기로 와도 재귀 락이라 안전하다.
+        // Waiting on previously submitted GPU work is the backend's job. Completion arrives on an
+        // arbitrary thread, so the wrapper retakes the lock — safe even when it arrives synchronously
+        // during registration, because the lock is recursive.
         noteReadbackStarted()
         backend.readBuffer(target.raw, offset: offset, length: length) { [weak self] result in
             guard let self else { return }
@@ -1940,39 +1965,39 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
                 target.isMapped = false
                 completion(["ok": false, "errors": [error.payload]])
             case .success(let data):
-                // `Data`를 그대로 싣는다 — Lynx가 `NSData`를 JS의 `ArrayBuffer`로 바꿔 준다.
-                // base64로 만들면 33% 팽창에 JS 쪽 디코딩 루프까지 붙는다.
+                // Carry `Data` straight through — Lynx turns `NSData` into a JS `ArrayBuffer`.
+                // base64 would add 33% inflation plus a decoding loop on the JS side.
                 completion(["ok": true, "data": data, "byteLength": data.count])
             }
         }
         executionLock.unlock()
     }
 
-    // MARK: - 리드백 자가 펌프
+    // MARK: - Readback self-pump
 
-    /// 미결 리드백 수 — `executionLock` 아래에서만 읽고 쓴다.
+    /// Outstanding readback count — read and written only under `executionLock`.
     private var pendingReadbacks = 0
     private var readbackPumpRunning = false
 
-    /// 자가 펌프의 회전 상한 (1ms 간격 × 이 수 = 약 30초).
+    /// Spin cap for the self-pump (1ms per turn × this count = about 30 seconds).
     ///
-    /// 완료가 **영영 안 오는** 경우(디바이스 손실, 백엔드가 콜백을 흘림)에도 분리 스레드가
-    /// 영원히 돌지 않게 하는 안전장치다. 상한이 없으면 그 스레드가 CPU를 태우면서 매 회전마다
-    /// `executionLock`을 잡아 JS 스레드까지 느리게 만든다 — 원인은 다른 곳인데 증상만 번진다.
-    /// (제네릭 타입이라 저장 프로퍼티가 될 수 없어 계산 프로퍼티다.)
+    /// A safeguard so the detached thread does not spin forever when a completion **never arrives**
+    /// (device loss, or a backend dropping the callback). Without a cap that thread burns CPU and
+    /// takes `executionLock` every turn, slowing the JS thread too — the cause is elsewhere but the
+    /// symptom spreads. (A computed property because a generic type cannot hold a static stored one.)
     private static var readbackPumpMaxSpins: Int { 30_000 }
 
-    /// 완료가 `pumpEvents()`에서만 나오는 백엔드(Dawn)를 위해, 미결 리드백이 있는 동안
-    /// 자가 펌프를 돌린다.
+    /// For backends whose completions come only from `pumpEvents()` (Dawn), runs a self-pump while
+    /// readbacks are outstanding.
     ///
-    /// 호스트의 프레임 티커는 **JS가 프레임 루프를 켠 씬에서만** 돈다. 애니메이션 없는
-    /// 씬(정적 검사 화면)이 `mapAsync`를 걸면 아무도 펌프를 밟지 않아 완료가 영영 도착하지
-    /// 않았다 — 오류가 아니라 **영원한 대기**라 화면에는 아무 일도 없다. `WebGPURuntime.
-    /// processEvents` 문서가 "티커가 없는 구성에서도 완료는 도착해야 한다 — 자체 대기 수단을
-    /// 갖출 것"이라 정한 자리의 이행이다. (Metal은 완료 핸들러가 스스로 도착하므로
-    /// `needsEventPump`가 거짓이고, 이 경로 전체가 비용 없이 빠진다.)
+    /// The host's frame ticker runs **only in scenes where JS started the frame loop.** When a scene
+    /// without animation (a static check screen) issues `mapAsync`, nobody steps the pump and the
+    /// completion never arrived — not an error but **an endless wait**, with nothing happening on
+    /// screen. This is the discharge of what `WebGPURuntime.processEvents` requires: "completions must
+    /// arrive even with no ticker — have your own waiting mechanism". (Metal's completion handler
+    /// arrives on its own, so `needsEventPump` is false and this whole path drops out at no cost.)
     ///
-    /// `executionLock` 아래에서 부른다.
+    /// Called under `executionLock`.
     private func noteReadbackStarted() {
         guard backend.capabilities.needsEventPump else { return }
         pendingReadbacks += 1
@@ -1989,9 +2014,9 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
                 if outstanding > 0, !exhausted {
                     self.backend.pumpEvents()
                 } else {
-                    // 여기서 내려놓는다 — 미결 카운터는 **일부러 그대로 둔다.**
-                    // 다음 `readBuffer`가 펌프를 다시 세우므로 회복 가능하고,
-                    // 카운터를 0으로 속이면 진짜 미결이 있는지 알 수 없게 된다.
+                    // We put it down here — the outstanding counter is **deliberately left alone.**
+                    // The next `readBuffer` stands the pump back up, so this is recoverable, and
+                    // faking the counter to 0 would hide whether anything is really outstanding.
                     self.readbackPumpRunning = false
                 }
                 self.executionLock.unlock()
@@ -1999,28 +2024,28 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
                 if exhausted {
                     WGPULog.runtime.error(
                         """
-                        리드백 자가 펌프를 멈춘다 — 미결 \(outstanding, privacy: .public)건의 완료가 \
-                        30초 동안 오지 않았다 (디바이스 손실이거나 백엔드가 완료 콜백을 흘리고 있다)
+                        Stopping the readback self-pump — \(outstanding, privacy: .public) outstanding \
+                        completion(s) did not arrive within 30s (device loss, or the backend is dropping completion callbacks)
                         """
                     )
                     return
                 }
-                // 락을 놓은 채 쉰다 — JS 스레드의 execute와 1ms 간격으로만 경쟁한다.
+                // Rest with the lock released — it competes with the JS thread's execute only at 1ms intervals.
                 usleep(1_000)
             }
         }
     }
 
-    /// `executionLock` 아래에서 부른다 (완료 래퍼 안).
+    /// Called under `executionLock` (inside the completion wrapper).
     private func noteReadbackFinished() {
         guard backend.capabilities.needsEventPump else { return }
         pendingReadbacks -= 1
     }
 
-    /// 인코딩된 이미지를 풀어 `ImageBitmap` 자리의 객체로 등록한다 (JS `createImageBitmap`).
+    /// Decodes an encoded image and registers it as the object standing in for `ImageBitmap` (JS `createImageBitmap`).
     ///
-    /// **핸들은 JS가 발급한다** — 커맨드 스트림과 같은 규칙이다. 디코딩은 느리므로
-    /// 백그라운드 큐에서 하고, 등록만 실행 락 안에서 한다.
+    /// **The handle is issued by JS** — the same rule as the command stream. Decoding is slow, so it
+    /// happens on a background queue and only registration runs inside the execution lock.
     public func decodeImage(
         handle: Int,
         data: Data?,
@@ -2034,12 +2059,13 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
                     let bitmap = try WGPUImageDecoder.decode(bytes, options: options)
-                    // 런타임이 먼저 해제됐어도 **콜백은 반드시 한 번 부른다.** 그냥 빠져나가면
-                    // JS의 `createImageBitmap()` Promise가 영영 풀리지 않아, 앱은 오류도 못 보고
-                    // 그 자리에 멈춘다 (실패 경로들은 전부 콜백한다 — 여기만 새던 구멍이었다).
+                    // **The callback must fire exactly once** even if the runtime was released first.
+                    // Slipping out would leave the JS `createImageBitmap()` promise unsettled forever,
+                    // stopping the app there without even an error (every failure path calls back —
+                    // this was the one hole).
                     guard let self else {
                         return fail(WGPUError.validation(
-                            "런타임이 이미 해제됐다 — createImageBitmap 결과를 등록할 수 없다"
+                            "the runtime has already been released — cannot register the createImageBitmap result"
                         ))
                     }
                     self.executionLock.lock()
@@ -2058,7 +2084,7 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
             finish(data)
         } else if let name {
             guard let provider else {
-                return fail(WGPUError.validation("애셋 공급자가 없다 — 이미지 바이트를 직접 넘길 것"))
+                return fail(WGPUError.validation("no asset provider — pass the image bytes directly"))
             }
             provider.loadAsset(named: name) { result in
                 switch result {
@@ -2067,11 +2093,11 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
                 }
             }
         } else {
-            fail(WGPUError.validation("createImageBitmap에는 이미지 바이트나 애셋 이름이 필요하다"))
+            fail(WGPUError.validation("createImageBitmap needs image bytes or an asset name"))
         }
     }
 
-    // MARK: - WebGPURuntime: 캔버스
+    // MARK: - WebGPURuntime: canvas
 
     private struct CanvasEntry {
         let raw: B.Surface
@@ -2088,29 +2114,30 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
     public func attachOffscreenCanvas(identifier: String, size: CGSize) throws {
         guard Self.isUsableDrawableSize(size) else {
             throw WGPUError.validation(
-                "오프스크린 캔버스 크기가 유효하지 않다 (\(size.width)x\(size.height))"
+                "the offscreen canvas size is not valid (\(size.width)x\(size.height))"
             )
         }
         let creation = try backend.makeOffscreenSurface(identifier: identifier, size: size)
         registerSurface(creation.surface, identifier: identifier, pacesFrames: creation.pacesFrames)
     }
 
-    /// 표면 크기로 쓸 수 있는 값인가 — **유한하고 음수가 아닌가.**
+    /// Whether a value is usable as a surface size — **finite and non-negative.**
     ///
-    /// NaN·무한대·음수는 이후 모든 정수 변환의 **트랩 씨앗**이다. `Int(CGFloat.nan)`은
-    /// Swift 런타임 트랩(프로세스 종료)이고, 부호 없는 GPU 인자 폭으로 접히면 거대값이 된다.
-    /// 크기는 UI 레이아웃에서 오므로(`bounds × pixelRatio`) 앱이 이상한 값을 흘리는 순간이
-    /// 곧 크래시가 된다 — 백엔드마다 따로 막을 일이 아니라 여기서 한 번 막는다.
+    /// NaN, infinity and negatives are **the seed of a trap** in every later integer conversion.
+    /// `Int(CGFloat.nan)` is a Swift runtime trap (process death), and folded into an unsigned GPU
+    /// argument width it becomes an enormous value. Sizes come from UI layout (`bounds × pixelRatio`),
+    /// so the moment an app leaks a strange value is a crash — not something to guard per backend, so
+    /// it is guarded once here.
     private static func isUsableDrawableSize(_ size: CGSize) -> Bool {
         size.width.isFinite && size.height.isFinite && size.width >= 0 && size.height >= 0
     }
 
-    /// 백엔드가 만든 표면을 직접 등록한다 — 커스텀 표면(테스트 더블 등)의 통로다.
+    /// Registers a backend-built surface directly — the channel for custom surfaces (test doubles, …).
     public func registerSurface(_ surface: B.Surface, identifier: String, pacesFrames: Bool) {
         canvasLock.lock()
         canvases[identifier] = CanvasEntry(raw: surface, pacesFrames: pacesFrames)
         canvasLock.unlock()
-        // 드로어블 풀이 있는 표면만 페이싱 대상이다 — 오프스크린은 밀릴 일이 없다.
+        // Only surfaces with a drawable pool are paced — an offscreen one cannot fall behind.
         if pacesFrames { frameCoordinator.track(canvas: identifier) }
     }
 
@@ -2118,16 +2145,16 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         canvasLock.lock()
         canvases.removeValue(forKey: identifier)
         canvasLock.unlock()
-        // 죽은 캔버스의 카운터를 남겨 두면 그것이 영원히 프레임 틱을 막는다.
+        // Leaving a dead canvas's counter behind would block frame ticks forever.
         frameCoordinator.forget(canvas: identifier)
     }
 
-    /// 드로어블 크기 갱신 — **쓸 수 없는 값은 조용히 무시한다.**
+    /// Updates the drawable size — **unusable values are ignored silently.**
     ///
-    /// 레이아웃 도중의 NaN·음수는 흔하고(측정 전 프레임 등), 그걸 그대로 흘리면
-    /// `Int(CGFloat.nan)`에서 프로세스가 죽는다 (`isUsableDrawableSize`). 오류로 돌려줄
-    /// 통로도 없는 자리라(반환값이 없다) 무시가 유일하게 맞는 처리다 — 다음 레이아웃이
-    /// 제대로 된 값을 들고 다시 온다.
+    /// NaN and negatives are common during layout (a frame before measurement, say), and passing them
+    /// straight down kills the process at `Int(CGFloat.nan)` (`isUsableDrawableSize`). There is no
+    /// channel to return an error here either (no return value), so ignoring is the only right
+    /// handling — the next layout comes back with a proper value.
     public func resizeCanvas(identifier: String, drawableSize: CGSize) {
         guard Self.isUsableDrawableSize(drawableSize) else { return }
         guard let entry = surfaceEntry(for: identifier) else { return }
@@ -2155,7 +2182,7 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
             return [
                 "ok": false,
                 "errors": [WGPUError.validation(
-                    "캔버스 '\(identifier)'이(가) 없다 (등록된 것: "
+                    "canvas '\(identifier)' does not exist (registered: "
                         + "\(registeredSurfaceIdentifiers.joined(separator: ", ")))"
                 ).payload],
             ]
@@ -2172,41 +2199,41 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
     public func readCanvasPixels(identifier: String) throws -> WGPUPixelReadback {
         guard let entry = surfaceEntry(for: identifier) else {
             throw WGPUError.validation(
-                "캔버스 '\(identifier)'은(는) 오프스크린 표면이 아니다 — 픽셀을 읽을 수 없다"
+                "canvas '\(identifier)' is not an offscreen surface — its pixels cannot be read"
             )
         }
         return try backend.readPixels(entry.raw, identifier: identifier)
     }
 
-    // MARK: - WebGPURuntime: 프레임·수명
+    // MARK: - WebGPURuntime: frames and lifetime
 
-    /// 등록된 모든 표면이 새 프레임을 받을 수 있는가 — 회계는 `frameCoordinator`가 한다.
+    /// Whether every registered surface can take a new frame — `frameCoordinator` does the accounting.
     public var isReadyForNextFrame: Bool { frameCoordinator.isReadyForNextFrame }
 
-    /// 비동기 완료 펌프 — 프레임 티커가 **매 틱, 메인 스레드에서** 부른다.
+    /// Asynchronous completion pump — the frame ticker calls it **every tick, on the main thread.**
     ///
-    /// **`tryLock`인 것이 핵심이다.** 백엔드 API가 스레드 안전하지 않을 수 있어
-    /// `execute`와 같은 락으로 직렬화해야 하는데(`WebGPURuntime` 문서), 그냥 `lock()`을
-    /// 잡으면 메인 스레드가 JS 스레드의 배치 인코딩 전체를 기다린다 — 무거운 프레임에서
-    /// 그대로 UI 히치가 된다. 펌프는 "정확성을 여기 의존하지 않는다, 지연 상한을 좁히는
-    /// 용도"라고 계약이 정해 두었으므로(같은 문서), 락이 잡혀 있으면 이 틱은 거른다.
-    /// 어차피 그 순간 `execute`가 백엔드를 돌리고 있고, 다음 틱이 곧 온다.
+    /// **Using `tryLock` is the point.** The backend API may not be thread-safe, so it has to be
+    /// serialized under the same lock as `execute` (see `WebGPURuntime`); but taking `lock()` outright
+    /// makes the main thread wait for the JS thread's entire batch encode — a UI hitch on any heavy
+    /// frame. The contract states the pump is "not something correctness depends on, only a way to
+    /// narrow the latency bound" (same document), so a held lock means skipping this tick. `execute`
+    /// is driving the backend at that moment anyway, and the next tick is close behind.
     ///
-    /// 티커가 아예 없는 구성에서 리드백이 굶는 문제는 이 경로가 아니라
-    /// `noteReadbackStarted()`의 자가 펌프가 막는다.
+    /// Readback starvation in a configuration with no ticker at all is prevented not by this path but
+    /// by the self-pump in `noteReadbackStarted()`.
     public func processEvents() {
         guard executionLock.try() else { return }
         backend.pumpEvents()
         executionLock.unlock()
     }
 
-    /// 모든 GPU 객체를 버린다 (페이지 이탈 등).
+    /// Discards every GPU object (leaving the page, and so on).
     public func reset() {
         executionLock.lock()
         registry.removeAll()
         errorScopes.discardAll()
-        // 프레임 중간 상태도 함께 버린다 — 남겨 두면 다음 디바이스의 첫 프레임이
-        // 죽은 드로어블을 present하려 든다.
+        // Mid-frame state goes too — leaving it would make the next device's first frame try to
+        // present a dead drawable.
         acquiredFrames.removeAll()
         frameScopedHandles.removeAll()
         _ = gpuFailures.drain()

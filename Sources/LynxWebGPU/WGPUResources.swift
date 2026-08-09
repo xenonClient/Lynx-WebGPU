@@ -383,7 +383,7 @@ public final class WGPUShaderModuleObject {
         if !isValid, let failure = compilationMessages.first {
             throw WGPUError(
                 kind: failure.kind,
-                message: "이 셰이더 모듈은 컴파일에 실패했다 — \(failure.message)",
+                message: "this shader module failed to compile — \(failure.message)",
                 path: path, line: failure.line
             )
         }

@@ -349,7 +349,7 @@ final class RenderBundleTests: XCTestCase {
         ])
 
         XCTAssertTrue(
-            ((errors(result).first?["message"] as? String) ?? "").contains("정점 버퍼 슬롯 0"),
+            ((errors(result).first?["message"] as? String) ?? "").contains("vertex buffer slot 0"),
             harness.describeErrors(result)
         )
     }
@@ -371,7 +371,7 @@ final class RenderBundleTests: XCTestCase {
         ])
 
         XCTAssertTrue(
-            ((errors(result).first?["message"] as? String) ?? "").contains("정점 버퍼 슬롯 0"),
+            ((errors(result).first?["message"] as? String) ?? "").contains("vertex buffer slot 0"),
             harness.describeErrors(result)
         )
     }
@@ -399,7 +399,7 @@ final class RenderBundleTests: XCTestCase {
         ])
 
         XCTAssertTrue(
-            ((errors(result).first?["message"] as? String) ?? "").contains("setIndexBuffer가 필요하다"),
+            ((errors(result).first?["message"] as? String) ?? "").contains("setIndexBuffer is required"),
             harness.describeErrors(result)
         )
     }
@@ -422,7 +422,7 @@ final class RenderBundleTests: XCTestCase {
         ])
 
         XCTAssertTrue(
-            ((errors(result).first?["message"] as? String) ?? "").contains("setIndexBuffer가 필요하다"),
+            ((errors(result).first?["message"] as? String) ?? "").contains("setIndexBuffer is required"),
             harness.describeErrors(result)
         )
     }
@@ -510,7 +510,7 @@ final class RenderBundleTests: XCTestCase {
         ])
 
         XCTAssertTrue(
-            ((errors(result).first?["message"] as? String) ?? "").contains("어태치먼트 수"),
+            ((errors(result).first?["message"] as? String) ?? "").contains("attachment count"),
             harness.describeErrors(result)
         )
     }
@@ -541,7 +541,7 @@ final class RenderBundleTests: XCTestCase {
 
         XCTAssertEqual(errors(result).first?["kind"] as? String, "validation")
         XCTAssertTrue(
-            ((errors(result).first?["message"] as? String) ?? "").contains("어태치먼트"),
+            ((errors(result).first?["message"] as? String) ?? "").contains("attachment"),
             harness.describeErrors(result)
         )
         XCTAssertEqual(harness.liveObjects, 0, "거부한 번들이 등록되면 안 된다")

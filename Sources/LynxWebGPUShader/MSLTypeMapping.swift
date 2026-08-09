@@ -1,13 +1,13 @@
 import Foundation
 import LynxWebGPUCore
 
-/// WGSL 타입·내장 함수 이름을 Metal Shading Language로 옮기는 표.
+/// Table mapping WGSL type and builtin names into Metal Shading Language.
 ///
-/// 대부분은 1:1이다 (WGSL과 MSL 모두 벡터/행렬 문법이 같고 수학 함수 이름도 겹친다).
-/// 여기 없는 이름은 **그대로 통과시킨다** — Metal 컴파일러가 모르는 이름이면 그 시점에
-/// 명확한 오류를 내므로, 번역기가 이름을 다 알아야 할 필요는 없다.
+/// Most of it is 1:1 (WGSL and MSL share vector/matrix syntax and many math function names).
+/// Names absent here **pass through unchanged** — if the Metal compiler does not know a name it
+/// raises a clear error at that point, so the translator need not know every name.
 enum MSLTypeMapping {
-    // MARK: - 타입
+    // MARK: - Types
 
     static func scalar(_ name: String) -> String {
         switch name {
@@ -20,7 +20,7 @@ enum MSLTypeMapping {
         }
     }
 
-    /// 값 위치에서 쓰는 MSL 타입 이름. 런타임 크기 배열은 여기서 표현할 수 없다.
+    /// The MSL type name used in value position. Runtime-sized arrays cannot be expressed here.
     static func type(_ type: WGSLType, module: WGSLModule) throws -> String {
         switch type {
         case .void:
@@ -29,27 +29,27 @@ enum MSLTypeMapping {
             return scalar(name)
         case .vector(let size, let element):
             guard case .scalar(let name) = element else {
-                throw WGPUError.unsupported("WGSL: 벡터 성분은 스칼라여야 한다")
+                throw WGPUError.unsupported("WGSL: vector components must be scalars")
             }
             return "\(scalar(name))\(size)"
         case .matrix(let columns, let rows, let element):
             guard case .scalar(let name) = element else {
-                throw WGPUError.unsupported("WGSL: 행렬 성분은 스칼라여야 한다")
+                throw WGPUError.unsupported("WGSL: matrix components must be scalars")
             }
             return "\(scalar(name))\(columns)x\(rows)"
         case .array(let element, let count):
             guard let count else {
                 throw WGPUError.unsupported(
-                    "WGSL: 런타임 크기 배열(array<T>)은 storage 버퍼 바인딩에서만 쓸 수 있다"
+                    "WGSL: a runtime-sized array (array<T>) can only be used in a storage buffer binding"
                 )
             }
             guard let length = WGSLLayout.constantValue(count, module: module) else {
-                throw WGPUError.unsupported("WGSL: 배열 길이를 컴파일 타임에 계산할 수 없다")
+                throw WGPUError.unsupported("WGSL: the array length cannot be computed at compile time")
             }
             return "array<\(try self.type(element, module: module)), \(length)>"
         case .atomic(let element):
             guard case .scalar(let name) = element else {
-                throw WGPUError.unsupported("WGSL: atomic 성분은 i32/u32여야 한다")
+                throw WGPUError.unsupported("WGSL: atomic components must be i32 or u32")
             }
             return name == "u32" ? "atomic_uint" : "atomic_int"
         case .pointer(let space, let element, _):
@@ -103,7 +103,7 @@ enum MSLTypeMapping {
         case (_, "cube"): base = "texturecube"
         case (_, "cube_array"): base = "texturecube_array"
         default:
-            throw WGPUError.unsupported("WGSL: 지원하지 않는 텍스처 차원 '\(texture.dimension)'")
+            throw WGPUError.unsupported("WGSL: unsupported texture dimension '\(texture.dimension)'")
         }
 
         if texture.kind == .storage {
@@ -125,48 +125,49 @@ enum MSLTypeMapping {
         return "float"
     }
 
-    // MARK: - 이름 충돌
+    // MARK: - Name collisions
 
-    /// WGSL에서는 평범한 식별자지만 MSL(C++14 + Metal 확장)에서는 예약어인 것들.
+    /// Ordinary identifiers in WGSL that are reserved words in MSL (C++14 plus Metal extensions).
     ///
-    /// 그래픽스 셰이더에서 `texture` `sampler` `device` `char` 같은 이름은 아주 흔하다.
-    /// 그대로 내보내면 컴파일이 깨지거나(운 나쁘면) 다른 의미로 해석되므로 전부 접두사를 붙인다.
+    /// Names such as `texture`, `sampler`, `device` and `char` are extremely common in graphics
+    /// shaders. Emitting them as-is either breaks the compile or (worse) changes meaning, so they all
+    /// get a prefix.
     private static let reservedIdentifiers: Set<String> = [
-        // Metal 주소 공간 / 함수 한정자
+        // Metal address spaces / function qualifiers
         "device", "constant", "threadgroup", "thread", "kernel", "vertex", "fragment",
         "texture", "sampler", "access", "ray_data", "object_data",
-        // C++ 키워드 (WGSL이 금지하지 않는 것만)
+        // C++ keywords (only those WGSL does not already forbid)
         "char", "short", "long", "signed", "unsigned", "class", "union", "enum",
         "template", "typename", "namespace", "using", "public", "private", "protected",
         "virtual", "operator", "new", "delete", "this", "throw", "try", "catch", "friend",
         "inline", "static", "extern", "register", "volatile", "mutable", "explicit",
         "export", "typedef", "sizeof", "alignof", "decltype", "auto", "constexpr", "nullptr",
         "goto", "do", "typeid", "and", "or", "not", "xor", "compl", "bitand", "bitor",
-        // MSL 스칼라/벡터 타입 이름
+        // MSL scalar/vector type names
         "half", "uchar", "ushort", "size_t", "ptrdiff_t",
     ]
 
-    /// 함수 이름으로 쓸 수 없는 것 (`main`은 C++ 키워드는 아니지만 Metal이 거부한다).
+    /// Names unusable as function names (`main` is not a C++ keyword but Metal rejects it).
     private static let reservedFunctionNames: Set<String> = ["main"]
 
-    /// 진입점·함수 이름을 MSL에서 안전한 이름으로 바꾼다.
+    /// Renames an entry point or function to a name that is safe in MSL.
     ///
-    /// 런타임이 `MTLLibrary.makeFunction(name:)`에 넘길 이름도 이 함수를 거쳐야 한다
+    /// The name the runtime passes to `MTLLibrary.makeFunction(name:)` must go through this function too.
     /// (`WGSLShaderModule.mslFunctionName(for:)`).
     static func functionName(_ name: String) -> String {
         if reservedFunctionNames.contains(name) { return "wgpu_fn_\(name)" }
         return identifier(name)
     }
 
-    /// 변수·매개변수·구조체·멤버 이름을 MSL에서 안전한 이름으로 바꾼다.
-    /// **선언과 모든 사용처가 같은 함수를 거쳐야** 이름이 어긋나지 않는다.
+    /// Renames a variable, parameter, struct or member to a name that is safe in MSL.
+    /// **The declaration and every use must go through the same function** or the names diverge.
     static func identifier(_ name: String) -> String {
         reservedIdentifiers.contains(name) ? "wgpu_id_\(name)" : name
     }
 
-    // MARK: - 내장 함수
+    // MARK: - Builtin functions
 
-    /// 이름만 다른 것들.
+    /// Those that differ only in name.
     static let renamedBuiltins: [String: String] = [
         "inverseSqrt": "rsqrt",
         "dpdx": "dfdx",
@@ -196,10 +197,10 @@ enum MSLTypeMapping {
         "unpack2x16float": "unpack_half2x16_to_float",
     ]
 
-    /// 스칼라 변환 생성자 (`f32(x)` → `float(x)`).
+    /// Scalar conversion constructors (`f32(x)` → `float(x)`).
     static let scalarConstructors: Set<String> = ["f32", "i32", "u32", "bool", "f16"]
 
-    /// `atomicAdd` → `atomic_fetch_add_explicit` 류.
+    /// The `atomicAdd` → `atomic_fetch_add_explicit` family.
     static let atomicFetchOperations: [String: String] = [
         "atomicAdd": "atomic_fetch_add_explicit",
         "atomicSub": "atomic_fetch_sub_explicit",
@@ -210,15 +211,15 @@ enum MSLTypeMapping {
         "atomicXor": "atomic_fetch_xor_explicit",
     ]
 
-    /// 이 구현이 아직 옮기지 못하는 내장 함수 — 조용히 틀리게 번역하지 않고 명시적으로 거부한다.
+    /// Builtins this implementation cannot translate yet — rejected explicitly rather than translated silently wrong.
     static let unsupportedBuiltins: [String: String] = [
-        "atomicCompareExchangeWeak": "반환 구조체(__atomic_compare_exchange_result)를 옮기지 못한다",
-        "modf": "반환 구조체를 옮기지 못한다. floor/fract로 나눠 쓸 것",
-        "frexp": "반환 구조체를 옮기지 못한다",
-        "workgroupUniformLoad": "지원하지 않는다",
+        "atomicCompareExchangeWeak": "the return struct (__atomic_compare_exchange_result) cannot be translated",
+        "modf": "the return struct cannot be translated. Split it into floor/fract",
+        "frexp": "the return struct cannot be translated",
+        "workgroupUniformLoad": "not supported",
     ]
 
-    /// WGSL `@builtin(x)` → MSL 속성과 타입.
+    /// WGSL `@builtin(x)` → the MSL attribute and type.
     static func builtin(_ name: String, stage: WGSLStage, isInput: Bool) throws -> (attribute: String, type: String) {
         switch name {
         case "vertex_index": return ("[[vertex_id]]", "uint")
@@ -236,11 +237,11 @@ enum MSLTypeMapping {
         case "workgroup_id": return ("[[threadgroup_position_in_grid]]", "uint3")
         case "num_workgroups": return ("[[threadgroups_per_grid]]", "uint3")
         default:
-            throw WGPUError.unsupported("WGSL: 지원하지 않는 @builtin(\(name))")
+            throw WGPUError.unsupported("WGSL: unsupported @builtin(\(name))")
         }
     }
 
-    /// `@interpolate(...)` → MSL 보간 속성.
+    /// `@interpolate(...)` → the MSL interpolation attribute.
     static func interpolation(_ attribute: WGSLAttribute?) -> String {
         guard let attribute, let kind = attribute.arguments.first else { return "" }
         switch kind {

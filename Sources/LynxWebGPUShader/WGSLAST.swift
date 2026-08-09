@@ -1,10 +1,10 @@
 import Foundation
 
-// WGSL 구문 트리. 트랜스파일에 필요한 만큼만 담는다 —
-// 타입 추론기가 아니라 **구문 번역기**이므로 표현식의 타입은 대부분 보존하지 않는다.
-// (MSL이 C++ 기반이라 대부분의 연산자·생성자 의미가 그대로 옮겨진다.)
+// The WGSL syntax tree. It carries only what transpilation needs —
+// this is a **syntax translator**, not a type inferencer, so most expression types are not preserved.
+// (MSL is C++-based, so most operator and constructor meanings carry across unchanged.)
 
-/// `@vertex`, `@group(0)`, `@location(2)` 같은 속성.
+/// An attribute such as `@vertex`, `@group(0)` or `@location(2)`.
 struct WGSLAttribute: Equatable {
     var name: String
     var arguments: [String]
@@ -26,17 +26,17 @@ indirect enum WGSLType: Equatable {
     case scalar(String)
     case vector(size: Int, element: WGSLType)
     case matrix(columns: Int, rows: Int, element: WGSLType)
-    /// count == nil 이면 런타임 크기 배열 (storage 버퍼 전용).
+    /// count == nil means a runtime-sized array (storage buffers only).
     case array(element: WGSLType, count: WGSLExpression?)
     case atomic(WGSLType)
     case pointer(space: String, element: WGSLType, access: String?)
     case texture(WGSLTextureType)
     case sampler(comparison: Bool)
-    /// 구조체 이름 또는 타입 별칭.
+    /// A struct name or a type alias.
     case named(String)
     case void
 
-    /// 런타임 크기 배열인가 (storage 버퍼 바인딩 판별용).
+    /// Whether it is a runtime-sized array (used to identify storage buffer bindings).
     var isRuntimeArray: Bool {
         if case .array(_, let count) = self { return count == nil }
         return false
@@ -51,11 +51,11 @@ struct WGSLTextureType: Equatable {
     var kind: Kind
     /// "1d" "2d" "2d_array" "3d" "cube" "cube_array"
     var dimension: String
-    /// sampled/multisampled 텍스처의 성분 타입 (f32/i32/u32).
+    /// Component type of a sampled/multisampled texture (f32/i32/u32).
     var sampleType: WGSLType?
-    /// storage 텍스처의 포맷 이름 ("rgba8unorm" …).
+    /// Format name of a storage texture ("rgba8unorm", …).
     var format: String?
-    /// storage 텍스처의 접근 모드 ("write" / "read" / "read_write").
+    /// Access mode of a storage texture ("write" / "read" / "read_write").
     var access: String?
 }
 
@@ -66,7 +66,7 @@ indirect enum WGSLExpression: Equatable {
     case identifier(String)
     case unary(op: String, WGSLExpression)
     case binary(op: String, WGSLExpression, WGSLExpression)
-    /// `vec4<f32>(…)`, `textureSample(…)`, 사용자 함수 호출을 모두 포함한다.
+    /// Covers `vec4<f32>(…)`, `textureSample(…)` and user function calls alike.
     case call(callee: String, typeArguments: [WGSLType], arguments: [WGSLExpression])
     case member(WGSLExpression, String)
     case index(WGSLExpression, WGSLExpression)
@@ -76,9 +76,9 @@ indirect enum WGSLExpression: Equatable {
 }
 
 indirect enum WGSLStatement: Equatable {
-    /// `let x: T = e;` — 불변 바인딩.
+    /// `let x: T = e;` — an immutable binding.
     case letDeclaration(name: String, type: WGSLType?, value: WGSLExpression)
-    /// `var x: T = e;` — 함수 지역 가변 변수.
+    /// `var x: T = e;` — a function-local mutable variable.
     case varDeclaration(name: String, type: WGSLType?, value: WGSLExpression?)
     /// `const x = e;`
     case constDeclaration(name: String, type: WGSLType?, value: WGSLExpression)
@@ -99,7 +99,7 @@ indirect enum WGSLStatement: Equatable {
     case breakStatement
     case continueStatement
     case discardStatement
-    /// 값을 버리는 함수 호출 (`textureStore(…);`).
+    /// A function call whose value is discarded (`textureStore(…);`).
     case expressionStatement(WGSLExpression)
     case block([WGSLStatement])
 }
@@ -126,11 +126,11 @@ struct WGSLStruct: Equatable {
     var members: [WGSLStructMember]
 }
 
-/// 모듈 스코프 변수 — 유니폼/스토리지 버퍼, 텍스처, 샘플러, workgroup·private 변수.
+/// A module-scope variable — uniform/storage buffers, textures, samplers, workgroup and private variables.
 struct WGSLGlobalVariable: Equatable {
     var attributes: [WGSLAttribute]
     var name: String
-    /// uniform / storage / workgroup / private / (nil = handle 타입: 텍스처·샘플러)
+    /// uniform / storage / workgroup / private / (nil = a handle type: texture or sampler)
     var addressSpace: String?
     var access: String?
     var type: WGSLType
@@ -138,16 +138,16 @@ struct WGSLGlobalVariable: Equatable {
 
     var group: Int? { attributes.group }
     var binding: Int? { attributes.binding }
-    /// 바인드 그룹 슬롯을 차지하는 변수인가 (workgroup/private는 아니다).
+    /// Whether the variable occupies a bind group slot (workgroup and private do not).
     var isResource: Bool { group != nil && binding != nil }
 }
 
-/// 모듈 스코프 상수 (`const PI = 3.14;`) 또는 파이프라인 상수 (`override scale: f32 = 1.0;`).
+/// A module-scope constant (`const PI = 3.14;`) or a pipeline constant (`override scale: f32 = 1.0;`).
 struct WGSLModuleConstant: Equatable {
     var name: String
     var type: WGSLType?
-    /// `override`는 기본값 없이 선언될 수 있다 (`override size: f32;`).
-    /// 그 경우 파이프라인 생성 시 `constants`로 값을 받아야 한다.
+    /// An `override` may be declared without a default (`override size: f32;`).
+    /// In that case a value must be supplied through `constants` at pipeline creation.
     var value: WGSLExpression?
     var isOverride: Bool
 }
