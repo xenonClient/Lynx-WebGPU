@@ -66,7 +66,9 @@ host.attach(to: lynxView)
 - [docs/WGSL.md](docs/WGSL.md) — WGSL 서브셋 문법 · MSL 매핑 · 제약
 - [docs/JS-AUTHORING.md](docs/JS-AUTHORING.md) — 번들(JS) 작성 가이드, 성능 규칙
 - [docs/LYNX-INTEGRATION.md](docs/LYNX-INTEGRATION.md) — 호스트 앱 연동
+- [docs/COMMAND-STREAM.md](docs/COMMAND-STREAM.md) — 커맨드 스트림 와이어 명세 (**다른 백엔드를 만들 때의 사양서**)
 - [docs/TESTING.md](docs/TESTING.md) — 테스트 전략/하네스/컨벤션
+- [docs/THIRD-PARTY.md](docs/THIRD-PARTY.md) — 서드파티 구성요소와 라이선스
 - [docs/ROADMAP.md](docs/ROADMAP.md) — 다음 기능 계획 (웹 라이브러리 이식 갭 → 이미지 처리 경로)
 - [Examples/HelloTriangle.tsx](Examples/HelloTriangle.tsx) — ReactLynx 최소 예제
 
@@ -74,12 +76,14 @@ host.attach(to: lynxView)
 
 | 모듈 | 역할 |
 |---|---|
-| `LynxWebGPUCore` | WebGPU 열거형·디스크립터·오류·핸들 레지스트리 (Metal-free) |
+| `LynxWebGPUCore` | WebGPU 열거형·디스크립터·오류·핸들 레지스트리 + **커맨드 스트림 엔진**(`WGPUBackendEngine` — 디코딩·검증·오류 스코프·프레임 수명)과 백엔드 동사 프로토콜(`WGPUBackend`). Metal-free |
 | `LynxWebGPUShader` | WGSL 렉서/파서/리플렉션/MSL 방출기 (순수 Swift) |
-| `LynxWebGPU` | Metal 백엔드 + 캔버스 표면 + 커맨드 스트림 해석기 |
+| `LynxWebGPU` | 엔진 위의 **Metal 백엔드**(인코딩) + 캔버스 표면 + 기본 런타임 `LynxWebGPUContext` |
+| `LynxWebGPUConformance` | 런타임 무관 **적합성 스위트**(29검사) — 저장소 밖에서 만든 백엔드가 같은 계약을 지키는지 픽셀로 판정한다 ([docs/TESTING.md](docs/TESTING.md) §2-1) |
 | `LynxWebGPUBridge` | Lynx NativeModule + `<webgpu-canvas>` 엘리먼트 (iOS 전용) — **SPM 타깃이 아니라 소스**다 |
 
-**이 패키지는 외부 의존성이 0이다.** SPM product는 엔진(`LynxWebGPU`) 하나뿐이고, Lynx SDK의
+**이 패키지는 외부 의존성이 0이다.** SPM product는 셋(`LynxWebGPU` 엔진 · `LynxWebGPUCore`
+계약 · `LynxWebGPUConformance` 적합성 스위트)이고, Lynx SDK의
 버전·배포처는 **앱이 정한다** — SPM으로 받든, CocoaPods로 이미 쓰고 있든, 사내 배포본을 물리든
 그대로 붙는다. Lynx 연동 레이어는 `#if canImport(Lynx)`로 감싼 소스로 제공되어, Lynx가 보이는
 타깃에서 컴파일하면 켜진다 (별도 브리지 타깃 · 앱 타깃 직접 — `docs/LYNX-INTEGRATION.md` §2).
@@ -131,7 +135,7 @@ JS 스레드(터치·타이머 포함)로 번지지 않는다.
 
 ## 검증
 
-Swift 217개 + JS 47개 테스트가 몇 초 안에 돈다 — 시뮬레이터도 기기도 필요 없다.
+Swift 362개 + JS 133개 테스트가 몇 초 안에 돈다 — 시뮬레이터도 기기도 필요 없다.
 
 - 트랜스파일러 테스트는 생성된 MSL을 **실제 Metal 컴파일러로** 통과시킨다.
 - 렌더 테스트는 오프스크린 텍스처에 그린 뒤 **픽셀 값을 단언**한다 (삼각형, 유니폼, 인덱스 드로우,
@@ -145,6 +149,10 @@ Swift 217개 + JS 47개 테스트가 몇 초 안에 돈다 — 시뮬레이터�
   매핑 중인 버퍼의 큐 작업 거부, read-only 어태치먼트 강제처럼 Metal이 그냥 통과시키는 것들이다.
   새 검증에는 **구현을 임시로 되돌려 실제로 실패하는지** 확인한 테스트만 넣는다.
 - `arrayLength()`처럼 런타임이 셰이더에 몰래 넘기는 값도 GPU에서 되짚어 **숫자로 단언**한다.
+- **적합성 스위트(`LynxWebGPUConformance`, 29검사)는 런타임을 갈아끼워도 그대로 돈다** —
+  커맨드 스트림·`readCanvasPixels`·`readBuffer`·`adapterInfo`만 쓰므로, 저장소 밖 백엔드도
+  같은 검사로 자신을 증명한다. 기본 Metal 런타임 29/29에 더해, 진짜 Dawn 위에 얹은 백엔드가
+  같은 스위트를 28/29(+1 시뮬레이터 건너뜀)로 통과한다 ([docs/TESTING.md](docs/TESTING.md) §2-1).
 - JS shim은 node 내장 러너로 검증한다 — 바이너리 경로의 타입·바이트를 단언하고,
   프레임당 브리지 왕복이 1회인지 목으로 센다.
 
