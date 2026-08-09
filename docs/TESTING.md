@@ -150,10 +150,9 @@ xcrun simctl launch <device> org.lynxwebgpu.dawndemo -demo triangle
 
 | 분류 | 씬 |
 |---|---|
-| 무오류 구동 (14) | arraybuffer · bench · blending · bundle · constants · cube · dynamic · interactive · particles · readback · scrollpass · texture · triangle · **three** (three.js WebGPURenderer r185 — 자체 검증 16/16: ASTC 압축·인스턴싱·밉맵 컴퓨트 패스·비동기 파이프라인 포함 · 커맨드 스트림 무오류 · 60fps) |
+| 무오류 구동 (20) | arraybuffer · bench · blending · bundle · constants · **contracts(10/10)** · cube · dynamic · **hdr** · **images** · interactive · particles · readback · scrollpass · **stencil** · **query** · texture · triangle · **wgsl** · **three** (three.js WebGPURenderer r185 — 자체 검증 16/16 · 60fps). 굵은 씬들은 명세 위반을 고쳐 합류했다 (2026-08-09): stencil·query는 auto 파생 레이아웃 공유 → **명시적 공유 레이아웃**으로, wgsl·hdr은 varying 분기 안 `textureSample` → **균일 흐름으로 끌어올려 select**로, images·contracts는 리드백 `bytesPerRow` 32 → **256**으로. contracts의 번들·역방향 검사는 백엔드 무관 판정으로 바꿨다 (Metal은 실행 시점 한국어 문구, Dawn은 명세대로 finish 시점 영문 — 둘 다 격리 성립) |
 | 의도된 오류 수신 (1) | spec — 씬 자체가 validation 오류를 유발해 수신 경로를 검증한다 (3건 수신, 정상) |
-| 의도된 거부 (2) | gpudriven — 간접 드로우를 시뮬레이터 가드가 `unsupported`로 막는다 (Metal 런타임과 같은 판단 — 실기기 대상 씬) · msl — 선택 기능 거부 (`docs/COMMAND-STREAM.md` §4-1 계약) |
-| **명세 발산** — 씬이 관대한 Metal 런타임에 기대던 것 (5) | wgsl·hdr — varying 분기 안 `textureSample` (uniformity 위반; 샘플을 분기 앞으로 올리면 해소됨을 확인, 씬은 무변경) · stencil·query — `layout:"auto"` 파이프라인의 바인드 그룹을 **다른** 파이프라인에 재사용 (명세상 auto 레이아웃은 파이프라인 전용 — 모든 드로우가 거부되어 캔버스는 비고, 오류는 오버레이에 표시된다) · images·**contracts** — contracts는 **7/10** (검증 레이어 분할 뒤 — `docs/extra/RN-WEBGPU-LAYERING.md` §3): ⑤ vec3 판독이 `copyTextureToBuffer` `bytesPerRow` 32(256 배수 위반 — images와 같은 뿌리, images는 리드백 1건만 실패하고 그림은 그려진다)로 0으로 읽히고, ⑦은 번들 내부 검증 **시점·문구**가 명세(Dawn: `finish()` 시점, 영문 "Index buffer was not set")와 달라 검사의 한국어 문구 탐침이 빗나가며, ⑨는 엔진 호환성 오류 문구를 정규식으로 파싱하는 검사라 네이티브 검증에서는 전제부터 없다. 격리 계약 자체는 양쪽 다 지켜진다 |
+| 의도된 거부 (2) | gpudriven — 간접 드로우를 시뮬레이터 가드가 `unsupported`로 막는다 (실기기 대상 씬) · msl — 선택 기능 거부 (`docs/COMMAND-STREAM.md` §4-1 계약) |
 
 > **정적 씬의 mapAsync 굶주림 (2026-08-09 발견·해소).** 처음 스위프에서 contracts는
 > "무오류 구동"으로 분류됐지만, 실제로는 **통과 0/10인 채 조용히 멈춰** 있었다 — 오류가
@@ -161,8 +160,8 @@ xcrun simctl launch <device> org.lynxwebgpu.dawndemo -demo triangle
 > 프레임 루프를 켠 씬에서만 돌므로, 애니메이션 없는 씬에서 `mapAsync` 완료를 실어 나를
 > `processEvents` 펌프를 아무도 밟지 않았다 (Metal은 완료 핸들러가 스스로 도착해 무관).
 > 해소: 엔진이 **미결 리드백이 있는 동안 자가 펌프**를 돌린다
-> (`WGPUBackendCapabilities.needsEventPump` — `WGPUBackendEngine` 참고). 수정 후
-> contracts는 7/10 (남은 3건은 위 발산 표 참고 — 검증 레이어 분할로 확정된 발산이다).
+> (`WGPUBackendCapabilities.needsEventPump` — `WGPUBackendEngine` 참고). 이 수정과
+> 씬 명세 위반 수정을 거쳐 contracts는 양쪽 백엔드에서 10/10이다.
 | **시뮬레이터에서 실패 (1)** | threelab (three.js 고난도 조합) — **캔버스 출력이 아예 없다.** 뿌리 하나: Dawn이 비교 샘플러를 거부하고("Compare functions are disabled with the Metal backend" — Dawn은 Metal family 3 미만에서 비교 샘플러를 끄는데 시뮬레이터가 family 2로 보고된다), three.js의 객체 바인드 그룹이 그림자용 비교 샘플러를 포함해 통째로 무효 → 모든 드로우 실패 → 합성까지 빈 화면 (오프스크린 검증 항목만 ✓). **Metal 런타임은 같은 시뮬레이터에서 씬 전체(그림자 포함 11/11)를 그린다.** 간접 드로우와 같은 계열의 시뮬레이터 family 가드로 보이며 실기기(A12+)에서 동작할 것으로 추정 — 확인 전까지 미해결로 둔다 |
 
 발산 4건은 전부 **브라우저에서도 같은 이유로 깨질 코드**다 — Dawn의 엄격 검증이 데모의

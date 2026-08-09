@@ -75,9 +75,15 @@ async function setup(
 
   const module = device.createShaderModule({ code: SHADER, label: 'query' })
 
+  // 명세상 auto 파생 레이아웃은 파이프라인 전용 — 공유하려면 명시적 레이아웃이어야 한다.
+  const sharedBindLayout = device.createBindGroupLayout({
+    entries: [{ binding: 0, visibility: 0x3 /* VERTEX|FRAGMENT */, buffer: {} }],
+  })
+  const sharedLayout = device.createPipelineLayout({ bindGroupLayouts: [sharedBindLayout] })
+
   function makePipeline(entryPoint: string) {
     return device.createRenderPipeline({
-      layout: 'auto',
+      layout: sharedLayout,
       vertex: { module, entryPoint: 'vs_main' },
       fragment: { module, entryPoint, targets: [{ format }] },
       depthStencil: { format: 'depth24plus', depthWriteEnabled: true, depthCompare: 'less' },
@@ -86,7 +92,7 @@ async function setup(
   const barPipeline = makePipeline('fs_bar')
   const targetPipeline = makePipeline('fs_target')
 
-  const layout = barPipeline.getBindGroupLayout(0)
+  const layout = sharedBindLayout
   function makeUniforms(label: string) {
     const buffer = device.createBuffer({
       size: 16,

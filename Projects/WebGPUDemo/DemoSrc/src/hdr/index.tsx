@@ -140,6 +140,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   }
   let uv = (in.uv - vec2f(0.5, 0.5)) / coverage + vec2f(0.5, 0.5);
 
+  // 샘플은 이른 return들 **앞**(균일 제어 흐름)에서 뜬다 — varying 분기·return 뒤의
+  // textureSample은 uniformity 위반이라 명세 검증기(Dawn/브라우저)가 거부한다.
+  // 8비트 원본은 하이라이트가 이미 1.0에서 잘려 있고, 게인맵 쪽은 1.0을 크게 넘는다.
+  let baseLinear = srgbToLinear(textureSample(baseTex, samp, uv).rgb);
+  let hdrLinear = textureSample(hdrTex, samp, uv).rgb;
+
   // 여백과 경계선은 인코딩을 거치지 않고 바로 낸다. EDR에서도 튀지 않도록 낮은 값을 쓴다.
   if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
     return vec4f(0.008, 0.010, 0.016, 1.0);
@@ -148,14 +154,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     return vec4f(1.0, 0.72, 0.15, 1.0);
   }
 
-  var linear: vec3f;
-  if (in.uv.x < u.wipe) {
-    // 8비트 원본. 하이라이트는 이미 1.0에서 잘려 있다.
-    linear = srgbToLinear(textureSample(baseTex, samp, uv).rgb);
-  } else {
-    // 게인맵으로 되살린 값. 1.0을 크게 넘는다.
-    linear = textureSample(hdrTex, samp, uv).rgb;
-  }
+  let linear = select(hdrLinear, baseLinear, in.uv.x < u.wipe);
 
   // 클리핑 표시 — 노출과 무관하게 "원본 값이 1.0을 넘는가"만 본다.
   if (u.mode > 0.5 && u.mode < 1.5) {

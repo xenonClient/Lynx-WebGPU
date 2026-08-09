@@ -165,8 +165,10 @@ function ImagesScene() {
           size: { width: 8, height: 8 }, format: 'rgba8unorm',
           usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
         })
+        // 텍스처→버퍼 복사의 bytesPerRow는 명세상 256의 배수여야 한다 (Metal은 봐 주지만
+        // 브라우저·Dawn은 거부한다). 행 간격만 넓어질 뿐 읽는 픽셀 좌표는 같다.
         const readback = device.createBuffer({
-          size: 8 * 8 * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+          size: 256 * 8, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
         })
         const bindGroup = device.createBindGroup({
           layout,
@@ -187,12 +189,12 @@ function ImagesScene() {
         pass.draw(3)
         pass.end()
         encoder.copyTextureToBuffer(
-          { texture: target }, { buffer: readback, bytesPerRow: 8 * 4 }, { width: 8, height: 8 }
+          { texture: target }, { buffer: readback, bytesPerRow: 256 }, { width: 8, height: 8 }
         )
         device.queue.submit([encoder.finish()])
 
         const bytes = new Uint8Array(await readback.mapAsync())
-        const offset = (atRow * 8 + 4) * 4
+        const offset = atRow * 256 + 4 * 4
         const pixel = [bytes[offset], bytes[offset + 1], bytes[offset + 2]]
         readback.unmap()
         readback.destroy()

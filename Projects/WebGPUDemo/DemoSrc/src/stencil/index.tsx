@@ -70,9 +70,16 @@ function setup({ device, context, format, report }: SceneContext, invertedRef: {
   const module = device.createShaderModule({ code: SHADER, label: 'stencil' })
 
   /** 스텐실 상태만 다른 파이프라인. 컬러 타깃과 셰이더는 셋 다 같다. */
+  // 명세상 `layout:"auto"`의 파생 레이아웃은 **그 파이프라인 전용**이다 — 셋이 바인드
+  // 그룹을 공유하려면 명시적 레이아웃이어야 한다 (Dawn/브라우저가 재사용을 거부한다).
+  const sharedBindLayout = device.createBindGroupLayout({
+    entries: [{ binding: 0, visibility: 0x3 /* VERTEX|FRAGMENT */, buffer: {} }],
+  })
+  const sharedLayout = device.createPipelineLayout({ bindGroupLayouts: [sharedBindLayout] })
+
   function makePipeline(options: { compare: string; passOp?: string; writesColor: boolean }) {
     return device.createRenderPipeline({
-      layout: 'auto',
+      layout: sharedLayout,
       vertex: { module, entryPoint: 'vs_main' },
       fragment: {
         module,
@@ -92,8 +99,8 @@ function setup({ device, context, format, report }: SceneContext, invertedRef: {
   const insidePipeline = makePipeline({ compare: 'equal', writesColor: true })
   const outsidePipeline = makePipeline({ compare: 'not-equal', writesColor: true })
 
-  // 같은 셰이더에서 유도한 레이아웃이라 세 파이프라인이 바인드 그룹을 공유한다.
-  const layout = maskPipeline.getBindGroupLayout(0)
+  // 명시적 공유 레이아웃이라 세 파이프라인이 바인드 그룹을 공유할 수 있다.
+  const layout = sharedBindLayout
   const brightUniforms = device.createBuffer({
     size: 16,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,

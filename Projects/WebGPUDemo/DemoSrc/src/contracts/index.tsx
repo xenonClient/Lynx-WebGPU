@@ -243,7 +243,8 @@ function ContractsScene() {
         }, { skipPipeline: true })
         const errors = takeErrors()
         return {
-          ok: errors.some((text) => text.includes('setIndexBuffer')),
+          // 백엔드마다 문구가 다르다 — Metal 엔진은 "setIndexBuffer", Dawn은 "Index buffer".
+          ok: errors.some((text) => text.includes('setIndexBuffer') || text.includes('Index buffer')),
           detail: errors[0] ? errors[0].slice(0, 55) : '거부되지 않았다',
         }
       })
@@ -261,7 +262,9 @@ function ContractsScene() {
         }, { skipPipeline: true })
         const errors = takeErrors()
         return {
-          ok: errors.some((text) => text.includes('setIndexBuffer')),
+          // 명세는 이 검증을 번들 finish() 시점으로 정한다 — Dawn은 그때 "Index buffer was
+          // not set"을 내고, Metal 엔진 재생은 실행 시점에 "setIndexBuffer"를 낸다. 둘 다 격리다.
+          ok: errors.some((text) => text.includes('setIndexBuffer') || text.includes('Index buffer')),
           detail: errors[0] ? errors[0].slice(0, 55) : '거부되지 않았다',
         }
       })
@@ -310,8 +313,11 @@ function ContractsScene() {
         const message = takeErrors()[0] || ''
         // "… 번들 rgba8unorm, 패스 bgra8unorm" — 뒤쪽이 드로어블에서 되돌린 이름이다.
         const reported = (message.match(/패스 ([a-z0-9-]+)/) || [])[1]
+        // Metal 엔진은 거부 문구에 역방향 매핑된 이름을 싣는다. 네이티브 검증(Dawn)은
+        // 자기 문구로 거부한다 — 그 경우 "어긋난 번들이 거부됐다"까지가 이 검사의 몫이다.
+        const nativeRejected = /not compatible|Attachment state/i.test(message)
         return {
-          ok: reported === canvasFormat,
+          ok: reported === canvasFormat || nativeRejected,
           detail: reported
             ? `패스가 아는 이름 ${reported} · configure ${canvasFormat}`
             : (message.slice(0, 55) || '거부되지 않았다'),
@@ -380,8 +386,9 @@ function ContractsScene() {
         size: { width: 8, height: 8 }, format: 'rgba8unorm',
         usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
       })
+      // 텍스처→버퍼 복사의 bytesPerRow는 명세상 256의 배수여야 한다.
       const readback = device.createBuffer({
-        size: 8 * 8 * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+        size: 256 * 8, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
       })
       const encoder = device.createCommandEncoder()
       const pass = encoder.beginRenderPass({
@@ -394,12 +401,12 @@ function ContractsScene() {
       record(pass)
       pass.end()
       encoder.copyTextureToBuffer(
-        { texture: target }, { buffer: readback, bytesPerRow: 8 * 4 }, { width: 8, height: 8 }
+        { texture: target }, { buffer: readback, bytesPerRow: 256 }, { width: 8, height: 8 }
       )
       device.queue.submit([encoder.finish()])
 
       const bytes = new Uint8Array(await readback.mapAsync())
-      const offset = (4 * 8 + 4) * 4
+      const offset = 4 * 256 + 4 * 4
       const pixel = [bytes[offset], bytes[offset + 1], bytes[offset + 2]]
       readback.unmap()
       readback.destroy()
