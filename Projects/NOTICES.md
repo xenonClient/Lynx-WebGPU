@@ -1,7 +1,8 @@
 # 오픈소스 고지 (데모·검증 앱 배포용)
 
-이 저장소의 **앱 산출물**(`WebGPUDemo` · `DawnDemo` · `DawnCheck`)에 포함되는 서드파티
-구성요소의 고지다. 앱을 배포한다면 이 파일의 내용을 그대로 앱의 오픈소스 고지 화면이나
+**이 프로젝트 자체는 Apache License 2.0이다** (저장소 루트의 [LICENSE](../LICENSE)).
+아래는 그와 별개로, 이 저장소의 **앱 산출물**(`WebGPUDemo` · `DawnDemo` · `DawnCheck`)에
+함께 실리는 서드파티 구성요소의 고지다. 앱을 배포한다면 이 파일의 내용을 그대로 앱의 오픈소스 고지 화면이나
 동봉 문서에 실으면 된다.
 
 **SPM 라이브러리 product(`LynxWebGPU` · `LynxWebGPUCore` · `LynxWebGPUConformance`)만 쓰는
