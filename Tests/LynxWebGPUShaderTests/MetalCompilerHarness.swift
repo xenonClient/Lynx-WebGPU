@@ -1,17 +1,17 @@
 import Foundation
 import XCTest
 
-/// 생성된 MSL을 **실제 Metal 컴파일러로 통과시키는** 검증 하네스.
+/// A verification harness that runs generated MSL **through the real Metal compiler**.
 ///
-/// 문자열 비교(골든 테스트)만으로는 "그럴듯하지만 컴파일되지 않는 MSL"을 잡지 못한다.
-/// 트랜스파일러 테스트는 항상 이 하네스를 함께 통과해야 한다 (docs/TESTING.md §3).
+/// String comparison (a golden test) alone cannot catch "plausible MSL that does not compile".
+/// Every transpiler test must pass this harness too (docs/TESTING.md §3).
 enum MetalCompilerHarness {
     struct Result {
         let succeeded: Bool
         let diagnostics: String
     }
 
-    /// `xcrun -sdk macosx metal -c` 로 컴파일해 본다. 툴체인이 없으면 nil.
+    /// Tries compiling with `xcrun -sdk macosx metal -c`. Nil when the toolchain is absent.
     static func compile(_ source: String) -> Result? {
         guard let metal = locateMetalCompiler() else { return nil }
 
@@ -25,7 +25,7 @@ enum MetalCompilerHarness {
         do {
             try source.write(to: sourceURL, atomically: true, encoding: .utf8)
         } catch {
-            return Result(succeeded: false, diagnostics: "소스 기록 실패: \(error)")
+            return Result(succeeded: false, diagnostics: "failed to write the source: \(error)")
         }
 
         let process = Process()
@@ -56,15 +56,15 @@ enum MetalCompilerHarness {
         #endif
     }
 
-    /// MSL이 컴파일되지 않으면 소스와 진단을 함께 실패 메시지로 낸다.
+    /// When the MSL does not compile, the failure message carries both the source and the diagnostics.
     static func assertCompiles(_ source: String, file: StaticString = #filePath, line: UInt = #line) {
         guard let result = compile(source) else {
-            // Metal 툴체인이 없는 환경(CI 컨테이너 등)에서는 조용히 건너뛴다.
+            // Skipped silently where the Metal toolchain is absent (a CI container, say).
             return
         }
         XCTAssertTrue(
             result.succeeded,
-            "생성된 MSL이 Metal 컴파일러를 통과하지 못했다:\n\(result.diagnostics)\n--- MSL ---\n\(numbered(source))",
+            "the generated MSL did not pass the Metal compiler:\n\(result.diagnostics)\n--- MSL ---\n\(numbered(source))",
             file: file,
             line: line
         )
