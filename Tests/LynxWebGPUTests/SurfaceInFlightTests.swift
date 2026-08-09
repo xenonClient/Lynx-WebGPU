@@ -146,6 +146,46 @@ final class SurfaceInFlightTests: XCTestCase {
         XCTAssertTrue(context.isReadyForNextFrame)
     }
 
+    /// 크기가 NaN·무한대·음수로 와도 **프로세스가 죽지 않아야 한다.**
+    ///
+    /// 크기는 UI 레이아웃에서 온다(`bounds × pixelRatio`) — 측정 전 프레임이나 이상한
+    /// pixelRatio가 NaN을 흘리는 순간이 있다. 그대로 내려가면 오프스크린 표면의
+    /// `Int(size.width)`가 **Swift 런타임 트랩**으로 프로세스를 죽인다. 검증 오류가 아니라
+    /// 즉사라 로그도 남지 않는다.
+    func test_이상한_크기의_resize는_무시하고_크래시하지_않는다() throws {
+        let context = try LynxWebGPUContext(device: device)
+        try context.attachOffscreenCanvas(identifier: "odd", size: CGSize(width: 8, height: 8))
+
+        for bad in [
+            CGSize(width: CGFloat.nan, height: -5),
+            CGSize(width: 8, height: CGFloat.nan),
+            CGSize(width: CGFloat.infinity, height: 8),
+            CGSize(width: -16, height: -16),
+        ] {
+            context.resizeCanvas(identifier: "odd", drawableSize: bad)
+        }
+
+        // 표면이 오염되지 않고 원래 크기 그대로 살아 있다.
+        let info = context.canvasInfo(identifier: "odd")
+        XCTAssertEqual(info["ok"] as? Bool, true, "\(info)")
+        XCTAssertEqual(info["width"] as? Int, 8)
+        XCTAssertEqual(info["height"] as? Int, 8)
+
+        // 정상 크기는 그대로 반영된다 — 무시가 표면을 잠가 버리지 않았다.
+        context.resizeCanvas(identifier: "odd", drawableSize: CGSize(width: 16, height: 16))
+        XCTAssertEqual(context.canvasInfo(identifier: "odd")["width"] as? Int, 16)
+    }
+
+    /// 붙일 때부터 이상한 크기면 **검증 오류로 거부한다** (여기는 돌려줄 통로가 있다).
+    func test_이상한_크기의_오프스크린_부착은_거부된다() throws {
+        let context = try LynxWebGPUContext(device: device)
+        XCTAssertThrowsError(
+            try context.attachOffscreenCanvas(
+                identifier: "nan", size: CGSize(width: CGFloat.nan, height: 8)
+            )
+        )
+    }
+
     private func waitUntil(timeout: TimeInterval = 2, _ condition: () -> Bool) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {

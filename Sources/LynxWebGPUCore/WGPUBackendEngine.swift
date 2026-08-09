@@ -2086,8 +2086,23 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
     }
 
     public func attachOffscreenCanvas(identifier: String, size: CGSize) throws {
+        guard Self.isUsableDrawableSize(size) else {
+            throw WGPUError.validation(
+                "오프스크린 캔버스 크기가 유효하지 않다 (\(size.width)x\(size.height))"
+            )
+        }
         let creation = try backend.makeOffscreenSurface(identifier: identifier, size: size)
         registerSurface(creation.surface, identifier: identifier, pacesFrames: creation.pacesFrames)
+    }
+
+    /// 표면 크기로 쓸 수 있는 값인가 — **유한하고 음수가 아닌가.**
+    ///
+    /// NaN·무한대·음수는 이후 모든 정수 변환의 **트랩 씨앗**이다. `Int(CGFloat.nan)`은
+    /// Swift 런타임 트랩(프로세스 종료)이고, 부호 없는 GPU 인자 폭으로 접히면 거대값이 된다.
+    /// 크기는 UI 레이아웃에서 오므로(`bounds × pixelRatio`) 앱이 이상한 값을 흘리는 순간이
+    /// 곧 크래시가 된다 — 백엔드마다 따로 막을 일이 아니라 여기서 한 번 막는다.
+    private static func isUsableDrawableSize(_ size: CGSize) -> Bool {
+        size.width.isFinite && size.height.isFinite && size.width >= 0 && size.height >= 0
     }
 
     /// 백엔드가 만든 표면을 직접 등록한다 — 커스텀 표면(테스트 더블 등)의 통로다.
@@ -2107,7 +2122,14 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         frameCoordinator.forget(canvas: identifier)
     }
 
+    /// 드로어블 크기 갱신 — **쓸 수 없는 값은 조용히 무시한다.**
+    ///
+    /// 레이아웃 도중의 NaN·음수는 흔하고(측정 전 프레임 등), 그걸 그대로 흘리면
+    /// `Int(CGFloat.nan)`에서 프로세스가 죽는다 (`isUsableDrawableSize`). 오류로 돌려줄
+    /// 통로도 없는 자리라(반환값이 없다) 무시가 유일하게 맞는 처리다 — 다음 레이아웃이
+    /// 제대로 된 값을 들고 다시 온다.
     public func resizeCanvas(identifier: String, drawableSize: CGSize) {
+        guard Self.isUsableDrawableSize(drawableSize) else { return }
         guard let entry = surfaceEntry(for: identifier) else { return }
         backend.resizeSurface(entry.raw, size: drawableSize)
     }
