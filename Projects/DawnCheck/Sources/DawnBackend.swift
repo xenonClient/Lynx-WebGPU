@@ -96,7 +96,11 @@ final class DawnBackend: WGPUBackend {
             maxVertexBufferSlots: 8,
             // mapAsync 완료가 wgpuInstanceProcessEvents에서만 나온다 — 프레임 티커가 없는
             // 씬을 위해 엔진이 자가 펌프를 돌린다 (`WGPUBackendCapabilities` 문서).
-            needsEventPump: true
+            needsEventPump: true,
+            // Dawn은 브라우저와 같은 검증기를 통째로 갖고 있다 — 명세 검증은 Dawn이 하고,
+            // 엔진 위층에는 브리징과 최소한의 예외처리만 남는다. 그래서 이 파일의 동사들은
+            // JS 유래 정수를 **반드시 dawn* 안전 변환으로** 받는다 (트랩 방지가 이쪽 몫이다).
+            validatesNatively: true
         )
     }
 
@@ -138,38 +142,17 @@ final class DawnBackend: WGPUBackend {
             wgpuCommandEncoderRelease(commandEncoder)
             self.commandEncoder = nil
         }
-        // Dawn 검증 오류를 이 배치 결과에 싣는 배치 스코프 — pop은 제출 뒤에 한다.
-        wgpuDevicePushErrorScope(device, WGPUErrorFilter_OutOfMemory)
-        wgpuDevicePushErrorScope(device, WGPUErrorFilter_Validation)
+        // 배치 오류는 **uncaptured 콜백**으로 모은다 — 디바이스 오류 스코프는 첫 오류
+        // 하나만 돌려줘서, 한 배치의 다중 거부(범위 초과 여러 건 등)가 뭉개진다.
+        // uncaptured는 오류마다 개별 전달이라 브라우저의 오류 밀도와 같다.
     }
 
     func collectBatchDiagnostics() -> [WGPUError] {
-        var diagnostics: [WGPUError] = []
-        // 안쪽(validation)부터 — push의 역순이다. 동기 펌프라 이 배치 결과에 실린다.
-        if let error = drainDeviceScope() { diagnostics.append(error) }
-        if let error = drainDeviceScope() { diagnostics.append(error) }
-        diagnostics.append(contentsOf: uncaptured.drain())
-        return diagnostics
-    }
-
-    /// 디바이스 스코프 하나를 pop해 잡힌 오류를 돌려준다 (동기 펌프).
-    private func drainDeviceScope() -> WGPUError? {
-        final class ScopeBox { var done = false; var error: WGPUError? }
-        let box = ScopeBox()
-        var callbackInfo = WGPUPopErrorScopeCallbackInfo()
-        callbackInfo.mode = WGPUCallbackMode_AllowProcessEvents
-        callbackInfo.callback = { _, type, message, userdata1, _ in
-            guard let userdata1 else { return }
-            let box = Unmanaged<ScopeBox>.fromOpaque(userdata1).takeRetainedValue()
-            if type != WGPUErrorType_NoError {
-                box.error = DawnEnum.errorType(type, message: String(wgpu: message))
-            }
-            box.done = true
-        }
-        callbackInfo.userdata1 = Unmanaged.passRetained(box).toOpaque()
-        _ = wgpuDevicePopErrorScope(device, callbackInfo)
-        try? DawnBootstrap.pump(instance: instance, until: { box.done }, what: "popErrorScope")
-        return box.error
+        // 검증 오류는 인코더 Finish/제출 뒤 wgpuInstanceProcessEvents에서 콜백으로 나온다.
+        // 몇 차례 퍼 올려 이 배치 몫을 회수한다 — 그래도 늦게 오는 것은 지연 오류 계약대로
+        // 다음 배치에 실린다 (`WGPUDeferredErrorQueue`).
+        for _ in 0..<3 { wgpuInstanceProcessEvents(instance) }
+        return uncaptured.drain()
     }
 
     var hasPendingWork: Bool { commandEncoder != nil }
@@ -272,9 +255,9 @@ final class DawnBackend: WGPUBackend {
     }
 
     func writeBuffer(_ buffer: DawnBufferObject, offset: Int, data: Data) throws {
-        // offset은 엔진이 범위를 확인했다 (음수 없음).
+        let dawnOffset = try dawnU64(offset, "bufferOffset")
         data.withUnsafeBytes { source in
-            wgpuQueueWriteBuffer(queue, buffer.buffer, UInt64(offset), source.baseAddress, source.count)
+            wgpuQueueWriteBuffer(queue, buffer.buffer, dawnOffset, source.baseAddress, source.count)
         }
     }
 
@@ -1110,10 +1093,10 @@ final class DawnBackend: WGPUBackend {
             var dawnWrites = WebGPU.WGPUPassTimestampWrites()
             dawnWrites.querySet = writes.querySet.querySet
             // 생략된 자리는 WGPU_QUERY_SET_INDEX_UNDEFINED(=UInt32.max)다.
-            dawnWrites.beginningOfPassWriteIndex = writes.beginningOfPassWriteIndex
-                .map { UInt32($0) } ?? UInt32.max
-            dawnWrites.endOfPassWriteIndex = writes.endOfPassWriteIndex
-                .map { UInt32($0) } ?? UInt32.max
+            dawnWrites.beginningOfPassWriteIndex = try writes.beginningOfPassWriteIndex
+                .map { try dawnU32($0, "beginningOfPassWriteIndex") } ?? UInt32.max
+            dawnWrites.endOfPassWriteIndex = try writes.endOfPassWriteIndex
+                .map { try dawnU32($0, "endOfPassWriteIndex") } ?? UInt32.max
             dawnDescriptor.timestampWrites = arena.value(dawnWrites)
         }
 
@@ -1130,10 +1113,10 @@ final class DawnBackend: WGPUBackend {
         if let writes = pass.timestampWrites {
             var dawnWrites = WebGPU.WGPUPassTimestampWrites()
             dawnWrites.querySet = writes.querySet.querySet
-            dawnWrites.beginningOfPassWriteIndex = writes.beginningOfPassWriteIndex
-                .map { UInt32($0) } ?? UInt32.max
-            dawnWrites.endOfPassWriteIndex = writes.endOfPassWriteIndex
-                .map { UInt32($0) } ?? UInt32.max
+            dawnWrites.beginningOfPassWriteIndex = try writes.beginningOfPassWriteIndex
+                .map { try dawnU32($0, "beginningOfPassWriteIndex") } ?? UInt32.max
+            dawnWrites.endOfPassWriteIndex = try writes.endOfPassWriteIndex
+                .map { try dawnU32($0, "endOfPassWriteIndex") } ?? UInt32.max
             dawnDescriptor.timestampWrites = arena.value(dawnWrites)
         }
         guard let encoder = wgpuCommandEncoderBeginComputePass(try ensureEncoder(), &dawnDescriptor) else {
@@ -1168,11 +1151,11 @@ final class DawnBackend: WGPUBackend {
         }
     }
 
-    func applyVertexBuffer(_ buffer: DawnBufferObject, offset: Int, slot: Int) {
+    func applyVertexBuffer(_ buffer: DawnBufferObject, offset: Int, slot: Int) throws {
         guard let renderPass else { return }
-        // slot·offset은 엔진이 범위를 확인했다 (0 ≤ slot < 8, 0 ≤ offset ≤ size).
         wgpuRenderPassEncoderSetVertexBuffer(
-            renderPass, UInt32(slot), buffer.buffer, UInt64(offset), UInt64.max
+            renderPass, try dawnU32(slot, "slot"), buffer.buffer,
+            try dawnU64(offset, "offset"), UInt64.max
         )
     }
 
@@ -1209,8 +1192,7 @@ final class DawnBackend: WGPUBackend {
 
     func beginOcclusionQuery(index: Int) throws {
         guard let renderPass else { return }
-        // index는 엔진이 범위·중첩·재사용을 확인했다.
-        wgpuRenderPassEncoderBeginOcclusionQuery(renderPass, UInt32(index))
+        wgpuRenderPassEncoderBeginOcclusionQuery(renderPass, try dawnU32(index, "queryIndex"))
     }
 
     func endOcclusionQuery(index: Int) throws {
@@ -1287,7 +1269,7 @@ final class DawnBackend: WGPUBackend {
         // Dawn은 상태 변경으로만 처리하므로 비용이 없다.
         wgpuRenderPassEncoderSetIndexBuffer(
             renderPass, index.buffer.buffer, DawnEnum.indexFormat(index.format),
-            UInt64(index.offset), UInt64.max
+            try dawnU64(index.offset, "offset"), UInt64.max
         )
         wgpuRenderPassEncoderDrawIndexed(
             renderPass,
@@ -1301,8 +1283,7 @@ final class DawnBackend: WGPUBackend {
 
     func drawIndirect(buffer: DawnBufferObject, offset: Int) throws {
         guard let renderPass else { return }
-        // offset은 엔진이 정렬·범위를 확인했다.
-        wgpuRenderPassEncoderDrawIndirect(renderPass, buffer.buffer, UInt64(offset))
+        wgpuRenderPassEncoderDrawIndirect(renderPass, buffer.buffer, try dawnU64(offset, "indirectOffset"))
     }
 
     func drawIndexedIndirect(
@@ -1311,9 +1292,11 @@ final class DawnBackend: WGPUBackend {
         guard let renderPass else { return }
         wgpuRenderPassEncoderSetIndexBuffer(
             renderPass, index.buffer.buffer, DawnEnum.indexFormat(index.format),
-            UInt64(index.offset), UInt64.max
+            try dawnU64(index.offset, "offset"), UInt64.max
         )
-        wgpuRenderPassEncoderDrawIndexedIndirect(renderPass, buffer.buffer, UInt64(offset))
+        wgpuRenderPassEncoderDrawIndexedIndirect(
+            renderPass, buffer.buffer, try dawnU64(offset, "indirectOffset")
+        )
     }
 
     func dispatchWorkgroups(_ command: WGPUDispatchWorkgroupsCommand) throws {
@@ -1328,7 +1311,9 @@ final class DawnBackend: WGPUBackend {
 
     func dispatchWorkgroupsIndirect(buffer: DawnBufferObject, offset: Int) throws {
         guard let computePass else { return }
-        wgpuComputePassEncoderDispatchWorkgroupsIndirect(computePass, buffer.buffer, UInt64(offset))
+        wgpuComputePassEncoderDispatchWorkgroupsIndirect(
+            computePass, buffer.buffer, try dawnU64(offset, "indirectOffset")
+        )
     }
 
     // MARK: - 복사
@@ -1337,10 +1322,10 @@ final class DawnBackend: WGPUBackend {
         source: DawnBufferObject, sourceOffset: Int,
         destination: DawnBufferObject, destinationOffset: Int, size: Int
     ) throws {
-        // 범위·부호는 엔진이 확인했다.
         wgpuCommandEncoderCopyBufferToBuffer(
-            try ensureEncoder(), source.buffer, UInt64(sourceOffset),
-            destination.buffer, UInt64(destinationOffset), UInt64(size)
+            try ensureEncoder(), source.buffer, try dawnU64(sourceOffset, "sourceOffset"),
+            destination.buffer, try dawnU64(destinationOffset, "destinationOffset"),
+            try dawnU64(size, "size")
         )
     }
 
@@ -1425,10 +1410,10 @@ final class DawnBackend: WGPUBackend {
         _ querySet: DawnQuerySetObject, first: Int, count: Int,
         destination: DawnBufferObject, destinationOffset: Int
     ) throws {
-        // 범위·정렬·usage는 엔진이 확인했다.
         wgpuCommandEncoderResolveQuerySet(
             try ensureEncoder(), querySet.querySet,
-            UInt32(first), UInt32(count), destination.buffer, UInt64(destinationOffset)
+            try dawnU32(first, "firstQuery"), try dawnU32(count, "queryCount"),
+            destination.buffer, try dawnU64(destinationOffset, "destinationOffset")
         )
     }
 

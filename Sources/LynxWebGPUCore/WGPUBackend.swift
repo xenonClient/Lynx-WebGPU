@@ -204,8 +204,9 @@ public protocol WGPUBackend: AnyObject {
     /// 드로우 직전, 엔진의 그림자 상태에서 **더러워진 그룹만** 내려온다 — 번들 경계의
     /// 바인딩 무효화가 엔진 그림자 상태로 표현되기 때문이다 (`WGPUBackendEngine` 문서).
     func applyBindGroup(_ group: BindGroup, at index: Int, dynamicOffsets: [Int]) throws
-    /// 드로우 직전, 더러워진 슬롯만 내려온다. `offset`은 엔진이 범위를 확인한 값이다.
-    func applyVertexBuffer(_ buffer: Buffer, offset: Int, slot: Int)
+    /// 드로우 직전, 더러워진 슬롯만 내려온다. `validatesNatively` 백엔드는 slot·offset을
+    /// 스스로 안전 변환할 것 (엔진 범위 검사가 빠진다).
+    func applyVertexBuffer(_ buffer: Buffer, offset: Int, slot: Int) throws
 
     func setViewport(_ command: WGPUSetViewportCommand) throws
     func setScissorRect(_ command: WGPUSetScissorRectCommand) throws
@@ -274,12 +275,24 @@ public struct WGPUBackendCapabilities {
     /// `WebGPURuntime.processEvents` 계약의 이행 지점이다. Metal처럼 완료가 스스로
     /// 도착하는 백엔드는 거짓으로 두면 비용이 없다.
     public let needsEventPump: Bool
+    /// 백엔드가 WebGPU 명세 검증기를 **통째로** 갖고 있는가 (Dawn — 브라우저와 같은 검증기).
+    ///
+    /// 참이면 엔진은 명세 수준 검사(범위·정렬·usage·occlusion 중첩·번들 호환성·압축 제약)를
+    /// 건너뛰고 **브리징과 최소한의 예외처리**만 남긴다 — 핸들 조회, 와이어 매핑 상태,
+    /// 패스 상태 가드, CPU 경로 보호. 잘못된 값은 백엔드가 자기 검증기(디바이스 오류
+    /// 스코프)로 거부하고, 트랩 방지는 백엔드의 안전 변환(`dawnU32` 계열)이 맡는다 —
+    /// react-native-webgpu가 Dawn을 쓰는 방식과 같은 분할이다 (`docs/extra/RN-WEBGPU-LAYERING.md`).
+    ///
+    /// 거짓이면(Metal — 관대한 API 위의 직접 구현) 엔진의 명세 검사가 전부 돈다 —
+    /// 그 검사들은 개념적으로 **직접 구현 쪽의 일부**다.
+    public let validatesNatively: Bool
 
     public init(supportsNativeRenderBundles: Bool, maxVertexBufferSlots: Int,
-                needsEventPump: Bool = false) {
+                needsEventPump: Bool = false, validatesNatively: Bool = false) {
         self.supportsNativeRenderBundles = supportsNativeRenderBundles
         self.maxVertexBufferSlots = maxVertexBufferSlots
         self.needsEventPump = needsEventPump
+        self.validatesNatively = validatesNatively
     }
 }
 
