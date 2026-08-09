@@ -27,7 +27,7 @@ final class ShaderSafetyTests: XCTestCase {
     // MARK: - 인덱싱 범위 (robustness)
 
     /// 고정 크기 배열은 **타입이 크기를 안다** — C++ 템플릿이 상한을 뽑는다.
-    func test_고정크기_배열_인덱싱이_범위로_잘린다() throws {
+    func test_fixedSizeArrayIndexingIsClampedToRange() throws {
         let msl = try translate("""
         @group(0) @binding(0) var<storage, read> data: array<f32, 8>;
         @group(0) @binding(1) var<uniform> idx: u32;
@@ -40,7 +40,7 @@ final class ShaderSafetyTests: XCTestCase {
 
     /// 런타임 크기 배열은 타입에 크기가 없다 — **버퍼 크기 표**로 상한을 구한다.
     /// 인덱스는 유니폼에서 오므로 결국 번들(JS)이 정하는 값이다.
-    func test_런타임크기_배열_인덱싱이_버퍼_크기로_잘린다() throws {
+    func test_runtimeSizedArrayIndexingIsClampedByBufferSize() throws {
         let msl = try translate("""
         @group(0) @binding(0) var<storage, read_write> data: array<f32>;
         @group(0) @binding(1) var<uniform> idx: u32;
@@ -54,7 +54,7 @@ final class ShaderSafetyTests: XCTestCase {
 
     /// 크기 표를 요구했으면 **파이프라인도 같은 답을 봐야 한다** — 어긋나면 셰이더가
     /// 바인딩되지 않은 버퍼를 읽는다.
-    func test_런타임배열_인덱싱만_해도_크기표가_필요하다고_보고한다() throws {
+    func test_indexingARuntimeArrayAloneReportsTheSizeTableAsNeeded() throws {
         let module = try WGSLShaderModule(source: """
         @group(0) @binding(0) var<storage, read_write> data: array<f32>;
         @compute @workgroup_size(1) fn cs() { data[0] = 1.0; }
@@ -66,7 +66,7 @@ final class ShaderSafetyTests: XCTestCase {
     }
 
     /// 벡터 성분은 참조로 묶을 수 없어(MSL 제약) 읽기는 값, 쓰기는 store 헬퍼로 간다.
-    func test_벡터_성분_인덱싱도_읽기_쓰기_모두_잘린다() throws {
+    func test_vectorComponentIndexingIsClampedForBothReadAndWrite() throws {
         let msl = try translate("""
         @group(0) @binding(0) var<uniform> idx: u32;
         @fragment fn fs() -> @location(0) vec4f {
@@ -79,7 +79,7 @@ final class ShaderSafetyTests: XCTestCase {
         XCTAssertTrue(msl.contains("wgpu_at(v, idx)"), "벡터 읽기가 클램프를 지나지 않는다\n\(msl)")
     }
 
-    func test_행렬_열_인덱싱과_중첩_인덱싱이_컴파일된다() throws {
+    func test_matrixColumnIndexingAndNestedIndexingCompile() throws {
         _ = try translate("""
         @group(0) @binding(0) var<uniform> idx: u32;
         @fragment fn fs() -> @location(0) vec4f {
@@ -93,7 +93,7 @@ final class ShaderSafetyTests: XCTestCase {
     }
 
     /// 복합 대입(`+=`)도 같은 경로를 지나야 한다 — 한쪽만 막으면 그 경로로 샌다.
-    func test_복합_대입도_클램프를_지난다() throws {
+    func test_compoundAssignmentGoesThroughTheClampToo() throws {
         let msl = try translate("""
         @group(0) @binding(0) var<storage, read_write> data: array<f32, 4>;
         @group(0) @binding(1) var<uniform> idx: u32;
@@ -107,7 +107,7 @@ final class ShaderSafetyTests: XCTestCase {
     // MARK: - 정수 나눗셈 · 시프트 · 변환
 
     /// WGSL은 `x / 0 == x`, `x % 0 == 0`으로 정의한다. C++에서는 UB다.
-    func test_정수_나눗셈과_나머지가_0_분모를_거른다() throws {
+    func test_integerDivisionAndRemainderFilterAZeroDenominator() throws {
         let msl = try translate("""
         @group(0) @binding(0) var<uniform> d: i32;
         @fragment fn fs() -> @location(0) vec4f {
@@ -119,7 +119,7 @@ final class ShaderSafetyTests: XCTestCase {
     }
 
     /// 폭 이상의 시프트는 C++에서 UB다 — 하위 5비트만 남긴다 (Tint와 같은 규칙).
-    func test_시프트_폭이_마스킹된다() throws {
+    func test_theShiftAmountIsMasked() throws {
         let msl = try translate("""
         @group(0) @binding(0) var<uniform> s: u32;
         @fragment fn fs() -> @location(0) vec4f {
@@ -144,7 +144,7 @@ final class ShaderSafetyTests: XCTestCase {
     }
 
     /// 정수 벡터를 다른 정수 벡터로 옮기는 것은 포화와 무관하다 — 좁히려다 깨지면 안 된다.
-    func test_정수_벡터_변환은_그대로_지나간다() throws {
+    func test_integerVectorConversionPassesThrough() throws {
         _ = try translate("""
         @group(0) @binding(0) var<uniform> v: vec2u;
         @fragment fn fs() -> @location(0) vec4f {
@@ -177,7 +177,7 @@ final class ShaderSafetyTests: XCTestCase {
     }
 
     /// 이미 `local_invocation_index`를 받는 셰이더에 **같은 속성이 두 번** 붙으면 안 된다.
-    func test_이미_받고_있는_인덱스_빌트인은_중복되지_않는다() throws {
+    func test_anIndexBuiltinAlreadyTakenIsNotDuplicated() throws {
         let msl = try translate("""
         var<workgroup> tile: array<f32, 8>;
         @group(0) @binding(0) var<storage, read_write> out: array<f32>;
@@ -242,7 +242,7 @@ final class ShaderSafetyTests: XCTestCase {
     }
 
     /// 헬퍼 함수 안의 `discard`도 같은 플래그를 봐야 한다 — 플래그가 호출 그래프를 따라 내려간다.
-    func test_헬퍼_함수의_discard도_같은_플래그를_쓴다() throws {
+    func test_aDiscardInAHelperUsesTheSameFlag() throws {
         let msl = try translate("""
         @group(0) @binding(0) var<storage, read_write> out: array<f32>;
         fn maybeDiscard(x: f32) { if (x > 0.5) { discard; } }
@@ -261,7 +261,7 @@ final class ShaderSafetyTests: XCTestCase {
     // MARK: - 무한 루프
 
     /// C++에서 무한 루프는 UB다 — 컴파일러가 "끝난다"고 가정하고 주변 코드를 지울 수 있다.
-    func test_무한_루프에_탈출_조건이_하나_더_붙는다() throws {
+    func test_anInfiniteLoopGainsOneMoreExitCondition() throws {
         let msl = try translate("""
         @group(0) @binding(0) var<uniform> n: u32;
         @fragment fn fs() -> @location(0) vec4f {
@@ -278,7 +278,7 @@ final class ShaderSafetyTests: XCTestCase {
     }
 
     /// 조건이 있는 `for`/`while`은 컴파일러가 끝난다고 볼 근거가 있다 — 가드를 붙이지 않는다.
-    func test_조건이_있는_루프에는_가드가_붙지_않는다() throws {
+    func test_aLoopWithAConditionGetsNoGuard() throws {
         let msl = try translate("""
         @fragment fn fs() -> @location(0) vec4f {
             var total = 0.0;
@@ -289,7 +289,7 @@ final class ShaderSafetyTests: XCTestCase {
         XCTAssertFalse(msl.contains("wgpu_loop_guard"), "조건이 있는 루프에 불필요한 가드가 붙었다\n\(msl)")
     }
 
-    func test_중첩된_무한_루프의_가드_이름이_겹치지_않는다() throws {
+    func test_guardNamesOfNestedInfiniteLoopsDoNotCollide() throws {
         let msl = try translate("""
         @group(0) @binding(0) var<uniform> n: u32;
         @fragment fn fs() -> @location(0) vec4f {

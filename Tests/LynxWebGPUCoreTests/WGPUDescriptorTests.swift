@@ -3,7 +3,7 @@ import XCTest
 
 /// 디스크립터 디코딩 — 명세 기본값과 검증 규칙.
 final class WGPUDescriptorTests: XCTestCase {
-    func test_버퍼_디스크립터는_초기데이터_길이로_크기를_유추한다() throws {
+    func test_bufferDescriptorInfersSizeFromInitialDataLength() throws {
         let data = Data([1, 2, 3, 4, 5, 6, 7, 8])
         let descriptor = try WGPUBufferDescriptor(from: WGPUValueReader([
             "usage": 0x20, "data": data.base64EncodedString(),
@@ -14,17 +14,17 @@ final class WGPUDescriptorTests: XCTestCase {
         XCTAssertTrue(descriptor.usage.contains(.vertex))
     }
 
-    func test_초기데이터가_버퍼보다_크면_오류다() {
+    func test_initialDataLargerThanTheBufferIsAnError() {
         XCTAssertThrowsError(try WGPUBufferDescriptor(from: WGPUValueReader([
             "size": 4, "usage": 0x20, "data": Data([1, 2, 3, 4, 5, 6]).base64EncodedString(),
         ])))
     }
 
-    func test_크기0_버퍼는_거부한다() {
+    func test_aZeroSizeBufferIsRejected() {
         XCTAssertThrowsError(try WGPUBufferDescriptor(from: WGPUValueReader(["size": 0, "usage": 0x20])))
     }
 
-    func test_샘플러_기본값은_명세를_따른다() throws {
+    func test_samplerDefaultsFollowTheSpec() throws {
         let sampler = try WGPUSamplerDescriptor(from: WGPUValueReader([:]))
 
         XCTAssertEqual(sampler.addressModeU, .clampToEdge)
@@ -34,7 +34,7 @@ final class WGPUDescriptorTests: XCTestCase {
         XCTAssertNil(sampler.compare)
     }
 
-    func test_스텐실_상태_기본값은_아무것도_하지_않는다() throws {
+    func test_theStencilStateDefaultDoesNothing() throws {
         let state = try WGPUDepthStencilState(from: WGPUValueReader(["format": "depth24plus-stencil8"]))
 
         // 명세 기본값 — 비교는 항상 통과, 세 연산은 모두 keep. 그래서 결과에 영향이 없다.
@@ -49,7 +49,7 @@ final class WGPUDescriptorTests: XCTestCase {
         XCTAssertFalse(state.usesStencil, "기본값만 있으면 스텐실 상태를 만들 이유가 없다")
     }
 
-    func test_스텐실_앞뒤면을_따로_읽는다() throws {
+    func test_readsStencilFrontAndBackSeparately() throws {
         let state = try WGPUDepthStencilState(from: WGPUValueReader([
             "format": "stencil8",
             "stencilFront": ["compare": "equal", "passOp": "replace"],
@@ -68,7 +68,7 @@ final class WGPUDescriptorTests: XCTestCase {
         XCTAssertTrue(state.usesStencil)
     }
 
-    func test_스텐실_연산_철자는_명세_그대로다() {
+    func test_stencilOpSpellingsMatchTheSpec() {
         // JS가 문자열로 보내므로 철자가 곧 API다 — 바꾸면 조용히 "알 수 없는 값"이 된다.
         XCTAssertEqual(
             WGPUStencilOperation.allCases.map(\.rawValue),
@@ -77,7 +77,7 @@ final class WGPUDescriptorTests: XCTestCase {
         )
     }
 
-    func test_알수없는_스텐실_연산은_후보를_알려준다() {
+    func test_anUnknownStencilOpListsTheCandidates() {
         XCTAssertThrowsError(try WGPUDepthStencilState(from: WGPUValueReader([
             "format": "stencil8", "stencilFront": ["passOp": "incrementClamp"],
         ]))) { error in
@@ -88,7 +88,7 @@ final class WGPUDescriptorTests: XCTestCase {
         }
     }
 
-    func test_바인드그룹_레이아웃은_리소스_종류를_정확히_하나_요구한다() throws {
+    func test_bindGroupLayoutRequiresExactlyOneResourceKind() throws {
         let buffer = try WGPUBindGroupLayoutEntry(from: WGPUValueReader([
             "binding": 0, "visibility": 0x1, "buffer": ["type": "read-only-storage"],
         ]))
@@ -106,7 +106,7 @@ final class WGPUDescriptorTests: XCTestCase {
         ])))
     }
 
-    func test_파이프라인_레이아웃_참조는_auto와_핸들을_모두_받는다() throws {
+    func test_pipelineLayoutRefAcceptsBothAutoAndAHandle() throws {
         if case .auto = try WGPUPipelineLayoutRef(from: WGPUValueReader(["layout": "auto"])) {} else {
             XCTFail("auto여야 한다")
         }
@@ -122,12 +122,12 @@ final class WGPUDescriptorTests: XCTestCase {
         XCTAssertThrowsError(try WGPUPipelineLayoutRef(from: WGPUValueReader(["layout": "nope"])))
     }
 
-    func test_깊이스텐실은_깊이포맷만_받는다() {
+    func test_depthStencilAcceptsOnlyDepthFormats() {
         XCTAssertNoThrow(try WGPUDepthStencilState(from: WGPUValueReader(["format": "depth32float"])))
         XCTAssertThrowsError(try WGPUDepthStencilState(from: WGPUValueReader(["format": "rgba8unorm"])))
     }
 
-    func test_블렌드_기본값은_교체다() throws {
+    func test_theBlendDefaultIsReplace() throws {
         let target = try WGPUColorTargetState(from: WGPUValueReader(["format": "bgra8unorm"]))
         XCTAssertNil(target.blend)
         XCTAssertEqual(target.writeMask, .all)
@@ -143,7 +143,7 @@ final class WGPUDescriptorTests: XCTestCase {
         XCTAssertEqual(blended.blend?.alpha.dstFactor, .zero)
     }
 
-    func test_텍스처포맷의_깊이_스텐실_판별과_바이트수() {
+    func test_textureFormatDepthStencilDetectionAndByteSizes() {
         XCTAssertTrue(WGPUTextureFormat.depth24plusStencil8.isDepthOrStencil)
         XCTAssertTrue(WGPUTextureFormat.depth24plusStencil8.hasDepth)
         XCTAssertTrue(WGPUTextureFormat.depth24plusStencil8.hasStencil)
@@ -154,7 +154,7 @@ final class WGPUDescriptorTests: XCTestCase {
         XCTAssertEqual(WGPUTextureFormat.r8unorm.bytesPerPixel, 1)
     }
 
-    func test_정점포맷_바이트수() {
+    func test_vertexFormatByteSizes() {
         XCTAssertEqual(WGPUVertexFormat.float32x3.byteSize, 12)
         XCTAssertEqual(WGPUVertexFormat.unorm8x4.byteSize, 4)
         XCTAssertEqual(WGPUVertexFormat.sint32x4.byteSize, 16)
@@ -166,7 +166,7 @@ final class WGPUObjectRegistryTests: XCTestCase {
     private final class Dummy {}
     private final class Other {}
 
-    func test_등록과_조회() throws {
+    func test_insertAndLookup() throws {
         let registry = WGPUObjectRegistry()
         let object = Dummy()
         registry.insert(object, at: WGPUHandle(1))
@@ -176,7 +176,7 @@ final class WGPUObjectRegistryTests: XCTestCase {
         XCTAssertEqual(registry.count, 1)
     }
 
-    func test_없는_핸들은_설명이_붙은_오류다() {
+    func test_aMissingHandleIsAnErrorWithAnExplanation() {
         let registry = WGPUObjectRegistry()
         XCTAssertThrowsError(try registry.lookup(WGPUHandle(9), as: Dummy.self, kind: "GPUBuffer")) { error in
             let message = (error as? WGPUError)?.message ?? ""
@@ -185,7 +185,7 @@ final class WGPUObjectRegistryTests: XCTestCase {
         }
     }
 
-    func test_타입이_다르면_실제_타입을_알려준다() {
+    func test_aTypeMismatchReportsTheActualType() {
         let registry = WGPUObjectRegistry()
         registry.insert(Other(), at: WGPUHandle(2))
 
@@ -194,7 +194,7 @@ final class WGPUObjectRegistryTests: XCTestCase {
         }
     }
 
-    func test_해제하면_조회가_실패한다() {
+    func test_lookupFailsAfterRemoval() {
         let registry = WGPUObjectRegistry()
         registry.insert(Dummy(), at: WGPUHandle(3))
         registry.remove(WGPUHandle(3))
@@ -207,7 +207,7 @@ final class WGPUObjectRegistryTests: XCTestCase {
     ///
     /// 오류로 드러나지 않는 것이 문제다 — 같은 타입끼리 겹치면 조회도 통과하고, "내 버퍼에
     /// 남이 그린다"는 증상만 남는다. 그래서 세어 두고 경고한다.
-    func test_살아있는_핸들을_덮어쓰면_센다() {
+    func test_overwritingALiveHandleIsCounted() {
         let registry = WGPUObjectRegistry()
         XCTAssertEqual(registry.displacedHandleCount, 0)
 
@@ -221,7 +221,7 @@ final class WGPUObjectRegistryTests: XCTestCase {
     }
 
     /// 해제한 뒤 같은 번호를 다시 쓰는 것은 겹친 것이 아니다 — 자리가 비어 있었다.
-    func test_해제한_핸들을_다시_쓰는_것은_겹침이_아니다() {
+    func test_reusingAReleasedHandleIsNotADisplacement() {
         let registry = WGPUObjectRegistry()
         registry.insert(Dummy(), at: WGPUHandle(1))
         registry.remove(WGPUHandle(1))
@@ -230,7 +230,7 @@ final class WGPUObjectRegistryTests: XCTestCase {
         XCTAssertEqual(registry.displacedHandleCount, 0)
     }
 
-    func test_객체가_임계값을_넘으면_경고하고_임계는_두배씩_올라간다() {
+    func test_crossingTheObjectThresholdWarnsAndDoublesIt() {
         let registry = WGPUObjectRegistry()
         let floor = WGPUObjectRegistry.growthWarningFloor
         XCTAssertEqual(registry.lastWarnedThreshold, 0, "임계 아래에서는 경고하지 않는다")

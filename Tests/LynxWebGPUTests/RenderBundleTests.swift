@@ -93,7 +93,7 @@ final class RenderBundleTests: XCTestCase {
 
     // MARK: - 동치성
 
-    func test_번들이_직접_인코딩과_같은_프레임을_낸다() throws {
+    func test_aBundleProducesTheSameFrameAsDirectEncoding() throws {
         harness.executeExpectingSuccess(setUpResources() + [
             createBundle(id: 10, commands: fullScreenDraw(bindGroup: 6)),
         ])
@@ -113,7 +113,7 @@ final class RenderBundleTests: XCTestCase {
     }
 
     /// 번들의 존재 이유는 재사용이다 — 한 번 실행하면 상하는 자료 구조가 아니어야 한다.
-    func test_같은_번들을_두_프레임_연속_실행해도_같은_결과다() throws {
+    func test_runningOneBundleTwoFramesInARowGivesTheSameResult() throws {
         harness.executeExpectingSuccess(setUpResources() + [
             createBundle(id: 10, commands: fullScreenDraw(bindGroup: 6)),
         ])
@@ -132,7 +132,7 @@ final class RenderBundleTests: XCTestCase {
         try harness.assertFrameEquals(first, "두 번째 실행도 같아야 한다")
     }
 
-    func test_여러_번들이_넘긴_순서대로_실행된다() throws {
+    func test_severalBundlesRunInTheOrderGiven() throws {
         harness.executeExpectingSuccess(setUpResources() + [
             createBundle(id: 10, commands: fullScreenDraw(bindGroup: 6)),   // 빨강
             createBundle(id: 11, commands: fullScreenDraw(bindGroup: 7)),   // 초록
@@ -156,7 +156,7 @@ final class RenderBundleTests: XCTestCase {
     /// 호환성 검증은 실행보다 먼저, **전체 목록에 대해** 끝나야 한다 — 하나만 비호환이어도
     /// 앞의 호환 번들까지 실행되지 않는다. 절반만 그려진 프레임을 남기지 않기 위한 계약인데,
     /// 검증 루프와 실행 루프를 합치면 조용히 깨지므로 픽셀로 못 박는다.
-    func test_비호환_번들이_섞이면_앞의_호환_번들도_실행되지_않는다() throws {
+    func test_anIncompatibleBundleStopsTheCompatibleOnesBeforeItToo() throws {
         let setUp = setUpResources() + [
             createBundle(id: 10, commands: fullScreenDraw(bindGroup: 6)),   // 호환 (빨강)
             ["op": "createRenderBundle", "id": 12, "colorFormats": ["bgra8unorm"],
@@ -177,7 +177,7 @@ final class RenderBundleTests: XCTestCase {
     ///
     /// 허용 목록에서 빠뜨리면 **마커 하나 때문에 번들 전체가 거부되고**, 사용자는 마커가
     /// 원인이라고 생각하기 어렵다 (드로우를 의심하며 엉뚱한 곳을 고친다).
-    func test_번들에_디버그_마커를_담을_수_있다() throws {
+    func test_aBundleCanContainDebugMarkers() throws {
         harness.executeExpectingSuccess(setUpResources() + [
             createBundle(id: 10, commands:
                 [["op": "pushDebugGroup", "groupLabel": "번들 구간"]]
@@ -201,7 +201,7 @@ final class RenderBundleTests: XCTestCase {
     /// 명세는 번들 실행이 패스 상태를 **복원**하는 것이 아니라 **무효화**한다고 정한다.
     /// 그래서 이어서 그리려면 `setPipeline`부터 다시 해야 한다 — 그러지 않으면 번들이 남긴
     /// 바인딩으로 그려져, 브라우저에서는 오류인 코드가 여기서만 돌아간다.
-    func test_번들_실행_뒤에는_파이프라인을_다시_지정해야_한다() {
+    func test_afterBundleExecutionThePipelineMustBeSetAgain() {
         let result = harness.execute(setUpResources() + [
             createBundle(id: 10, commands: fullScreenDraw(bindGroup: 6)),
         ] + acquireDrawable + [
@@ -218,7 +218,7 @@ final class RenderBundleTests: XCTestCase {
     }
 
     /// 반대 방향 — 번들은 패스가 이미 지정해 둔 파이프라인을 물려받지 않는다.
-    func test_번들은_패스의_파이프라인을_물려받지_않는다() {
+    func test_aBundleDoesNotInheritThePassPipeline() {
         let result = harness.execute(setUpResources() + [
             // setPipeline 없이 draw만 담은 번들.
             createBundle(id: 10, commands: [
@@ -242,7 +242,7 @@ final class RenderBundleTests: XCTestCase {
     ///
     /// 파이프라인과 달리 바인드 그룹은 **Metal 인코더에 그대로 남아 있어서** 그림자 상태만
     /// 비워서는 격리되지 않는다. 레이아웃이 요구하는 그룹이 다 바인드되었는지 봐야 잡힌다.
-    func test_번들은_패스의_바인드_그룹을_물려받지_않는다() {
+    func test_aBundleDoesNotInheritThePassBindGroups() {
         let result = harness.execute(setUpResources() + [
             createBundle(id: 10, commands: [
                 ["op": "setPipeline", "pipeline": 2],   // setBindGroup 없이
@@ -263,7 +263,7 @@ final class RenderBundleTests: XCTestCase {
     }
 
     /// 번들 실행 뒤 `setPipeline`만 다시 하고 그리면, 바인드 그룹은 번들이 남긴 것이 쓰인다.
-    func test_번들_실행_뒤에는_바인드_그룹도_다시_지정해야_한다() {
+    func test_afterBundleExecutionBindGroupsMustBeSetAgain() {
         let result = harness.execute(setUpResources() + [
             createBundle(id: 10, commands: fullScreenDraw(bindGroup: 6)),
         ] + acquireDrawable + [
@@ -318,7 +318,7 @@ final class RenderBundleTests: XCTestCase {
     }
 
     /// 기준 — 번들이 자기 정점 버퍼를 담으면 정상으로 그려진다.
-    func test_정점_버퍼를_담은_번들은_정상으로_그린다() throws {
+    func test_aBundleCarryingItsVertexBufferDrawsNormally() throws {
         harness.executeExpectingSuccess(setUpVertexPulling() + [
             vertexBundle(id: 43, commands: [
                 ["op": "setPipeline", "pipeline": 41],
@@ -335,7 +335,7 @@ final class RenderBundleTests: XCTestCase {
     }
 
     /// 패스 쪽에서만 정점 버퍼를 올린 경우 — 번들은 물려받지 않으므로 거부되어야 한다.
-    func test_번들은_패스의_정점_버퍼를_물려받지_않는다() {
+    func test_aBundleDoesNotInheritThePassVertexBuffers() {
         let result = harness.execute(setUpVertexPulling() + [
             vertexBundle(id: 43, commands: [
                 ["op": "setPipeline", "pipeline": 41],   // setVertexBuffer 없이
@@ -355,7 +355,7 @@ final class RenderBundleTests: XCTestCase {
     }
 
     /// 반대 방향 — 번들이 올린 정점 버퍼는 실행이 끝나면 무효화된다.
-    func test_번들_실행_뒤에는_정점_버퍼도_다시_지정해야_한다() {
+    func test_afterBundleExecutionVertexBuffersMustBeSetAgain() {
         let result = harness.execute(setUpVertexPulling() + [
             vertexBundle(id: 43, commands: [
                 ["op": "setPipeline", "pipeline": 41],
@@ -379,7 +379,7 @@ final class RenderBundleTests: XCTestCase {
     /// 인덱스 버퍼도 번들 경계에서 무효화된다 — 문서가 "파이프라인·바인드 그룹·정점 버퍼·
     /// **인덱스 버퍼** 네 가지"라고 적어 둔 자리다. 남아 있으면 이어지는 `drawIndexed`가
     /// 번들이 남긴 인덱스로 **실제로 그려져** 브라우저와 다르게 동작한다.
-    func test_번들_실행_뒤에는_인덱스_버퍼도_다시_지정해야_한다() {
+    func test_afterBundleExecutionTheIndexBufferMustBeSetAgain() {
         let result = harness.execute(setUpVertexPulling() + [
             ["op": "createBuffer", "id": 44, "size": 6, "usage": TestUsage.index,
              "data": Data([0, 0, 1, 0, 2, 0]).base64EncodedString()],
@@ -405,7 +405,7 @@ final class RenderBundleTests: XCTestCase {
     }
 
     /// 반대 방향 — 패스에서 묶은 인덱스 버퍼를 번들이 물려받지 않는다.
-    func test_번들은_패스의_인덱스_버퍼를_물려받지_않는다() {
+    func test_aBundleDoesNotInheritThePassIndexBuffer() {
         let result = harness.execute(setUpVertexPulling() + [
             ["op": "createBuffer", "id": 44, "size": 6, "usage": TestUsage.index,
              "data": Data([0, 0, 1, 0, 2, 0]).base64EncodedString()],
@@ -432,7 +432,7 @@ final class RenderBundleTests: XCTestCase {
     /// 해석기의 계약은 "오류가 프레임을 죽이지 않고 누적된다"이므로 실행은 다음 명령부터 계속된다.
     /// 그때 초기화를 빠뜨리면 이어지는 draw가 번들이 남긴 파이프라인으로 **실제로 그려진다** —
     /// 브라우저에서는 거부되는 코드가 여기서만 엉뚱한 픽셀을 낸다.
-    func test_번들_실행_중_오류가_나도_패스_바인딩이_초기화된다() {
+    func test_passBindingsResetEvenWhenABundleErrorsMidExecution() {
         let result = harness.execute(setUpResources() + [
             // 두 번째 명령의 바인드 그룹 핸들이 없다 — 실행 도중에 실패한다.
             createBundle(id: 10, commands: [
@@ -460,7 +460,7 @@ final class RenderBundleTests: XCTestCase {
     /// 회귀 — 패스의 `sampleCount`를 컬러 어태치먼트에서만 유도하면, 컬러 없이 깊이만 있는
     /// MSAA 패스(그림자 맵·깊이 프리패스)에서 패스가 1로 잡힌다. 그러면 명세대로 정확히
     /// `sampleCount: 4`를 선언한 번들이 오탐으로 거부된다.
-    func test_컬러_없는_MSAA_깊이_패스에서_sampleCount가_깊이_뷰로_결정된다() throws {
+    func test_inAColorlessMSAADepthPassSampleCountComesFromTheDepthView() throws {
         try XCTSkipUnless(harness.context!.device.supportsTextureSampleCount(4), "4x MSAA 미지원")
 
         let result = harness.execute([
@@ -483,7 +483,7 @@ final class RenderBundleTests: XCTestCase {
 
     // MARK: - 계약
 
-    func test_번들의_컬러_포맷이_패스와_다르면_거부한다() {
+    func test_rejectsABundleWhoseColorFormatDiffersFromThePass() {
         let result = harness.execute(setUpResources() + [
             ["op": "createRenderBundle", "id": 10, "colorFormats": ["bgra8unorm"],
              "commands": fullScreenDraw(bindGroup: 6)],
@@ -499,7 +499,7 @@ final class RenderBundleTests: XCTestCase {
         XCTAssertTrue(message.contains("bgra8unorm") && message.contains("rgba8unorm"), message)
     }
 
-    func test_번들의_어태치먼트_수가_패스와_다르면_거부한다() {
+    func test_rejectsABundleWhoseAttachmentCountDiffersFromThePass() {
         let result = harness.execute(setUpResources() + [
             ["op": "createRenderBundle", "id": 10, "colorFormats": ["rgba8unorm", "rgba8unorm"],
              "commands": fullScreenDraw(bindGroup: 6)],
@@ -516,7 +516,7 @@ final class RenderBundleTests: XCTestCase {
     }
 
     /// 명세의 레이아웃 동치 비교는 **후행 null을 무시한다.** 자르지 않으면 유효한 조합이 거부된다.
-    func test_번들_colorFormats의_후행_null은_무시한다() {
+    func test_trailingNullsInBundleColorFormatsAreIgnored() {
         let result = harness.execute(setUpResources() + [
             ["op": "createRenderBundle", "id": 10,
              // JS가 `null`을 실어 보내면 브리지에서 NSNull로 도착한다.
@@ -533,7 +533,7 @@ final class RenderBundleTests: XCTestCase {
 
     /// 어태치먼트가 하나도 없는 번들은 **만들 때** 거부한다.
     /// 지금도 결국 `makeRenderCommandEncoder`가 실패하지만, 그러면 오류가 엉뚱한 자리에서 난다.
-    func test_어태치먼트가_없는_번들은_만들_때_거부한다() {
+    func test_aBundleWithNoAttachmentIsRejectedAtCreation() {
         let result = harness.execute([
             ["op": "createRenderBundle", "id": 10, "colorFormats": [String?](),
              "commands": [[String: Any]]()],
@@ -547,7 +547,7 @@ final class RenderBundleTests: XCTestCase {
         XCTAssertEqual(harness.liveObjects, 0, "거부한 번들이 등록되면 안 된다")
     }
 
-    func test_번들의_깊이_포맷이_패스와_다르면_거부한다() {
+    func test_rejectsABundleWhoseDepthFormatDiffersFromThePass() {
         let result = harness.execute(setUpResources() + [
             ["op": "createRenderBundle", "id": 10, "colorFormats": ["rgba8unorm"],
              "depthStencilFormat": "depth32float", "commands": fullScreenDraw(bindGroup: 6)],
@@ -565,7 +565,7 @@ final class RenderBundleTests: XCTestCase {
 
     /// 명세가 번들에 담지 못하게 한 명령들. **번들을 만들 때** 거부해야 한다 —
     /// 실행 시점까지 미루면 몇 프레임 뒤에야 드러난다.
-    func test_번들_안에_금지된_명령이_있으면_만들_때_거부한다() {
+    func test_aForbiddenCommandInsideABundleIsRejectedAtCreation() {
         for forbidden in [
             ["op": "setViewport", "x": 0, "y": 0, "width": 8, "height": 8],
             ["op": "setScissorRect", "x": 0, "y": 0, "width": 8, "height": 8],
@@ -636,7 +636,7 @@ final class RenderBundleTests: XCTestCase {
         ])
     }
 
-    func test_패스없이_executeBundles하면_오류다() {
+    func test_executeBundlesWithNoPassIsAnError() {
         let result = harness.execute(setUpResources() + [
             createBundle(id: 10, commands: fullScreenDraw(bindGroup: 6)),
             ["op": "executeBundles", "bundles": [10]],
@@ -648,7 +648,7 @@ final class RenderBundleTests: XCTestCase {
         )
     }
 
-    func test_없는_번들_핸들은_validation_오류다() {
+    func test_aMissingBundleHandleIsAValidationError() {
         let result = harness.execute(setUpResources() + acquireDrawable + [
             beginPass,
             ["op": "executeBundles", "bundles": [999]],

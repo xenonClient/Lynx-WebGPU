@@ -9,7 +9,7 @@ import XCTest
 final class WGPUCompressedFormatTests: XCTestCase {
     /// 압축 포맷은 전부 `isCompressed`이고 비압축은 전부 아니어야 한다 —
     /// 이 구분 하나로 `bytesPerRow`/`blockRows`의 경로가 갈린다.
-    func test_압축_여부가_이름과_일치한다() {
+    func test_compressionFlagMatchesTheName() {
         for format in WGPUTextureFormat.allCases {
             let looksCompressed = format.rawValue.hasPrefix("bc")
                 || format.rawValue.hasPrefix("etc2-")
@@ -19,7 +19,7 @@ final class WGPUCompressedFormatTests: XCTestCase {
         }
     }
 
-    func test_비압축_포맷의_블록은_1x1이고_블록크기가_픽셀크기다() {
+    func test_uncompressedBlocksAre1x1AndBlockSizeEqualsPixelSize() {
         for format in WGPUTextureFormat.allCases where !format.isCompressed {
             XCTAssertEqual(format.blockWidth, 1, "\(format.rawValue)")
             XCTAssertEqual(format.blockHeight, 1, "\(format.rawValue)")
@@ -65,7 +65,7 @@ final class WGPUCompressedFormatTests: XCTestCase {
     }
 
     /// 블록당 바이트는 8이거나 16이다. 여기서 하나를 잘못 짚으면 데이터가 절반씩 밀린다.
-    func test_블록당_바이트가_계열별로_맞는다() {
+    func test_bytesPerBlockAreCorrectPerFamily() {
         let eightByte: Set<String> = [
             "bc1-rgba-unorm", "bc1-rgba-unorm-srgb", "bc4-r-unorm", "bc4-r-snorm",
             "etc2-rgb8unorm", "etc2-rgb8unorm-srgb", "etc2-rgb8a1unorm", "etc2-rgb8a1unorm-srgb",
@@ -79,7 +79,7 @@ final class WGPUCompressedFormatTests: XCTestCase {
 
     /// 압축 텍스처의 한 행은 **블록 수로 올림**해서 센다. 내림하면 가장자리 블록이
     /// 통째로 빠져 데이터가 밀린다 — 실제로 자주 나는 실수라 값으로 못 박는다.
-    func test_행_바이트와_블록_행_수를_올림으로_센다() {
+    func test_rowBytesAndBlockRowsRoundUp() {
         let bc1 = WGPUTextureFormat.bc1RGBAUnorm      // 4x4 블록, 8바이트
         XCTAssertEqual(bc1.bytesPerRow(width: 16), 4 * 8)
         XCTAssertEqual(bc1.bytesPerRow(width: 17), 5 * 8, "17픽셀은 블록 5개가 필요하다")
@@ -96,7 +96,7 @@ final class WGPUCompressedFormatTests: XCTestCase {
 
     /// 4×4 BC1 텍스처 하나는 정확히 블록 하나(8B)다. 이 값이 밀리면 `writeTexture`가
     /// "데이터가 부족하다"로 거부하거나, 반대로 모자란 데이터를 GPU에 올린다.
-    func test_작은_텍스처의_전체_크기가_블록_하나다() {
+    func test_aTinyTextureIsOneWholeBlock() {
         let bc1 = WGPUTextureFormat.bc1RGBAUnorm
         XCTAssertEqual(bc1.bytesPerRow(width: 4) * bc1.blockRows(height: 4), 8)
         // 밉 사슬의 꼬리(2x2, 1x1)도 블록 하나씩이다 — 크기가 0이 되면 안 된다.

@@ -123,7 +123,7 @@ final class QuerySetTests: XCTestCase {
 
     // MARK: - timestamp (비결정적 — 구조만)
 
-    func test_타임스탬프가_패스_경계에서_증가한다() throws {
+    func test_timestampsIncreaseAcrossAPassBoundary() throws {
         try XCTSkipUnless(
             harness.supports(.timestampQuery), "패스 경계 타임스탬프 샘플링을 지원하지 않는 기기"
         )
@@ -168,7 +168,7 @@ final class QuerySetTests: XCTestCase {
     /// 그래서 흔들리는 단언 대신 "결과가 (0, 0)이거나 제대로 된 값이거나 둘 중 하나"만 본다.
     /// 쓰레기 값·잘못된 길이·resolve 실패는 여전히 잡히고, CI는 흔들리지 않는다.
     /// 프레임 계측이 목적이라면 **렌더 패스 타임스탬프**를 쓸 것 (그쪽은 안정적이다).
-    func test_컴퓨트_패스도_타임스탬프를_찍는다() throws {
+    func test_aComputePassTakesTimestampsToo() throws {
         try XCTSkipUnless(
             harness.supports(.timestampQuery), "패스 경계 타임스탬프 샘플링을 지원하지 않는 기기"
         )
@@ -215,7 +215,7 @@ final class QuerySetTests: XCTestCase {
 
     /// 지원하지 않는 기기에서 만들려 하면 **명확한 `unsupported`**가 나와야 한다.
     /// 지원하는 기기에서는 그냥 만들어지는지만 본다 — 양쪽 다 조용히 실패하면 안 된다.
-    func test_타임스탬프_쿼리셋_생성이_기기_지원과_일치한다() {
+    func test_timestampQuerySetCreationMatchesDeviceSupport() {
         let result = harness.execute([
             ["op": "createQuerySet", "id": 1, "type": "timestamp", "count": 2],
         ])
@@ -227,7 +227,7 @@ final class QuerySetTests: XCTestCase {
         }
     }
 
-    func test_어댑터가_타임스탬프_지원을_기능으로_알린다() throws {
+    func test_theAdapterAdvertisesTimestampSupportAsAFeature() throws {
         let info = harness.runtime.adapterInfo()
         let features = try XCTUnwrap(info["features"] as? [String])
 
@@ -241,7 +241,7 @@ final class QuerySetTests: XCTestCase {
 
     // MARK: - 계약
 
-    func test_쿼리셋_없이_beginOcclusionQuery하면_오류다() {
+    func test_beginOcclusionQueryWithoutAQuerySetIsAnError() {
         let result = harness.execute(setUpResources() + acquireDrawable + [
             beginPass(),   // occlusionQuerySet 없이
             ["op": "beginOcclusionQuery", "queryIndex": 0],
@@ -270,7 +270,7 @@ final class QuerySetTests: XCTestCase {
         )
     }
 
-    func test_쿼리_인덱스가_범위를_넘으면_거부한다() {
+    func test_rejectsAQueryIndexOutOfRange() {
         let result = harness.execute(setUpResources() + [
             ["op": "createQuerySet", "id": 3, "type": "occlusion", "count": 2],
         ] + acquireDrawable + [
@@ -295,7 +295,7 @@ final class QuerySetTests: XCTestCase {
         XCTAssertTrue(((errors(result).first?["message"] as? String) ?? "").contains("QUERY_RESOLVE"))
     }
 
-    func test_목적지_오프셋은_256의_배수여야_한다() {
+    func test_theDestinationOffsetMustBeAMultipleOf256() {
         let result = harness.execute([
             ["op": "createQuerySet", "id": 1, "type": "occlusion", "count": 1],
             ["op": "createBuffer", "id": 2, "size": 512, "usage": TestUsage.queryResolve],
@@ -328,7 +328,7 @@ final class QuerySetTests: XCTestCase {
         )
     }
 
-    func test_크기0_쿼리셋은_거부한다() {
+    func test_aZeroSizeQuerySetIsRejected() {
         let result = harness.execute([["op": "createQuerySet", "id": 1, "type": "occlusion", "count": 0]])
         XCTAssertEqual(errors(result).first?["kind"] as? String, "validation")
         XCTAssertEqual(errors(result).first?["path"] as? String, "commands[0].count")
@@ -336,7 +336,7 @@ final class QuerySetTests: XCTestCase {
 
     /// 상한을 넘는 쿼리셋은 여기서 만들어지지만 브라우저에서는 validation 오류다.
     /// (occlusion이면 `count * 8`바이트를 그대로 할당하기까지 한다.)
-    func test_쿼리_개수_상한을_넘으면_거부한다() {
+    func test_rejectsAQueryCountPastTheCap() {
         let result = harness.execute([
             ["op": "createQuerySet", "id": 1, "type": "occlusion",
              "count": WGPUQuerySetDescriptor.maxCount + 1],
@@ -422,7 +422,7 @@ final class QuerySetTests: XCTestCase {
 
     /// 같은 인덱스를 두 번 쓰면 두 구간이 같은 8바이트 슬롯을 나눠 쓴다 —
     /// 남는 값이 Metal의 누적/덮어쓰기 동작에 달린 값이 되어 브라우저와 결과가 갈린다.
-    func test_같은_패스에서_occlusion_인덱스를_재사용하면_거부한다() {
+    func test_rejectsReusingAnOcclusionIndexWithinOnePass() {
         let result = harness.execute(setUpResources() + [
             ["op": "createQuerySet", "id": 3, "type": "occlusion", "count": 2],
         ] + acquireDrawable + [
@@ -444,7 +444,7 @@ final class QuerySetTests: XCTestCase {
     }
 
     /// 반대로 **패스가 다르면** 같은 인덱스를 다시 쓸 수 있어야 한다 (명세는 패스 안에서만 막는다).
-    func test_패스가_다르면_같은_occlusion_인덱스를_다시_쓸_수_있다() {
+    func test_theSameOcclusionIndexCanBeReusedInADifferentPass() {
         let pass: [[String: Any]] = [
             beginPass(occlusionQuerySet: 3),
             ["op": "setPipeline", "pipeline": 2],

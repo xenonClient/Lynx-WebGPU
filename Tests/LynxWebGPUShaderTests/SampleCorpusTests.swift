@@ -29,7 +29,7 @@ final class SampleCorpusTests: XCTestCase {
         case mslFailure(entryPoint: String, diagnostic: String)
     }
 
-    func test_외부_WGSL_코퍼스_호환성_리포트() throws {
+    func test_externalWGSLCorpusCompatibilityReport() throws {
         guard let root = ProcessInfo.processInfo.environment["LYNXWEBGPU_WGSL_CORPUS"] else {
             throw XCTSkip("LYNXWEBGPU_WGSL_CORPUS 미지정 — 외부 코퍼스 리포트를 건너뛴다")
         }

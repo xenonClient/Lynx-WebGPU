@@ -36,14 +36,14 @@ final class AssetProviderTests: XCTestCase {
 
     // MARK: - 등록된 메모리 데이터
 
-    func test_등록한_데이터를_이름으로_돌려받는다() {
+    func test_registeredDataComesBackByName() {
         let provider = WGPUFileAssetProvider()
         provider.register(Data([1, 2, 3]), for: "picked-image")
 
         XCTAssertEqual(try load(provider, "picked-image").get(), Data([1, 2, 3]))
     }
 
-    func test_등록_해제하면_더는_해석되지_않는다() {
+    func test_afterUnregisteringItNoLongerResolves() {
         let provider = WGPUFileAssetProvider(bundle: Bundle(url: directory)!)
         provider.register(Data([1]), for: "gone")
         provider.unregister("gone")
@@ -51,7 +51,7 @@ final class AssetProviderTests: XCTestCase {
         XCTAssertThrowsError(try load(provider, "gone").get())
     }
 
-    func test_등록_이름이_파일보다_먼저다() throws {
+    func test_aRegisteredNameTakesPrecedenceOverAFile() throws {
         let url = try write([9, 9], to: "clash.bin")
         let provider = WGPUFileAssetProvider()
         provider.register(Data([1]), for: url.path)
@@ -61,7 +61,7 @@ final class AssetProviderTests: XCTestCase {
 
     // MARK: - 파일 경로 (기본: 전체 허용)
 
-    func test_절대_경로를_읽는다() throws {
+    func test_readsAnAbsolutePath() throws {
         let url = try write([10, 20, 30], to: "path.bin")
 
         XCTAssertEqual(try load(WGPUFileAssetProvider(), url.path).get(), Data([10, 20, 30]))
@@ -73,7 +73,7 @@ final class AssetProviderTests: XCTestCase {
         XCTAssertEqual(try load(WGPUFileAssetProvider(), url.absoluteString).get(), Data([7]))
     }
 
-    func test_없는_파일은_backend_오류다() {
+    func test_aMissingFileIsABackendError() {
         let result = load(WGPUFileAssetProvider(), directory.appendingPathComponent("absent.bin").path)
 
         guard case .failure(let error) = result else { return XCTFail("성공하면 안 된다") }
@@ -82,14 +82,14 @@ final class AssetProviderTests: XCTestCase {
 
     // MARK: - allowedRoots 제한
 
-    func test_허용_디렉토리_안은_통과한다() throws {
+    func test_insideTheAllowedDirectoriesPasses() throws {
         let url = try write([1], to: "inside.bin")
         let provider = WGPUFileAssetProvider(allowedRoots: [directory])
 
         XCTAssertEqual(try load(provider, url.path).get(), Data([1]))
     }
 
-    func test_허용_디렉토리_밖은_validation_오류다() throws {
+    func test_outsideTheAllowedDirectoriesIsAValidationError() throws {
         let provider = WGPUFileAssetProvider(allowedRoots: [directory.appendingPathComponent("sub")])
         let url = try write([1], to: "outside.bin")
 
@@ -97,7 +97,7 @@ final class AssetProviderTests: XCTestCase {
         XCTAssertEqual(error.kind, .validation)
     }
 
-    func test_상위로_거슬러_올라가는_경로는_막힌다() throws {
+    func test_aPathClimbingToAParentIsBlocked() throws {
         _ = try write([1], to: "secret.bin")
         let sub = directory.appendingPathComponent("sub", isDirectory: true)
         try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
@@ -109,7 +109,7 @@ final class AssetProviderTests: XCTestCase {
         XCTAssertEqual(error.kind, .validation)
     }
 
-    func test_이름이_접두사만_같은_형제_디렉토리는_막힌다() throws {
+    func test_aSiblingDirectorySharingOnlyThePrefixIsBlocked() throws {
         // 허용 루트가 `…/sub`일 때 `…/subevil/x`가 새어 나가면 안 된다.
         let sub = directory.appendingPathComponent("sub", isDirectory: true)
         let evil = directory.appendingPathComponent("subevil", isDirectory: true)
@@ -125,14 +125,14 @@ final class AssetProviderTests: XCTestCase {
 
     // MARK: - 번들 상대 이름
 
-    func test_번들에서_이름으로_찾는다() throws {
+    func test_findsByNameInTheBundle() throws {
         _ = try write([5, 6], to: "asset.bin")
         let provider = WGPUFileAssetProvider(bundle: Bundle(url: directory)!)
 
         XCTAssertEqual(try load(provider, "asset.bin").get(), Data([5, 6]))
     }
 
-    func test_번들_하위_디렉토리도_찾는다() throws {
+    func test_findsBundleSubdirectoriesToo() throws {
         let sub = directory.appendingPathComponent("LUTs", isDirectory: true)
         try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
         try Data([3]).write(to: sub.appendingPathComponent("neutral.cube"))
@@ -141,7 +141,7 @@ final class AssetProviderTests: XCTestCase {
         XCTAssertEqual(try load(provider, "LUTs/neutral.cube").get(), Data([3]))
     }
 
-    func test_번들_이름에_상위_경로가_섞이면_validation_오류다() {
+    func test_aParentPathInABundleNameIsAValidationError() {
         let provider = WGPUFileAssetProvider(bundle: Bundle(url: directory)!)
 
         guard case .failure(let error) = load(provider, "LUTs/../secret.bin") else {
@@ -150,14 +150,14 @@ final class AssetProviderTests: XCTestCase {
         XCTAssertEqual(error.kind, .validation)
     }
 
-    func test_빈_이름은_validation_오류다() {
+    func test_anEmptyNameIsAValidationError() {
         guard case .failure(let error) = load(WGPUFileAssetProvider(), "") else {
             return XCTFail("성공하면 안 된다")
         }
         XCTAssertEqual(error.kind, .validation)
     }
 
-    func test_기본_공급자는_https_URL을_해석하지_않는다() {
+    func test_theDefaultProviderDoesNotResolveHTTPSURLs() {
         // 네트워크는 기본 스코프 밖이다 — 번들 이름으로 떨어져 "없다"로 끝나야 한다.
         guard case .failure(let error) = load(WGPUFileAssetProvider(), "https://example.com/a.bin") else {
             return XCTFail("성공하면 안 된다")
@@ -206,7 +206,7 @@ final class AssetProviderSwapTests: XCTestCase {
         (payload["errors"] as? [[String: Any]])?.first
     }
 
-    func test_교체한_공급자는_https_URL을_허용한다() {
+    func test_aReplacedProviderCanAllowHTTPSURLs() {
         let provider = HTTPSOnlyProvider()
         provider.served["https://example.com/lut.cube"] = Data([1, 2])
 
@@ -217,7 +217,7 @@ final class AssetProviderSwapTests: XCTestCase {
         XCTAssertEqual(payload["byteLength"] as? Int, 2)
     }
 
-    func test_교체한_공급자는_기본이_허용하던_파일_경로를_차단한다() throws {
+    func test_aReplacedProviderCanBlockFilePathsTheDefaultAllowed() throws {
         // 실존하는 파일이라도 공급자가 거부하면 못 읽는다 — 스코프는 공급자의 것이다.
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("swap-\(UUID().uuidString).bin")
         try Data([9]).write(to: url)
@@ -230,7 +230,7 @@ final class AssetProviderSwapTests: XCTestCase {
         XCTAssertEqual(firstError(payload)?["kind"] as? String, "validation")
     }
 
-    func test_공급자의_오류_분류가_JS_페이로드까지_그대로_간다() {
+    func test_theProvidersErrorKindReachesTheJSPayloadUnchanged() {
         let payload = load(HTTPSOnlyProvider(), ["name": "https://example.com/absent.bin"])
 
         XCTAssertEqual(payload["ok"] as? Bool, false)

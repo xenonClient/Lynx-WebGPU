@@ -19,7 +19,7 @@ final class SurfaceInFlightTests: XCTestCase {
 
     // MARK: - 등록 배선
 
-    func test_스왑체인_표면만_페이싱_대상으로_등록된다() throws {
+    func test_onlySwapchainSurfacesAreRegisteredForPacing() throws {
         let context = try LynxWebGPUContext(device: device)
         context.registerSurface(WGPUOffscreenSurface(
             identifier: "off", size: CGSize(width: 8, height: 8), device: device
@@ -30,7 +30,7 @@ final class SurfaceInFlightTests: XCTestCase {
         XCTAssertEqual(context.frameCoordinator.trackedCanvases, ["screen"])
     }
 
-    func test_컨텍스트는_포화된_캔버스가_하나라도_있으면_준비_안됨이다() throws {
+    func test_theContextIsNotReadyWhenAnyCanvasIsSaturated() throws {
         let context = try LynxWebGPUContext(device: device)
         context.registerSurface(WGPUMetalLayerSurface(identifier: "sat", layer: CAMetalLayer()))
         XCTAssertTrue(context.isReadyForNextFrame)
@@ -49,7 +49,7 @@ final class SurfaceInFlightTests: XCTestCase {
 
     /// 드로어블을 실은 배치가 커밋 1회·완료 1회를 통지하는지 — 같은 표면에서 텍스처를
     /// 여러 번 얻어도 프레임은 하나이므로 통지도 한 번이어야 한다.
-    func test_드로어블을_실은_배치는_커밋과_완료를_한_번씩_알린다() throws {
+    func test_aBatchCarryingADrawableNotifiesCommitAndCompletionOnce() throws {
         let coordinator = CountingCoordinator()
         let context = try LynxWebGPUContext(device: device, frameCoordinator: coordinator)
         // 오프스크린 표면을 쓰되 페이싱 대상으로 직접 등록한다 — 헤드리스에서도 드로어블이
@@ -76,7 +76,7 @@ final class SurfaceInFlightTests: XCTestCase {
         XCTAssertTrue(waitUntil { coordinator.completedCount == 1 }, "GPU 완료가 돌아와야 한다")
     }
 
-    func test_드로어블이_없는_배치는_알리지_않는다() throws {
+    func test_aBatchWithNoDrawableNotifiesNothing() throws {
         let coordinator = CountingCoordinator()
         let context = try LynxWebGPUContext(device: device, frameCoordinator: coordinator)
         coordinator.track(canvas: "idle")
@@ -152,7 +152,7 @@ final class SurfaceInFlightTests: XCTestCase {
     /// pixelRatio가 NaN을 흘리는 순간이 있다. 그대로 내려가면 오프스크린 표면의
     /// `Int(size.width)`가 **Swift 런타임 트랩**으로 프로세스를 죽인다. 검증 오류가 아니라
     /// 즉사라 로그도 남지 않는다.
-    func test_이상한_크기의_resize는_무시하고_크래시하지_않는다() throws {
+    func test_aStrangeResizeIsIgnoredWithoutCrashing() throws {
         let context = try LynxWebGPUContext(device: device)
         try context.attachOffscreenCanvas(identifier: "odd", size: CGSize(width: 8, height: 8))
 
@@ -177,7 +177,7 @@ final class SurfaceInFlightTests: XCTestCase {
     }
 
     /// 붙일 때부터 이상한 크기면 **검증 오류로 거부한다** (여기는 돌려줄 통로가 있다).
-    func test_이상한_크기의_오프스크린_부착은_거부된다() throws {
+    func test_attachingAnOffscreenCanvasWithAStrangeSizeIsRejected() throws {
         let context = try LynxWebGPUContext(device: device)
         XCTAssertThrowsError(
             try context.attachOffscreenCanvas(

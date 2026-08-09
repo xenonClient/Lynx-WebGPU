@@ -33,7 +33,7 @@ final class RenderHarnessTests: XCTestCase {
         ]
     }
 
-    func test_같은_커맨드를_두_번_실행하면_프레임이_바이트까지_같다() throws {
+    func test_runningTheSameCommandsTwiceGivesByteIdenticalFrames() throws {
         harness.executeExpectingSuccess([
             ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
         ])
@@ -45,7 +45,7 @@ final class RenderHarnessTests: XCTestCase {
         try harness.assertFrameEquals(reference, "같은 입력은 같은 프레임이어야 한다")
     }
 
-    func test_프레임이_다르면_동치성_단언이_잡아낸다() throws {
+    func test_theEquivalenceAssertionCatchesADifferingFrame() throws {
         harness.executeExpectingSuccess([
             ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
         ])
@@ -58,7 +58,7 @@ final class RenderHarnessTests: XCTestCase {
         XCTAssertNotEqual(try harness.frameBytes(), reference, "다른 입력은 다른 프레임이어야 한다")
     }
 
-    func test_동기_리드백이_실패를_오류로_알린다() {
+    func test_synchronousReadbackReportsFailureAsAnError() {
         // 없는 핸들 — 콜백이 오지 않아 타임아웃으로 매달리면 안 되고, 오류로 즉시 돌아와야 한다.
         XCTAssertThrowsError(try harness.readBufferSync(handle: 999)) { error in
             XCTAssertTrue(

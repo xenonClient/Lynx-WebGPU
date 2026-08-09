@@ -21,7 +21,7 @@ final class CommandInterpreterTests: XCTestCase {
         result["errors"] as? [[String: Any]] ?? []
     }
 
-    func test_알수없는_명령은_unsupported_오류로_보고된다() {
+    func test_anUnknownCommandIsReportedAsUnsupported() {
         let result = harness.execute([["op": "teleport"]])
 
         XCTAssertEqual(result["ok"] as? Bool, false)
@@ -29,7 +29,7 @@ final class CommandInterpreterTests: XCTestCase {
         XCTAssertEqual(errors(result).first?["path"] as? String, "commands[0].op")
     }
 
-    func test_없는_핸들을_참조하면_validation_오류다() {
+    func test_referencingAMissingHandleIsAValidationError() {
         let result = harness.execute([
             ["op": "setVertexBuffer", "slot": 0, "buffer": 999],
         ])
@@ -38,7 +38,7 @@ final class CommandInterpreterTests: XCTestCase {
         XCTAssertEqual(errors(result).first?["kind"] as? String, "validation")
     }
 
-    func test_오류가_나도_뒤의_명령을_계속_실행한다() {
+    func test_laterCommandsKeepRunningAfterAnError() {
         let result = harness.execute([
             ["op": "teleport"],
             ["op": "createBuffer", "id": 1, "size": 16, "usage": TestUsage.uniform],
@@ -50,7 +50,7 @@ final class CommandInterpreterTests: XCTestCase {
         XCTAssertEqual(harness.liveObjects, 1)
     }
 
-    func test_패스없이_draw하면_오류다() {
+    func test_drawingWithNoPassIsAnError() {
         let result = harness.execute([["op": "draw", "vertexCount": 3]])
         XCTAssertEqual(errors(result).first?["kind"] as? String, "validation")
         XCTAssertTrue(
@@ -59,7 +59,7 @@ final class CommandInterpreterTests: XCTestCase {
         )
     }
 
-    func test_등록되지_않은_캔버스는_등록된_목록을_알려준다() {
+    func test_anUnregisteredCanvasListsTheRegisteredOnes() {
         let result = harness.execute([["op": "configureCanvas", "canvas": "없는캔버스"]])
         let message = (errors(result).first?["message"] as? String) ?? ""
         XCTAssertTrue(message.contains("없는캔버스"))
@@ -80,7 +80,7 @@ final class CommandInterpreterTests: XCTestCase {
         XCTAssertTrue(message.contains("MSL"), "생성된 MSL이 진단에 포함돼야 한다: \(message)")
     }
 
-    func test_드로어블_텍스처_핸들은_프레임이_끝나면_회수된다() {
+    func test_drawableTextureHandlesAreReclaimedWhenTheFrameEnds() {
         harness.executeExpectingSuccess([
             ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
         ])
@@ -105,7 +105,7 @@ final class CommandInterpreterTests: XCTestCase {
     /// `popErrorScope`·`mapAsync`는 결과를 받으려고 프레임 중간에 제출한다. 배치가 끝날 때마다
     /// 프레임 스코프를 닫으면 그 지점에서 스왑체인 핸들이 지워져, 이어지는 `beginRenderPass`가
     /// "없는 핸들"로 깨진다 — 그 프레임이 통째로 날아간다.
-    func test_프레임_중간에_제출해도_스왑체인_핸들이_살아_있다() {
+    func test_swapchainHandlesSurviveAMidFrameSubmit() {
         harness.executeExpectingSuccess([
             ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
         ])
@@ -138,7 +138,7 @@ final class CommandInterpreterTests: XCTestCase {
     /// 프레임 경계가 `submit()`이 아니라 **프레임 루프 콜백의 끝**이므로 (브라우저가 태스크
     /// 끝에 present하는 자리), 틱의 마지막에는 명령이 비어 있고 present만 하는 배치가 온다.
     /// 그때 커맨드 버퍼가 없다고 그냥 지나가면 **화면이 멈춘 채 아무 말이 없다.**
-    func test_명령이_없는_배치도_present하고_프레임_핸들을_회수한다() {
+    func test_aBatchWithNoCommandsStillPresentsAndReclaimsFrameHandles() {
         harness.executeExpectingSuccess([
             ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
         ])
@@ -171,7 +171,7 @@ final class CommandInterpreterTests: XCTestCase {
 
     /// 획득한 드로어블이 없으면 빈 배치는 **아무것도 하지 않는다** — 커맨드 버퍼를 괜히
     /// 만들어 커밋하면 in-flight 회계가 헛돈다.
-    func test_드로어블이_없으면_빈_배치는_아무것도_하지_않는다() {
+    func test_withNoDrawableAnEmptyBatchDoesNothing() {
         harness.executeExpectingSuccess([
             ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
         ])
@@ -186,7 +186,7 @@ final class CommandInterpreterTests: XCTestCase {
     /// 한 프레임의 제출 여러 개가 **드로어블 뷰를 공유**한다 — three.js의 포스트프로세싱이
     /// 그 모양이다 (씬 패스 → bloom 밉 체인 → 출력 패스). 중간에 present하면 두 번째 패스가
     /// "GPUTextureView가 존재하지 않는다"로 거부된다.
-    func test_한_프레임의_여러_제출이_드로어블_뷰를_공유한다() {
+    func test_severalSubmitsInOneFrameShareTheDrawableView() {
         harness.executeExpectingSuccess([
             ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
         ])
@@ -273,7 +273,7 @@ final class CommandInterpreterTests: XCTestCase {
     ///
     /// 이 회수가 없으면 프레임마다 하나씩 쌓여, 화면 표면에서는 세 프레임 만에 드로어블 풀이
     /// 말라 `nextDrawable()`이 JS 스레드를 최대 1초씩 세운 뒤 영영 실패한다.
-    func test_실패한_프레임의_드로어블이_프레임마다_쌓이지_않는다() {
+    func test_failedFrameDrawablesDoNotAccumulatePerFrame() {
         harness.executeExpectingSuccess([
             ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
         ])
@@ -296,7 +296,7 @@ final class CommandInterpreterTests: XCTestCase {
         )
     }
 
-    func test_버퍼_쓰기와_복사와_읽기가_순서대로_동작한다() throws {
+    func test_bufferWriteCopyAndReadHappenInOrder() throws {
         let source: [Float] = [1, 2, 3, 4]
         harness.executeExpectingSuccess([
             ["op": "createBuffer", "id": 1, "size": 16, "usage": TestUsage.copySrc | TestUsage.copyDst],
@@ -336,7 +336,7 @@ final class CommandInterpreterTests: XCTestCase {
     }
 
     /// 범위를 넘는 복사는 **Metal이 단언으로 프로세스를 죽인다** — 검증 오류로 잡아야 한다.
-    func test_범위를_넘는_copyBufferToBuffer를_거부한다() throws {
+    func test_rejectsACopyBufferToBufferPastTheEnd() throws {
         harness.executeExpectingSuccess([
             ["op": "createBuffer", "id": 1, "size": 16, "usage": TestUsage.copySrc],
             ["op": "createBuffer", "id": 2, "size": 8, "usage": TestUsage.copyDst],
@@ -358,7 +358,7 @@ final class CommandInterpreterTests: XCTestCase {
     }
 
     /// 0바이트 복사는 no-op이다 — Metal blit이 거부하므로 그냥 넘기면 오류가 된다.
-    func test_크기가_0인_copyBufferToBuffer는_no_op다() throws {
+    func test_aZeroSizeCopyBufferToBufferIsANoOp() throws {
         harness.executeExpectingSuccess([
             ["op": "createBuffer", "id": 1, "size": 16, "usage": TestUsage.copySrc],
             ["op": "createBuffer", "id": 2, "size": 16, "usage": TestUsage.copyDst],
@@ -371,7 +371,7 @@ final class CommandInterpreterTests: XCTestCase {
     /// 명세는 `mapAsync`가 버퍼를 "unavailable"로 만들어 큐 작업에 못 쓰게 해 경쟁 자체를 없앤다.
     /// 이 구현은 `.storageModeShared` 버퍼를 스테이징 없이 읽으므로, 이 검사가 없으면 리드백이
     /// GPU 완료를 기다리는 동안 다음 프레임의 쓰기가 같은 메모리에 겹친다.
-    func test_매핑_중인_버퍼는_큐_작업에_쓸_수_없다() throws {
+    func test_aMappedBufferCannotBeUsedInQueueWork() throws {
         harness.executeExpectingSuccess([
             ["op": "createBuffer", "id": 1, "size": 16, "usage": TestUsage.copyDst | TestUsage.mapRead],
             ["op": "createBuffer", "id": 2, "size": 16, "usage": TestUsage.copySrc],
@@ -397,7 +397,7 @@ final class CommandInterpreterTests: XCTestCase {
         ])
     }
 
-    func test_이미_매핑된_버퍼를_다시_읽으면_거부한다() throws {
+    func test_rereadingAnAlreadyMappedBufferIsRejected() throws {
         harness.executeExpectingSuccess([
             ["op": "createBuffer", "id": 1, "size": 16, "usage": TestUsage.copyDst | TestUsage.mapRead],
         ])
@@ -408,7 +408,7 @@ final class CommandInterpreterTests: XCTestCase {
 
     /// 명세는 `MAP_READ`를 `COPY_DST`와만, `MAP_WRITE`를 `COPY_SRC`와만 조합하게 한다.
     /// Metal은 `.storageModeShared` 하나로 전부 되지만, 안 막으면 브라우저에서만 깨진다.
-    func test_매핑_usage는_복사와만_조합할_수_있다() {
+    func test_mappingUsageCombinesOnlyWithCopies() {
         for usage in [
             TestUsage.mapRead | TestUsage.queryResolve,
             TestUsage.mapRead | TestUsage.copySrc,
@@ -426,7 +426,7 @@ final class CommandInterpreterTests: XCTestCase {
         ])
     }
 
-    func test_범위를_벗어난_writeBuffer는_거부된다() {
+    func test_anOutOfRangeWriteBufferIsRejected() {
         let result = harness.execute([
             ["op": "createBuffer", "id": 1, "size": 8, "usage": TestUsage.copyDst],
             ["op": "writeBuffer", "buffer": 1, "bufferOffset": 4,
@@ -435,7 +435,7 @@ final class CommandInterpreterTests: XCTestCase {
         XCTAssertTrue(((errors(result).first?["message"] as? String) ?? "").contains("out of range"))
     }
 
-    func test_실행_응답에_live_객체_수가_실린다() {
+    func test_theExecuteResponseCarriesTheLiveObjectCount() {
         let result = harness.executeExpectingSuccess([
             ["op": "createBuffer", "id": 1, "size": 16, "usage": TestUsage.uniform],
             ["op": "createBuffer", "id": 2, "size": 16, "usage": TestUsage.uniform],
@@ -556,7 +556,7 @@ final class CommandInterpreterTests: XCTestCase {
         ]
     }
 
-    func test_간접_오프셋이_4의_배수가_아니면_거부한다() {
+    func test_rejectsAnIndirectOffsetThatIsNotAMultipleOf4() {
         let setup = indirectSetup(usage: TestUsage.indirect)
         let result = harness.execute(setup + [
             ["op": "drawIndirect", "indirectBuffer": 1, "indirectOffset": 2],
@@ -566,7 +566,7 @@ final class CommandInterpreterTests: XCTestCase {
         XCTAssertEqual(errors(result).first?["path"] as? String, "commands[\(setup.count)].indirectOffset")
     }
 
-    func test_간접_인자가_버퍼_범위를_넘으면_거부한다() {
+    func test_rejectsIndirectArgumentsPastTheBufferEnd() {
         // drawIndexedIndirect는 20B를 읽는다 — offset 16 + 20 > 32.
         let setup = indirectSetup(usage: TestUsage.indirect)
         let result = harness.execute(setup + [
@@ -589,7 +589,7 @@ final class CommandInterpreterTests: XCTestCase {
         XCTAssertTrue(((errors(result).first?["message"] as? String) ?? "").contains("INDIRECT"))
     }
 
-    func test_패스없이_간접_드로우하면_오류다() {
+    func test_anIndirectDrawWithNoPassIsAnError() {
         let result = harness.execute([
             ["op": "createBuffer", "id": 1, "size": 32, "usage": TestUsage.indirect],
             ["op": "drawIndirect", "indirectBuffer": 1],
@@ -604,7 +604,7 @@ final class CommandInterpreterTests: XCTestCase {
 
     /// 명세에서 **셰이더 모듈은 컴파일에 실패해도 만들어진다.** 핸들이 아예 없으면 이후 명령이
     /// 전부 "존재하지 않는다"로만 깨져 **진짜 원인(파싱 실패)이 화면에서 사라진다.**
-    func test_파싱에_실패해도_모듈은_만들어지고_원인을_돌려준다() {
+    func test_theModuleIsStillCreatedOnAParseFailureAndReturnsTheCause() {
         let result = harness.execute([
             ["op": "createShaderModule", "id": 1, "code": """
              @vertex
@@ -631,7 +631,7 @@ final class CommandInterpreterTests: XCTestCase {
 
     /// 깨진 모듈로 파이프라인을 만들면 **진짜 원인**을 다시 알려 줘야 한다 —
     /// "진입점이 없다"로 바꿔 말하면 사용자가 셰이더 이름을 의심하며 엉뚱한 곳을 고친다.
-    func test_깨진_모듈로_파이프라인을_만들면_원인을_다시_알려_준다() {
+    func test_buildingAPipelineFromABrokenModuleRestatesTheCause() {
         let result = harness.execute([
             ["op": "createShaderModule", "id": 1, "code": "fn broken( {"],
             ["op": "createRenderPipeline", "id": 2, "layout": "auto",
@@ -645,7 +645,7 @@ final class CommandInterpreterTests: XCTestCase {
         )
     }
 
-    func test_정상_모듈은_진단이_비어_있다() {
+    func test_aHealthyModuleHasNoDiagnostics() {
         harness.executeExpectingSuccess([
             ["op": "createShaderModule", "id": 1, "code": """
              @fragment fn fs() -> @location(0) vec4f { return vec4f(1.0); }
@@ -657,7 +657,7 @@ final class CommandInterpreterTests: XCTestCase {
         XCTAssertEqual((info["messages"] as? [[String: Any]])?.count, 0)
     }
 
-    func test_없는_모듈의_진단은_오류다() {
+    func test_diagnosticsForAMissingModuleAreAnError() {
         let info = harness.runtime.shaderCompilationInfo(handle: 999)
         XCTAssertEqual(info["ok"] as? Bool, false)
     }
@@ -665,7 +665,7 @@ final class CommandInterpreterTests: XCTestCase {
     // MARK: - 디버그 마커
 
     /// 패스 안팎 모두에서 받아야 한다 — Xcode GPU 캡처의 구간 이름이 여기서 나온다.
-    func test_디버그_마커를_패스_안팎에서_받는다() {
+    func test_acceptsDebugMarkersInsideAndOutsideAPass() {
         let result = harness.execute([
             ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
             ["op": "createBuffer", "id": 1, "size": 16, "usage": TestUsage.copyDst],
@@ -692,7 +692,7 @@ final class CommandInterpreterTests: XCTestCase {
 
     /// 짝이 맞지 않는 `pop`은 **Metal이 단언으로 프로세스를 죽인다.** 깊이를 세어 막고
     /// validation 오류로 알린다 — 여기서 죽으면 진단할 기회조차 없다.
-    func test_짝이_없는_popDebugGroup은_프로세스를_죽이지_않고_오류다() {
+    func test_anUnmatchedPopDebugGroupIsAnErrorNotProcessDeath() {
         let result = harness.execute([
             ["op": "createBuffer", "id": 1, "size": 16, "usage": TestUsage.copyDst],
             ["op": "writeBuffer", "buffer": 1, "data": [Float](repeating: 1, count: 4).base64],
@@ -710,7 +710,7 @@ final class CommandInterpreterTests: XCTestCase {
     ///
     /// 커맨드 버퍼가 없으면 백엔드에 내릴 것은 없지만, 보고까지 건너뛰면 "아직 아무것도 안
     /// 했는데 pop부터 한" 가장 흔한 실수가 조용히 지나간다 — 짝을 세는 것이 이 함수의 일이다.
-    func test_작업이_없을_때의_짝없는_popDebugGroup도_오류다() {
+    func test_anUnmatchedPopDebugGroupWithNoWorkIsAlsoAnError() {
         let result = harness.execute([["op": "popDebugGroup"]])
 
         XCTAssertEqual(errors(result).first?["kind"] as? String, "validation", "\(result)")
@@ -721,7 +721,7 @@ final class CommandInterpreterTests: XCTestCase {
     }
 
     /// 열린 채로 패스가 끝나도 Metal이 죽는다 — 닫아 주고 오류로 알린다.
-    func test_열린_채_끝난_디버그_그룹은_닫아_주고_오류로_알린다() {
+    func test_aDebugGroupLeftOpenIsClosedAndReported() {
         let result = harness.execute([
             ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
             ["op": "getCurrentTexture", "id": 10, "canvas": "test"],
@@ -746,7 +746,7 @@ final class CommandInterpreterTests: XCTestCase {
     ///
     /// 프레임 구간 마커는 커맨드 버퍼에 붙는데, 아직 만들어지지 않았으면 만들어야 짝이 맞는다.
     /// (안 만들면 push는 사라지고 pop만 남아 "짝이 없다"가 된다.)
-    func test_마커만_있는_배치도_오류가_없다() {
+    func test_aBatchOfOnlyMarkersRaisesNoError() {
         let result = harness.execute([
             ["op": "pushDebugGroup", "groupLabel": "빈 프레임"],
             ["op": "insertDebugMarker", "markerLabel": "표식"],
@@ -852,7 +852,7 @@ final class CommandInterpreterTests: XCTestCase {
         XCTAssertEqual(result["ok"] as? Bool, true, harness.describeErrors(result))
     }
 
-    func test_후보가_둘_이상이면_고르지_않고_거부한다() {
+    func test_withMoreThanOneCandidateItRefusesToChoose() {
         let result = harness.execute([
             ["op": "createShaderModule", "id": 1, "code": Self.multiEntryShader],
             // 프래그먼트 진입점이 둘이라 생략하면 고를 수 없다 — 조용히 하나를 집으면 안 된다.
@@ -867,7 +867,7 @@ final class CommandInterpreterTests: XCTestCase {
         XCTAssertTrue(message.contains("main_cube"))
     }
 
-    func test_컴퓨트도_entryPoint를_생략할_수_있다() {
+    func test_computeCanOmitEntryPointToo() {
         let result = harness.execute([
             ["op": "createShaderModule", "id": 1, "code": """
              @compute @workgroup_size(4) fn onlyKernel() {}
@@ -878,7 +878,7 @@ final class CommandInterpreterTests: XCTestCase {
         XCTAssertEqual(result["ok"] as? Bool, true, harness.describeErrors(result))
     }
 
-    func test_스테이지가_다른_진입점을_지정하면_거부한다() {
+    func test_rejectsAnEntryPointFromAnotherStage() {
         let result = harness.execute([
             ["op": "createShaderModule", "id": 1, "code": Self.multiEntryShader],
             // 프래그먼트 자리에 정점 진입점을 줬다.
@@ -900,7 +900,7 @@ final class CommandInterpreterTests: XCTestCase {
     /// Metal은 `MTLValidateFeatureSupport … failed assertion`으로 앱을 끝내 버린다 —
     /// iOS 시뮬레이터(Apple family 2)가 정확히 여기 해당한다. 실기기는 A12(family 5) 이상이라
     /// 지원하지만, 시뮬레이터에서 개발하다 죽으면 이유를 남기지도 못한다.
-    func test_간접_인자_미지원_기기는_죽지_않고_오류를_낸다() throws {
+    func test_aDeviceWithoutIndirectArgumentsErrorsRatherThanDies() throws {
         try XCTSkipIf(
             harness.supports(.indirectArguments),
             "이 기기는 간접 인자를 지원한다 — 거부 경로는 미지원 기기에서만 볼 수 있다"
@@ -927,7 +927,7 @@ final class CommandInterpreterTests: XCTestCase {
 
     /// 반대 방향 — 지원하는 기기에서는 `indirect-first-instance`를 광고하고, 못 하면 감춘다.
     /// 있다고 알려 놓고 첫 호출에서 거부하면 확인하고 쓴 앱이 오히려 배신당한다.
-    func test_간접_기능_광고는_기기_능력과_일치한다() throws {
+    func test_indirectFeatureAdvertisementMatchesDeviceCapability() throws {
         let features = try XCTUnwrap(harness.runtime.adapterInfo()["features"] as? [String])
         XCTAssertEqual(
             features.contains("indirect-first-instance"),
@@ -936,7 +936,7 @@ final class CommandInterpreterTests: XCTestCase {
         )
     }
 
-    func test_파이프라인없는_간접_드로우는_op이름이_든_메시지로_거부한다() {
+    func test_anIndirectDrawWithNoPipelineIsRejectedWithItsOpNameInTheMessage() {
         // 한때 이 가드가 `applyDrawState()` 뒤에 있어 도달 불가였다 — 일반형 메시지("draw 전에…")가
         // 대신 나가 사용자가 어느 op이 문제인지 알 수 없었다. op 이름이 실제로 나가는지 못 박는다.
         let renderSetup = indirectSetup(usage: TestUsage.indirect)
@@ -961,7 +961,7 @@ final class CommandInterpreterTests: XCTestCase {
         )
     }
 
-    func test_어댑터_정보가_한계값을_보고한다() {
+    func test_adapterInfoReportsTheLimits() {
         let info = harness.runtime.adapterInfo()
 
         XCTAssertEqual(info["ok"] as? Bool, true)
@@ -972,7 +972,7 @@ final class CommandInterpreterTests: XCTestCase {
     }
 
     /// 명세 `GPUAdapterInfo` — 웹 코드가 GPU 종류로 분기할 때 읽는 표준 이름들.
-    func test_어댑터_정보가_명세_GPUAdapterInfo를_싣는다() throws {
+    func test_adapterInfoCarriesTheSpecGPUAdapterInfo() throws {
         let info = try XCTUnwrap(harness.runtime.adapterInfo()["info"] as? [String: Any])
 
         XCTAssertEqual(info["vendor"] as? String, "apple")

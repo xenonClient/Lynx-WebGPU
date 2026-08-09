@@ -21,7 +21,7 @@ final class ShaderSafetyRenderTests: XCTestCase {
     }
 
     /// 범위를 크게 벗어난 **읽기**가 잘려 마지막 원소를 준다 — 인접 메모리를 읽지 않는다.
-    func test_범위를_벗어난_읽기가_마지막_원소로_잘린다() throws {
+    func test_anOutOfRangeReadIsClampedToTheLastElement() throws {
         let source: [Float] = [10, 20, 30, 40]
         harness.executeExpectingSuccess([
             ["op": "createShaderModule", "id": 1, "code": """
@@ -58,7 +58,7 @@ final class ShaderSafetyRenderTests: XCTestCase {
     }
 
     /// 범위를 벗어난 **쓰기**가 잘려 버퍼 안에 떨어진다 — 잘리지 않으면 남의 메모리를 덮어쓴다.
-    func test_범위를_벗어난_쓰기가_버퍼_안으로_잘린다() throws {
+    func test_anOutOfRangeWriteIsClampedInsideTheBuffer() throws {
         harness.executeExpectingSuccess([
             ["op": "createShaderModule", "id": 1, "code": """
             @group(0) @binding(0) var<storage, read_write> out: array<f32>;
@@ -124,7 +124,7 @@ final class ShaderSafetyRenderTests: XCTestCase {
     ///
     /// MSL의 `discard_fragment()`는 즉시 종료가 아니라 뒤의 코드가 계속 돈다 — 막지 않으면
     /// 이 테스트의 버퍼가 1.0으로 채워진다.
-    func test_버려진_프래그먼트는_스토리지에_쓰지_않는다() throws {
+    func test_aDiscardedFragmentDoesNotWriteToStorage() throws {
         harness.executeExpectingSuccess([
             ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
             ["op": "createShaderModule", "id": 1, "code": """

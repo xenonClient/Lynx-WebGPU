@@ -106,7 +106,7 @@ final class WGPUCommandDecodeTests: XCTestCase {
         }
     }
 
-    func test_미지_op은_경로가_붙은_unsupported_오류다() throws {
+    func test_anUnknownOpIsUnsupportedWithAPath() throws {
         // 실전과 같은 리더 경로를 만든다 — execute가 requiredObjects("commands")로 쪼개는 형태.
         let commands = try WGPUValueReader(["commands": [["op": "teleport"]]])
             .requiredObjects("commands")

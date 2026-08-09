@@ -9,18 +9,18 @@ final class WGPUErrorScopeStackTests: XCTestCase {
 
     // MARK: - 스코프 스택
 
-    func test_빈_스택_pop은_unmatched다() {
+    func test_poppingAnEmptyStackIsUnmatched() {
         var stack = WGPUErrorScopeStack()
         XCTAssertEqual(stack.pop(), .unmatched)
     }
 
-    func test_안_잡힌_스코프는_clean으로_닫힌다() {
+    func test_aScopeThatCaughtNothingClosesClean() {
         var stack = WGPUErrorScopeStack()
         stack.push(.validation)
         XCTAssertEqual(stack.pop(), .clean)
     }
 
-    func test_맞는_필터가_잡고_errors로는_안_나간다() {
+    func test_aMatchingFilterCatchesAndKeepsItOutOfErrors() {
         var stack = WGPUErrorScopeStack()
         stack.push(.validation)
         let error = WGPUError.validation("잘못된 인자")
@@ -28,14 +28,14 @@ final class WGPUErrorScopeStackTests: XCTestCase {
         XCTAssertEqual(stack.pop(), .captured(error))
     }
 
-    func test_안_맞는_필터는_잡지_않는다() {
+    func test_aNonMatchingFilterDoesNotCatch() {
         var stack = WGPUErrorScopeStack()
         stack.push(.outOfMemory)
         XCTAssertFalse(stack.capture(.validation("잘못된 인자")))
         XCTAssertEqual(stack.pop(), .clean)
     }
 
-    func test_가장_안쪽_스코프가_먼저_잡는다() {
+    func test_innermostScopeCatchesFirst() {
         var stack = WGPUErrorScopeStack()
         stack.push(.validation)   // 바깥
         stack.push(.validation)   // 안쪽
@@ -45,7 +45,7 @@ final class WGPUErrorScopeStackTests: XCTestCase {
         XCTAssertEqual(stack.pop(), .clean)             // 바깥은 비어 있다
     }
 
-    func test_스코프는_처음_잡힌_오류_하나만_돌려준다() {
+    func test_aScopeReturnsOnlyTheFirstErrorItCaught() {
         var stack = WGPUErrorScopeStack()
         stack.push(.validation)
         let first = WGPUError.validation("첫 번째")
@@ -54,7 +54,7 @@ final class WGPUErrorScopeStackTests: XCTestCase {
         XCTAssertEqual(stack.pop(), .captured(first))
     }
 
-    func test_자리표시자는_아무것도_잡지_않고_깊이만_차지한다() {
+    func test_aPlaceholderCatchesNothingAndOnlyHoldsDepth() {
         var stack = WGPUErrorScopeStack()
         stack.push(.validation)   // 바깥
         stack.push(nil)           // 자리표시자 (필터 파싱 실패)
@@ -64,7 +64,7 @@ final class WGPUErrorScopeStackTests: XCTestCase {
         XCTAssertEqual(stack.pop(), .captured(error))   // 바깥
     }
 
-    func test_필터_매핑은_4종_오류를_3종_필터로_나눈다() {
+    func test_filterMappingSplitsFourErrorKindsIntoThreeFilters() {
         // 근거는 WGPUErrorFilter.captures 문서 — unsupported는 validation이, backend는 internal이.
         var validation = WGPUErrorScopeStack()
         validation.push(.validation)
@@ -102,7 +102,7 @@ final class WGPUErrorScopeStackTests: XCTestCase {
 
     // MARK: - 배치 결과 조립
 
-    func test_깨끗한_배치는_필수_키_셋만_싣는다() {
+    func test_cleanBatchCarriesOnlyTheThreeRequiredKeys() {
         let payload = WGPUBatchResult(commandCount: 3, liveObjectCount: 7).payload
         XCTAssertEqual(payload["ok"] as? Bool, true)
         XCTAssertEqual(payload["commandCount"] as? Int, 3)
@@ -113,7 +113,7 @@ final class WGPUErrorScopeStackTests: XCTestCase {
         XCTAssertNil(payload["errorScopes"])
     }
 
-    func test_오류가_있으면_ok는_false이고_errors가_실린다() {
+    func test_withErrorsOkIsFalseAndErrorsAreCarried() {
         let payload = WGPUBatchResult(
             commandCount: 1, liveObjectCount: 0,
             errors: [.validation("깨진 명령", path: "commands[0].draw")]
@@ -124,7 +124,7 @@ final class WGPUErrorScopeStackTests: XCTestCase {
         XCTAssertEqual(errors?.first?["path"] as? String, "commands[0].draw")
     }
 
-    func test_잡힌_오류는_errors가_아니라_errorScopes로_나간다() {
+    func test_aCaughtErrorLeavesThroughErrorScopesNotErrors() {
         // 해석기 흐름의 축소판: capture가 true면 errors에 안 넣고 pop 결과로만 나간다.
         var stack = WGPUErrorScopeStack()
         stack.push(.validation)
@@ -163,7 +163,7 @@ final class WGPUErrorScopeStackTests: XCTestCase {
         XCTAssertEqual(canvases?["main"]?["height"] as? Int, 844)
     }
 
-    func test_최상위_실패는_ok와_errors만_싣는다() {
+    func test_aTopLevelFailureCarriesOnlyOkAndErrors() {
         let payload = WGPUBatchResult.failure([.validation("commands 배열이 없다")])
         XCTAssertEqual(payload["ok"] as? Bool, false)
         XCTAssertEqual((payload["errors"] as? [[String: Any]])?.count, 1)
@@ -174,14 +174,14 @@ final class WGPUErrorScopeStackTests: XCTestCase {
 
     // MARK: - 지연 실패 큐
 
-    func test_지연_큐는_꺼내면_비워진다() {
+    func test_theDeferredQueueEmptiesOnDrain() {
         let queue = WGPUDeferredErrorQueue()
         queue.report(.backend("GPU 작업이 실패했다"))
         XCTAssertEqual(queue.drain().count, 1)
         XCTAssertTrue(queue.drain().isEmpty)
     }
 
-    func test_지연_큐는_임의_스레드_보고를_잃지_않는다() {
+    func test_theDeferredQueueLosesNoReportFromAnyThread() {
         let queue = WGPUDeferredErrorQueue()
         DispatchQueue.concurrentPerform(iterations: 64) { index in
             queue.report(.backend("실패 \(index)"))

@@ -22,7 +22,7 @@ import LynxWebGPUConformance
 ///   있는 것. 다른 런타임으로 옮겨지지 않는다.
 final class ConformanceTests: XCTestCase {
 
-    func test_기본런타임이_적합성_스위트를_통과한다() throws {
+    func test_theDefaultRuntimePassesTheConformanceSuite() throws {
         try XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, "Metal 디바이스 없음")
         let runtime = try LynxWebGPUContext()
 
@@ -41,7 +41,7 @@ final class ConformanceTests: XCTestCase {
 
     /// 스위트가 **런타임을 검사 사이에 초기화**한다 — 앞 검사의 객체가 남으면 뒤 검사의
     /// 판정이 우연에 기대게 된다.
-    func test_검사마다_런타임_상태가_초기화된다() throws {
+    func test_runtimeStateIsResetForEveryCheck() throws {
         try XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, "Metal 디바이스 없음")
         let runtime = try LynxWebGPUContext()
 
@@ -63,7 +63,7 @@ final class ConformanceTests: XCTestCase {
     ///
     /// 항상 통과하는 적합성 스위트는 쓸모가 없다 — "Dawn 런타임이 19/19"라는 문장이 아무것도
     /// 보증하지 못하게 된다. 계약을 일부러 어기는 런타임을 걸어 실패가 나오는지 확인한다.
-    func test_계약을_어기면_스위트가_잡아낸다() throws {
+    func test_theSuiteCatchesAContractViolation() throws {
         try XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, "Metal 디바이스 없음")
         let runtime = try LynxWebGPUContext()
 

@@ -3,7 +3,7 @@ import XCTest
 
 /// 커맨드 스트림 디코딩 — JS가 보내는 형태를 그대로 재현해 검증한다.
 final class WGPUValueReaderTests: XCTestCase {
-    func test_스칼라_읽기와_기본값() throws {
+    func test_scalarReadsAndDefaults() throws {
         let reader = WGPUValueReader(["size": 128, "label": "vertices", "flag": true])
 
         XCTAssertEqual(try reader.requiredInt("size"), 128)
@@ -13,7 +13,7 @@ final class WGPUValueReaderTests: XCTestCase {
         XCTAssertFalse(reader.bool("missing", default: false))
     }
 
-    func test_필수필드가_없으면_경로가_붙은_오류다() {
+    func test_aMissingRequiredFieldIsAnErrorWithAPath() {
         let reader = WGPUValueReader(["a": 1], path: "commands[3]")
 
         XCTAssertThrowsError(try reader.requiredInt("size")) { error in
@@ -30,7 +30,7 @@ final class WGPUValueReaderTests: XCTestCase {
         XCTAssertNil(reader.optionalString("label"))
     }
 
-    func test_열거형은_명세_철자로_파싱하고_모르면_후보를_알려준다() throws {
+    func test_enumsParseBySpecSpellingAndListCandidatesWhenUnknown() throws {
         let reader = WGPUValueReader(["format": "bgra8unorm", "topology": "triangle-strip"])
 
         XCTAssertEqual(try reader.requiredEnum("format", WGPUTextureFormat.self), .bgra8unorm)
@@ -43,7 +43,7 @@ final class WGPUValueReaderTests: XCTestCase {
         }
     }
 
-    func test_비트마스크_플래그를_읽는다() throws {
+    func test_readsBitmaskFlags() throws {
         let reader = WGPUValueReader(["usage": 0x0020 | 0x0008])
         let usage = try reader.requiredFlags("usage", WGPUBufferUsage.self)
 
@@ -52,7 +52,7 @@ final class WGPUValueReaderTests: XCTestCase {
         XCTAssertFalse(usage.contains(.uniform))
     }
 
-    func test_색은_객체와_배열_두_표기를_모두_받는다() throws {
+    func test_colorAcceptsBothObjectAndArrayForms() throws {
         let object = WGPUValueReader(["clearValue": ["r": 1.0, "g": 0.5, "b": 0.0, "a": 1.0]])
         XCTAssertEqual(try object.color("clearValue", default: .black), WGPUColor(red: 1, green: 0.5, blue: 0, alpha: 1))
 
@@ -63,7 +63,7 @@ final class WGPUValueReaderTests: XCTestCase {
         XCTAssertEqual(try missing.color("clearValue", default: .black), .black)
     }
 
-    func test_크기는_객체와_배열_두_표기를_모두_받는다() throws {
+    func test_extentAcceptsBothObjectAndArrayForms() throws {
         let object = WGPUValueReader(["size": ["width": 64, "height": 32]])
         XCTAssertEqual(try object.requiredExtent("size"), WGPUExtent3D(width: 64, height: 32))
 
@@ -71,7 +71,7 @@ final class WGPUValueReaderTests: XCTestCase {
         XCTAssertEqual(try array.requiredExtent("size"), WGPUExtent3D(width: 64, height: 32, depthOrArrayLayers: 6))
     }
 
-    func test_바이너리는_Data와_base64와_바이트배열을_모두_받는다() throws {
+    func test_binaryAcceptsDataBase64AndByteArrays() throws {
         let bytes: [UInt8] = [0xDE, 0xAD, 0xBE, 0xEF]
 
         // JS 셰임이 쓰는 경로 — Lynx가 ArrayBuffer를 NSData로 바꿔 준 것이 그대로 들어온다.
@@ -92,7 +92,7 @@ final class WGPUValueReaderTests: XCTestCase {
         XCTAssertThrowsError(try broken.requiredData("data"))
     }
 
-    func test_중첩_배열의_경로가_인덱스까지_남는다() {
+    func test_aNestedArrayPathKeepsTheIndex() {
         let reader = WGPUValueReader(["entries": [["binding": 0], ["nope": 1]]], path: "cmd")
         let entries = try? reader.requiredObjects("entries")
 

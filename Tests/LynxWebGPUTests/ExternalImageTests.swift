@@ -114,7 +114,7 @@ final class ExternalImageTests: XCTestCase {
     }
 
     /// 깨진 데이터는 **오류로** 온다 — 조용히 빈 이미지를 만들면 화면이 검게 나오고 원인은 사라진다.
-    func test_디코딩할_수_없는_데이터는_오류다() {
+    func test_undecodableDataIsAnError() {
         XCTAssertThrowsError(try WGPUImageDecoder.decode(Data([0x00, 0x01, 0x02, 0x03]))) { error in
             XCTAssertTrue("\(error)".contains("decode"), "\(error)")
         }
@@ -130,7 +130,7 @@ final class ExternalImageTests: XCTestCase {
         XCTAssertEqual(result["height"] as? Int, 4)
     }
 
-    func test_이미지_바이트도_이름도_없으면_거부한다() throws {
+    func test_rejectsWithNeitherImageBytesNorAName() throws {
         let expectation = expectation(description: "decodeImage")
         var payload: [String: Any] = [:]
         harness.runtime.decodeImage(
@@ -204,7 +204,7 @@ final class ExternalImageTests: XCTestCase {
         harness.executeExpectingSuccess(commands)
     }
 
-    func test_디코딩한_이미지를_텍스처로_올려_샘플링한다() throws {
+    func test_uploadsADecodedImageIntoATextureAndSamplesIt() throws {
         let png = try makePNG(width: 4, height: 4, top: (255, 0, 0, 255), bottom: (0, 0, 255, 255))
         try decode(handle: 40, data: png)
 
@@ -221,7 +221,7 @@ final class ExternalImageTests: XCTestCase {
     }
 
     /// 소스 일부만 잘라 올린다 — 스트라이드를 이미지 폭 그대로 쓰면 여기서 색이 밀린다.
-    func test_이미지의_일부만_잘라_올린다() throws {
+    func test_uploadsOnlyACroppedPartOfTheImage() throws {
         let png = try makePNG(width: 8, height: 8, top: (255, 0, 0, 255), bottom: (0, 0, 255, 255))
         try decode(handle: 40, data: png)
 
@@ -239,7 +239,7 @@ final class ExternalImageTests: XCTestCase {
     ///
     /// `createImageBitmap`의 flipY와는 다른 자리다. 웹 라이브러리는 이쪽을 쓴다
     /// (three.js의 `Texture.flipY`가 기본 true라, 무시하면 텍스처가 조용히 뒤집힌다).
-    func test_복사_시점_flipY가_위아래를_뒤집는다() throws {
+    func test_copyTimeFlipYFlipsTopToBottom() throws {
         let png = try makePNG(width: 4, height: 4, top: (255, 0, 0, 255), bottom: (0, 0, 255, 255))
         try decode(handle: 40, data: png)
 
@@ -257,7 +257,7 @@ final class ExternalImageTests: XCTestCase {
 
     /// 디코딩 시점과 복사 시점을 **둘 다** 뒤집으면 제자리로 돌아온다 — 두 옵션이
     /// 서로 다른 층이라는 증거다.
-    func test_디코딩과_복사에서_각각_뒤집으면_제자리다() throws {
+    func test_flippingAtBothDecodeAndCopyReturnsToTheOriginal() throws {
         let png = try makePNG(width: 4, height: 4, top: (255, 0, 0, 255), bottom: (0, 0, 255, 255))
         try decode(handle: 40, data: png, options: .init(flipY: true))
 
@@ -272,7 +272,7 @@ final class ExternalImageTests: XCTestCase {
     }
 
     /// 부분 복사와 flipY가 함께 와도 **잘라낸 영역 안에서만** 뒤집힌다.
-    func test_부분_복사에도_flipY가_영역_안에서_적용된다() throws {
+    func test_flipYAppliesWithinTheRegionForAPartialCopy() throws {
         // 위 2행 빨강, 아래 2행 파랑. (0,1)에서 4x2를 뜨면 빨강 1행 + 파랑 1행이다.
         let png = try makePNG(width: 4, height: 4, top: (255, 0, 0, 255), bottom: (0, 0, 255, 255))
         try decode(handle: 40, data: png)
@@ -302,7 +302,7 @@ final class ExternalImageTests: XCTestCase {
         try harness.assertPixel(x: 32, y: 32, equals: (255, 0, 0, 255))
     }
 
-    func test_이미지를_넘는_복사를_거부한다() throws {
+    func test_rejectsACopyPastTheImage() throws {
         let png = try makePNG(width: 4, height: 4, top: (255, 0, 0, 255), bottom: (255, 0, 0, 255))
         try decode(handle: 40, data: png)
 
@@ -319,7 +319,7 @@ final class ExternalImageTests: XCTestCase {
     }
 
     /// 압축 텍스처로는 올릴 수 없다 — GPU에 블록 인코더가 없다.
-    func test_압축_텍스처로는_올릴_수_없다() throws {
+    func test_cannotUploadIntoACompressedTexture() throws {
         try XCTSkipUnless(
             WGPUDeviceCapability.supportsCompression(.astc4x4Unorm, on: harness.context!.device),
             "이 기기는 ASTC를 지원하지 않는다"
@@ -352,7 +352,7 @@ final class ExternalImageTests: XCTestCase {
         XCTAssertTrue(harness.describeErrors(result).contains("4-byte"), harness.describeErrors(result))
     }
 
-    func test_없는_이미지_핸들은_분명한_오류다() throws {
+    func test_aMissingImageHandleIsAClearError() throws {
         let result = harness.execute([
             ["op": "createTexture", "id": 2, "size": ["width": 4, "height": 4],
              "format": "rgba8unorm", "usage": TestUsage.textureBinding | TestUsage.textureCopyDst],

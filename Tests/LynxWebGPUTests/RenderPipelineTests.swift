@@ -39,7 +39,7 @@ final class RenderPipelineTests: XCTestCase {
     }
     """
 
-    func test_삼각형이_그려지고_클리어색과_구분된다() throws {
+    func test_theTriangleIsDrawnAndDistinctFromTheClearColor() throws {
         // 위치(x, y) + 색(r, g, b) 인터리브 — stride 20B
         let vertices: [Float] = [
             -0.5, -0.5, 1, 0, 0,
@@ -84,7 +84,7 @@ final class RenderPipelineTests: XCTestCase {
         try harness.assertPixel(x: 1, y: 1, equals: (0, 0, 255, 255), "삼각형 외부(클리어색)")
     }
 
-    func test_유니폼버퍼가_프래그먼트_출력에_반영된다() throws {
+    func test_aUniformBufferReachesTheFragmentOutput() throws {
         let shader = """
         struct Tint { color: vec4f };
         @group(0) @binding(0) var<uniform> tint: Tint;
@@ -142,7 +142,7 @@ final class RenderPipelineTests: XCTestCase {
     ///
     /// (`packed_int3`/`packed_uint3`는 MSL에 있는 타입이고 12바이트다. 이름만 맞고 크기가
     /// 16이면 이 테스트가 깨진다.)
-    func test_정수_vec3_유니폼이_WGSL_오프셋대로_읽힌다() throws {
+    func test_anIntegerVec3UniformReadsAtTheWGSLOffsets() throws {
         let shader = """
         struct Counts {
             offsets: vec3<i32>,   // offset 0  (12B)
@@ -198,7 +198,7 @@ final class RenderPipelineTests: XCTestCase {
         try harness.assertPixel(x: 32, y: 32, equals: (10, 26, 36, 255), "정수 vec3 배치")
     }
 
-    func test_인덱스드로우가_사각형을_채운다() throws {
+    func test_anIndexedDrawFillsTheQuad() throws {
         let vertices: [Float] = [
             -1, -1, 1, 1, 0,
              1, -1, 1, 1, 0,
@@ -243,7 +243,7 @@ final class RenderPipelineTests: XCTestCase {
         try harness.assertPixel(x: 2, y: 61, equals: (255, 255, 0, 255))
     }
 
-    func test_알파블렌딩이_적용된다() throws {
+    func test_alphaBlendingIsApplied() throws {
         let shader = """
         @vertex
         fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f {
@@ -288,7 +288,7 @@ final class RenderPipelineTests: XCTestCase {
     ///   result = src·a + dst·(1 − a)
     ///
     /// 겹친 색이 "이상해 보인다"는 판단은 눈으로 하면 틀리기 쉬우므로 수치로 고정한다.
-    func test_미리곱해진알파_합성이_공식과_일치한다() throws {
+    func test_premultipliedAlphaCompositingMatchesTheFormula() throws {
         let shader = """
         struct Layer { color: vec4f };
         @group(0) @binding(0) var<uniform> layer: Layer;
@@ -371,7 +371,7 @@ final class RenderPipelineTests: XCTestCase {
 
     // MARK: - 컴퓨트
 
-    func test_컴퓨트셰이더가_스토리지버퍼를_계산한다() throws {
+    func test_aComputeShaderComputesIntoAStorageBuffer() throws {
         let shader = """
         @group(0) @binding(0) var<storage, read> input: array<f32>;
         @group(0) @binding(1) var<storage, read_write> output: array<f32>;
@@ -460,7 +460,7 @@ final class RenderPipelineTests: XCTestCase {
 
     // MARK: - 텍스처
 
-    func test_텍스처_샘플링이_동작한다() throws {
+    func test_textureSamplingWorks() throws {
         let shader = """
         @group(0) @binding(0) var tex: texture_2d<f32>;
         @group(0) @binding(1) var samp: sampler;
@@ -526,7 +526,7 @@ final class RenderPipelineTests: XCTestCase {
         try harness.assertPixel(x: 32, y: 32, equals: (255, 0, 255, 255), "샘플링한 텍셀 색")
     }
 
-    func test_외부텍스처를_가장자리_클램프로_샘플링한다() throws {
+    func test_samplesAnExternalTextureWithEdgeClamping() throws {
         // `textureSampleBaseClampToEdge`는 좌표를 텍셀 절반만큼 안쪽으로 물린다. 그래서 uv가
         // 0이나 1로 가도 **반대쪽 텍셀이 섞이지 않는다** — 비디오 프레임 경계가 번지는 것을 막는 장치다.
         // 여기서는 일부러 repeat 샘플러를 써서, 클램프가 없으면 반대쪽이 섞이는 상황을 만든다.
@@ -596,7 +596,7 @@ final class RenderPipelineTests: XCTestCase {
 
     // MARK: - 깊이 버퍼
 
-    func test_깊이테스트가_뒤쪽_삼각형을_가린다() throws {
+    func test_theDepthTestHidesTheTriangleBehind() throws {
         let shader = """
         struct Uniforms { depth: f32, r: f32, g: f32, b: f32 };
         @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -703,7 +703,7 @@ final class RenderPipelineTests: XCTestCase {
 
     // MARK: - 전역 섀도잉 (스코프 해석이 값까지 옳은지)
 
-    func test_전역을_가린_지역선언의_스코프가_런타임_값으로_옳다() throws {
+    func test_theScopeOfALocalShadowingAGlobalIsCorrectAtRuntime() throws {
         // 선언 앞의 base는 전역(초록), 뒤의 base는 지역(빨강)이다. 스코프 해석이나
         // 리네임 참조 치환이 틀리면 빨강이 나온다 — 컴파일 성공만으로는 못 잡는 부분이다.
         let shader = """

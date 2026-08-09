@@ -12,14 +12,14 @@ final class StagingPoolTests: XCTestCase {
         try XCTSkipIf(device == nil, "Metal 디바이스 없음")
     }
 
-    func test_크기는_4KB_바닥의_2제곱_클래스로_반올림된다() {
+    func test_sizesRoundUpToPowerOfTwoClassesWithA4KBFloor() {
         XCTAssertEqual(WGPUStagingPool.sizeClass(for: 1), 4096)
         XCTAssertEqual(WGPUStagingPool.sizeClass(for: 4096), 4096)
         XCTAssertEqual(WGPUStagingPool.sizeClass(for: 4097), 8192)
         XCTAssertEqual(WGPUStagingPool.sizeClass(for: 100_000), 131_072)
     }
 
-    func test_회수한_버퍼를_같은_인스턴스로_재사용한다() throws {
+    func test_aRecycledBufferIsReusedAsTheSameInstance() throws {
         let pool = WGPUStagingPool(device: device)
         let first = try pool.acquire(Data([1, 2, 3, 4]))
         pool.recycle([first])
@@ -32,7 +32,7 @@ final class StagingPoolTests: XCTestCase {
         XCTAssertEqual(second.contents().load(as: UInt8.self), 5)
     }
 
-    func test_맞는_것_중_가장_작은_버퍼를_고른다() throws {
+    func test_choosesTheSmallestBufferThatFits() throws {
         let pool = WGPUStagingPool(device: device)
         let small = try pool.acquire(Data(count: 100))          // 4096 클래스
         let large = try pool.acquire(Data(count: 50_000))       // 65536 클래스
@@ -42,7 +42,7 @@ final class StagingPoolTests: XCTestCase {
         XCTAssertTrue(picked === small, "작은 업로드가 큰 버퍼를 붙잡으면 안 된다")
     }
 
-    func test_총량_상한을_넘는_버퍼는_회수하지_않는다() throws {
+    func test_buffersPastTheTotalCapAreNotRecycled() throws {
         let pool = WGPUStagingPool(device: device, maxPooledBytes: 8192)
         let buffers = try (0..<3).map { _ in try pool.acquire(Data(count: 4096)) }
         pool.recycle(buffers)
@@ -61,7 +61,7 @@ final class StagingPoolTests: XCTestCase {
     // MARK: - 해석기 통합
 
     /// 프레임(execute)마다 스테이징을 새로 만들지 않고, 완료된 프레임의 버퍼가 돌아와 재사용되는지.
-    func test_프레임을_거듭해도_스테이징_풀이_1개로_유지된다() throws {
+    func test_theStagingPoolStaysAtOneAcrossFrames() throws {
         let harness = try XCTUnwrap(RenderHarness.make(width: 8, height: 8))
         let payload: [Float] = [1, 2, 3, 4]
         harness.executeExpectingSuccess([

@@ -249,7 +249,7 @@ final class IndirectDrawTests: XCTestCase {
     ///
     /// 커맨드 스트림 순서(컴퓨트 → 드로우)가 실제 실행 순서라는 것도 함께 확인한다.
     /// 순서가 뒤집히면 드로우가 아직 0인 인자를 읽어 아무것도 안 그린다.
-    func test_컴퓨트가_쓴_인자로_같은_배치에서_드로우한다() throws {
+    func test_drawsInTheSameBatchWithArgumentsComputeWrote() throws {
         let argumentWriter = """
         @group(0) @binding(0) var<storage, read_write> args: array<u32>;
 

@@ -33,7 +33,7 @@ final class OffscreenReadbackTests: XCTestCase {
         return surface
     }
 
-    func test_되읽기_길이와_행간격이_포맷을_따라간다() throws {
+    func test_readbackLengthAndRowStrideFollowTheFormat() throws {
         let queue = try XCTUnwrap(device.makeCommandQueue())
 
         for (format, bytesPerPixel) in [

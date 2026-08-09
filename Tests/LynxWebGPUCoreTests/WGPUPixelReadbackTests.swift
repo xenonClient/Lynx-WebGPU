@@ -45,7 +45,7 @@ final class WGPUPixelReadbackTests: XCTestCase {
         XCTAssertEqual(color.w, 1)
     }
 
-    func test_같은_바이트라도_포맷에_따라_다르게_읽힌다() throws {
+    func test_sameBytesReadDifferentlyPerFormat() throws {
         // rgba16float 한 픽셀(8B)을 rgba8unorm으로 읽으면 두 픽셀로 보인다 —
         // 예전 readPixels가 조용히 저지르던 착각이 바로 이것이다.
         let bytes = Data([0x00, 0x41, 0x00, 0x38, 0x00, 0xBC, 0x00, 0x3C])
@@ -73,7 +73,7 @@ final class WGPUPixelReadbackTests: XCTestCase {
         XCTAssertEqual(color.w, 1, accuracy: 1e-6)
     }
 
-    func test_없는_채널은_RGB가0_알파가1로_채워진다() throws {
+    func test_missingChannelsFillRGBWith0AndAlphaWith1() throws {
         let readback = WGPUPixelReadback(
             data: Data([128, 64]), format: .rg8unorm, width: 1, height: 1, bytesPerRow: 2
         )
@@ -84,7 +84,7 @@ final class WGPUPixelReadbackTests: XCTestCase {
         XCTAssertEqual(color.w, 1)
     }
 
-    func test_행_패딩이_있으면_bytesPerRow를_따라_건너뛴다() throws {
+    func test_rowPaddingIsSkippedUsingBytesPerRow() throws {
         // 2×2, 픽셀당 4B인데 행 간격은 12B (행마다 4B 패딩).
         var data = Data()
         for row in 0..<2 {
@@ -101,7 +101,7 @@ final class WGPUPixelReadbackTests: XCTestCase {
 
     // MARK: - 오류
 
-    func test_범위_밖_좌표는_오류다() {
+    func test_anOutOfRangeCoordinateIsAnError() {
         let readback = WGPUPixelReadback(
             data: Data(count: 16), format: .rgba8unorm, width: 2, height: 2, bytesPerRow: 8
         )
@@ -111,7 +111,7 @@ final class WGPUPixelReadbackTests: XCTestCase {
         XCTAssertThrowsError(try readback.rgba(x: 0, y: -1))
     }
 
-    func test_채널로_풀_수_없는_포맷은_조용히_넘어가지_않는다() {
+    func test_aFormatThatCannotExpandIntoChannelsDoesNotPassSilently() {
         // 팩된 포맷·정수 포맷은 정규화 float으로 펴면 값이 왜곡된다 → data를 직접 읽으라고 던진다.
         for format: WGPUTextureFormat in [
             .rgb10a2unorm, .rgb10a2uint, .rg11b10ufloat, .rgb9e5ufloat, .rgba8uint, .rgba16uint,
@@ -126,7 +126,7 @@ final class WGPUPixelReadbackTests: XCTestCase {
         }
     }
 
-    func test_바이트가_모자라면_잘못된_값_대신_오류다() {
+    func test_tooFewBytesIsAnErrorRatherThanAWrongValue() {
         let readback = WGPUPixelReadback(
             data: Data(count: 4), format: .rgba8unorm, width: 2, height: 2, bytesPerRow: 8
         )

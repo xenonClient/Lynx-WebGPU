@@ -148,7 +148,7 @@ final class CompressedTextureTests: XCTestCase {
 
     /// 압축 텍스처는 렌더 타깃이 될 수 없다. **Metal은 이것을 단언으로 죽인다** —
     /// 검증 오류로 돌려주는지가 요점이다.
-    func test_압축_텍스처를_렌더타깃으로_만들면_거부한다() throws {
+    func test_rejectsACompressedTextureAsARenderTarget() throws {
         let result = harness.execute([
             ["op": "createTexture", "id": 1, "size": ["width": 4, "height": 4],
              "format": "astc-4x4-unorm", "usage": TestUsage.renderAttachment],
@@ -157,7 +157,7 @@ final class CompressedTextureTests: XCTestCase {
         XCTAssertTrue(harness.describeErrors(result).contains("render target"), harness.describeErrors(result))
     }
 
-    func test_압축_텍스처의_어긋난_origin을_거부한다() throws {
+    func test_rejectsAMisalignedOriginOnACompressedTexture() throws {
         try XCTSkipUnless(
             WGPUDeviceCapability.supportsCompression(.astc4x4Unorm, on: harness.context!.device),
             "이 기기는 ASTC를 지원하지 않는다"
@@ -175,7 +175,7 @@ final class CompressedTextureTests: XCTestCase {
     }
 
     /// 가장자리 블록은 잘려 있으므로, **밉 레벨 끝에 닿는** 크기는 블록 배수가 아니어도 된다.
-    func test_밉_레벨_끝에_닿으면_블록_배수가_아니어도_된다() throws {
+    func test_reachingTheMipLevelEndNeedNotBeAMultipleOfTheBlock() throws {
         try XCTSkipUnless(
             WGPUDeviceCapability.supportsCompression(.astc4x4Unorm, on: harness.context!.device),
             "이 기기는 ASTC를 지원하지 않는다"
@@ -193,7 +193,7 @@ final class CompressedTextureTests: XCTestCase {
 
     /// `adapter.features`가 실제 기기 능력과 일치하는지 — 있다고 알리고 못 만들면
     /// 확인하고 쓴 앱이 오히려 배신당한다.
-    func test_기능_광고가_실제_지원과_일치한다() throws {
+    func test_featureAdvertisementMatchesActualSupport() throws {
         let info = harness.runtime.adapterInfo()
         let features = Set(info["features"] as? [String] ?? [])
         let device = harness.context!.device

@@ -144,7 +144,7 @@ final class StencilTests: XCTestCase {
 
     // MARK: - 마스킹
 
-    func test_스텐실_마스크가_뒤이은_드로우를_잘라낸다() throws {
+    func test_theStencilMaskClipsTheFollowingDraw() throws {
         harness.executeExpectingSuccess(makeCommonResources() + [
             ["op": "createTexture", "id": 2, "size": ["width": 64, "height": 64],
              "format": "stencil8", "usage": TestUsage.renderAttachment],
@@ -181,7 +181,7 @@ final class StencilTests: XCTestCase {
     ///
     /// 두 점만 보면 "스텐실이 아니라 다른 이유로 잘린" 경우를 못 거른다. 경계 픽셀까지
     /// 똑같아야 스텐실이 정확히 그 영역을 잘랐다고 말할 수 있다.
-    func test_스텐실_마스크_결과가_같은_영역의_시저와_일치한다() throws {
+    func test_theStencilMaskResultMatchesAScissorOverTheSameRegion() throws {
         harness.executeExpectingSuccess(makeCommonResources() + [
             ["op": "createTexture", "id": 2, "size": ["width": 64, "height": 64],
              "format": "stencil8", "usage": TestUsage.renderAttachment],
@@ -407,7 +407,7 @@ final class StencilTests: XCTestCase {
 
     /// 스텐실 성분이 없는 포맷에 스텐실 상태를 붙이면 Metal은 **조용히 무시**한다.
     /// 그러면 "스텐실 마스킹이 왜 안 먹지"를 오류 하나 없이 디버깅하게 되므로 여기서 막는다.
-    func test_스텐실_없는_깊이_포맷에_스텐실_상태를_주면_거부한다() {
+    func test_rejectsStencilStateOnADepthFormatWithoutStencil() {
         for format in ["depth32float", "depth24plus", "depth16unorm"] {
             let result = harness.execute(makeCommonResources() + [
                 pipeline(id: 6, format: format,
@@ -526,7 +526,7 @@ final class StencilTests: XCTestCase {
 
     /// `GPUStencilValue`는 `u32`이고 WebIDL 변환은 modulo다 — 음수는 wrap될 뿐 트랩하지 않는다.
     /// 비-truncating 이니셜라이저를 쓰면 이 한 줄로 프로세스가 죽는다.
-    func test_음수_스텐실_참조값이_프로세스를_죽이지_않는다() {
+    func test_aNegativeStencilReferenceDoesNotKillTheProcess() {
         harness.executeExpectingSuccess(makeCommonResources() + [
             ["op": "createTexture", "id": 2, "size": ["width": 64, "height": 64],
              "format": "stencil8", "usage": TestUsage.renderAttachment],
@@ -550,7 +550,7 @@ final class StencilTests: XCTestCase {
     }
 
     /// 반대로 스텐실 상태를 주지 않으면 깊이 전용 포맷도 그대로 통과해야 한다.
-    func test_스텐실_상태가_기본값이면_깊이_전용_포맷이_통과한다() {
+    func test_aDepthOnlyFormatPassesWhenStencilStateIsDefault() {
         harness.executeExpectingSuccess(makeCommonResources() + [
             pipeline(id: 6, format: "depth32float", stencil: [:], depthCompare: "less", depthWrite: true),
         ])

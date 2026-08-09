@@ -60,7 +60,7 @@ final class WGSLTranspilerTests: XCTestCase {
     }
     """
 
-    func test_삼각형셰이더_정점속성과_유니폼이_MSL로_번역된다() throws {
+    func test_triangleShaderVertexAttributesAndUniformsTranslateToMSL() throws {
         let msl = try translate(Self.triangleShader, entryPoints: ["vs_main", "fs_main"])
 
         XCTAssertTrue(msl.contains("vertex wgpu_vs_main_out vs_main("), "vertex 진입점 래퍼가 없다")
@@ -72,7 +72,7 @@ final class WGSLTranspilerTests: XCTestCase {
         XCTAssertTrue(msl.contains("constant Uniforms& uniforms [[buffer(0)]]"), "유니폼 바인딩이 없다")
     }
 
-    func test_헬퍼함수가_쓰는_유니폼은_인자로_전달된다() throws {
+    func test_aUniformUsedByAHelperIsPassedAsAnArgument() throws {
         let msl = try translate(Self.triangleShader, entryPoints: ["vs_main", "fs_main"])
 
         // MSL에는 가변 전역이 없으므로 헬퍼가 유니폼을 인자로 받아야 한다.
@@ -83,7 +83,7 @@ final class WGSLTranspilerTests: XCTestCase {
         XCTAssertTrue(msl.contains("apply_tint(input.color, uniforms)"), "호출 측이 리소스를 넘기지 않았다")
     }
 
-    func test_리플렉션이_진입점과_바인딩을_보고한다() throws {
+    func test_reflectionReportsEntryPointsAndBindings() throws {
         let module = try WGSLShaderModule(source: Self.triangleShader)
 
         XCTAssertEqual(module.reflection.entryPoints.map(\.name).sorted(), ["fs_main", "vs_main"])
@@ -127,7 +127,7 @@ final class WGSLTranspilerTests: XCTestCase {
     /// 정수 vec3도 같은 배치 보정을 받는다 — `packed_int3`/`packed_uint3`는 MSL에 있는
     /// 타입이지만 float만 확인해 두면 정수 경로가 컴파일되는지 아무도 모른다.
     /// (`translate`가 **실제 Metal 컴파일러**를 태우는 것이 이 테스트의 요점이다.)
-    func test_정수_vec3도_packed로_배치를_맞춘다() throws {
+    func test_anIntegerVec3IsAlsoPackedToMatchTheLayout() throws {
         let source = """
         struct Counts {
             offsets: vec3<i32>,
@@ -149,7 +149,7 @@ final class WGSLTranspilerTests: XCTestCase {
         XCTAssertTrue(msl.contains("packed_uint3 sizes;"), "부호 없는 vec3가 패킹되지 않았다:\n\(msl)")
     }
 
-    func test_구조체_배치가_WGSL_오프셋과_일치한다() throws {
+    func test_structLayoutMatchesWGSLOffsets() throws {
         let source = """
         struct S {
             a: vec3f,
@@ -172,7 +172,7 @@ final class WGSLTranspilerTests: XCTestCase {
 
     // MARK: - 컴퓨트 / 스토리지 버퍼
 
-    func test_컴퓨트셰이더와_스토리지버퍼가_번역된다() throws {
+    func test_computeShadersAndStorageBuffersTranslate() throws {
         let source = """
         @group(0) @binding(0) var<storage, read> input: array<f32>;
         @group(0) @binding(1) var<storage, read_write> output: array<f32>;
@@ -203,7 +203,7 @@ final class WGSLTranspilerTests: XCTestCase {
 
     // MARK: - 텍스처 / 샘플러
 
-    func test_텍스처샘플링이_MSL_메서드호출로_바뀐다() throws {
+    func test_textureSamplingBecomesAnMSLMethodCall() throws {
         let source = """
         @group(0) @binding(0) var tex: texture_2d<f32>;
         @group(0) @binding(1) var samp: sampler;
@@ -227,7 +227,7 @@ final class WGSLTranspilerTests: XCTestCase {
         XCTAssertTrue(msl.contains("sampler samp [[sampler(0)]]"))
     }
 
-    func test_스토리지텍스처_쓰기가_write호출로_바뀐다() throws {
+    func test_aStorageTextureWriteBecomesAWriteCall() throws {
         let source = """
         @group(0) @binding(0) var target: texture_storage_2d<rgba8unorm, write>;
 
@@ -244,7 +244,7 @@ final class WGSLTranspilerTests: XCTestCase {
 
     // MARK: - 제어 흐름
 
-    func test_제어흐름_구문이_모두_번역된다() throws {
+    func test_everyControlFlowConstructTranslates() throws {
         let source = """
         fn classify(v: i32) -> i32 {
             switch v {
@@ -314,19 +314,19 @@ final class WGSLTranspilerTests: XCTestCase {
 
     // MARK: - 오류 처리
 
-    func test_없는_진입점을_요청하면_오류다() throws {
+    func test_requestingAMissingEntryPointIsAnError() throws {
         let module = try WGSLShaderModule(source: Self.triangleShader)
         XCTAssertThrowsError(try module.requireEntryPoint("missing", stage: .vertex)) { error in
             XCTAssertEqual((error as? WGPUError)?.kind, .validation)
         }
     }
 
-    func test_스테이지가_다르면_오류다() throws {
+    func test_aDifferingStageIsAnError() throws {
         let module = try WGSLShaderModule(source: Self.triangleShader)
         XCTAssertThrowsError(try module.requireEntryPoint("fs_main", stage: .vertex))
     }
 
-    func test_지원하지_않는_내장함수는_명시적으로_거부한다() throws {
+    func test_anUnsupportedBuiltinIsRejectedExplicitly() throws {
         let source = """
         @group(0) @binding(0) var<storage, read> data: array<f32>;
         @compute @workgroup_size(1)
@@ -341,7 +341,7 @@ final class WGSLTranspilerTests: XCTestCase {
         }
     }
 
-    func test_문법오류는_줄번호와_함께_보고된다() throws {
+    func test_aSyntaxErrorIsReportedWithItsLineNumber() throws {
         let source = """
         @vertex
         fn vs() -> @builtin(position) vec4f {
@@ -380,7 +380,7 @@ final class WGSLTranspilerTests: XCTestCase {
         // 선언과 사용처가 어긋나면 Metal 컴파일에서 잡힌다 (translate 헬퍼가 검증한다).
     }
 
-    func test_부동소수_나머지연산은_fmod로_보내진다() throws {
+    func test_floatingPointRemainderIsRoutedToFmod() throws {
         let source = """
         @fragment
         fn fs_main(@location(0) uv: vec2f) -> @location(0) vec4f {
@@ -393,7 +393,7 @@ final class WGSLTranspilerTests: XCTestCase {
         XCTAssertTrue(msl.contains("wgpu_mod("), "% 가 헬퍼로 우회되지 않았다:\n\(msl)")
     }
 
-    func test_성분타입이_생략된_벡터생성자는_인자에서_추론한다() throws {
+    func test_aVectorConstructorWithNoComponentTypeInfersFromItsArguments() throws {
         let source = """
         @compute @workgroup_size(1)
         fn main(@builtin(global_invocation_id) id: vec3u) {
@@ -412,7 +412,7 @@ final class WGSLTranspilerTests: XCTestCase {
         XCTAssertTrue(msl.contains("float3(1, 2, 3).y"), "스위즐 대상은 구체 타입으로:\n\(msl)")
     }
 
-    func test_파이프라인_상수가_MSL에_박힌다() throws {
+    func test_pipelineConstantsArePlantedIntoTheMSL() throws {
         let source = """
         override scale: f32 = 1.0;
         override count: u32;
@@ -443,7 +443,7 @@ final class WGSLTranspilerTests: XCTestCase {
         MetalCompilerHarness.assertCompiles(msl)
     }
 
-    func test_확장선언은_무시된다() throws {
+    func test_enableDeclarationsAreIgnored() throws {
         let source = """
         enable f16;
         diagnostic(off, derivative_uniformity);
@@ -458,7 +458,7 @@ final class WGSLTranspilerTests: XCTestCase {
 
     // MARK: - 도달 가능성 (여럿이 나눠 쓰는 공용 모듈)
 
-    func test_진입점이_부르지_않는_함수는_방출되지_않는다() throws {
+    func test_functionsTheEntryPointNeverCallsAreNotEmitted() throws {
         // `common.wgsl` 하나를 여러 셰이더가 나눠 쓰는 구성이 흔하다 (webgpu-samples의 cornell).
         // 그때 이 진입점이 안 쓰는 함수까지 내보내면, `layout: "auto"`의 바인드 그룹에 없는
         // 리소스를 그 함수가 찾다가 번역이 통째로 실패한다 — 실제로 깨졌던 경로다.
@@ -483,7 +483,7 @@ final class WGSLTranspilerTests: XCTestCase {
         XCTAssertTrue(msl.contains("fs_main"), "진입점은 있어야 한다")
     }
 
-    func test_전이적으로_닿는_함수는_방출된다() throws {
+    func test_transitivelyReachableFunctionsAreEmitted() throws {
         // 도달 가능성은 **전이적**이다 — 진입점 → outer → inner 를 따라가야 한다.
         let source = """
         fn inner(x: f32) -> f32 { return x * 2.0; }
@@ -502,7 +502,7 @@ final class WGSLTranspilerTests: XCTestCase {
         XCTAssertFalse(msl.contains("orphan"), "아무도 안 부르는 함수가 방출됐다")
     }
 
-    func test_진입점마다_필요한_함수가_다르면_각각_그것만_방출한다() throws {
+    func test_eachEntryPointEmitsOnlyTheFunctionsItNeeds() throws {
         let source = """
         fn only_vertex() -> f32 { return 1.0; }
         fn only_fragment() -> f32 { return 2.0; }
@@ -529,7 +529,7 @@ final class WGSLTranspilerTests: XCTestCase {
 
     // MARK: - 전역 섀도잉 (기계 생성 셰이더의 일상 패턴 — Three.js nodeVar0)
 
-    func test_지역변수에_가려진_전역은_주입되지_않는다() throws {
+    func test_aGlobalShadowedByALocalIsNotInjected() throws {
         // Three.js 노드 시스템이 만드는 패턴: 같은 이름을 모듈 스코프와 함수 지역에 동시 생성한다.
         // helper는 지역 v만 쓰므로 모듈 스코프 v를 인자로 받으면 안 된다 — 받으면
         // `float4 v{}` 지역 선언과 재정의 충돌이 난다.
@@ -552,7 +552,7 @@ final class WGSLTranspilerTests: XCTestCase {
         XCTAssertTrue(msl.contains("float4 helper(float4 c)"), "가려진 전역이 주입됐다:\n\(msl)")
     }
 
-    func test_매개변수에_가려진_전역은_주입되지_않는다() throws {
+    func test_aGlobalShadowedByAParameterIsNotInjected() throws {
         let source = """
         var<private> tint : vec4<f32>;
 
@@ -570,7 +570,7 @@ final class WGSLTranspilerTests: XCTestCase {
         XCTAssertTrue(msl.contains("float4 helper(float4 tint)"), "매개변수에 가려진 전역이 주입됐다:\n\(msl)")
     }
 
-    func test_전역을_쓴_뒤_같은_이름의_지역을_선언하면_지역이_리네임된다() throws {
+    func test_aLocalDeclaredAfterUsingASameNamedGlobalIsRenamed() throws {
         // WGSL은 point-of-declaration 스코프라 선언 앞의 v는 전역, 뒤의 v는 지역이다.
         // 전역이 인자로 주입된 상태에서 같은 이름의 지역 선언은 C++ 재정의라 리네임이 필요하다.
         let source = """
@@ -594,7 +594,7 @@ final class WGSLTranspilerTests: XCTestCase {
         XCTAssertTrue(msl.contains("const auto before = v"), "선언 앞의 참조가 전역(주입 인자)을 봐야 한다:\n\(msl)")
     }
 
-    func test_지역이_가린_전역도_호출_그래프를_따라_전달된다() throws {
+    func test_aGlobalShadowedLocallyIsStillThreadedDownTheCallGraph() throws {
         // outer는 전역 v를 직접 쓰지 않지만(지역이 가린다) inner가 쓰므로,
         // outer는 전역 v를 **전달만** 해야 한다 — 지역을 넘기면 조용히 틀린다.
         let source = """
@@ -621,7 +621,7 @@ final class WGSLTranspilerTests: XCTestCase {
         XCTAssertTrue(msl.contains("inner(v)"), "inner에는 전역(주입 인자)이 넘어가야 한다:\n\(msl)")
     }
 
-    func test_중첩블록의_섀도잉은_블록을_벗어나면_풀린다() throws {
+    func test_shadowingInANestedBlockEndsWithTheBlock() throws {
         // 블록 안 지역 선언의 리네임이 블록 밖으로 새면, 밖의 v 대입이 선언된 적 없는
         // 이름(wgpu_shadow_v)을 참조해 컴파일이 깨진다 — translate가 잡는다.
         let source = """
@@ -647,7 +647,7 @@ final class WGSLTranspilerTests: XCTestCase {
 
     // MARK: - 바인딩 배정
 
-    func test_바인딩배정은_그룹_바인딩_순으로_결정적이다() throws {
+    func test_bindingAssignmentIsDeterministicInGroupThenBindingOrder() throws {
         let source = """
         @group(0) @binding(0) var<uniform> a: vec4f;
         @group(0) @binding(2) var tex: texture_2d<f32>;
@@ -671,7 +671,7 @@ final class WGSLTranspilerTests: XCTestCase {
         _ = try translate(source, entryPoints: ["fs"])
     }
 
-    func test_정점버퍼_인덱스는_테이블_위쪽부터_역순배정된다() {
+    func test_vertexBufferIndicesAreAssignedDownwardFromTheTopOfTheTable() {
         XCTAssertEqual(WGSLMetalLimits.vertexBufferIndex(slot: 0), 30)
         XCTAssertEqual(WGSLMetalLimits.vertexBufferIndex(slot: 1), 29)
         // 바인드 그룹 버퍼 상한과 겹치지 않아야 한다.
@@ -689,7 +689,7 @@ final class WGSLTranspilerTests: XCTestCase {
 
     // MARK: - arrayLength
 
-    func test_런타임_크기_배열의_길이는_크기표_조회로_번역된다() throws {
+    func test_aRuntimeSizedArrayLengthTranslatesIntoASizeTableLookup() throws {
         let source = """
         @group(0) @binding(0) var<storage, read> data: array<f32>;
         @group(0) @binding(1) var<storage, read_write> out: array<u32>;
@@ -710,7 +710,7 @@ final class WGSLTranspilerTests: XCTestCase {
         XCTAssertTrue(msl.contains("(wgpu_buffer_sizes[0] / uint(sizeof(float)))"), msl)
     }
 
-    func test_구조체_말미의_런타임_배열은_앞쪽_멤버_크기를_빼고_센다() throws {
+    func test_aTrailingRuntimeArraySubtractsThePrecedingMembersSize() throws {
         let source = """
         struct Particles {
             count: u32,
@@ -736,7 +736,7 @@ final class WGSLTranspilerTests: XCTestCase {
 
     // MARK: - 컴파일 타임 상수
 
-    func test_함수_안에서_선언한_const도_배열_크기로_쓸_수_있다() throws {
+    func test_aConstDeclaredInsideAFunctionCanBeAnArraySize() throws {
         let source = """
         @fragment
         fn fs() -> @location(0) vec4f {
@@ -752,7 +752,7 @@ final class WGSLTranspilerTests: XCTestCase {
         XCTAssertTrue(msl.contains("array<float4, 4>"), msl)
     }
 
-    func test_같은_이름의_지역_const가_함수마다_다르면_배열_크기로_쓰지_않는다() throws {
+    func test_aLocalConstWithDifferingValuesPerFunctionIsNotUsedAsAnArraySize() throws {
         // 배열 크기를 정할 때는 함수 문맥이 없으므로, 값이 하나로 정해지지 않으면 거부해야 한다.
         let source = """
         fn a() -> f32 {
@@ -775,7 +775,7 @@ final class WGSLTranspilerTests: XCTestCase {
 
     // MARK: - 외부 텍스처
 
-    func test_외부_텍스처는_가장자리_클램프_샘플링으로_번역된다() throws {
+    func test_anExternalTextureTranslatesToEdgeClampedSampling() throws {
         let source = """
         @group(0) @binding(0) var s: sampler;
         @group(0) @binding(1) var frame: texture_external;

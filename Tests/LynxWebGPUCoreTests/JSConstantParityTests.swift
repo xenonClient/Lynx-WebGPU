@@ -49,7 +49,7 @@ final class JSConstantParityTests: XCTestCase {
         )
     }
 
-    func test_버퍼_사용플래그가_JS와_일치한다() throws {
+    func test_bufferUsageFlagsMatchJS() throws {
         let source = try loadShim()
         assertParity("MAP_READ", WGPUBufferUsage.mapRead.rawValue, in: source)
         assertParity("MAP_WRITE", WGPUBufferUsage.mapWrite.rawValue, in: source)
@@ -63,7 +63,7 @@ final class JSConstantParityTests: XCTestCase {
         assertParity("QUERY_RESOLVE", WGPUBufferUsage.queryResolve.rawValue, in: source)
     }
 
-    func test_텍스처_사용플래그가_JS와_일치한다() throws {
+    func test_textureUsageFlagsMatchJS() throws {
         // GPUTextureUsage 블록만 잘라서 본다 — COPY_SRC 등 이름이 버퍼 쪽과 겹친다.
         let source = try loadShim()
         guard let start = source.range(of: "export const GPUTextureUsage = {"),
@@ -79,7 +79,7 @@ final class JSConstantParityTests: XCTestCase {
         assertParity("RENDER_ATTACHMENT", WGPUTextureUsage.renderAttachment.rawValue, in: block)
     }
 
-    func test_셰이더스테이지와_컬러마스크가_JS와_일치한다() throws {
+    func test_shaderStageAndColorMaskMatchJS() throws {
         let source = try loadShim()
         guard let stageStart = source.range(of: "export const GPUShaderStage = {"),
               let stageEnd = source.range(of: "};", range: stageStart.upperBound..<source.endIndex) else {
