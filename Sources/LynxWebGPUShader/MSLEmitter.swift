@@ -352,6 +352,25 @@ struct MSLEmitter {
         return ("\(type) \(MSLTypeMapping.identifier(member.name));", member.size)
     }
 
+    /// Aggregate initialization matching the padded declaration `emitStruct` produced: the same
+    /// cursor walk decides where a `char wgpu_padN[…]` member sits, and each such slot gets a
+    /// zero-filling `{}` so the positional arguments land on the real members.
+    private func structConstructor(_ name: String, arguments: [String]) throws -> String {
+        let mslName = MSLTypeMapping.identifier(name)
+        guard !arguments.isEmpty, let structure = module.structs.first(where: { $0.name == name }) else {
+            return "\(mslName){\(arguments.joined(separator: ", "))}"   // zero-value construction zero-fills everything
+        }
+        let placement = WGSLLayout.layout(of: structure, module: module, uniform: uniformStructs.contains(name))
+        var parts: [String] = []
+        var cursor = 0
+        for (index, member) in placement.members.enumerated() {
+            if cursor < member.offset { parts.append("{}") }
+            parts.append(index < arguments.count ? arguments[index] : "{}")
+            cursor = member.offset + (try memberDeclaration(member, in: structure)).byteSize
+        }
+        return "\(mslName){\(parts.joined(separator: ", "))}"
+    }
+
     // MARK: - Resource threading
 
     /// Returns the module-scope variables a function uses (transitively) in deterministic order.
@@ -1195,7 +1214,7 @@ struct MSLEmitter {
 
         // A struct constructor is aggregate initialization in MSL (C++).
         if structNames.contains(callee) {
-            return "\(MSLTypeMapping.identifier(callee)){\(emitted.joined(separator: ", "))}"
+            return try structConstructor(callee, arguments: emitted)
         }
         // A vector constructor with the component type omitted.
         if MSLPrelude.inferredVectorConstructors.contains(callee), typeArguments.isEmpty {

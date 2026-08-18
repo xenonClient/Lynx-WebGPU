@@ -170,6 +170,33 @@ final class WGSLTranspilerTests: XCTestCase {
         _ = try translate(source, entryPoints: ["fs"])
     }
 
+    /// A struct value constructor must skip the padding members the layout inserts — positional
+    /// aggregate init would push the next argument into `char wgpu_padN[…]` ("cannot initialize an
+    /// array element of type 'char'"). Found by the ocean demo's `WaveSample(height, disp)`.
+    func test_aStructConstructorSkipsInsertedPaddingMembers() throws {
+        let source = """
+        struct WaveSample {
+            height: f32,
+            disp: vec2f,
+        };
+
+        fn make(h: f32) -> WaveSample {
+            return WaveSample(h, vec2f(h, h * 2.0));
+        }
+
+        @fragment
+        fn fs_main() -> @location(0) vec4f {
+            let s = make(0.25);
+            let zero = WaveSample();
+            return vec4f(s.height + zero.height, s.disp, 1.0);
+        }
+        """
+        let msl = try translate(source, entryPoints: ["fs_main"])
+
+        XCTAssertTrue(msl.contains("WaveSample{h, {}, "), "the padding slot must be zero-filled:\n\(msl)")
+        XCTAssertTrue(msl.contains("WaveSample{}"), "zero-value construction stays a plain empty init:\n\(msl)")
+    }
+
     // MARK: - Compute / storage buffers
 
     func test_computeShadersAndStorageBuffersTranslate() throws {
