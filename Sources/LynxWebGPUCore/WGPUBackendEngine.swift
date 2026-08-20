@@ -94,11 +94,19 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
 
     // MARK: - WebGPURuntime: execution
 
+    /// Runs one batch.
+    ///
+    /// The payload is **materialized into native containers first** (`WGPUPayload`). Holding on to the
+    /// host's `NSDictionary` would leave every nested descriptor a window onto host-owned memory for the
+    /// whole batch, and a host that reuses its conversion output before this call returns turns the reads
+    /// late in the batch into garbage. The walk is done outside the lock because it touches no GPU state.
     public func execute(_ payload: [String: Any]) -> [String: Any] {
+        let owned = WGPUPayload.materialize(payload)
+
         executionLock.lock()
         defer { executionLock.unlock() }
 
-        let reader = WGPUValueReader(payload)
+        let reader = WGPUValueReader(owned)
         let commands: [WGPUValueReader]
         do {
             commands = try reader.requiredObjects("commands")

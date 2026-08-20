@@ -5,6 +5,11 @@ import Foundation
 /// It never goes through a JSON string — Lynx already converts to `NSDictionary`/`NSNumber`/
 /// `NSString`, and serializing once more would only add per-frame cost. Instead a failure throws
 /// an **error carrying a path**, so JS learns immediately where the command stream went wrong.
+///
+/// **Run a host payload through `WGPUPayload.materialize(_:)` first.** This reader keeps the dictionary
+/// it is given, and an `NSDictionary` received as `[String: Any]` is not a copy — only its top level is
+/// native, and nested containers still point at host-owned objects for as long as the reader lives
+/// (see `WGPUPayload`).
 public struct WGPUValueReader {
     public let path: String
     private let dictionary: [String: Any]

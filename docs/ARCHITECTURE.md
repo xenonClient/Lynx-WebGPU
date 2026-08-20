@@ -127,6 +127,11 @@ Lynx는 NativeModule 메서드를 **JS 백그라운드 스레드**에서 부른�
 `DispatchQueue.main.sync`를 걸면 메인이 Lynx 런타임을 기다리는 순간 교착이 나므로 **비동기로** 넘기고,
 `getCurrentTexture`는 캐시된 설정 대신 **실제 드로어블 텍스처의 포맷**을 보고한다.
 
+JS가 넘긴 페이로드는 배치를 시작하기 전에 **네이티브 컨테이너로 실체화한다**
+(`WGPUPayload`). Lynx가 준 `NSDictionary`를 그대로 들고 있으면 중첩 디스크립터가 배치가 끝날
+때까지 호스트 소유 메모리를 가리키는 창으로 남는다 — 선택이 아니라 정정된 크래시다
+(`docs/COMMAND-STREAM.md` §5-1-1).
+
 ## 4. 셰이더 파이프라인 (WGSL → MSL)
 
 ```
