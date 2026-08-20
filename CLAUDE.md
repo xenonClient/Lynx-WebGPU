@@ -220,6 +220,10 @@ git tag -a 0.2.0 -m "0.2.0 — 요약"
     **`WebGPUNativeModule.swift`의 `methodLookup`과 짝이 맞아야 한다.** 한쪽만 고치면 런타임에 깨진다.
   - shim을 고쳤으면 데모 사본도 맞춘다:
     `cp JS/webgpu.js JS/webgpu.d.ts Projects/WebGPUDemo/DemoSrc/src/`
+- **호스트가 넘긴 페이로드는 `WGPUValueReader`에 바로 넣지 말고 `WGPUPayload.materialize(_:)`를 먼저 거친다.**
+  `NSDictionary`를 `[String: Any]`로 받으면 최상위 한 겹만 네이티브로 옮겨지고, 중첩 컨테이너는
+  호스트 소유 객체를 가리키는 창으로 남는다 — 배치 후반의 명령이 그 창을 읽다가 죽는다
+  (`docs/COMMAND-STREAM.md` §5-1-1).
 - **커맨드 스트림의 필드 이름은 타입 검사가 잡아 주지 않는다.** JS는 `Record<string, any>`로 싣고
   Swift는 문자열 키로 읽으므로, 이름이 어긋나도 양쪽 다 컴파일된다. op를 추가·수정할 때는
   `.claude/skills/webgpu-command/SKILL.md`의 순서를 그대로 따라 양쪽을 함께 고칠 것.
