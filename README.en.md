@@ -140,7 +140,7 @@ The measurement harness ships in the repo, so the numbers can be re-taken anytim
 
 ## Verification
 
-366 Swift + 133 JS tests run in seconds — no simulator, no device.
+374 Swift + 133 JS tests run in seconds — no simulator, no device.
 
 - Transpiler tests push the generated MSL through the **actual Metal compiler**.
 - Render tests draw into offscreen textures and **assert pixel values** (triangle, uniforms, indexed draw,
@@ -152,6 +152,10 @@ The measurement harness ships in the repo, so the numbers can be re-taken anytim
   counter rises and falls with commit/completion.
 - Values the runtime slips into shaders behind the scenes (like `arrayLength()`) are read back from the GPU
   and **asserted as numbers**.
+- **Host payloads are moved into native containers before a batch starts** — the tests hold that line:
+  emptying the source `NSDictionary` mid-batch changes nothing, and a payload arriving as an Objective-C
+  tree still renders a frame (regression guard for the crash fixed in 0.5.2 —
+  `docs/COMMAND-STREAM.md` §5-1-1).
 - **The conformance suite (`LynxWebGPUConformance`, 29 checks) survives a runtime swap** — it only uses the
   command stream, `readCanvasPixels`, `readBuffer` and `adapterInfo`, so a backend built outside this repo
   proves itself with the same checks. Beyond the default Metal runtime at 29/29, a backend on top of real

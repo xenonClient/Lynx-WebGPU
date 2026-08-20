@@ -21,7 +21,7 @@ GPU 코드는 "돌려 보고 눈으로 확인"에 기대기 쉽다. 이 저장�
 ## 2. 실행
 
 ```zsh
-swift test                                      # 전체 (366개, 약 8초)
+swift test                                      # 전체 (374개, 약 8초)
 swift test --filter LynxWebGPUCoreTests         # 디스크립터/핸들
 swift test --filter LynxWebGPUShaderTests       # 트랜스파일러 (+ Metal 컴파일 검증)
 swift test --filter LynxWebGPUTests             # GPU 렌더 + 해석기
@@ -323,11 +323,12 @@ try XCTSkipUnless(harness.supports(.indirectArguments), "this device does not su
 - 비동기 경로(`readBuffer`)는 `XCTestExpectation`으로 검증한다.
 - 테스트 더블은 손으로 만든다 (모킹 라이브러리 없음).
 
-## 6. 커버리지 대상 (Swift 366 + JS 133 — 테스트 **케이스** 수다)
+## 6. 커버리지 대상 (Swift 374 + JS 133 — 테스트 **케이스** 수다)
 
 | 영역 | 파일 | 주요 케이스 |
 |---|---|---|
 | 값 디코딩 | `WGPUValueReaderTests` | 기본값, NSNull, 열거형 후보 안내, 색/크기 두 표기, **바이너리 세 표현(Data·base64·바이트배열)**, 경로 누적 |
+| 호스트 페이로드 | `WGPUPayloadTests` + `HostPayloadTests` | 실체화한 페이로드가 **원본을 비워도** 같은 값을 읽는지, **중첩 컨테이너까지** 옮겨졌는지(실체화를 건너뛰면 원본을 그대로 본다는 대조군), 구조·잎 타입 보존, **`Data`는 참조로만 옮김**(프레임마다 딥카피 금지), 빈 컨테이너 통과, **ObjC 트리로 들어온 페이로드가 프레임을 그려 내는지** |
 | 디스크립터 | `WGPUDescriptorTests` | 크기 유추, 범위 검증, 명세 기본값, auto/명시 레이아웃, 블렌드 기본값 |
 | 핸들 레지스트리 | `WGPUObjectRegistryTests` | 등록/조회/해제, 타입 불일치 진단, **증식 경고 임계(4096 → 두 배씩)**, **살아 있는 핸들 덮어쓰기 감지**(해제 뒤 재사용은 겹침이 아니다) |
 | 픽셀 되읽기 해석 | `WGPUPixelReadbackTests` | half→float(서브노멀·Inf·NaN), **1.0 초과·음수 보존**, BGRA 순서, 없는 채널 기본값, 행 패딩, 팩된/정수 포맷 거부 |
