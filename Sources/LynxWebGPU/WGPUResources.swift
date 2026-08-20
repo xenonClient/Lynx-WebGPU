@@ -32,11 +32,11 @@ public final class WGPUBufferObject {
         self.label = descriptor.label
         if let label = descriptor.label { buffer.label = label }
 
-        if let data = descriptor.initialData {
-            data.withUnsafeBytes { raw in
-                guard let base = raw.baseAddress else { return }
-                buffer.contents().copyMemory(from: base, byteCount: min(data.count, size))
-            }
+        // No `withUnsafeBytes` — same reason as `WGPUStagingPool.acquire`: inside a throwing function the
+        // optimizer may park `contents()` in the error-return register across the rethrows closure.
+        if let data = descriptor.initialData, !data.isEmpty {
+            data.copyBytes(to: buffer.contents().assumingMemoryBound(to: UInt8.self),
+                           count: min(data.count, size))
         }
     }
 
@@ -47,10 +47,11 @@ public final class WGPUBufferObject {
                 "writeBuffer out of range — offset \(offset) + \(data.count)B > buffer size \(size)B"
             )
         }
-        data.withUnsafeBytes { raw in
-            guard let base = raw.baseAddress else { return }
-            buffer.contents().advanced(by: offset).copyMemory(from: base, byteCount: data.count)
-        }
+        guard !data.isEmpty else { return }
+        // Closure-free for the reason spelled out in `WGPUStagingPool.acquire` — `writeBuffer` reaches this
+        // through the same throwing path `writeTexture` does.
+        data.copyBytes(to: buffer.contents().advanced(by: offset).assumingMemoryBound(to: UInt8.self),
+                       count: data.count)
     }
 
     func read(offset: Int, length: Int) throws -> Data {

@@ -26,12 +26,34 @@ final class WGPUStagingPool {
     }
 
     /// Hands back a staging buffer filled with `data`. A larger `minimumLength` reserves that much headroom.
+    ///
+    /// ## Why this copies without `withUnsafeBytes`
+    ///
+    /// A field crash died in the batch loop retaining a "thrown error" that was not an error: the pointer
+    /// it tried to retain was page-aligned and held half-float pixels — a **staging buffer**. Once the
+    /// engine started recording which command was running, the op turned out to be `writeTexture`, and
+    /// that lands here.
+    ///
+    /// On arm64 the Swift error return travels in **x21**, which is also an ordinary callee-saved register
+    /// an optimizer may borrow. In the shipped `-Osize` binary the `withUnsafeBytes` closure this function
+    /// used did exactly that: `mov x21, x0` right after `contents()`, twice. A caller that reads x21 as the
+    /// thrown error then gets a buffer pointer, and retaining it reads pixel data as an object header —
+    /// which is the crash, and why a debug build never showed it.
+    ///
+    /// `copyBytes(to:count:)` needs no closure, so that site is gone; the copy is the same memcpy.
+    ///
+    /// **This is a mitigation, not a proven fix.** Rebuilding the same source here (Xcode 17C52, iOS arm64
+    /// and macOS arm64, `-Osize`) never reproduced that register choice — it appears only in the shipped
+    /// build (Xcode 17F106, arm64e). So the site was removed rather than the bug being understood. Before
+    /// shipping, check the built archive directly:
+    ///
+    /// ```zsh
+    /// otool -arch arm64 -tV …/LynxWebGPU.framework/LynxWebGPU | grep -n "mov.*x21, x0"
+    /// ```
     func acquire(_ data: Data, minimumLength: Int = 0) throws -> MTLBuffer {
         let buffer = try buffer(fitting: max(data.count, minimumLength, 1))
-        data.withUnsafeBytes { raw in
-            guard let base = raw.baseAddress else { return }
-            buffer.contents().copyMemory(from: base, byteCount: data.count)
-        }
+        guard !data.isEmpty else { return buffer }
+        data.copyBytes(to: buffer.contents().assumingMemoryBound(to: UInt8.self), count: data.count)
         return buffer
     }
 
