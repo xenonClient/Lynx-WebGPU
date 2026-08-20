@@ -35,7 +35,7 @@ startFrameLoop(() => {
 
 ```swift
 // Package.swift
-.package(url: "https://github.com/xenonClient/Lynx-WebGPU", from: "0.5.1")
+.package(url: "https://github.com/xenonClient/Lynx-WebGPU", from: "0.5.2")
 ```
 
 이것으로 **엔진**(`LynxWebGPU`)이 들어온다. 아래 `LynxWebGPUHost`처럼 Lynx와 맞물리는 타입은

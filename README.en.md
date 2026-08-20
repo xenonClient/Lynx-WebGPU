@@ -35,7 +35,7 @@ Browser WebGPU code and WGSL shaders port over almost verbatim.
 
 ```swift
 // Package.swift
-.package(url: "https://github.com/xenonClient/Lynx-WebGPU", from: "0.5.1")
+.package(url: "https://github.com/xenonClient/Lynx-WebGPU", from: "0.5.2")
 ```
 
 That gives you the **engine** (`LynxWebGPU`). Types that touch Lynx — such as `LynxWebGPUHost` below —
