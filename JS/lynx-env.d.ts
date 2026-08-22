@@ -139,6 +139,7 @@ interface WebGPUNativeModule {
   ): void;
   startFrameLoop(params: { fps: number }): unknown;
   stopFrameLoop(): unknown;
+  frameHandled(): unknown;
   reset(): unknown;
 }
 

@@ -67,8 +67,10 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
     /// Canvases handed a drawable **in this batch**. Used to tell a repeat acquisition within one
     /// batch (same frame) from one across batches (a new frame) — see `getCurrentTexture`.
     private var acquiredThisBatch: Set<String> = []
-    /// Handles that become invalid once the frame ends (the drawable texture and its views).
-    private var frameScopedHandles: [WGPUHandle] = []
+    /// Handles that become invalid once the frame ends (the drawable texture and its views), each
+    /// tagged with its canvas — so reclaiming **one** canvas's failed frame (or a detach) does not
+    /// tear down another canvas's frame still in flight.
+    private var frameScopedHandles: [(handle: WGPUHandle, canvas: String)] = []
     private var touchedCanvases: [String: B.Surface] = [:]
     private var errors: [WGPUError] = []
 
@@ -260,9 +262,18 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
     /// Factored out because a presented frame and **a frame that ended with nothing to submit** must
     /// do the same thing. Fix only one and handles live forever on the other path.
     private func expireFrame() {
-        for handle in frameScopedHandles { registry.remove(handle) }
+        for entry in frameScopedHandles { registry.remove(entry.handle) }
         frameScopedHandles.removeAll()
         acquiredFrames.removeAll()
+    }
+
+    /// Expires **one canvas's** frame — the reclaim of a frame that will never be drawn (see
+    /// `getCurrentTexture`) and a mid-frame `detachCanvas` land here. Scoped so another canvas's
+    /// in-flight frame keeps its swapchain handles.
+    private func expireFrame(canvas: String) {
+        for entry in frameScopedHandles where entry.canvas == canvas { registry.remove(entry.handle) }
+        frameScopedHandles.removeAll { $0.canvas == canvas }
+        acquiredFrames.removeAll { $0.canvas == canvas }
     }
 
     /// Canvases handed a drawable this frame (deduplicated — several acquisitions on one surface are still one frame).
@@ -526,8 +537,7 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
                 raw: raw,
                 format: command.descriptor.format,
                 size: command.descriptor.size,
-                sampleCount: command.descriptor.sampleCount,
-                isDrawable: false
+                sampleCount: command.descriptor.sampleCount
             ),
             at: command.id
         )
@@ -790,8 +800,11 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
             WGPUEngineTextureView<B>(raw: raw, format: format, sampleCount: source.sampleCount),
             at: command.id
         )
-        // Views of a drawable texture expire with the frame (the spec's "Expire the current texture").
-        if source.isDrawable { frameScopedHandles.append(command.id) }
+        // Views of a drawable texture expire with the frame (the spec's "Expire the current texture") —
+        // under the same canvas as their texture, so a per-canvas expiry takes them along.
+        if let canvas = source.drawableCanvas {
+            frameScopedHandles.append((command.id, canvas))
+        }
     }
 
     private func createSampler(_ command: WGPUCreateCommand<WGPUSamplerDescriptor>) throws {
@@ -1046,10 +1059,13 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         //
         // **Repeat acquisition within one batch is excluded** — that is the same frame (the spec says
         // to return the same texture), and the view already handed out is still in use that frame.
+        //
+        // The reclaim is **scoped to this canvas** — another canvas's un-presented frame may still
+        // legitimately be going (a mid-frame flush), and a global discard would present-or-lose it.
         if !acquiredThisBatch.contains(canvasId),
            acquiredFrames.contains(where: { $0.canvas == canvasId }) {
-            backend.discardAcquiredFrames()
-            expireFrame()
+            backend.discardAcquiredFrame(canvas: canvasId)
+            expireFrame(canvas: canvasId)
         }
         acquiredThisBatch.insert(canvasId)
         touchedCanvases[canvasId] = entry.raw
@@ -1064,12 +1080,12 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
                 format: acquired.format,
                 size: WGPUExtent3D(width: acquired.width, height: acquired.height),
                 sampleCount: acquired.sampleCount,
-                isDrawable: true
+                drawableCanvas: canvasId
             ),
             at: handle
         )
         acquiredFrames.append((handle, canvasId))
-        frameScopedHandles.append(handle)
+        frameScopedHandles.append((handle, canvasId))
     }
 
     // MARK: - Render pass
@@ -2155,6 +2171,17 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         canvasLock.unlock()
         // Leaving a dead canvas's counter behind would block frame ticks forever.
         frameCoordinator.forget(canvas: identifier)
+        // A frame acquired but never presented would otherwise be held **for good**: the reclaim in
+        // `getCurrentTexture` only fires when the same canvas asks again, which a detached canvas
+        // never does — the drawable sits in the backend (worse, the next global present would put an
+        // undrawn frame on a dead layer) and its texture handle pins the swapchain texture in the
+        // registry. Detach is the last moment this canvas can clean up after itself.
+        // Under the execution lock: this can come from any thread (the element's deinit), while the
+        // frame bookkeeping and the backend are otherwise only touched by `execute`.
+        executionLock.lock()
+        backend.discardAcquiredFrame(canvas: identifier)
+        expireFrame(canvas: identifier)
+        executionLock.unlock()
     }
 
     /// Updates the drawable size — **unusable values are ignored silently.**

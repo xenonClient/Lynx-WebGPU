@@ -296,6 +296,72 @@ final class CommandInterpreterTests: XCTestCase {
         )
     }
 
+    /// A canvas detached **mid-frame** must hand back its acquisition.
+    ///
+    /// The reclaim in `getCurrentTexture` only fires when the same canvas asks again — a detached
+    /// canvas never does. Without cleanup at detach, the drawable sits in the backend for good (and
+    /// the next present would put an undrawn frame on the dead layer), while the swapchain texture
+    /// handle pins the registry. Detach is that canvas's last chance to clean up after itself.
+    func test_detachingACanvasReclaimsItsPendingFrame() throws {
+        try harness.runtime.attachOffscreenCanvas(
+            identifier: "doomed", size: CGSize(width: 8, height: 8)
+        )
+        harness.executeExpectingSuccess([
+            ["op": "configureCanvas", "canvas": "doomed", "format": "rgba8unorm"],
+        ])
+        let before = harness.liveObjects
+
+        // Mid-frame: acquired, nothing presented — and then the element goes away.
+        let midFrame = harness.execute([
+            ["op": "getCurrentTexture", "id": 80, "canvas": "doomed"],
+            ["op": "createTextureView", "id": 81, "texture": 80],
+        ], present: false)
+        XCTAssertEqual(midFrame["ok"] as? Bool, true, harness.describeErrors(midFrame))
+        XCTAssertEqual(harness.liveObjects, before + 2, "mid-frame — the acquisition is held")
+
+        harness.runtime.detachCanvas(identifier: "doomed")
+
+        XCTAssertEqual(
+            harness.liveObjects, before,
+            "a detached canvas's frame handles must be reclaimed — held on, they leak for good"
+        )
+    }
+
+    /// Reclaiming one canvas's failed frame must not tear down **another canvas's** frame in flight.
+    ///
+    /// Frame N: canvas "test" acquires and its frame dies with nothing submitted. Frame N+1: canvas
+    /// "other" acquires first (a fresh frame), then "test" asks again — the stale-frame reclaim fires
+    /// there. Were the reclaim global rather than per-canvas, it would drop "other"'s just-acquired
+    /// drawable and expire its handles, and the render pass right after would be rejected with
+    /// "GPUTextureView does not exist".
+    func test_reclaimingOneCanvasLeavesAnotherCanvasesFrameAlone() throws {
+        try harness.runtime.attachOffscreenCanvas(
+            identifier: "other", size: CGSize(width: 8, height: 8)
+        )
+        harness.executeExpectingSuccess([
+            ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
+            ["op": "configureCanvas", "canvas": "other", "format": "rgba8unorm"],
+        ])
+
+        // Frame N: "test" acquires and the frame ends with nothing to submit.
+        let stale = harness.execute([
+            ["op": "getCurrentTexture", "id": 90, "canvas": "test"],
+        ], present: false)
+        XCTAssertEqual(stale["ok"] as? Bool, true, harness.describeErrors(stale))
+
+        // Frame N+1: "other" first, then "test" (whose reclaim fires), then "other" draws.
+        harness.executeExpectingSuccess([
+            ["op": "getCurrentTexture", "id": 92, "canvas": "other"],
+            ["op": "createTextureView", "id": 93, "texture": 92],
+            ["op": "getCurrentTexture", "id": 94, "canvas": "test"],
+            ["op": "beginRenderPass", "colorAttachments": [[
+                "view": 93, "loadOp": "clear", "storeOp": "store",
+                "clearValue": ["r": 1, "g": 0, "b": 0, "a": 1],
+            ]]],
+            ["op": "endPass"],
+        ])
+    }
+
     func test_bufferWriteCopyAndReadHappenInOrder() throws {
         let source: [Float] = [1, 2, 3, 4]
         harness.executeExpectingSuccess([

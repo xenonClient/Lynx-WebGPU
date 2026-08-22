@@ -226,6 +226,12 @@ let frameTickDepth = 0;
 let frameLoopSubscribers = 0;
 
 /**
+ * Whether the **native** ticker is driving the frames (as opposed to the timer fallback).
+ * Only then does the end of a tick owe native an ack — see `acknowledgeFrameTick`.
+ */
+let nativeTickerActive = false;
+
+/**
  * The recorders that owe a present this tick. When the tick ends, only these present —
  * a tick with no GPU work never crosses the bridge.
  * @type {Set<Recorder>}
@@ -248,12 +254,38 @@ function runFrameTick(handler, frame) {
   }
 }
 
-/** The end of a tick — the deferred presents all go out here. */
+/** The end of a tick — the deferred presents all go out here, then native is told the tick is done. */
 function endFrameTick() {
-  if (framePresentDebt.size === 0) return;
-  const owing = Array.from(framePresentDebt);
-  framePresentDebt.clear();
-  for (const recorder of owing) recorder.flush(true, { presentOnly: true });
+  if (framePresentDebt.size > 0) {
+    const owing = Array.from(framePresentDebt);
+    framePresentDebt.clear();
+    for (const recorder of owing) recorder.flush(true, { presentOnly: true });
+  }
+  acknowledgeFrameTick();
+}
+
+/**
+ * Tells native this frame event has been handled (**rAF-style backpressure**).
+ *
+ * The native ticker sends the next `webgpu:frame` only after this ack. Without it, whenever the JS
+ * thread falls behind the refresh rate, frame events pile up in the JS message queue without bound
+ * and every touch event queues **behind** them — input lag grows to seconds. The ack caps the queue
+ * at one pending frame event, the same bound `requestAnimationFrame` gives a browser.
+ *
+ * It goes out **on a tick that drew nothing too** — skipping idle ticks would leave the ticker
+ * waiting out its timeout after every one of them. An old native without `frameHandled` is
+ * tolerated: its tick gate does not exist, so losing the ack changes nothing.
+ *
+ * @returns {void}
+ */
+function acknowledgeFrameTick() {
+  if (!nativeTickerActive) return;
+  try {
+    const module = nativeModule();
+    if (typeof module.frameHandled === 'function') module.frameHandled();
+  } catch (error) {
+    // Version skew (an old native) — its ticker has no gate, so there is nothing to unblock.
+  }
 }
 
 let nextHandle = 1;
@@ -2320,6 +2352,7 @@ export function startFrameLoop(handler, options) {
     frameLoopSubscribers -= 1;
     if (frameLoopSubscribers <= 0) {
       frameLoopSubscribers = 0;
+      nativeTickerActive = false;
       module.stopFrameLoop();
     }
   };
@@ -2339,6 +2372,7 @@ export function startFrameLoop(handler, options) {
     const listener = (frame) => runFrameTick(handler, frame || { timestamp: 0, delta: 16 });
     emitter.addListener('webgpu:frame', listener);
     module.startFrameLoop({ fps });
+    nativeTickerActive = true;
     let stopped = false;
     return () => {
       if (stopped) return;   // calling twice does not eat someone else's subscription
