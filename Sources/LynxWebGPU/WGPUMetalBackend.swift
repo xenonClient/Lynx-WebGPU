@@ -48,8 +48,12 @@ public final class WGPUMetalBackend: WGPUBackend {
     private var bufferSizes = [UInt32](repeating: 0, count: WGSLMetalLimits.maxBindGroupBuffers)
     /// Staging buffers used for this frame's uploads — returned to the pool when the command buffer completes.
     private var frameStagingBuffers: [MTLBuffer] = []
-    /// Drawables acquired this frame — `submit(present: true)` sends them to screen.
-    private var acquiredDrawables: [WGPUDrawable] = []
+    /// Drawables acquired this frame, keyed by canvas — `submit(present: true)` sends them to
+    /// screen. Keyed so the engine can hand back **one** canvas's frame (a reclaim or a detach)
+    /// without touching another canvas's frame still in flight. At most one per canvas: within a
+    /// frame a repeat `getCurrentTexture` returns the same texture, and a new frame's acquisition is
+    /// preceded by the engine reclaiming the old one.
+    private var acquiredDrawables: [String: WGPUDrawable] = [:]
     /// The last committed command buffer — used when `readBuffer` waits on GPU completion.
     private(set) var lastCommittedBuffer: MTLCommandBuffer?
 
@@ -121,7 +125,7 @@ public final class WGPUMetalBackend: WGPUBackend {
     public func submit(present: Bool, onCompleted: @escaping (WGPUError?) -> Void) {
         guard let commandBuffer else { return }
         if present {
-            for drawable in acquiredDrawables { drawable.present(with: commandBuffer) }
+            for drawable in acquiredDrawables.values { drawable.present(with: commandBuffer) }
         }
         // A completion handler can only be attached before commit (a Metal assertion).
         if !frameStagingBuffers.isEmpty {
@@ -140,11 +144,12 @@ public final class WGPUMetalBackend: WGPUBackend {
         self.commandBuffer = nil
     }
 
-    /// Releases a drawable we could not draw — called by the engine when the frame ended without present.
+    /// Releases one canvas's drawable we could not draw — called by the engine when that canvas's
+    /// frame ended without present (a reclaim on re-acquisition, or a detach).
     /// A `CAMetalDrawable` returns to the pool once its last reference is gone. Held on to, the pool
     /// dries up in three frames and `nextDrawable()` stalls the JS thread.
-    public func discardAcquiredFrames() {
-        acquiredDrawables.removeAll()
+    public func discardAcquiredFrame(canvas identifier: String) {
+        acquiredDrawables.removeValue(forKey: identifier)
     }
 
     /// Turns a failed command buffer into the best error we can name.
@@ -486,7 +491,7 @@ public final class WGPUMetalBackend: WGPUBackend {
         let format = WGPUMetalMapping.textureFormat(from: drawable.texture.pixelFormat)
             ?? surface.configuredFormat
         let texture = WGPUTextureObject(drawableTexture: drawable.texture, format: format)
-        acquiredDrawables.append(drawable)
+        acquiredDrawables[surface.identifier] = drawable
         return WGPUAcquiredSurfaceTexture(
             texture: texture,
             format: format,

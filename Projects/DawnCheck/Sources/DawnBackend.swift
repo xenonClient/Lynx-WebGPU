@@ -194,11 +194,12 @@ final class DawnBackend: WGPUBackend {
         _ = wgpuQueueOnSubmittedWorkDone(queue, callbackInfo)
     }
 
-    /// Releases acquisitions we could not draw — called by the engine when a frame ended without a present.
-    /// The surface texture itself is released by the engine as it expires the frame-scoped handles, so all
-    /// that happens here is clearing the present target list — left behind, the next frame would present the previous frame's surface.
-    func discardAcquiredFrames() {
-        presentTargets.removeAll()
+    /// Releases one canvas's acquisition we could not draw — called by the engine when that canvas's frame
+    /// ended without a present (a reclaim on re-acquisition, or a detach). The surface texture itself is
+    /// released by the engine as it expires the frame-scoped handles, so all that happens here is dropping
+    /// the present target — left behind, the next present would put out that canvas's undrawn frame.
+    func discardAcquiredFrame(canvas identifier: String) {
+        presentTargets.removeValue(forKey: identifier)
     }
 
     private final class WorkDoneBox {
