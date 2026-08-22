@@ -27,6 +27,7 @@ public final class WebGPUNativeModule: NSObject, LynxModule {
             "decodeImage": NSStringFromSelector(#selector(decodeImage(_:callback:))),
             "startFrameLoop": NSStringFromSelector(#selector(startFrameLoop(_:))),
             "stopFrameLoop": NSStringFromSelector(#selector(stopFrameLoop)),
+            "frameHandled": NSStringFromSelector(#selector(frameHandled)),
             "reset": NSStringFromSelector(#selector(reset)),
         ]
     }
@@ -163,6 +164,15 @@ public final class WebGPUNativeModule: NSObject, LynxModule {
     public func stopFrameLoop() -> [String: Any] {
         guard let host else { return Self.unavailable }
         host.stopFrameLoop()
+        return ["ok": true]
+    }
+
+    /// The end of one frame callback on the JS side (rAF-style backpressure) — the ticker may
+    /// send the next `webgpu:frame` only after this ack. The shim calls it automatically at the
+    /// end of every tick, so a bundle never calls it by hand.
+    public func frameHandled() -> [String: Any] {
+        guard let host else { return Self.unavailable }
+        host.frameTickHandled()
         return ["ok": true]
     }
 

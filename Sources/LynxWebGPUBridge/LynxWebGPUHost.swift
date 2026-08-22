@@ -25,6 +25,10 @@ public final class LynxWebGPUHost: NSObject {
     public let runtime: WebGPURuntime
     private weak var lynxView: LynxView?
     private let ticker = WebGPUFrameTicker()
+    /// JS-side tick backpressure — the next `webgpu:frame` goes out only after the shim's ack
+    /// (`frameHandled`). The GPU gate below cannot see the JS thread falling behind; without this
+    /// one, frame events pile up in the JS queue and touch handlers wait behind them for seconds.
+    private let tickGate = WGPUFrameTickGate()
 
     /// Where the name from JS's `loadAsset(name)` is resolved into bytes. Swap it and the app decides
     /// the resolution rules and the access scope (see `WGPUAssetProvider`).
@@ -55,6 +59,10 @@ public final class LynxWebGPUHost: NSObject {
             // would have JS build a frame and stall **the entire JS thread** at nextDrawable() —
             // dropping the frame is better. Once a completion returns it resumes from the next tick.
             guard self.runtime.isReadyForNextFrame else { return }
+            // When the JS thread is the slow side, skip the tick until the previous frame event
+            // is acknowledged (rAF semantics) — at most one frame event waits in the JS queue,
+            // and input events interleave between frames instead of queuing behind stale ticks.
+            guard self.tickGate.shouldSend(at: timestamp) else { return }
             self.lynxView?.sendGlobalEvent("webgpu:frame", withParams: [[
                 "timestamp": timestamp * 1000,
                 "delta": deltaSeconds * 1000,
@@ -64,7 +72,7 @@ public final class LynxWebGPUHost: NSObject {
 
     /// Call when leaving the page — stops the display link and discards GPU objects.
     public func detach() {
-        ticker.stop()
+        stopFrameLoop()
         runtime.reset()
         lynxView = nil
     }
@@ -85,12 +93,22 @@ public final class LynxWebGPUHost: NSObject {
     /// (native code building the command stream itself, or diagnosing the JS path). Using both paths
     /// does not double the ticks — there is one link, and `start` replaces the existing one.
     public func startFrameLoop(preferredFramesPerSecond: Int = 60) {
+        // The debtor of a previous loop's tick may be gone (its listener was removed) — carrying
+        // the old debt over would stall the new loop's first tick by a full timeout.
+        tickGate.reset()
         ticker.start(preferredFramesPerSecond: preferredFramesPerSecond)
     }
 
     /// Stops the frame loop. `detach()` already calls it, so leaving a page needs no separate call.
     public func stopFrameLoop() {
         ticker.stop()
+        tickGate.reset()
+    }
+
+    /// The shim's ack at the end of one frame callback (`NativeModules.WebGPU.frameHandled`) —
+    /// presents included, idle ticks included. Clears the tick gate so the next tick may go.
+    public func frameTickHandled() {
+        tickGate.acknowledge()
     }
 
     // MARK: - Canvas registration
