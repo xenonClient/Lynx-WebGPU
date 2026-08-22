@@ -75,8 +75,11 @@ public final class WebGPUCanvasUI: LynxUI<WebGPUCanvasView> {
 
     public override func createView() -> WebGPUCanvasView? {
         let view = WebGPUCanvasView()
-        view.onDrawableSizeChange = { [weak self] size in
-            guard let self else { return }
+        // `view` is captured weakly too: this closure is stored **on that very view**, so a strong
+        // capture would form a self-referencing cycle. The view would then outlive the element — and
+        // with it the CAMetalLayer's drawable IOSurfaces, tens of MB per canvas that is never freed.
+        view.onDrawableSizeChange = { [weak self, weak view] size in
+            guard let self, let view else { return }
             if let canvasIdentifier = self.canvasIdentifier {
                 self.host?.resizeCanvas(identifier: canvasIdentifier, drawableSize: size)
             }
