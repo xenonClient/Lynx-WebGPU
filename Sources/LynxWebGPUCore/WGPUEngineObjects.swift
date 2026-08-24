@@ -30,16 +30,19 @@ public final class WGPUEngineTexture<B: WGPUBackend> {
     public let format: WGPUTextureFormat
     public let size: WGPUExtent3D
     public let sampleCount: Int
-    /// Whether it came from a canvas drawable — its handle expires once the frame is presented.
-    public let isDrawable: Bool
+    /// The canvas this drawable texture came from — nil for a regular texture. Non-nil means the
+    /// handle expires once the frame is presented, and views of it inherit the same canvas scope
+    /// (so a per-canvas expiry can pick them out).
+    public let drawableCanvas: String?
+    public var isDrawable: Bool { drawableCanvas != nil }
 
     public init(raw: B.Texture, format: WGPUTextureFormat, size: WGPUExtent3D,
-                sampleCount: Int, isDrawable: Bool) {
+                sampleCount: Int, drawableCanvas: String? = nil) {
         self.raw = raw
         self.format = format
         self.size = size
         self.sampleCount = sampleCount
-        self.isDrawable = isDrawable
+        self.drawableCanvas = drawableCanvas
     }
 }
 

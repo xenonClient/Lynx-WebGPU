@@ -101,18 +101,23 @@ public protocol WGPUBackend: AnyObject {
     ///   on failure — the engine routes it through the deferred error queue into the next batch.
     func submit(present: Bool, onCompleted: @escaping (WGPUError?) -> Void)
 
-    /// Hands back an acquisition we decided not to present — called by the engine when a drawable
-    /// was obtained but the frame ended with **no GPU work to submit at all** (a frame that hit a
-    /// validation error before the first encoder looks like this).
+    /// Hands back **one canvas's** acquisition we decided not to present — called by the engine when
+    /// a drawable was obtained but that canvas's frame ended with **no GPU work to submit at all** (a
+    /// frame that hit a validation error before the first encoder looks like this), and when the
+    /// canvas is detached mid-frame.
     ///
     /// Simply holding on drains the swapchain pool, and on an on-screen surface **the next
     /// acquisition stalls the JS thread for up to a second** and then fails permanently. A drawable
     /// that was never drawn cannot be presented (a blank frame would go out), so releasing it
     /// without presenting is the only way out.
     ///
-    /// A no-op when nothing was acquired. Must stay safe when called after `submit(present: true)`
-    /// already cleared the list.
-    func discardAcquiredFrames()
+    /// It is scoped to one canvas because another canvas's frame may still legitimately be in
+    /// flight — dropping every acquisition here would present-or-lose a frame the engine did not
+    /// give up on.
+    ///
+    /// A no-op when that canvas has nothing acquired. Must stay safe when called after
+    /// `submit(present: true)` already cleared the list.
+    func discardAcquiredFrame(canvas identifier: String)
 
     // MARK: - Resources
 

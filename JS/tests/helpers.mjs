@@ -21,6 +21,7 @@ export function installNativeMock(overrides = {}) {
     readBufferResult: overrides.readBufferResult ?? { ok: true, data: new ArrayBuffer(0) },
     loadAssetResult: overrides.loadAssetResult ?? { ok: true, data: new ArrayBuffer(0) },
     stopFrameLoopCalls: 0,
+    frameHandledCalls: 0,
     decodeImageCalls: [],
     decodeImageResult: overrides.decodeImageResult ?? { ok: true, width: 4, height: 4 },
   };
@@ -57,6 +58,10 @@ export function installNativeMock(overrides = {}) {
       },
       stopFrameLoop() {
         state.stopFrameLoopCalls += 1;
+        return { ok: true };
+      },
+      frameHandled() {
+        state.frameHandledCalls += 1;
         return { ok: true };
       },
       reset() {

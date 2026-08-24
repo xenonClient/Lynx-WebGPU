@@ -140,12 +140,20 @@ final class GPUPageViewController: UIViewController {
 JS  startFrameLoop(handler)          (JS/webgpu.js)
  └▶ NativeModules.WebGPU.startFrameLoop({fps})
      └▶ LynxWebGPUHost.startFrameLoop(preferredFramesPerSecond:)  →  CADisplayLink 시작
-         └▶ 매 틱: runtime.processEvents() → isReadyForNextFrame 검사 → `webgpu:frame` 전역 이벤트
+         └▶ 매 틱: runtime.processEvents() → isReadyForNextFrame 검사 → 틱 게이트 검사
+             → `webgpu:frame` 전역 이벤트 → (JS 콜백 끝) NativeModules.WebGPU.frameHandled() ack
 ```
 
 프레임을 쓰지 않는 페이지에서 링크가 헛도는 것을 막는 배치다. 그래서 **애니메이션 없는
 씬은 링크가 아예 돌지 않는 것이 정상**이고, 그런 씬에서도 `mapAsync` 완료가 굶지 않도록
 펌프가 필요한 백엔드는 엔진이 자체 펌프를 돌린다 (`WGPUBackendCapabilities.needsEventPump`).
+
+게이트는 둘이고 **막는 쪽이 서로 다르다**: `isReadyForNextFrame`(`WGPUFrameCoordinator`)은
+**GPU가** 밀렸을 때 닫히고, 틱 게이트(`WGPUFrameTickGate`)는 **JS 스레드가** 밀렸을 때 닫힌다 —
+직전 틱의 ack(`frameHandled`, shim이 틱 끝에 자동으로 보낸다)가 오기 전에는 다음 틱을 보내지
+않는다. 이 두 번째 게이트가 없으면 무거운 씬에서 프레임 이벤트가 JS 메시지 큐에 무한히 쌓이고,
+터치 이벤트가 그 뒤에 줄을 서서 **입력이 수 초씩 밀린다** (rAF의 풀 모델을 티커에 이식한 것).
+ack가 유실되면(콜백 예외·페이지 이탈) 1초 타임아웃으로 스스로 풀린다.
 
 **"캔버스는 뜨는데 화면이 검다"면 이 사슬부터 본다** — 번들이 `startFrameLoop`(또는 그 위의
 `requestAnimationFrame`)을 부르는지, 링크가 서 있는지. 호스트가 JS 밖에서 프레임을 몰아야

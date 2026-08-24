@@ -297,6 +297,7 @@ occlusion 쿼리는 중첩할 수 없고, 한 패스에서 같은 인덱스를 �
 | `loadAsset({name}, cb)` | 브라우저 `fetch()` 자리. 해석은 `WGPUAssetProvider`가 한다 |
 | `decodeImage({id, data?/name?, flipY?, premultiplyAlpha?, resizeWidth?, resizeHeight?}, cb)` | `createImageBitmap()` |
 | `startFrameLoop({fps})` / `stopFrameLoop()` | `webgpu:frame` 전역 이벤트 |
+| `frameHandled()` | 프레임 콜백 하나가 끝났다는 ack — 티커는 이걸 받아야 다음 틱을 보낸다 (rAF식 역압, `WGPUFrameTickGate`). shim이 틱 끝에 자동으로 부르므로 번들이 직접 부를 일은 없다. 유실 시 1초 타임아웃으로 풀린다 |
 | `reset()` | 모든 GPU 객체를 버린다 |
 
 ### 5-1. 스레딩·수명 규약
