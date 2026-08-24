@@ -41,7 +41,7 @@ Lynx 연동 레이어(`LynxWebGPUHost` · `WebGPUNativeModule` · `WebGPUCanvasU
 
 ```swift
 packages: [
-    .remote(url: "https://github.com/xenonClient/Lynx-WebGPU", requirement: .upToNextMajor(from: "0.5.3")),
+    .remote(url: "https://github.com/xenonClient/Lynx-WebGPU", requirement: .upToNextMajor(from: "0.5.4")),
     // Lynx는 **앱이 고른다.** 아래는 데모가 쓰는 배포본일 뿐이고, 다른 저장소·다른 버전으로
     // 바꿔도 브리지 소스는 그대로 컴파일된다.
     .remote(url: "https://github.com/xenonClient/Lynx-XCFramework", requirement: .exact("4.0.0")),
