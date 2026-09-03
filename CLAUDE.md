@@ -253,16 +253,31 @@ git tag -a 0.2.0 -m "0.2.0 — 요약"
   시뮬레이터에서 `unsupported` 오류가 나고, **실기기(A12 이상)에서는 정상 동작**한다.
   막지 않으면 `MTLValidateFeatureSupport … failed assertion`으로 프로세스가 죽는다
   (`WGPUDeviceCapability.supportsIndirectArguments`가 걸러 준다).
-- **시뮬레이터에는 터치 주입 수단이 없다** (`simctl`에 탭 API가 없고 `osascript` 클릭은 접근성 권한이 필요).
-  터치로만 보이는 상태는 런치 인자로 고정해 캡처한다 (`-cardTilt` 참고 — initData로 JS까지 전달된다).
+- **시뮬레이터 터치 주입은 AXe CLI로 한다** (`axe tap/swipe/describe-ui` — `simctl`에는 탭 API가 없고
+  `osascript` 클릭은 접근성 권한이 필요). 접근성 라벨을 읽는 채널이 필요하므로 검증할 엘리먼트에는
+  `ios-platform-accessibility-id`를 단다 (`docs/TESTING.md` §8의 `fog` 씬이 실물). 그래도 손가락 없이
+  찍어야 하는 상태는 런치 인자로 고정한다 (`-cardTilt` · `-altMode` — initData로 JS까지 전달된다).
 - **EDR(HDR 출력)은 시뮬레이터에서 확인할 수 없다.** 실기기 디스플레이 기능이라 스크린샷에도
   안 잡힌다. `hdr` 씬의 EDR 버튼은 실기기에서만 의미가 있다 (`docs/WEBGPU-API.md` §2).
   값이 실제로 1.0을 넘는지는 같은 씬의 **클리핑 표시**로 확인한다 — 그건 화면과 무관하다.
 - **`<webgpu-canvas>`의 터치는 Lynx 표준 이벤트를 쓴다** (`bindtouchstart` 등). UIKit `touchesBegan`을
   가로채면 Lynx의 hitTest·pointer-events·버블링·제스처 아레나를 우회해 웹과 다르게 동작한다
   (`docs/LYNX-INTEGRATION.md` §6).
+- **데모 씬은 WebGPU 명세 안에서만 만든다** — 같은 번들이 Metal 엔진과 Dawn에서 그대로 돌아야 한다.
+  캔버스 뒤를 읽는 캡처나 영역별 터치 마스크 같은 호스트 확장은 넣지 않는다 (한 번 넣었다가 뺐다).
+  캔버스가 덮은 콘텐츠를 흐려야 하면 콘텐츠를 **씬이 직접 텍스처에 그린다** (`fog` 씬이 실물 —
+  SDF + 글자 아틀라스). `r32float`처럼 필터링 불가 포맷은 **명시적 바인드 그룹 레이아웃**의
+  `unfilterable-float`로 묶을 것 — auto 레이아웃은 `float`로 추론해 Dawn이 거부한다.
+  **WGSL 예약어를 식별자로 쓰지 말 것** (`active` `patch` `pass` `filter` `layout` `set` `common`
+  `smooth` `precise` `resource` …) — 자체 트랜스파일러는 통과시키지만 Dawn(Tint)은 모듈 생성을
+  거부하고 그 뒤 모든 제출이 "이전 오류로 무효"가 되어 **화면이 아예 안 나온다** (fog 씬에서 실제로
+  겪었다). 새 씬은 DawnDemo(`-demo <씬>`)로 한 번 띄워 HUD에 오류가 없는지 본다.
 - **`LynxWebGPUCore`의 public 저장 프로퍼티를 바꾸면 `rm -rf .build` 후 다시 빌드한다.**
   SwiftPM 증분 빌드가 의존 모듈(Shader/LynxWebGPU)을 옛 메모리 레이아웃으로 남겨 두어,
   테스트가 **signal 11로 죽는다** — 코드 버그처럼 보이지만 아니다 (`WGPUError`에 필드를
   더했을 때 실제로 겪었다). 클린 빌드로 재현되지 않으면 그 경우다.
+- **`swift test`는 시뮬레이터의 데모 앱을 끄고 돌린다.** 60fps 씬이 같은 Mac GPU를 쓰는 동안에는
+  `QuerySetTests/test_timestampsIncreaseAcrossAPassBoundary`(GPU 타임스탬프 카운터)가 간헐적으로
+  실패한다 — 코드 문제가 아니라 카운터 샘플링 경합이다. `xcrun simctl terminate <device> org.lynxwebgpu.demo`
+  후에는 재현되지 않는다 (Stop 훅의 회귀 테스트도 같은 이유로 막힐 수 있다).
 - 임시 산출물(빌드 로그, 렌더 덤프 PNG 등)은 `.tmp/` 아래에 둔다 (git-ignored).

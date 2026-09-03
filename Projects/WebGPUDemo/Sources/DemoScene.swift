@@ -24,6 +24,7 @@ enum DemoScene: String, CaseIterable {
     case bench
     case hdr
     case scrollpass
+    case fog
     case three
     case spec
     case images
@@ -35,7 +36,7 @@ enum DemoScene: String, CaseIterable {
     /// Swipe-back (`interactivePopGestureRecognizer`) intercepts drags starting at the left edge, so a
     /// scene you grab and drag on the canvas competes with that gesture. A modal full-screen
     /// presentation has no such gesture, so touches reach Lynx intact (back is a button we attach).
-    var coversFullScreen: Bool { self == .interactive || self == .hdr || self == .scrollpass }
+    var coversFullScreen: Bool { self == .interactive || self == .hdr || self == .scrollpass || self == .fog }
 
     var title: String {
         switch self {
@@ -58,6 +59,7 @@ enum DemoScene: String, CaseIterable {
         case .bench: return "Bridge cost measurement"
         case .hdr: return "HDR gain map reconstruction"
         case .scrollpass: return "Scroll passthrough"
+        case .fog: return "Condensation wipe"
         case .three: return "three.js renderer"
         case .spec: return "Spec surface checklist"
         case .images: return "Images and compressed textures"
@@ -88,6 +90,7 @@ enum DemoScene: String, CaseIterable {
         case .bench: return "base64 string vs ArrayBuffer — comparing encoding and submission cost"
         case .hdr: return "loadAsset + a gain map compute → an rgba16float intermediate → tone mapping"
         case .scrollpass: return "A canvas over a <scroll-view> — verifies passthrough-touches hit testing"
+        case .fog: return "A wipeable fog over a GPU-drawn shelf — all inside the spec, so Dawn runs it unchanged"
         case .three: return "A 16-item checklist plus a rotating cube in ASTC textures over a decoded PNG background"
         case .spec: return "14 spec surfaces — debug markers, diagnostics, partial mapping — checked by value"
         case .images: return "ASTC and BC blocks plus PNG decoding, checked by the pixel colors read back"

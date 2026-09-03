@@ -172,7 +172,7 @@ cd JS && npm test    # JS shim (zero dependencies)
 
 ## Demo app
 
-`Projects/WebGPUDemo` contains a Tuist demo host app and **24 Lynx bundles**. The app opens with a scene list,
+`Projects/WebGPUDemo` contains a Tuist demo host app and **25 Lynx bundles**. The app opens with a scene list,
 and each scene maps 1:1 to a feature the offscreen harness verifies automatically — spinning triangle, 3D cube
 (depth testing), 4096 particles (compute + instancing), texture & sampler, **dynamic texture (CPU plasma via
 `writeTexture` every frame)**, alpha blending, **stencil masking (standalone `stencil8` format)**,
@@ -182,7 +182,8 @@ compute readback (`mapAsync`), pipeline constants (`override`),
 MSL escape hatch, holographic card (touch → 3D pose → foil), WGSL compatibility (`arrayLength` · external
 textures · untyped constant expressions), binary bridging, bridge cost benchmark, **HDR gain-map
 reconstruction (`rgba16float` intermediate texture → EDR output)**, and scroll pass-through
-(`passthrough-touches` verification with a canvas over a `<scroll-view>`).
+(`passthrough-touches` verification with a canvas over a `<scroll-view>`), and **condensation (a fog you
+wipe off a GPU-drawn shelf and watch return — all inside the spec, so Dawn runs it unchanged)**.
 Everything runs at 60 fps with Lynx `<text>` HUDs composited over the canvas.
 
 ```zsh

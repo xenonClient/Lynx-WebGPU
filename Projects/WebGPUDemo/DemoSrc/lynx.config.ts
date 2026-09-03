@@ -25,6 +25,7 @@ export default defineConfig({
       bench: './src/bench/index.tsx',
       hdr: './src/hdr/index.tsx',
       scrollpass: './src/scrollpass/index.tsx',
+      fog: './src/fog/index.tsx',
       three: './src/three/index.tsx',
       spec: './src/spec/index.tsx',
       images: './src/images/index.tsx',

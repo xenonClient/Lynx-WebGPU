@@ -176,7 +176,7 @@ xcrun simctl launch <device> org.lynxwebgpu.dawndemo -demo triangle
 
 | 분류 | 씬 |
 |---|---|
-| 무오류 구동 (20) | arraybuffer · bench · blending · bundle · constants · **contracts(10/10)** · cube · dynamic · **hdr** · **images** · interactive · particles · readback · scrollpass · **stencil** · **query** · texture · triangle · **wgsl** · **three** (three.js WebGPURenderer r185 — 자체 검증 16/16 · 60fps). 굵은 씬들은 명세 위반을 고쳐 합류했다 (2026-08-09): stencil·query는 auto 파생 레이아웃 공유 → **명시적 공유 레이아웃**으로, wgsl·hdr은 varying 분기 안 `textureSample` → **균일 흐름으로 끌어올려 select**로, images·contracts는 리드백 `bytesPerRow` 32 → **256**으로. contracts의 번들·역방향 검사는 백엔드 무관 판정으로 바꿨다 (Metal은 실행 시점에 `setIndexBuffer` 문구, Dawn은 명세대로 finish 시점에 `Index buffer` 문구 — 둘 다 격리 성립) |
+| 무오류 구동 (21) | arraybuffer · bench · blending · bundle · constants · **contracts(10/10)** · cube · dynamic · **fog** · **hdr** · **images** · interactive · particles · readback · scrollpass · **stencil** · **query** · texture · triangle · **wgsl** · **three** (three.js WebGPURenderer r185 — 자체 검증 16/16 · 60fps). 굵은 씬들은 명세 위반을 고쳐 합류했다 (2026-08-09, fog는 2026-09-03 — WGSL 예약어 `active`·`patch`를 식별자로 써서 Tint가 모듈을 거부했다; 자체 트랜스파일러는 통과시킨다): stencil·query는 auto 파생 레이아웃 공유 → **명시적 공유 레이아웃**으로, wgsl·hdr은 varying 분기 안 `textureSample` → **균일 흐름으로 끌어올려 select**로, images·contracts는 리드백 `bytesPerRow` 32 → **256**으로. contracts의 번들·역방향 검사는 백엔드 무관 판정으로 바꿨다 (Metal은 실행 시점에 `setIndexBuffer` 문구, Dawn은 명세대로 finish 시점에 `Index buffer` 문구 — 둘 다 격리 성립) |
 | 의도된 오류 수신 (1) | spec — 씬 자체가 validation 오류를 유발해 수신 경로를 검증한다 (3건 수신, 정상) |
 | 의도된 거부 (2) | gpudriven — 간접 드로우를 시뮬레이터 가드가 `unsupported`로 막는다 (실기기 대상 씬) · msl — 선택 기능 거부 (`docs/COMMAND-STREAM.md` §4-1 계약) |
 
@@ -452,13 +452,14 @@ LYNXWEBGPU_WGSL_CORPUS=… LYNXWEBGPU_WGSL_DUMP=/tmp/msl swift test --filter Sam
 | `arraybuffer` | **Lynx 값 변환기 스모크** — 바이트열이 `ArrayBuffer`로 **양방향** 오가는지 본다. 올릴 때는 커맨드의 중첩 위치(`commands[i].data`), 내릴 때는 `mapAsync`. 페이로드 타입까지 단언한다. 화면이 초록이면 통과, 빨강이면 실패 |
 | `hdr` | **HDR 게인맵 재구성** — `loadAsset`으로 받은 애셋을 컴퓨트로 `rgba16float`에 되살리고, 좌우로 갈라 8비트 원본과 같은 조건으로 비교한다. 드래그로 경계 이동. 버튼 셋: 노출 ±, **클리핑**(원본 선형값이 1.0을 넘는 픽셀만 표시 — 오른쪽에만 떠야 정상), **EDR**(캔버스를 `rgba16float` + `toneMapping: extended`로 재configure). **EDR은 실기기에서만 확인된다** |
 | `scrollpass` | **스크롤 통과** — `<scroll-view>` 리스트 **위에** 캔버스 밴드가 형제로 겹친다. 밴드를 세로로 드래그: `passthrough-touches` ON이면 리스트가 스크롤되고 캔버스는 `touchcancel`을 받는다, OFF면 웹 기본처럼 스크롤이 막히고 `touchmove`가 계속 온다. HUD의 스크롤 오프셋·터치 로그로 판정한다. **터치 주입 수단이 없어 손으로 만져야 한다** |
+| `fog` | **김 서린 유리** — 알록달록한 자판기 선반 위에 김·이슬·흘러내림이 낀다. **전부 WebGPU 명세 안**이라 Dawn에서도 그대로 돈다: 캔버스는 자기 뒤를 읽을 수 없으므로 선반을 **씬이 직접 텍스처에 그리고**(SDF + 글자 아틀라스 `fog-labels.png`, `Tools/make-fog-labels.py`가 만든다) 그것을 흐려 김을 합성한다. 진입하면 맑은 유리에서 5초쯤에 걸쳐 서리고, 스와이프로 닦으면 그 자리에 선명한 선반이 보이며, 일정 시간(4초 유지 + 7초 회복) 뒤 얼룩덜룩 다시 서린다. 물방울은 열마다 주기적으로 맺혀 커진 뒤 흘러내려 화면 밖으로 나가고 자국이 잠시 남는다 (닦으면 김과 함께 사라진다). 터치는 표준 Lynx 이벤트 + JS 히트테스트다 — **김 위를 누르면 닦이고, 닦인 곳을 탭하면 병이 눌린다** (같은 닦기 필드로 판정). `r32float` 필드는 명시적 레이아웃의 `unfilterable-float`로 묶는다 (auto 레이아웃이면 Dawn이 거부). HUD의 `last input`이 어느 쪽이 받았는지, `clear glass %`가 맑은 비율을 말한다. AXe로 검증한다: `axe swipe`로 띠를 닦고 `axe tap`을 띠 안/밖에 넣어 `fog-input` 라벨을 읽는다 (`ios-platform-accessibility-id`: `fog-clock` · `fog-input` · `fog-state` · `fog-button-fog/wipe`; 병은 GPU가 그리므로 좌표로 탭한다). `-altMode 1`은 미리 닦인 획을 오래(40초) 유지해 스크린샷용이다 |
 | `threelab` | **three.js 고난도 조합 10종** — three가 던질 수 있는 가장 무거운 것들을 한 화면에: TSL 절차적 머티리얼(노이즈→색·정점 변형) · **그림자 맵**(`textureSampleCompare`, 한 줄을 훑어 명암 차로 단언) · **GPU 컴퓨트 → 스토리지 버퍼**(TSL `Fn`이 만든 컴퓨트가 값을 채우고 되읽어 확인) · 컴퓨트 결과를 인스턴스가 읽는 되먹임 · 인스턴싱 4096개 · **bloom 포스트프로세싱**. 합성 화면은 절차적 토러스 노트 + 그림자 + 입자 4096개가 60fps로 돈다. **`copyExternalImageToTexture`의 `flipY` 누락과 프레임 경계 버그를 찾아낸 화면**이다 — present가 `submit()`마다 일어나 한 프레임의 여러 패스가 드로어블을 공유하지 못하던 것 (`docs/WEBGPU-API.md` §8) |
 | `contracts` | **계약 점검 10종** — 검토에서 지적된 자리들을 실기에서 확인한다. `copyBufferToBuffer`의 기본값·범위·0바이트, **정수 vec3 유니폼 배치를 셰이더가 읽은 값으로**(`packed_int3`/`packed_uint3`), 번들의 인덱스 버퍼 격리 양방향, occlusion 쿼리 차단(shim 미노출 + 네이티브 거부 두 겹), **드로어블 포맷 역방향 매핑**(일부러 어긋난 번들의 거부 메시지가 패스의 실제 포맷 이름을 실어 준다 — 네이티브 안에만 있는 표를 밖에서 보는 유일한 통로다), **디바이스 둘의 핸들이 겹치지 않는지** |
 | `images` | **이미지 경로 체크리스트 13종** — ASTC 4x4·6x5와 BC1 블록을 손으로 인코딩해 올리고 **되읽은 픽셀 색으로** 확인한다. 블록 경계·렌더 타깃 거부, `createImageBitmap`의 색·방향·`flipY`·부분 복사까지. 기기가 못 하는 압축 계열은 실패가 아니라 `–`로 표시한다 (시뮬레이터에는 BC가 없다) |
 | `spec` | **명세 표면 체크리스트 14종** — 이번에 채운 기능(디버그 마커·`getCompilationInfo`·`adapter.info`·부분 매핑·`clearBuffer`·비동기 파이프라인·`uncapturederror`·core 포맷·`unconfigure`)을 **진짜 GPU와 진짜 브리지**를 지나 값으로 확인한다. 단위 테스트가 목으로 맞춘 계약이 실기에서도 맞는지 보는 자리다 |
 | `three` | **three.js WebGPURenderer 기능 체크리스트 16종** — 렌더러가 자기 부트스트랩(navigator.gpu → adapter.features → requiredFeatures → device.lost → rAF 루프)을 그대로 밟은 뒤, 렌더 타깃에 그려 `readRenderTargetPixelsAsync`로 **픽셀 값을 단언**한다: shim 직접 프로브 2종(버퍼/텍스처 왕복 — three 실패 시 층 가르기용) → 클리어색 → 단색 쿼드(노드 셰이더→WGSL) → DataTexture 샘플링 → **압축 텍스처**(`CompressedTexture` + ASTC — three가 스스로 `_copyCompressedBufferToTexture`로 가서 블록 단위 `bytesPerRow`를 계산한다) → **외부 이미지**(`createImageBitmap` → three가 스스로 `queue.copyExternalImageToTexture`를 부른다) → Standard+Directional 조명. HUD에 ✓/✗와 실제 (r,g,b), 스트림 통계(P/I 배치·오류 수)가 뜨고, **ASTC 압축 데이터를 입은 큐브**가 네이티브로 디코딩한 PNG 배경 앞에서 회전한다 — 새 경로가 화면을 실제로 만드는지 보는 자리다. **기록 시점 스냅샷 버그를 잡아낸 화면**이고 (copySize가 flush 전에 reset되어 폭 0 복사가 나가던 것), **복사 시점 `flipY` 누락도 여기서 드러났다** (three의 `Texture.flipY` 기본값이 true라 이미지가 조용히 뒤집혀 있었다) |
 
-`interactive` · `hdr` · `scrollpass`는 **모달 전체 화면**으로 올라온다 (닫기 버튼은 화면 왼쪽 위).
+`interactive` · `hdr` · `scrollpass` · `fog`는 **모달 전체 화면**으로 올라온다 (닫기 버튼은 화면 왼쪽 위).
 밀어서 뒤로 가기 제스처가 캔버스를 끄는 드래그를 가로채기 때문이다 — `DemoScene.coversFullScreen`.
 
 목록 ↔ 씬을 오갈 때마다 LynxView와 WebGPU 런타임이 새로 만들어지고 해제되므로,
@@ -478,6 +479,9 @@ xcrun simctl launch <device> org.lynxwebgpu.demo -demo cube      # 목록을 건
 xcrun simctl launch <device> org.lynxwebgpu.demo -demo interactive -cardTilt 0.42
 # -altMode 1 은 토글이 있는 씬(stencil·gpudriven·bundle)을 **기본이 아닌 쪽**으로 시작시킨다.
 xcrun simctl launch <device> org.lynxwebgpu.demo -demo bundle -altMode 1
+# fog 씬에서는 미리 닦인 획을 오래 유지한다 — 손가락 없이 닦인 상태를 찍을 때.
+xcrun simctl launch <device> org.lynxwebgpu.demo -demo fog -altMode 1
+# 터치가 정말 필요한 씬은 AXe로 넣는다 (`axe swipe` · `axe tap` · `axe describe-ui`, fog 씬 행 참고).
 xcrun simctl io <device> screenshot .tmp/demo-cube.png
 ```
 
