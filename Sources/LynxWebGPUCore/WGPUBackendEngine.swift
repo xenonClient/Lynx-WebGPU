@@ -722,27 +722,209 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         let data = command.data
         let size = command.size
         let format = target.format
-        // The default for an omitted stride **requires knowing the format** — in a compressed format
-        // a row is measured in **blocks**, not pixels (spec GPUTexelCopyBufferLayout). So it is filled
-        // in here rather than during decoding.
-        let bytesPerRow = command.bytesPerRow ?? format.bytesPerRow(width: size.width)
-        let blockRows = format.blockRows(height: size.height)
-        let rowsPerImage = command.rowsPerImage ?? blockRows
+        // Region first: the row/byte arithmetic below multiplies these values, so they must be known
+        // to be non-negative and inside the texture before anything is computed from them.
+        try validateTexelCopyRegion(
+            origin: command.origin, mipLevel: command.mipLevel, size: size, texture: target,
+            label: "writeTexture", sizeKey: "size", path: command.fieldPath
+        )
         guard size.width > 0, size.height > 0, size.depthOrArrayLayers > 0 else { return }   // no-op
         if specValidation {
             try validateBlockAlignment(format: format, origin: command.origin, size: size,
                                        textureSize: target.size, mipLevel: command.mipLevel,
                                        label: "writeTexture")
-            let bytesPerImage = bytesPerRow * max(rowsPerImage, blockRows)
-            let layers = max(size.depthOrArrayLayers, 1)
-            let required = bytesPerImage * (layers - 1) + bytesPerRow * blockRows
-            guard data.count >= required else {
-                throw WGPUError.validation("writeTexture data is too short (\(data.count)B, at least \(required)B needed)")
+        }
+        // The default for an omitted stride **requires knowing the format** — in a compressed format
+        // a row is measured in **blocks**, not pixels (spec GPUTexelCopyBufferLayout). So it is filled
+        // in here rather than during decoding.
+        let layout = try resolveLinearLayout(
+            bytesPerRow: command.bytesPerRow, rowsPerImage: command.rowsPerImage,
+            format: format, size: size, label: "writeTexture", path: command.fieldPath
+        )
+        if specValidation {
+            guard data.count >= layout.requiredBytes else {
+                throw WGPUError.validation(
+                    "writeTexture data is too short (\(data.count)B, at least \(layout.requiredBytes)B needed)",
+                    path: command.fieldPath("data")
+                )
             }
         }
         try backend.writeTexture(
             target.raw, data: data, origin: command.origin, size: size,
-            mipLevel: command.mipLevel, bytesPerRow: bytesPerRow, rowsPerImage: rowsPerImage
+            mipLevel: command.mipLevel, bytesPerRow: layout.bytesPerRow, rowsPerImage: layout.rowsPerImage
+        )
+    }
+
+    /// The largest value a `GPUSize32`/`GPUIntegerCoordinate` can carry. Anything JS sends above it
+    /// is a validation error (WebIDL `[EnforceRange] unsigned long`) — and it is also what keeps the
+    /// products below inside `Int`: two values at most 2^32 multiply to at most 2^64, which
+    /// `multipliedReportingOverflow` catches, while 2^53 × 2^53 would not even be representable.
+    private static var maxCopyValue: Int { Int(UInt32.max) }
+
+    /// `a * b` and `a + b` on copy arithmetic — **a trap is never the answer to a bad argument.** An
+    /// overflow means the copy is larger than any buffer, so it is reported as the spec's range error.
+    private func checkedMultiply(_ a: Int, _ b: Int, label: String, path: String?) throws -> Int {
+        let (value, overflow) = a.multipliedReportingOverflow(by: b)
+        guard !overflow else {
+            throw WGPUError.validation("\(label): the copy size overflows (\(a) × \(b))", path: path)
+        }
+        return value
+    }
+
+    private func checkedAdd(_ a: Int, _ b: Int, label: String, path: String?) throws -> Int {
+        let (value, overflow) = a.addingReportingOverflow(b)
+        guard !overflow else {
+            throw WGPUError.validation("\(label): the copy size overflows (\(a) + \(b))", path: path)
+        }
+        return value
+    }
+
+    /// The spec's "validating GPUTexelCopyTextureInfo" and "validating texture copy range" — **shared
+    /// by every texel copy op** (`writeTexture`, `copyBufferToTexture`, `copyTextureToBuffer`,
+    /// `copyTextureToTexture`, `copyExternalImageToTexture`).
+    ///
+    /// The sign, magnitude and mip-range checks run **regardless of `specValidation`**: a negative or
+    /// out-of-range value crossing into an unsigned Metal blit argument is an assertion (process
+    /// death), and the byte arithmetic that follows multiplies these values, where `Int` overflow is a
+    /// trap as well. Minimal exception handling, not spec validation — a natively validating backend
+    /// would reject the same input with its own wording, but it never gets the chance to say so if
+    /// the engine trapped first. The region-versus-level check is a spec rule that such a backend
+    /// enforces itself, so it stays behind `specValidation`.
+    private func validateTexelCopyRegion(
+        origin: WGPUOrigin3D,
+        mipLevel: Int,
+        size: WGPUExtent3D,
+        texture: WGPUEngineTexture<B>,
+        label: String,
+        end: String = "destination",
+        sizeKey: String = "copySize",
+        path: (String) -> String
+    ) throws {
+        guard size.width >= 0, size.height >= 0, size.depthOrArrayLayers >= 0 else {
+            throw WGPUError.validation(
+                "\(label): the copy size must not be negative "
+                + "(\(size.width)x\(size.height)x\(size.depthOrArrayLayers))",
+                path: path(sizeKey)
+            )
+        }
+        guard origin.x >= 0, origin.y >= 0, origin.z >= 0 else {
+            throw WGPUError.validation(
+                "\(label): the \(end) origin must not be negative (\(origin.x), \(origin.y), \(origin.z))",
+                path: path("origin")
+            )
+        }
+        let limit = Self.maxCopyValue
+        guard size.width <= limit, size.height <= limit, size.depthOrArrayLayers <= limit,
+              origin.x <= limit, origin.y <= limit, origin.z <= limit else {
+            throw WGPUError.validation(
+                "\(label): the copy region exceeds the \(end) texture — coordinates must fit in 32 bits "
+                + "(origin (\(origin.x), \(origin.y), \(origin.z)), "
+                + "size \(size.width)x\(size.height)x\(size.depthOrArrayLayers))",
+                path: path(sizeKey)
+            )
+        }
+        guard mipLevel >= 0, mipLevel < texture.mipLevelCount else {
+            throw WGPUError.validation(
+                "\(label): mipLevel must be between 0 and \(texture.mipLevelCount - 1) (got \(mipLevel))",
+                path: path("mipLevel")
+            )
+        }
+        guard specValidation else { return }
+        let levelWidth = max(texture.size.width >> mipLevel, 1)
+        let levelHeight = max(texture.size.height >> mipLevel, 1)
+        let levelDepth = texture.dimension == .threeD
+            ? max(texture.size.depthOrArrayLayers >> mipLevel, 1)
+            : texture.size.depthOrArrayLayers
+        // Compared by subtraction: every operand is non-negative here, so nothing can overflow.
+        guard size.width <= levelWidth - origin.x,
+              size.height <= levelHeight - origin.y,
+              size.depthOrArrayLayers <= levelDepth - origin.z else {
+            throw WGPUError.validation(
+                "\(label): the copy region exceeds the \(end) texture — "
+                + "(\(origin.x), \(origin.y), \(origin.z)) + "
+                + "\(size.width)x\(size.height)x\(size.depthOrArrayLayers) > "
+                + "\(levelWidth)x\(levelHeight)x\(levelDepth) @ level \(mipLevel)",
+                path: path("origin")
+            )
+        }
+    }
+
+    /// A resolved `GPUTexelCopyBufferLayout` — the defaults filled in, and the byte count the copy
+    /// touches (the spec's "validating linear texture data"), computed without a trap.
+    private struct LinearLayout {
+        let bytesPerRow: Int
+        let rowsPerImage: Int
+        let requiredBytes: Int
+    }
+
+    /// Fills the layout's defaults and measures the copy.
+    ///
+    /// The magnitude guards run regardless of `specValidation` — the arithmetic here is what used to
+    /// trap on a 2^52 stride (`Int` overflow). The row-size and image-height minimums are spec rules
+    /// (and Metal assertions), kept behind `specValidation`. `size` has already passed
+    /// `validateTexelCopyRegion`, so it is non-negative and 32-bit.
+    private func resolveLinearLayout(
+        bytesPerRow: Int?,
+        rowsPerImage: Int?,
+        format: WGPUTextureFormat,
+        size: WGPUExtent3D,
+        label: String,
+        path: (String) -> String
+    ) throws -> LinearLayout {
+        let bytesInLastRow = format.bytesPerRow(width: size.width)
+        let blockRows = format.blockRows(height: size.height)
+        let layers = size.depthOrArrayLayers
+        let resolvedBytesPerRow = bytesPerRow ?? bytesInLastRow
+        let resolvedRowsPerImage = rowsPerImage ?? blockRows
+        let limit = Self.maxCopyValue
+        guard resolvedBytesPerRow >= 0, resolvedBytesPerRow <= limit else {
+            throw WGPUError.validation(
+                "\(label): bytesPerRow must be between 0 and \(limit) (got \(resolvedBytesPerRow))",
+                path: path("bytesPerRow")
+            )
+        }
+        guard resolvedRowsPerImage >= 0, resolvedRowsPerImage <= limit else {
+            throw WGPUError.validation(
+                "\(label): rowsPerImage must be between 0 and \(limit) (got \(resolvedRowsPerImage))",
+                path: path("rowsPerImage")
+            )
+        }
+        if specValidation {
+            // Spec: with more than one row (or layer) the stride must cover a row, and with more than
+            // one layer the image height must cover the rows. Metal asserts on both.
+            if blockRows > 1 || layers > 1 {
+                guard resolvedBytesPerRow >= bytesInLastRow else {
+                    throw WGPUError.validation(
+                        "\(label): bytesPerRow (\(resolvedBytesPerRow)) is smaller than a row of the copy "
+                        + "(\(bytesInLastRow)B for \(size.width) texels of \(format.rawValue))",
+                        path: path("bytesPerRow")
+                    )
+                }
+            }
+            if layers > 1 {
+                guard resolvedRowsPerImage >= blockRows else {
+                    throw WGPUError.validation(
+                        "\(label): rowsPerImage (\(resolvedRowsPerImage)) is smaller than the copy's "
+                        + "\(blockRows) block row(s)",
+                        path: path("rowsPerImage")
+                    )
+                }
+            }
+        }
+        // Spec "validating linear texture data": the bytes the copy touches are
+        // bytesPerImage × (layers − 1) + bytesPerRow × (rows − 1) + bytesInLastRow — zero for an empty copy.
+        var required = 0
+        if blockRows > 0, layers > 0 {
+            let bytesPerImage = try checkedMultiply(
+                resolvedBytesPerRow, resolvedRowsPerImage, label: label, path: path("rowsPerImage"))
+            required = try checkedMultiply(bytesPerImage, layers - 1, label: label, path: path("copySize"))
+            let rows = try checkedMultiply(
+                resolvedBytesPerRow, blockRows - 1, label: label, path: path("bytesPerRow"))
+            required = try checkedAdd(required, rows, label: label, path: path("copySize"))
+            required = try checkedAdd(required, bytesInLastRow, label: label, path: path("copySize"))
+        }
+        return LinearLayout(
+            bytesPerRow: resolvedBytesPerRow, rowsPerImage: resolvedRowsPerImage, requiredBytes: required
         )
     }
 
@@ -820,8 +1002,17 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
             )
         }
         if specValidation {
-            try validateExternalImageDestination(command.destination, texture: target, size: size)
+            guard target.sampleCount == 1 else {
+                throw WGPUError.validation(
+                    "copyExternalImageToTexture cannot target a multisampled texture (sampleCount \(target.sampleCount))",
+                    path: command.destination.fieldPath("texture")
+                )
+            }
         }
+        try validateTexelCopyRegion(
+            origin: command.destination.origin, mipLevel: command.destination.mipLevel, size: size,
+            texture: target, label: "copyExternalImageToTexture", path: command.destination.fieldPath
+        )
         guard size.width > 0, size.height > 0, size.depthOrArrayLayers > 0 else { return }   // no-op
 
         // Spec `GPUCopyExternalImageSourceInfo.flipY` — flips top to bottom **at copy time**.
@@ -852,56 +1043,6 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
             mipLevel: command.destination.mipLevel,
             bytesPerRow: rowBytes, rowsPerImage: size.height
         )
-    }
-
-    /// The destination end of `copyExternalImageToTexture` (the spec's "validating
-    /// GPUTexelCopyTextureInfo" and "validating texture copy range", for this op only).
-    ///
-    /// A negative origin or an out-of-range mip level would cross into unsigned Metal blit arguments
-    /// and die on an assertion — or write outside the texture. Backends that validate natively
-    /// reject these themselves, so this runs only under `specValidation`. `size` is already known
-    /// to be non-negative and at most one layer deep.
-    private func validateExternalImageDestination(
-        _ destination: WGPUTexelCopyTextureInfo,
-        texture: WGPUEngineTexture<B>,
-        size: WGPUExtent3D
-    ) throws {
-        guard texture.sampleCount == 1 else {
-            throw WGPUError.validation(
-                "copyExternalImageToTexture cannot target a multisampled texture (sampleCount \(texture.sampleCount))",
-                path: destination.fieldPath("texture")
-            )
-        }
-        let mipLevel = destination.mipLevel
-        guard mipLevel >= 0, mipLevel < texture.mipLevelCount else {
-            throw WGPUError.validation(
-                "mipLevel must be between 0 and \(texture.mipLevelCount - 1) (got \(mipLevel))",
-                path: destination.fieldPath("mipLevel")
-            )
-        }
-        let origin = destination.origin
-        guard origin.x >= 0, origin.y >= 0, origin.z >= 0 else {
-            throw WGPUError.validation(
-                "the destination origin must not be negative (\(origin.x), \(origin.y), \(origin.z))",
-                path: destination.fieldPath("origin")
-            )
-        }
-        let levelWidth = max(texture.size.width >> mipLevel, 1)
-        let levelHeight = max(texture.size.height >> mipLevel, 1)
-        let levelDepth = texture.dimension == .threeD
-            ? max(texture.size.depthOrArrayLayers >> mipLevel, 1)
-            : texture.size.depthOrArrayLayers
-        // Compared by subtraction: every operand is non-negative here, so nothing can overflow.
-        guard size.width <= levelWidth - origin.x,
-              size.height <= levelHeight - origin.y,
-              size.depthOrArrayLayers <= levelDepth - origin.z else {
-            throw WGPUError.validation(
-                "the copy region exceeds the destination texture — (\(origin.x), \(origin.y), \(origin.z)) + "
-                + "\(size.width)x\(size.height)x\(size.depthOrArrayLayers) > "
-                + "\(levelWidth)x\(levelHeight)x\(levelDepth) @ level \(mipLevel)",
-                path: destination.fieldPath("origin")
-            )
-        }
     }
 
     /// Block alignment for compressed texture copies (the spec's "validating texel copy range").
@@ -973,6 +1114,42 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
                 path: path
             )
         }
+    }
+
+    /// The buffer end of a buffer↔texture copy: the offset's sign (unconditional — it becomes an
+    /// unsigned blit argument) and, under `specValidation`, the spec's "offset + requiredBytesInCopy
+    /// ≤ buffer size". A copy past the end is a Metal assertion.
+    private func validateTexelCopyBufferRange(
+        _ info: WGPUTexelCopyBufferInfo,
+        buffer: WGPUEngineBuffer<B>,
+        requiredBytes: Int,
+        label: String
+    ) throws {
+        guard info.offset >= 0 else {
+            throw WGPUError.validation(
+                "\(label): the buffer offset must not be negative (got \(info.offset))",
+                path: info.fieldPath("offset")
+            )
+        }
+        guard specValidation else { return }
+        let end = try checkedAdd(info.offset, requiredBytes, label: label, path: info.fieldPath("offset"))
+        guard end <= buffer.size else {
+            throw WGPUError.validation(
+                "\(label): the copy exceeds the buffer — offset \(info.offset) + \(requiredBytes)B > "
+                + "size \(buffer.size)B",
+                path: info.fieldPath("offset")
+            )
+        }
+    }
+
+    /// Spec "texture copy compatibility" — the same format, or formats differing only in `-srgb`.
+    private static func copyCompatible(_ a: WGPUTextureFormat, _ b: WGPUTextureFormat) -> Bool {
+        if a == b { return true }
+        func base(_ format: WGPUTextureFormat) -> String {
+            let raw = format.rawValue
+            return raw.hasSuffix("-srgb") ? String(raw.dropLast("-srgb".count)) : raw
+        }
+        return base(a) == base(b)
     }
 
     private func createTextureView(_ command: WGPUCreateTextureViewCommand) throws {
@@ -2094,8 +2271,17 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         let buffer = try unmappedBuffer(destination.buffer, path: destination.fieldPath("buffer"))
         let size = command.copySize
         let format = texture.format
-        let bytesPerRow = destination.bytesPerRow ?? format.bytesPerRow(width: size.width)
+        try validateTexelCopyRegion(
+            origin: source.origin, mipLevel: source.mipLevel, size: size, texture: texture,
+            label: "copyTextureToBuffer", end: "source", path: source.fieldPath
+        )
         if specValidation {
+            guard texture.sampleCount == 1 else {
+                throw WGPUError.validation(
+                    "copyTextureToBuffer cannot read a multisampled texture (sampleCount \(texture.sampleCount))",
+                    path: source.fieldPath("texture")
+                )
+            }
             try validateBlockAlignment(format: format, origin: source.origin, size: size,
                                        textureSize: texture.size, mipLevel: source.mipLevel,
                                        label: "copyTextureToBuffer")
@@ -2104,15 +2290,25 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
                 label: "copyTextureToBuffer", path: destination.fieldPath("bytesPerRow")
             )
         }
+        let layout = try resolveLinearLayout(
+            bytesPerRow: destination.bytesPerRow, rowsPerImage: destination.rowsPerImage,
+            format: format, size: size, label: "copyTextureToBuffer", path: destination.fieldPath
+        )
+        try validateTexelCopyBufferRange(
+            destination, buffer: buffer, requiredBytes: layout.requiredBytes, label: "copyTextureToBuffer"
+        )
+        if size.width == 0 || size.height == 0 || size.depthOrArrayLayers == 0 { return }   // no-op
         try requireNoOpenPass()
         try backend.copyTextureToBuffer(
             texture: texture.raw, slice: source.origin.z, mipLevel: source.mipLevel,
             origin: source.origin, size: size,
             buffer: buffer.raw, offset: destination.offset,
-            bytesPerRow: bytesPerRow,
+            bytesPerRow: layout.bytesPerRow,
             // Only one slice is copied, so `rowsPerImage` goes unused
             // (a known difference in `docs/COMMAND-STREAM.md`).
-            bytesPerImage: bytesPerRow * format.blockRows(height: size.height)
+            bytesPerImage: try checkedMultiply(
+                layout.bytesPerRow, format.blockRows(height: size.height),
+                label: "copyTextureToBuffer", path: destination.fieldPath("bytesPerRow"))
         )
     }
 
@@ -2123,8 +2319,17 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         let texture = try self.texture(destination.texture, path: destination.fieldPath("texture"))
         let size = command.copySize
         let format = texture.format
-        let bytesPerRow = source.bytesPerRow ?? format.bytesPerRow(width: size.width)
+        try validateTexelCopyRegion(
+            origin: destination.origin, mipLevel: destination.mipLevel, size: size, texture: texture,
+            label: "copyBufferToTexture", path: destination.fieldPath
+        )
         if specValidation {
+            guard texture.sampleCount == 1 else {
+                throw WGPUError.validation(
+                    "copyBufferToTexture cannot write a multisampled texture (sampleCount \(texture.sampleCount))",
+                    path: destination.fieldPath("texture")
+                )
+            }
             try validateBlockAlignment(format: format, origin: destination.origin, size: size,
                                        textureSize: texture.size, mipLevel: destination.mipLevel,
                                        label: "copyBufferToTexture")
@@ -2133,11 +2338,21 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
                 label: "copyBufferToTexture", path: source.fieldPath("bytesPerRow")
             )
         }
+        let layout = try resolveLinearLayout(
+            bytesPerRow: source.bytesPerRow, rowsPerImage: source.rowsPerImage,
+            format: format, size: size, label: "copyBufferToTexture", path: source.fieldPath
+        )
+        try validateTexelCopyBufferRange(
+            source, buffer: buffer, requiredBytes: layout.requiredBytes, label: "copyBufferToTexture"
+        )
+        if size.width == 0 || size.height == 0 || size.depthOrArrayLayers == 0 { return }   // no-op
         try requireNoOpenPass()
         try backend.copyBufferToTexture(
             buffer: buffer.raw, offset: source.offset,
-            bytesPerRow: bytesPerRow,
-            bytesPerImage: bytesPerRow * format.blockRows(height: size.height),
+            bytesPerRow: layout.bytesPerRow,
+            bytesPerImage: try checkedMultiply(
+                layout.bytesPerRow, format.blockRows(height: size.height),
+                label: "copyBufferToTexture", path: source.fieldPath("bytesPerRow")),
             texture: texture.raw, slice: destination.origin.z, mipLevel: destination.mipLevel,
             origin: destination.origin, size: size
         )
@@ -2148,6 +2363,42 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         let destination = try texture(
             command.destination.texture, path: command.destination.fieldPath("texture")
         )
+        let size = command.copySize
+        // Both ends are checked the same way every other texel copy is — this op used to go to the
+        // blit encoder with **no** validation, where a region past the texture is an assertion.
+        try validateTexelCopyRegion(
+            origin: command.source.origin, mipLevel: command.source.mipLevel, size: size,
+            texture: source, label: "copyTextureToTexture", end: "source", path: command.source.fieldPath
+        )
+        try validateTexelCopyRegion(
+            origin: command.destination.origin, mipLevel: command.destination.mipLevel, size: size,
+            texture: destination, label: "copyTextureToTexture", path: command.destination.fieldPath
+        )
+        if specValidation {
+            // Spec: copy-compatible formats and equal sample counts (Metal asserts on both).
+            guard Self.copyCompatible(source.format, destination.format) else {
+                throw WGPUError.validation(
+                    "copyTextureToTexture needs copy-compatible formats "
+                    + "(\(source.format.rawValue) → \(destination.format.rawValue))",
+                    path: command.destination.fieldPath("texture")
+                )
+            }
+            guard source.sampleCount == destination.sampleCount else {
+                throw WGPUError.validation(
+                    "copyTextureToTexture needs equal sample counts "
+                    + "(\(source.sampleCount) → \(destination.sampleCount))",
+                    path: command.destination.fieldPath("texture")
+                )
+            }
+            try validateBlockAlignment(format: source.format, origin: command.source.origin, size: size,
+                                       textureSize: source.size, mipLevel: command.source.mipLevel,
+                                       label: "copyTextureToTexture")
+            try validateBlockAlignment(format: destination.format, origin: command.destination.origin,
+                                       size: size, textureSize: destination.size,
+                                       mipLevel: command.destination.mipLevel,
+                                       label: "copyTextureToTexture")
+        }
+        if size.width == 0 || size.height == 0 || size.depthOrArrayLayers == 0 { return }   // no-op
         try requireNoOpenPass()
         try backend.copyTextureToTexture(
             source: source.raw,
