@@ -2299,6 +2299,57 @@ final class WGSLTranspilerTests: XCTestCase {
         // texture_external lowers to a sampleable 2D texture.
         XCTAssertTrue(msl.contains("texture2d<float>"), msl)
     }
+
+    // MARK: - Expression height
+
+    /// A flat chain is not nesting — the parser builds it in a loop — but the tree it builds is as tall
+    /// as the chain is long, and the emitter walks it recursively. A hundred-thousand-term chain
+    /// overflowed that walk (a SIGSEGV from shader text). So the finished tree's **height** is capped,
+    /// for every chain shape, with a line-numbered validation error.
+    func test_aFlatChainTallerThanTheHeightLimitIsAnErrorNotAStackOverflow() {
+        let terms = WGSLParser.maximumExpressionHeight + 8
+        let sources = [
+            "fn f(a: f32) -> f32 {\n return " + Array(repeating: "a", count: terms).joined(separator: " + ") + ";\n}",
+            "fn g(v: vec4f) -> f32 {\n return v" + String(repeating: ".x", count: terms) + ";\n}",
+            "fn h(m: array<array<f32, 2>, 2>) -> f32 {\n return m" + String(repeating: "[0]", count: terms) + ";\n}",
+            // An assignment target is an expression too.
+            "fn k(v: vec4f) {\n var w = v; w" + String(repeating: ".x", count: terms) + " = 1.0;\n}",
+        ]
+        for source in sources {
+            var failure: WGPUError?
+            onSmallStack {
+                do { _ = try WGSLShaderModule(source: source) } catch { failure = error as? WGPUError }
+            }
+            XCTAssertEqual(failure?.kind, .validation, String(source.prefix(40)))
+            XCTAssertEqual(failure?.line, 2, String(source.prefix(40)))
+            XCTAssertTrue(failure?.message.contains("deeper than") ?? false, "\(String(describing: failure))")
+        }
+    }
+
+    /// Inside the limit, a long chain keeps translating — the cap is far above any real shader, and
+    /// the translation runs on `WGSLDeepStack` regardless of the caller's stack.
+    func test_aLongFlatChainInsideTheHeightLimitTranslates() {
+        let terms = WGSLParser.maximumExpressionHeight - 8
+        let source = """
+        @fragment
+        fn fs(@location(0) a: f32) -> @location(0) vec4f {
+            let s = \(Array(repeating: "a", count: terms).joined(separator: " + "));
+            return vec4f(s);
+        }
+        """
+        let outcome = ThreadOutcome()
+        onSmallStack {
+            do {
+                let module = try WGSLShaderModule(source: source)
+                let bindings = try WGSLBindingAssigner.assign(groups: module.autoBindGroupLayouts(entryPoints: ["fs"]))
+                outcome.msl = try module.translateToMSL(entryPoints: ["fs"], bindings: bindings)
+            } catch {
+                outcome.error = error
+            }
+        }
+        XCTAssertNil(outcome.error, "\(String(describing: outcome.error))")
+        XCTAssertNotNil(outcome.msl)
+    }
 }
 
 /// What a worker thread produced — handed back through a semaphore, so the access is ordered.

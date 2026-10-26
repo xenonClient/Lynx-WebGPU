@@ -81,6 +81,37 @@ indirect enum WGSLExpression: Equatable {
     case dereference(WGSLExpression)
 }
 
+extension WGSLExpression {
+    /// The height of this expression tree — the longest root-to-leaf path, in nodes.
+    ///
+    /// Measured **with an explicit stack, not recursion**, so it can be asked of a tree that a
+    /// recursive walk would overflow on. That is its purpose: the parser builds a flat chain
+    /// (`a + a + …`, `v.x.x.…`, `m[0][0]…`) in a loop, so the nesting counter never sees it, yet every
+    /// later walk (reflection, emission) recurses once per node along it. The parser rejects a tree
+    /// taller than `WGSLParser.maximumExpressionHeight` before any of them runs.
+    var height: Int {
+        var deepest = 0
+        var stack: [(node: WGSLExpression, depth: Int)] = [(self, 1)]
+        while let entry = stack.popLast() {
+            let depth = entry.depth
+            deepest = max(deepest, depth)
+            switch entry.node {
+            case .intLiteral, .floatLiteral, .boolLiteral, .identifier:
+                break
+            case .unary(_, let operand), .paren(let operand), .addressOf(let operand),
+                 .dereference(let operand), .member(let operand, _):
+                stack.append((operand, depth + 1))
+            case .binary(_, let left, let right), .index(let left, let right):
+                stack.append((left, depth + 1))
+                stack.append((right, depth + 1))
+            case .call(_, _, let arguments):
+                for argument in arguments { stack.append((argument, depth + 1)) }
+            }
+        }
+        return deepest
+    }
+}
+
 indirect enum WGSLStatement: Equatable {
     /// `let x: T = e;` — an immutable binding.
     case letDeclaration(name: String, type: WGSLType?, value: WGSLExpression)

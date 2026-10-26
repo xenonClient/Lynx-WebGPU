@@ -109,6 +109,33 @@ struct WGSLParser {
     /// limit. Real shaders stay far below it; past it parsing fails instead of exhausting the stack.
     static let maximumNestingDepth = 128
 
+    /// The tallest expression tree a module may contain.
+    ///
+    /// `maximumNestingDepth` counts parser recursion, and a flat chain (`a + a + … + a`,
+    /// `v.x.x.…`, `m[0][0]…`) is built in a loop — so it never counts, while the tree it builds is as
+    /// tall as the chain is long and **every later walk recurses once per node along it**
+    /// (reflection, emission). A hundred-thousand-term chain overflowed the emitter's stack: a
+    /// SIGSEGV of the host from shader text in a bundle. So the finished tree's height is measured
+    /// (`WGSLExpression.height`, iteratively) and capped here. Real shaders are nowhere near it —
+    /// 1024 chained operators is far beyond what hand-written or machine-generated code produces —
+    /// and 1024 recursive frames fit the 16 MB `WGSLDeepStack` with room to spare.
+    static let maximumExpressionHeight = 1024
+
+    /// How many `parseExpression` calls are on the stack — the height check runs once, at the
+    /// outermost one, so a long chain is measured once rather than once per nested operand.
+    private var expressionDepth = 0
+
+    /// Rejects a finished expression whose tree is taller than `maximumExpressionHeight`.
+    private func checkHeight(of expression: WGSLExpression, line: Int) throws {
+        guard expression.height <= Self.maximumExpressionHeight else {
+            throw error(
+                "the expression is deeper than \(Self.maximumExpressionHeight) levels "
+                + "— a chain of that many operators, members or indices is not translatable",
+                line: line
+            )
+        }
+    }
+
     /// Called on entry to every recursive production; pair it with `defer { nestingDepth -= 1 }`.
     private mutating func enterNesting() throws {
         nestingDepth += 1
@@ -759,7 +786,13 @@ struct WGSLParser {
     mutating func parseExpression() throws -> WGSLExpression {
         try enterNesting()
         defer { nestingDepth -= 1 }
-        return try parseBinary(minimumLevel: 0)
+        expressionDepth += 1
+        defer { expressionDepth -= 1 }
+        let line = current.line
+        let expression = try parseBinary(minimumLevel: 0)
+        // Only the outermost expression is measured — its height covers every nested operand.
+        if expressionDepth == 1 { try checkHeight(of: expression, line: line) }
+        return expression
     }
 
     /// Precedence climbing — one call per operand instead of one per precedence level, so a nested
