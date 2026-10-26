@@ -771,7 +771,11 @@ if (error) fallBackToSimplePipeline()
 | `GPUExternalTexture` (`importExternalTexture`) | Lynx에 **비디오** 엘리먼트 핸들이 없다. 다만 WGSL `texture_external` + `textureSampleBaseClampToEdge`는 **지원**하므로, 프레임을 텍스처로 올려 그 자리에 `GPUTextureView`를 묶으면 된다. 정지 이미지는 `createImageBitmap()`이 그 길이다 (§3) |
 | `writeTimestamp` | Metal은 패스 경계에서만 카운터를 샘플링한다 — `timestampWrites`(§6)를 쓸 것 |
 | `device.lost`의 **유실 통지** | iOS/macOS에는 디바이스 손실에 해당하는 사건이 사실상 없다. **속성 자체는 있다** — 웹 코드(`Three.js WebGPUBackend.init()` 등)가 `device.lost.then(...)`을 걸어도 TypeError가 나지 않도록 영원히 pending인 Promise를 준다. **GPU 실행 자체의 실패**(`.outOfMemory`·`.timeout` 등)는 다음 `submit()` 응답에 `backend` 오류로 실려 나온다 |
-| `setBindGroup`의 `Uint32Array` 오버로드 | 동적 오프셋을 `(data, start, length)`로 넘기는 형태. 배열 형태(`setBindGroup(i, group, [o1, o2])`)와 결과가 같고, 브리지를 건널 때 어차피 배열로 펴진다 — 두 경로를 두면 검증만 두 배가 된다 |
+| `queue.onSubmittedWorkDone()`의 **시점** | 명세는 GPU가 제출된 작업을 끝냈을 때 resolve한다. 커맨드 스트림에는 완료 통지 통로가 없어 **네이티브에 넘긴 직후** resolve한다 — 이 Promise로 리드백·프레임을 페이싱하는 코드는 브라우저보다 일찍 돈다. GPU를 실제로 기다리는 호출은 `mapAsync()`다 |
+| `device.destroy()`의 **범위** | 네이티브 레지스트리는 런타임당 하나라(핸들을 모듈 전체에서 발급) 디바이스별로 지울 수 없다. **마지막 디바이스가 destroy될 때** 전부 지우고, 그 전까지는 destroy된 디바이스의 객체가 네이티브에 남는다. `device.lost`는 명세대로 `reason: 'destroyed'`로 settle된다 |
+| `copyExternalImageToTexture`의 `premultipliedAlpha` · `colorSpace`, 대상 포맷 | 대상은 `rgba8unorm(-srgb)`·`bgra8unorm(-srgb)`만 받는다 (BGRA는 채널을 바꿔 올린다). 명세의 다른 포맷으로의 색 변환과 프리멀티플라이·색공간 변환은 하지 않는다 — 다른 포맷은 `unsupported` 오류, 두 옵션은 무시된다. 프리멀티플라이는 `createImageBitmap({premultiplyAlpha})`에서 정한다 |
+| `colorAttachments`의 `null` 슬롯 · `setBindGroup(i, null)` | 명세는 희소 어태치먼트(`[null, {...}]`)와 바인드 그룹 해제를 허용한다. 둘 다 받지 않는다 — shim에서 TypeError, 스트림에서는 검증 오류 |
+| `requestDevice({requiredLimits})`의 **반영 방식** | 어댑터 한계를 넘는 요청은 명세대로 `OperationError`로 거부한다. 다만 `device.limits`는 명세의 "기본값에서 시작"이 아니라 **어댑터 값에서 시작해 요청한 항목만 덮어쓴다** — 이 shim에 맞춰 쓴 코드가 어댑터 값을 기대하기 때문이다 |
 | `GPURenderPassColorAttachment.depthSlice` | 3D 텍스처의 한 슬라이스를 렌더 타깃으로 삼는 값. 지금은 **읽지 않으므로 항상 0번 슬라이스**에 그린다. 3D 렌더 타깃을 쓰게 되면 그때 넣는다 (2D 배열은 `baseArrayLayer`로 이미 된다) |
 | `GPURenderPassDescriptor.maxDrawCount` | 드라이버에 주는 검증 힌트다. 무시해도 그림은 같고, 넘겼을 때의 거부는 명세상 선택이다 |
 | `GPUCanvasContext.canvas` | 명세는 `HTMLCanvasElement`를 돌려준다 — Lynx에는 대응하는 엘리먼트 객체가 없다. `context.canvasId`(문자열)가 그 자리다 |

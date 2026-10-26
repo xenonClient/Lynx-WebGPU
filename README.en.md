@@ -35,7 +35,7 @@ Browser WebGPU code and WGSL shaders port over almost verbatim.
 
 ```swift
 // Package.swift
-.package(url: "https://github.com/xenonClient/Lynx-WebGPU", from: "0.5.4")
+.package(url: "https://github.com/xenonClient/Lynx-WebGPU", from: "0.6.0")
 ```
 
 That gives you the **engine** (`LynxWebGPU`). Types that touch Lynx — such as `LynxWebGPUHost` below —
@@ -140,7 +140,7 @@ The measurement harness ships in the repo, so the numbers can be re-taken anytim
 
 ## Verification
 
-486 Swift + 150 JS tests run in under half a minute — no simulator, no device.
+505 Swift + 157 JS tests run in under half a minute — no simulator, no device.
 
 - Transpiler tests push the generated MSL through the **actual Metal compiler**.
 - Render tests draw into offscreen textures and **assert pixel values** (triangle, uniforms, indexed draw,

@@ -62,7 +62,7 @@ export const GPUMapMode = { READ: 0x1, WRITE: 0x2 };
 /**
  * One item in the command stream.
  *
- * The fields are read **by string key** by native's `WGPUCommandInterpreter`. A name mismatch is not
+ * The fields are read **by string key** by native's `WGPUBackendEngine`. A name mismatch is not
  * caught here, so when adding or changing an op be sure to fix both sides
  * (`.claude/skills/webgpu-command/SKILL.md`).
  * @typedef {Record<string, any>} GPUCommand
@@ -152,7 +152,13 @@ function toArrayBuffer(source, elementOffset, elementCount) {
   // copied"). Commands sit in the queue until submit, so putting one on by reference makes the last
   // value overwrite them all when the caller reuses the same array (the common pattern of filling
   // several buffers from one uniform array). The copy cost is negligible next to a bridge crossing (docs/ARCHITECTURE.md §3).
-  if (source instanceof ArrayBuffer) return source.slice(0);
+  const start = elementOffset || 0;
+  if (source instanceof ArrayBuffer) {
+    // Spec: for an `ArrayBuffer` (and a `DataView`) the offset and size are in **bytes**. They used
+    // to be ignored here, so a sub-range write uploaded the whole buffer.
+    const end = elementCount === undefined ? source.byteLength : start + elementCount;
+    return source.slice(start, end);
+  }
   if (ArrayBuffer.isView(source)) {
     // A DataView has no BYTES_PER_ELEMENT — in that case the offset is read as bytes.
     const elementSize = /** @type {{BYTES_PER_ELEMENT?: number}} */ (source).BYTES_PER_ELEMENT || 1;
@@ -163,7 +169,12 @@ function toArrayBuffer(source, elementOffset, elementCount) {
     const backing = /** @type {ArrayBuffer} */ (source.buffer);
     return backing.slice(start, start + length);
   }
-  if (Array.isArray(source)) return /** @type {ArrayBuffer} */ (new Uint8Array(source).buffer);
+  if (Array.isArray(source)) {
+    // A plain number array is this shim's extension — read as **bytes** (each element 0…255),
+    // the offset and size counting elements.
+    const end = elementCount === undefined ? source.length : start + elementCount;
+    return /** @type {ArrayBuffer} */ (new Uint8Array(source.slice(start, end)).buffer);
+  }
   throw new TypeError('data must be a TypedArray, an ArrayBuffer or a number array');
 }
 
@@ -765,12 +776,12 @@ class GPUBuffer extends GPUObjectBase {
   /**
    * Unmaps.
    *
-   * For `mappedAtCreation`, this is where the actual creation command (initial data included) is recorded;
-   * for something mapped by `mapAsync` it tells native "queue operations may use it now" —
-   * a buffer being mapped is rejected by queue operations per the spec, so **this must be called once you are done.**
+   * It tells native "queue operations may use it now" — a buffer being mapped is rejected by queue
+   * operations per the spec, so **this must be called once you are done.**
    *
-   * A `GPUMapMode.WRITE` mapping **carries its bytes back** here (`unmapBuffer`'s `offset` + `data`) —
-   * the mapping is a JS copy, so without that everything written into it would vanish silently.
+   * A write mapping — `mappedAtCreation` or `GPUMapMode.WRITE` — **carries its bytes back** here
+   * (`unmapBuffer`'s `offset` + `data`): the mapping is a JS copy, so without that everything
+   * written into it would vanish silently.
    *
    * @returns {void}
    */
@@ -778,17 +789,8 @@ class GPUBuffer extends GPUObjectBase {
     if (!this._mapped) return;
     // The writes into the range copies are put back into the mapping before sending — otherwise they vanish silently.
     this._flushMappedRanges();
-    if (this._mappedAtCreation) {
-      this._recorder.push({
-        op: 'createBuffer',
-        id: this.id,
-        size: this.size,
-        usage: this.usage,
-        label: this.label,
-        data: this._mapped,   // already an ArrayBuffer
-      });
+    if (this._mappedAtCreation || this._mapMode === GPUMapMode.WRITE) {
       this._mappedAtCreation = false;
-    } else if (this._mapMode === GPUMapMode.WRITE) {
       // The whole mapping goes back: it started as the buffer's current contents (spec), so bytes the
       // app did not touch are written back unchanged.
       this._recorder.push({
@@ -1079,14 +1081,26 @@ class GPUPassEncoderBase {
   /**
    * @param {number} index
    * @param {GPUBindGroup} bindGroup
-   * @param {number[]} [dynamicOffsets]
+   * @param {number[] | Uint32Array} [dynamicOffsets]
+   * @param {number} [dynamicOffsetsDataStart] with a `Uint32Array`: the first offset to use (spec overload)
+   * @param {number} [dynamicOffsetsDataLength] with a `Uint32Array`: how many offsets to use
    * @returns {void}
    */
-  setBindGroup(index, bindGroup, dynamicOffsets) {
+  setBindGroup(index, bindGroup, dynamicOffsets, dynamicOffsetsDataStart, dynamicOffsetsDataLength) {
     this._retain(bindGroup);
     /** @type {GPUCommand} */
     const command = { op: 'setBindGroup', index, bindGroup: bindGroup.id };
-    if (dynamicOffsets && dynamicOffsets.length) command.dynamicOffsets = Array.from(dynamicOffsets);
+    if (dynamicOffsets && dynamicOffsets.length) {
+      // The `(Uint32Array, start, length)` overload names a window of a larger array. It used to be
+      // flattened whole, so native saw too many offsets and reported a count mismatch.
+      let offsets = Array.from(dynamicOffsets);
+      if (dynamicOffsetsDataStart !== undefined || dynamicOffsetsDataLength !== undefined) {
+        const start = dynamicOffsetsDataStart || 0;
+        const end = dynamicOffsetsDataLength === undefined ? offsets.length : start + dynamicOffsetsDataLength;
+        offsets = offsets.slice(start, end);
+      }
+      if (offsets.length) command.dynamicOffsets = offsets;
+    }
     this._commands.push(command);
   }
 }
@@ -1103,22 +1117,30 @@ class GPURenderCommandsBase extends GPUPassEncoderBase {
    * @param {number} slot
    * @param {GPUBuffer} buffer
    * @param {number} [offset]
+   * @param {number} [size] the bytes bound from `offset` (spec: the rest of the buffer when omitted)
    * @returns {void}
    */
-  setVertexBuffer(slot, buffer, offset) {
+  setVertexBuffer(slot, buffer, offset, size) {
     this._retain(buffer);
-    this._commands.push({ op: 'setVertexBuffer', slot, buffer: buffer.id, offset: offset || 0 });
+    /** @type {GPUCommand} */
+    const command = { op: 'setVertexBuffer', slot, buffer: buffer.id, offset: offset || 0 };
+    if (size !== undefined) command.size = size;
+    this._commands.push(command);
   }
 
   /**
    * @param {GPUBuffer} buffer
    * @param {'uint16' | 'uint32'} format
    * @param {number} [offset]
+   * @param {number} [size] the bytes bound from `offset` — bounds what `drawIndexed` may read
    * @returns {void}
    */
-  setIndexBuffer(buffer, format, offset) {
+  setIndexBuffer(buffer, format, offset, size) {
     this._retain(buffer);
-    this._commands.push({ op: 'setIndexBuffer', buffer: buffer.id, format, offset: offset || 0 });
+    /** @type {GPUCommand} */
+    const command = { op: 'setIndexBuffer', buffer: buffer.id, format, offset: offset || 0 };
+    if (size !== undefined) command.size = size;
+    this._commands.push(command);
   }
 
   /**
@@ -1646,8 +1668,8 @@ class GPUQueue {
    * @param {GPUBuffer} buffer
    * @param {number} bufferOffset
    * @param {GPUDataSource} data
-   * @param {number} [dataOffset] the start position in elements
-   * @param {number} [size] the number of elements
+   * @param {number} [dataOffset] the start position — in elements of a TypedArray, in **bytes** of an `ArrayBuffer`/`DataView` (spec)
+   * @param {number} [size] the count — elements of a TypedArray, bytes of an `ArrayBuffer`/`DataView`
    * @returns {void}
    */
   writeBuffer(buffer, bufferOffset, data, dataOffset, size) {
@@ -1662,7 +1684,8 @@ class GPUQueue {
   /**
    * @param {{texture: GPUTexture, mipLevel?: number, origin?: GPUOrigin3DDict}} destination
    * @param {GPUDataSource} data
-   * @param {{bytesPerRow: number, rowsPerImage?: number}} dataLayout
+   * @param {{offset?: number, bytesPerRow?: number, rowsPerImage?: number}} dataLayout `offset` is the
+   *   byte the upload starts at inside `data` (spec `GPUTexelCopyBufferLayout.offset`)
    * @param {GPUExtent3D} size
    * @returns {void}
    */
@@ -1673,6 +1696,7 @@ class GPUQueue {
       mipLevel: destination.mipLevel || 0,
       origin: destination.origin,
       data: toArrayBuffer(data),
+      offset: dataLayout.offset || 0,
       bytesPerRow: dataLayout.bytesPerRow,
       rowsPerImage: dataLayout.rowsPerImage,
       size,
@@ -1725,7 +1749,13 @@ class GPUQueue {
     return this._recorder.flush();
   }
 
-  /** @returns {Promise<void>} */
+  /**
+   * **Resolves once the work has been handed to native, not when the GPU finishes it.** The command
+   * stream has no completion channel (`docs/COMMAND-STREAM.md`), so code pacing readbacks or frames
+   * on this promise runs earlier than in a browser — `mapAsync()` is the call that does wait for the
+   * GPU (`docs/WEBGPU-API.md` §8).
+   * @returns {Promise<void>}
+   */
   onSubmittedWorkDone() {
     this._recorder.flush();
     return Promise.resolve();
@@ -1736,10 +1766,21 @@ class GPUDevice {
   /**
    * @param {GPUAdapter} adapter
    * @param {string[]} [requiredFeatures] the feature names already validated in `requestDevice()`
+   * @param {Record<string, number>} [requiredLimits] the limits already validated in `requestDevice()`
    */
-  constructor(adapter, requiredFeatures) {
+  constructor(adapter, requiredFeatures, requiredLimits) {
     this.adapter = adapter;
-    this.limits = adapter.limits;
+    /** The runtime this device was created on — its registry is shared by every device on it. */
+    this._runtime = nativeModule();
+    /**
+     * The adapter's limits, overridden by what `requestDevice({requiredLimits})` asked for (already
+     * validated against the adapter there). The spec starts from the defaults instead; starting from
+     * the adapter's values keeps code written against this shim working.
+     */
+    this.limits = requiredLimits && Object.keys(requiredLimits).length
+      ? Object.assign({}, adapter.limits, requiredLimits) : adapter.limits;
+    this._destroyed = false;
+    liveDevices(this._runtime).add(this);
     /** The spec's `GPUDevice.adapterInfo` — it looks straight at the adapter's. */
     this.adapterInfo = adapter.info;
     /**
@@ -1748,15 +1789,18 @@ class GPUDevice {
      * as three.js uses the pattern of requesting exactly what it picked from the adapter and re-checking here.
      */
     this.features = makeFeatureSet(requiredFeatures || []);
+    /** @type {(info: GPUDeviceLostInfo) => void} */
+    this._resolveLost = () => {};
     /**
      * Device loss notification (the counterpart of `device.lost.then(...)`).
      *
-     * This implementation does not report loss, so it stays **pending forever** — the scenarios where a
-     * Metal device disappears (an eGPU being unplugged, say) do not exist on iOS, and when the process
-     * dies JS dies with it. The property has to exist for bootstraps like `WebGPUBackend.init()` to pass without a TypeError.
+     * This implementation does not report GPU loss, so it stays pending — the scenarios where a Metal
+     * device disappears (an eGPU being unplugged, say) do not exist on iOS, and when the process dies
+     * JS dies with it. It does settle with `reason: 'destroyed'` on `destroy()`, as the spec requires.
+     * The property has to exist for bootstraps like `WebGPUBackend.init()` to pass without a TypeError.
      * @type {Promise<GPUDeviceLostInfo>}
      */
-    this.lost = new Promise(() => {});
+    this.lost = new Promise((resolve) => { this._resolveLost = resolve; });
     /**
      * Errors uncaught by a scope (the spec's `GPUDevice.onuncapturederror`).
      *
@@ -1878,15 +1922,19 @@ class GPUDevice {
   createBuffer(descriptor) {
     const id = this._recorder.allocate();
     const buffer = new GPUBuffer(this, id, descriptor);
+    // Recorded **now**, mapped or not — in a browser the buffer exists from this call, so a
+    // `createBindGroup` referencing it before `unmap()` is legal (the map state is checked at submit,
+    // not at creation). Deferring the creation to `unmap()` ordered such a reference first in the
+    // stream, and native answered "GPUBuffer does not exist". The initial data follows on
+    // `unmap()` as a write-back (`unmapBuffer`), the same path a `GPUMapMode.WRITE` mapping takes.
+    this._recorder.push({
+      op: 'createBuffer', id,
+      size: descriptor.size, usage: descriptor.usage, label: descriptor.label,
+      mappedAtCreation: !!descriptor.mappedAtCreation,
+    });
     if (descriptor.mappedAtCreation) {
-      // The creation command is recorded in unmap(), together with the initial data.
       buffer._mapped = new ArrayBuffer(descriptor.size);
       buffer._mappedAtCreation = true;
-    } else {
-      this._recorder.push({
-        op: 'createBuffer', id,
-        size: descriptor.size, usage: descriptor.usage, label: descriptor.label,
-      });
     }
     return buffer;
   }
@@ -2098,16 +2146,50 @@ class GPUDevice {
     return new GPUQuerySet(this, id, descriptor);
   }
 
-  /** Throws away every GPU object (called when leaving the page). @returns {void} */
+  /**
+   * Destroys the device (called when leaving the page). `lost` settles with `reason: 'destroyed'`.
+   *
+   * The native registry is one per runtime, not per device (handles are issued module-wide), so it
+   * is cleared **only when no device remains** — destroying one of two devices used to erase the
+   * other's objects as well. A destroyed device's own objects stay native until the last device goes.
+   * @returns {void}
+   */
   destroy() {
+    if (this._destroyed) return;
+    this._destroyed = true;
+    const siblings = liveDevices(this._runtime);
+    siblings.delete(this);
     this._recorder.pending = [];
     // Leaving waiting popErrorScope Promises alone means they never resolve — they are closed with null.
     // As things stand `flush()` resolves the scopes however it ends (success or failure), so nothing gets
     // this far. It stays only as a last safety net.
     this._recorder.settleErrorScopes([]);
-    canvasSizeCache.clear();
-    nativeModule().reset();
+    this._resolveLost({ reason: 'destroyed', message: 'GPUDevice.destroy() was called' });
+    if (siblings.size === 0) {
+      canvasSizeCache.clear();
+      this._runtime.reset();
+    }
   }
+}
+
+/**
+ * Devices not yet destroyed, per runtime (the native module they were created on) — a runtime's
+ * registry is cleared when its last device goes.
+ * @type {WeakMap<object, Set<GPUDevice>>}
+ */
+const liveDevicesByRuntime = new WeakMap();
+
+/**
+ * @param {object} runtime
+ * @returns {Set<GPUDevice>}
+ */
+function liveDevices(runtime) {
+  let devices = liveDevicesByRuntime.get(runtime);
+  if (!devices) {
+    devices = new Set();
+    liveDevicesByRuntime.set(runtime, devices);
+  }
+  return devices;
 }
 
 /**
@@ -2288,17 +2370,58 @@ class GPUCanvasContext {
 // ---------------------------------------------------------------------------
 
 /**
- * A stand-in for `GPUSupportedFeatures` — all web code uses is `has()` and iteration.
+ * The spec's `GPUSupportedFeatures` — a read-only setlike.
+ *
+ * Web code iterates it (`for…of`, spread, `.forEach`, `.keys()`), which the earlier plain
+ * `{has, size, values}` object broke with a TypeError. Built without `Set` so it does not depend on
+ * the engine providing one.
+ */
+export class GPUSupportedFeatures {
+  /** @param {string[]} names */
+  constructor(names) {
+    /** @type {string[]} */
+    this._names = names.slice();
+  }
+
+  /** @returns {number} */
+  get size() { return this._names.length; }
+
+  /**
+   * @param {string} name
+   * @returns {boolean}
+   */
+  has(name) { return this._names.indexOf(name) >= 0; }
+
+  /** @returns {IterableIterator<string>} */
+  values() { return this._names.slice()[Symbol.iterator](); }
+
+  /** @returns {IterableIterator<string>} */
+  keys() { return this.values(); }
+
+  /** @returns {IterableIterator<[string, string]>} */
+  entries() {
+    return this._names.map((name) => /** @type {[string, string]} */ ([name, name]))[Symbol.iterator]();
+  }
+
+  /**
+   * @param {(value: string, key: string, set: GPUSupportedFeatures) => void} callback
+   * @param {any} [thisArg]
+   * @returns {void}
+   */
+  forEach(callback, thisArg) {
+    for (const name of this._names) callback.call(thisArg, name, name, this);
+  }
+
+  /** @returns {IterableIterator<string>} */
+  [Symbol.iterator]() { return this.values(); }
+}
+
+/**
  * @param {string[]} names
- * @returns {{has: (name: string) => boolean, size: number, values: () => string[]}}
+ * @returns {GPUSupportedFeatures}
  */
 function makeFeatureSet(names) {
-  const list = names.slice();
-  return {
-    has: (name) => list.indexOf(name) >= 0,
-    size: list.length,
-    values: () => list.slice(),
-  };
+  return new GPUSupportedFeatures(names);
 }
 
 /**
@@ -2356,11 +2479,31 @@ class GPUAdapter {
       if (!this.features.has(name)) {
         throw new Error(
           `requestDevice: this adapter does not support the '${name}' feature ` +
-            `(supported: ${this.features.values().join(', ') || 'none'})`
+            `(supported: ${Array.from(this.features).join(', ') || 'none'})`
         );
       }
     }
-    return new GPUDevice(this, required);
+    // Spec: a `requiredLimits` entry beyond the adapter rejects with an OperationError. They used to
+    // be ignored, so an over-budget request went through and `device.limits` never reflected it.
+    /** @type {Record<string, number>} */
+    const requestedLimits = (descriptor && descriptor.requiredLimits) || {};
+    for (const key of Object.keys(requestedLimits)) {
+      const requested = requestedLimits[key];
+      if (requested === undefined) continue;
+      const supported = /** @type {Record<string, number>} */ (this.limits)[key];
+      if (supported === undefined) {
+        throw new OperationError(`requestDevice: '${key}' is not a limit this adapter reports`);
+      }
+      // An alignment limit is better when **smaller** — a request may not go below the adapter's;
+      // every other limit may not exceed it.
+      const isAlignment = key.startsWith('min') && key.endsWith('Alignment');
+      if (isAlignment ? requested < supported : requested > supported) {
+        throw new OperationError(
+          `requestDevice: requiredLimits.${key} = ${requested} is beyond what the adapter supports (${supported})`
+        );
+      }
+    }
+    return new GPUDevice(this, required, requestedLimits);
   }
 }
 
@@ -2663,6 +2806,8 @@ export {
   GPURenderBundle, GPURenderBundleEncoder, GPUQuerySet,
   // The errors `uncapturederror` carries — used when telling the kinds apart with `instanceof`.
   GPUError, GPUValidationError, GPUOutOfMemoryError, GPUInternalError,
+  // The DOMException stand-ins promise rejections carry.
+  OperationError,
 };
 export default gpu;
 

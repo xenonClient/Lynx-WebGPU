@@ -52,7 +52,8 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         func alignment(_ key: String) -> Int { max((limits[key] as? Int) ?? 256, 1) }
         return (alignment("minUniformBufferOffsetAlignment"), alignment("minStorageBufferOffsetAlignment"))
     }()
-    private var indexBinding: (buffer: WGPUEngineBuffer<B>, offset: Int, format: WGPUIndexFormat, stride: Int)?
+    /// `bytes` is the bound range from `offset` (`setIndexBuffer`'s `size`, or the rest of the buffer).
+    private var indexBinding: (buffer: WGPUEngineBuffer<B>, offset: Int, format: WGPUIndexFormat, stride: Int, bytes: Int)?
     /// Vertex buffer bindings per slot. **They do not go straight to the backend**; they gather here
     /// and go down right before a draw. That is what lets `resetPassBindings()` genuinely invalidate
     /// bindings at a bundle boundary — a backend encoder has no "unbind", so invalidation can only
@@ -823,7 +824,16 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
 
     private func writeTexture(_ command: WGPUWriteTextureCommand) throws {
         let target = try texture(command.texture, path: command.fieldPath("texture"))
-        let data = command.data
+        // `dataLayout.offset` — a sub-range of a larger staging array. It was dropped on both sides
+        // of the wire, so such an upload started at byte 0.
+        guard command.offset >= 0, command.offset <= command.data.count else {
+            throw WGPUError.validation(
+                "writeTexture: offset \(command.offset) is outside the data (\(command.data.count)B)",
+                path: command.fieldPath("offset")
+            )
+        }
+        let data = command.offset == 0
+            ? command.data : command.data.subdata(in: command.offset..<command.data.count)
         let size = command.size
         let format = target.format
         // Region first: the row/byte arithmetic below multiplies these values, so they must be known
@@ -2308,6 +2318,14 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
                     path: command.fieldPath("offset")
                 )
             }
+            if let size = command.size {
+                guard size >= 0, size <= buffer.size - offset else {
+                    throw WGPUError.validation(
+                        "vertex buffer range exceeds the buffer — offset \(offset) + \(size)B > size \(buffer.size)B",
+                        path: command.fieldPath("size")
+                    )
+                }
+            }
         }
         // Not sent to the backend immediately — sending right before the draw is what makes bundle-boundary invalidation hold.
         vertexBindings[slot] = (buffer, offset)
@@ -2334,7 +2352,18 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
                 )
             }
         }
-        indexBinding = (buffer, offset, command.format, command.indexStride)
+        // The spec's `size` argument bounds what `drawIndexed` may read; omitted, the rest of the buffer.
+        var bytes = buffer.size - offset
+        if let size = command.size {
+            guard size >= 0, size <= bytes else {
+                throw WGPUError.validation(
+                    "index buffer range exceeds the buffer — offset \(offset) + \(size)B > size \(buffer.size)B",
+                    path: command.fieldPath("size")
+                )
+            }
+            bytes = size
+        }
+        indexBinding = (buffer, offset, command.format, command.indexStride, bytes)
     }
 
     /// `[EnforceRange] GPUSize32` for draw arguments — regardless of who validates, since a negative
@@ -2404,7 +2433,7 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
     }
 
     private func resolvedIndexBinding(
-        _ binding: (buffer: WGPUEngineBuffer<B>, offset: Int, format: WGPUIndexFormat, stride: Int)
+        _ binding: (buffer: WGPUEngineBuffer<B>, offset: Int, format: WGPUIndexFormat, stride: Int, bytes: Int)
     ) -> WGPUResolvedIndexBinding<B> {
         WGPUResolvedIndexBinding<B>(
             buffer: binding.buffer.raw, offset: binding.offset,
@@ -2452,7 +2481,7 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         }
         if specValidation {
             // Spec: the indices read lie inside the bound index buffer.
-            let available = (indexBinding.buffer.size - indexBinding.offset) / indexBinding.stride
+            let available = indexBinding.bytes / indexBinding.stride
             guard command.firstIndex + command.indexCount <= available else {
                 throw WGPUError.validation(
                     "drawIndexed reads indices \(command.firstIndex)..<\(command.firstIndex + command.indexCount), "

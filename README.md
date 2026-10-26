@@ -35,7 +35,7 @@ startFrameLoop(() => {
 
 ```swift
 // Package.swift
-.package(url: "https://github.com/xenonClient/Lynx-WebGPU", from: "0.5.4")
+.package(url: "https://github.com/xenonClient/Lynx-WebGPU", from: "0.6.0")
 ```
 
 이것으로 **엔진**(`LynxWebGPU`)이 들어온다. 아래 `LynxWebGPUHost`처럼 Lynx와 맞물리는 타입은
@@ -135,7 +135,7 @@ JS 스레드(터치·타이머 포함)로 번지지 않는다.
 
 ## 검증
 
-Swift 486개 + JS 150개 테스트가 30초 안에 돈다 — 시뮬레이터도 기기도 필요 없다.
+Swift 505개 + JS 157개 테스트가 30초 안에 돈다 — 시뮬레이터도 기기도 필요 없다.
 
 - 트랜스파일러 테스트는 생성된 MSL을 **실제 Metal 컴파일러로** 통과시킨다.
 - 렌더 테스트는 오프스크린 텍스처에 그린 뒤 **픽셀 값을 단언**한다 (삼각형, 유니폼, 인덱스 드로우,

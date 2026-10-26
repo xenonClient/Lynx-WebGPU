@@ -157,6 +157,8 @@ public struct WGPUWriteBufferCommand: WGPUCommandFields {
 public struct WGPUWriteTextureCommand: WGPUCommandFields {
     public let texture: WGPUHandle
     public let data: Data
+    /// `GPUTexelCopyBufferLayout.offset` — the byte in `data` the upload starts at.
+    public let offset: Int
     public let mipLevel: Int
     public let origin: WGPUOrigin3D
     public let size: WGPUExtent3D
@@ -167,6 +169,7 @@ public struct WGPUWriteTextureCommand: WGPUCommandFields {
     public init(from reader: WGPUValueReader) throws {
         texture = try reader.requiredHandle("texture")
         data = try reader.requiredData("data")
+        offset = try reader.int("offset", default: 0)
         mipLevel = try reader.int("mipLevel", default: 0)
         origin = try reader.origin("origin")
         size = try reader.requiredExtent("size")
@@ -317,12 +320,15 @@ public struct WGPUSetVertexBufferCommand: WGPUCommandFields {
     public let slot: Int
     public let buffer: WGPUHandle
     public let offset: Int
+    /// The spec's fourth argument — the bytes bound from `offset`; nil means the rest of the buffer.
+    public let size: Int?
     public let path: String
 
     public init(from reader: WGPUValueReader) throws {
         slot = try reader.requiredInt("slot")
         buffer = try reader.requiredHandle("buffer")
         offset = try reader.int("offset", default: 0)
+        size = try reader.optionalInt("size")
         path = reader.path
     }
 }
@@ -332,6 +338,9 @@ public struct WGPUSetIndexBufferCommand: WGPUCommandFields {
     public let buffer: WGPUHandle
     public let format: WGPUIndexFormat
     public let offset: Int
+    /// The spec's fourth argument — the bytes bound from `offset`; nil means the rest of the buffer.
+    /// Bounds what `drawIndexed` may read.
+    public let size: Int?
     public let path: String
 
     /// Bytes per index — used to turn `firstIndex` into a byte offset.
@@ -341,6 +350,7 @@ public struct WGPUSetIndexBufferCommand: WGPUCommandFields {
         buffer = try reader.requiredHandle("buffer")
         format = try reader.requiredEnum("format", WGPUIndexFormat.self)
         offset = try reader.int("offset", default: 0)
+        size = try reader.optionalInt("size")
         path = reader.path
     }
 }

@@ -212,7 +212,7 @@ nil이면 그 검사는 백엔드 몫이다. `getBindGroupLayout`이 돌려주�
 | op | 필드 |
 |---|---|
 | `writeBuffer` | `buffer` · `data` · `bufferOffset`(0). 대상은 `COPY_DST`여야 하고 offset·크기는 **4의 배수**여야 한다 |
-| `writeTexture` | `texture` · `data` · `mipLevel`(0) · `origin` · `size`(extent) · `bytesPerRow`(포맷에서 유도) · `rowsPerImage`(블록 행 수) |
+| `writeTexture` | `texture` · `data` · `offset`(0 — `data` 안에서 업로드가 시작하는 바이트, 명세 `GPUTexelCopyBufferLayout.offset`) · `mipLevel`(0) · `origin` · `size`(extent) · `bytesPerRow`(포맷에서 유도) · `rowsPerImage`(블록 행 수). origin·size·mip·stride는 **텍스처 범위와 32비트 안**이어야 한다 (어긋나면 검증 오류 — 바이트 산술은 오버플로 검사를 거친다) |
 | `copyExternalImageToTexture` | `source:{source(ImageBitmap 핸들), origin?, flipY?}` · `destination:{texture, mipLevel?, origin?}` · `copySize`(생략 시 이미지의 남은 전부) |
 | `unmapBuffer` | `buffer` · `offset`(매핑 시작) · `data` — `mapAsync` 상태를 푼다. **쓰기 매핑**(`mapAsync(GPUMapMode.WRITE)`·네이티브 `mappedAtCreation`)이면 `data`가 그 매핑의 바이트이고 **버퍼 오프셋** `offset`에 써진 뒤 매핑이 풀린다 (JS 매핑은 사본이라 이게 없으면 쓴 내용이 사라진다). `data`는 매핑 구간 안이어야 하고 offset은 8의 배수·크기는 4의 배수 — 읽기 매핑이나 매핑 안 된 버퍼에 `data`를 실으면 거부된다 (`COPY_DST` 없이 쓰는 뒷문이 되므로). 명세의 `unmap`은 실패하지 않으므로 **write-back이 거부돼도 매핑은 풀린다** |
 
@@ -255,10 +255,10 @@ Metal은 둘 다 느슨해서, 안 막으면 브라우저·Dawn에서만 거부�
 | `beginRenderPass` | `colorAttachments[]` · `depthStencilAttachment` · `occlusionQuerySet` · `timestampWrites` · `label` |
 | `setPipeline` | `pipeline` (렌더/컴퓨트 공용 — 열린 패스가 어느 쪽인지 정한다) |
 | `setBindGroup` | `index` · `bindGroup` · `dynamicOffsets[]` — 개수는 레이아웃의 `hasDynamicOffset` 항목 수와 같아야 하고(바인딩 번호 순), 각 값은 `minUniformBufferOffsetAlignment`/`minStorageBufferOffsetAlignment`의 배수, `offset + 동적 오프셋 + size ≤ 버퍼 크기` (size 생략 시 버퍼 끝까지라 0만 된다 — Dawn과 같은 규칙). 어긋나면 이 명령에서 검증 오류 |
-| `setVertexBuffer` | `slot` · `buffer` · `offset`(0) |
-| `setIndexBuffer` | `buffer` · `format`(`"uint16"`\|`"uint32"`) · `offset`(0) |
-| `setViewport` | `x`(0) · `y`(0) · `width` · `height` · `minDepth`(0) · `maxDepth`(1) |
-| `setScissorRect` | `x`(0) · `y`(0) · `width` · `height` |
+| `setVertexBuffer` | `slot` · `buffer` · `offset`(0) · `size?`(생략 시 버퍼 끝까지 — `offset + size ≤ 버퍼 크기`) |
+| `setIndexBuffer` | `buffer` · `format`(`"uint16"`\|`"uint32"`) · `offset`(0 — 인덱스 크기의 배수) · `size?`(생략 시 버퍼 끝까지). `drawIndexed`의 `firstIndex + indexCount`는 이 범위 안이어야 한다 |
+| `setViewport` | `x`(0) · `y`(0) · `width` · `height` · `minDepth`(0) · `maxDepth`(1) — 패스 어태치먼트 안, `0 ≤ minDepth ≤ maxDepth ≤ 1` |
+| `setScissorRect` | `x`(0) · `y`(0) · `width` · `height` — 패스 어태치먼트 안 (어긋나면 검증 오류. 리사이즈 직후 이전 크기로 계산한 시저가 여기 걸릴 수 있다) |
 | `setBlendConstant` | `color` |
 | `setStencilReference` | `reference`(0) — **WebIDL의 `u32` 변환(modulo)을 적용한다** |
 | `draw` | `vertexCount` · `instanceCount`(1) · `firstVertex`(0) · `firstInstance`(0) — 개수가 0이면 상태만 검증하고 백엔드 드로우는 건너뛴다 |

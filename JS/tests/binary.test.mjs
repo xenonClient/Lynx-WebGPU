@@ -146,7 +146,7 @@ test('writeTexture puts an ArrayBuffer on too', async () => {
   assert.deepEqual(payloadOf(state, 'writeTexture'), texels);
 });
 
-test('mappedAtCreation → unmap puts the initial data on createBuffer as an ArrayBuffer', async () => {
+test('mappedAtCreation → the buffer is created at once and unmap writes the initial data back as an ArrayBuffer', async () => {
   const bytes = randomBytes(32, 5);
   const state = installNativeMock();
   const device = await makeDevice();
@@ -155,5 +155,9 @@ test('mappedAtCreation → unmap puts the initial data on createBuffer as an Arr
   buffer.unmap();
   device.queue.submit([]);
 
-  assert.deepEqual(payloadOf(state, 'createBuffer'), bytes);
+  // The creation precedes the write-back in the stream (a bind group may reference the buffer before unmap).
+  const ops = commandsOf(state).map((command) => command.op);
+  assert.ok(ops.indexOf('createBuffer') < ops.indexOf('unmapBuffer'), ops.join(','));
+  assert.equal(commandsOf(state).find((command) => command.op === 'createBuffer').mappedAtCreation, true);
+  assert.deepEqual(payloadOf(state, 'unmapBuffer'), bytes);
 });

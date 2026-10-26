@@ -203,6 +203,25 @@ declare class GPUOutOfMemoryError extends GPUError {
 }
 declare class GPUInternalError extends GPUError {
 }
+/**
+ * The error the `createRenderPipelineAsync` family rejects with (the spec's `GPUPipelineError`).
+ *
+ * The spec's `reason` is only `'validation' | 'internal'`, so the four command error kinds fold into those —
+ * a shader translation/compilation failure (`backend`) is `internal` and the rest are `validation`.
+ * The same rule as the `pushErrorScope` filter correspondence.
+ *
+ * @param {WGPUError} error
+ * @returns {Error & {reason: string}}
+ */
+/**
+ * The slot where the spec says to throw an `OperationError` (argument validation in `getMappedRange`, etc.).
+ *
+ * Matching the name is the point — web code branches on `error.name`.
+ */
+declare class OperationError extends Error {
+    /** @param {string} message */
+    constructor(message: string);
+}
 declare class Recorder {
     /** @type {GPUCommand[]} */
     pending: GPUCommand[];
@@ -373,12 +392,12 @@ declare class GPUBuffer extends GPUObjectBase {
     /**
      * Unmaps.
      *
-     * For `mappedAtCreation`, this is where the actual creation command (initial data included) is recorded;
-     * for something mapped by `mapAsync` it tells native "queue operations may use it now" —
-     * a buffer being mapped is rejected by queue operations per the spec, so **this must be called once you are done.**
+     * It tells native "queue operations may use it now" — a buffer being mapped is rejected by queue
+     * operations per the spec, so **this must be called once you are done.**
      *
-     * A `GPUMapMode.WRITE` mapping **carries its bytes back** here (`unmapBuffer`'s `offset` + `data`) —
-     * the mapping is a JS copy, so without that everything written into it would vanish silently.
+     * A write mapping — `mappedAtCreation` or `GPUMapMode.WRITE` — **carries its bytes back** here
+     * (`unmapBuffer`'s `offset` + `data`): the mapping is a JS copy, so without that everything
+     * written into it would vanish silently.
      *
      * @returns {void}
      */
@@ -559,10 +578,12 @@ declare class GPUPassEncoderBase {
     /**
      * @param {number} index
      * @param {GPUBindGroup} bindGroup
-     * @param {number[]} [dynamicOffsets]
+     * @param {number[] | Uint32Array} [dynamicOffsets]
+     * @param {number} [dynamicOffsetsDataStart] with a `Uint32Array`: the first offset to use (spec overload)
+     * @param {number} [dynamicOffsetsDataLength] with a `Uint32Array`: how many offsets to use
      * @returns {void}
      */
-    setBindGroup(index: number, bindGroup: GPUBindGroup, dynamicOffsets?: number[]): void;
+    setBindGroup(index: number, bindGroup: GPUBindGroup, dynamicOffsets?: number[] | Uint32Array, dynamicOffsetsDataStart?: number, dynamicOffsetsDataLength?: number): void;
 }
 /**
  * The commands a render pass and a render bundle can **both** use.
@@ -576,16 +597,18 @@ declare class GPURenderCommandsBase extends GPUPassEncoderBase {
      * @param {number} slot
      * @param {GPUBuffer} buffer
      * @param {number} [offset]
+     * @param {number} [size] the bytes bound from `offset` (spec: the rest of the buffer when omitted)
      * @returns {void}
      */
-    setVertexBuffer(slot: number, buffer: GPUBuffer, offset?: number): void;
+    setVertexBuffer(slot: number, buffer: GPUBuffer, offset?: number, size?: number): void;
     /**
      * @param {GPUBuffer} buffer
      * @param {'uint16' | 'uint32'} format
      * @param {number} [offset]
+     * @param {number} [size] the bytes bound from `offset` — bounds what `drawIndexed` may read
      * @returns {void}
      */
-    setIndexBuffer(buffer: GPUBuffer, format: 'uint16' | 'uint32', offset?: number): void;
+    setIndexBuffer(buffer: GPUBuffer, format: 'uint16' | 'uint32', offset?: number, size?: number): void;
     /**
      * @param {number} vertexCount
      * @param {number} [instanceCount]
@@ -886,15 +909,16 @@ declare class GPUQueue {
      * @param {GPUBuffer} buffer
      * @param {number} bufferOffset
      * @param {GPUDataSource} data
-     * @param {number} [dataOffset] the start position in elements
-     * @param {number} [size] the number of elements
+     * @param {number} [dataOffset] the start position — in elements of a TypedArray, in **bytes** of an `ArrayBuffer`/`DataView` (spec)
+     * @param {number} [size] the count — elements of a TypedArray, bytes of an `ArrayBuffer`/`DataView`
      * @returns {void}
      */
     writeBuffer(buffer: GPUBuffer, bufferOffset: number, data: GPUDataSource, dataOffset?: number, size?: number): void;
     /**
      * @param {{texture: GPUTexture, mipLevel?: number, origin?: GPUOrigin3DDict}} destination
      * @param {GPUDataSource} data
-     * @param {{bytesPerRow: number, rowsPerImage?: number}} dataLayout
+     * @param {{offset?: number, bytesPerRow?: number, rowsPerImage?: number}} dataLayout `offset` is the
+     *   byte the upload starts at inside `data` (spec `GPUTexelCopyBufferLayout.offset`)
      * @param {GPUExtent3D} size
      * @returns {void}
      */
@@ -903,7 +927,8 @@ declare class GPUQueue {
         mipLevel?: number;
         origin?: GPUOrigin3DDict;
     }, data: GPUDataSource, dataLayout: {
-        bytesPerRow: number;
+        offset?: number;
+        bytesPerRow?: number;
         rowsPerImage?: number;
     }, size: GPUExtent3D): void;
     /**
@@ -940,12 +965,26 @@ declare class GPUQueue {
      * @returns {WGPUExecuteResult}
      */
     submit(commandBuffers: GPUCommandBuffer[]): WGPUExecuteResult;
-    /** @returns {Promise<void>} */
+    /**
+     * **Resolves once the work has been handed to native, not when the GPU finishes it.** The command
+     * stream has no completion channel (`docs/COMMAND-STREAM.md`), so code pacing readbacks or frames
+     * on this promise runs earlier than in a browser — `mapAsync()` is the call that does wait for the
+     * GPU (`docs/WEBGPU-API.md` §8).
+     * @returns {Promise<void>}
+     */
     onSubmittedWorkDone(): Promise<void>;
 }
 declare class GPUDevice {
     adapter: GPUAdapter;
+    /** The runtime this device was created on — its registry is shared by every device on it. */
+    _runtime: WebGPUNativeModule;
+    /**
+     * The adapter's limits, overridden by what `requestDevice({requiredLimits})` asked for (already
+     * validated against the adapter there). The spec starts from the defaults instead; starting from
+     * the adapter's values keeps code written against this shim working.
+     */
     limits: Record<string, number>;
+    _destroyed: boolean;
     /** The spec's `GPUDevice.adapterInfo` — it looks straight at the adapter's. */
     adapterInfo: GPUAdapterInfoView;
     /**
@@ -953,17 +992,16 @@ declare class GPUDevice {
      * adapter supports it, `has()` is false unless it was asked for via `requiredFeatures`). Web code such
      * as three.js uses the pattern of requesting exactly what it picked from the adapter and re-checking here.
      */
-    features: {
-        has: (name: string) => boolean;
-        size: number;
-        values: () => string[];
-    };
+    features: GPUSupportedFeatures;
+    /** @type {(info: GPUDeviceLostInfo) => void} */
+    _resolveLost: (info: GPUDeviceLostInfo) => void;
     /**
      * Device loss notification (the counterpart of `device.lost.then(...)`).
      *
-     * This implementation does not report loss, so it stays **pending forever** — the scenarios where a
-     * Metal device disappears (an eGPU being unplugged, say) do not exist on iOS, and when the process
-     * dies JS dies with it. The property has to exist for bootstraps like `WebGPUBackend.init()` to pass without a TypeError.
+     * This implementation does not report GPU loss, so it stays pending — the scenarios where a Metal
+     * device disappears (an eGPU being unplugged, say) do not exist on iOS, and when the process dies
+     * JS dies with it. It does settle with `reason: 'destroyed'` on `destroy()`, as the spec requires.
+     * The property has to exist for bootstraps like `WebGPUBackend.init()` to pass without a TypeError.
      * @type {Promise<GPUDeviceLostInfo>}
      */
     lost: Promise<GPUDeviceLostInfo>;
@@ -988,8 +1026,9 @@ declare class GPUDevice {
     /**
      * @param {GPUAdapter} adapter
      * @param {string[]} [requiredFeatures] the feature names already validated in `requestDevice()`
+     * @param {Record<string, number>} [requiredLimits] the limits already validated in `requestDevice()`
      */
-    constructor(adapter: GPUAdapter, requiredFeatures?: string[]);
+    constructor(adapter: GPUAdapter, requiredFeatures?: string[], requiredLimits?: Record<string, number>);
     /**
      * The command execution error handler (`{kind, message, path}`). Unregistered, errors go to console.error.
      *
@@ -1159,7 +1198,14 @@ declare class GPUDevice {
      * @returns {GPUQuerySet}
      */
     createQuerySet(descriptor: GPUQuerySetDescriptor): GPUQuerySet;
-    /** Throws away every GPU object (called when leaving the page). @returns {void} */
+    /**
+     * Destroys the device (called when leaving the page). `lost` settles with `reason: 'destroyed'`.
+     *
+     * The native registry is one per runtime, not per device (handles are issued module-wide), so it
+     * is cleared **only when no device remains** — destroying one of two devices used to erase the
+     * other's objects as well. A destroyed device's own objects stay native until the last device goes.
+     * @returns {void}
+     */
     destroy(): void;
 }
 declare class GPUCanvasContext {
@@ -1240,6 +1286,40 @@ declare class GPUCanvasContext {
         height: number;
     };
 }
+/**
+ * The spec's `GPUSupportedFeatures` — a read-only setlike.
+ *
+ * Web code iterates it (`for…of`, spread, `.forEach`, `.keys()`), which the earlier plain
+ * `{has, size, values}` object broke with a TypeError. Built without `Set` so it does not depend on
+ * the engine providing one.
+ */
+export declare class GPUSupportedFeatures {
+    /** @type {string[]} */
+    _names: string[];
+    /** @param {string[]} names */
+    constructor(names: string[]);
+    /** @returns {number} */
+    get size(): number;
+    /**
+     * @param {string} name
+     * @returns {boolean}
+     */
+    has(name: string): boolean;
+    /** @returns {IterableIterator<string>} */
+    values(): IterableIterator<string>;
+    /** @returns {IterableIterator<string>} */
+    keys(): IterableIterator<string>;
+    /** @returns {IterableIterator<[string, string]>} */
+    entries(): IterableIterator<[string, string]>;
+    /**
+     * @param {(value: string, key: string, set: GPUSupportedFeatures) => void} callback
+     * @param {any} [thisArg]
+     * @returns {void}
+     */
+    forEach(callback: (value: string, key: string, set: GPUSupportedFeatures) => void, thisArg?: any): void;
+    /** @returns {IterableIterator<string>} */
+    [Symbol.iterator](): IterableIterator<string>;
+}
 declare class GPUAdapter {
     /**
      * The spec's `GPUAdapterInfo`. The `name`, `backend` and `hasUnifiedMemory` below are **this
@@ -1256,11 +1336,7 @@ declare class GPUAdapter {
      * Device-dependent features — only `has` is imitated so that the same branch as on the web
      * (`adapter.features.has('timestamp-query')`) works (the engine may not have `Set`).
      */
-    features: {
-        has: (name: string) => boolean;
-        size: number;
-        values: () => string[];
-    };
+    features: GPUSupportedFeatures;
     /** @param {WGPUAdapterInfo} info */
     constructor(info: WGPUAdapterInfo);
     /**
@@ -1410,5 +1486,5 @@ export declare function createImageBitmap(source: ArrayBuffer | ArrayBufferView 
     resizeWidth?: number;
     resizeHeight?: number;
 }): Promise<GPUImageBitmap>;
-export { GPUImageBitmap, GPUBuffer, GPUTexture, GPUTextureView, GPUSampler, GPUDevice, GPUCanvasContext, GPURenderBundle, GPURenderBundleEncoder, GPUQuerySet, GPUError, GPUValidationError, GPUOutOfMemoryError, GPUInternalError, };
+export { GPUImageBitmap, GPUBuffer, GPUTexture, GPUTextureView, GPUSampler, GPUDevice, GPUCanvasContext, GPURenderBundle, GPURenderBundleEncoder, GPUQuerySet, GPUError, GPUValidationError, GPUOutOfMemoryError, GPUInternalError, OperationError, };
 export default gpu;

@@ -19,7 +19,7 @@ Lynx 연동: `docs/LYNX-INTEGRATION.md` · 커맨드 스트림 명세: `docs/COM
 ```zsh
 # macOS 개발 루프 — Lynx 없이 엔진/트랜스파일러만 빌드·테스트 (가장 빠르다)
 swift build
-swift test                                   # 486개 테스트, ~25초 (셰이더 테스트가 Metal 컴파일러를 부른다)
+swift test                                   # 505개 테스트, ~25초 (셰이더 테스트가 Metal 컴파일러를 부른다)
 swift test --filter LynxWebGPUShaderTests    # WGSL → MSL 트랜스파일러만
 swift test --filter RenderPipelineTests      # GPU 오프스크린 렌더 검증
 swift test --filter ConformanceTests         # 적합성 스위트(31검사) — 런타임 무관 계약
@@ -38,7 +38,7 @@ arch -arm64 xcodebuild -workspace LynxWebGPUDemo.xcworkspace -scheme DawnCheck \
 xcrun simctl launch <device> org.lynxwebgpu.dawndemo -demo triangle   # DawnDemo 스킴 빌드 후 화면 확인
 
 # JS 클라이언트(shim) — 런타임 의존성 0. TypeScript는 **검사·선언 생성 전용**이다 (빌드 산출물 없음)
-cd JS && npm test            # node 내장 러너, 150개
+cd JS && npm test            # node 내장 러너, 157개
 cd JS && npm run typecheck   # JSDoc 기준 타입 검사 (tsc --noEmit)
 cd JS && npm run types       # webgpu.d.ts 를 JSDoc에서 다시 생성
 

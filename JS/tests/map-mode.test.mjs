@@ -137,13 +137,18 @@ test('the mode of the previous mapping does not leak into the next one', async (
   const device = await makeDevice();
   const buffer = device.createBuffer({ size: 16, usage: GPUBufferUsage.MAP_WRITE, mappedAtCreation: true });
 
-  buffer.unmap();   // the creation command carries the bytes — no unmapBuffer
-  await buffer.mapAsync(GPUMapMode.WRITE);   // flushes the creation command in its own batch
+  buffer.unmap();   // the mappedAtCreation bytes go back as the first unmapBuffer
+  await buffer.mapAsync(GPUMapMode.WRITE);   // flushes the creation and the write-back in their own batch
   buffer.unmap();
   device.queue.submit([]);
 
   const commands = state.executeCalls.flatMap((call) => call.commands);
-  assert.equal(commands.filter((command) => command.op === 'unmapBuffer').length, 1);
-  assert.ok(commands.find((command) => command.op === 'createBuffer').data instanceof ArrayBuffer);
-  assert.equal(commands.find((command) => command.op === 'unmapBuffer').data.byteLength, 16);
+  const unmaps = commands.filter((command) => command.op === 'unmapBuffer');
+  assert.equal(unmaps.length, 2);
+  assert.equal(commands.find((command) => command.op === 'createBuffer').mappedAtCreation, true);
+  for (const unmap of unmaps) {
+    assert.ok(unmap.data instanceof ArrayBuffer);
+    assert.equal(unmap.data.byteLength, 16);
+    assert.equal(unmap.offset, 0);
+  }
 });

@@ -35,8 +35,8 @@ test('what was written into a range comes back at unmap', async () => {
   buffer.unmap();
   device.queue.submit([]);
 
-  const create = commandsOf(state).find((command) => command.op === 'createBuffer');
-  const bytes = new Uint8Array(create.data);
+  const unmap = commandsOf(state).find((command) => command.op === 'unmapBuffer');
+  const bytes = new Uint8Array(unmap.data);
   assert.equal(bytes.length, 32);
   assert.deepEqual(Array.from(bytes.slice(24)), Array(8).fill(0xab), 'what was written vanished');
   assert.deepEqual(Array.from(bytes.slice(0, 8)), Array(8).fill(0), 'the untouched part is unchanged');
