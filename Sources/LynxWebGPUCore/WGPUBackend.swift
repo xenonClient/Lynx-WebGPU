@@ -452,16 +452,28 @@ public struct WGPURenderPipelineInfo {
     /// pipeline creation and against the bound ranges (`minBindingSize: 0` entries) at draw time.
     /// A binding missing from the table is not checked (a shader the backend cannot reflect).
     public let minimumBindingSizes: [Int: [Int: Int]]?
+    /// The attachment shape the pipeline was built for — the spec's render pass compatibility
+    /// (`setPipeline` rejects a pipeline whose targets, depth/stencil format or sample count differ
+    /// from the pass's attachments; Metal makes every one of those an assertion). `sampleCount`
+    /// nil means the backend validates this itself.
+    public let colorFormats: [WGPUTextureFormat]?
+    public let depthStencilFormat: WGPUTextureFormat?
+    public let sampleCount: Int?
 
     public init(requiredGroups: Set<Int>? = nil, layoutGroupCount: Int? = nil,
                 requiredVertexSlots: Set<Int>? = nil, writesDepth: Bool? = nil, writesStencil: Bool? = nil,
-                minimumBindingSizes: [Int: [Int: Int]]? = nil) {
+                minimumBindingSizes: [Int: [Int: Int]]? = nil,
+                colorFormats: [WGPUTextureFormat]? = nil, depthStencilFormat: WGPUTextureFormat? = nil,
+                sampleCount: Int? = nil) {
         self.requiredGroups = requiredGroups
         self.layoutGroupCount = layoutGroupCount
         self.requiredVertexSlots = requiredVertexSlots
         self.writesDepth = writesDepth
         self.writesStencil = writesStencil
         self.minimumBindingSizes = minimumBindingSizes
+        self.colorFormats = colorFormats
+        self.depthStencilFormat = depthStencilFormat
+        self.sampleCount = sampleCount
     }
 }
 

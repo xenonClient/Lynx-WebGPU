@@ -16,12 +16,17 @@ public struct WGPUImageDecodeOptions {
     public var premultiplyAlpha: Bool
     /// Target size (`resizeWidth`/`resizeHeight`). nil keeps the original size.
     public var resize: (width: Int, height: Int)?
+    /// The largest width or height the decoded image may have — the runtime sets it to the
+    /// device's `maxTextureDimension2D`. A larger image (a decoder bomb's header, a resize to 2^31)
+    /// is rejected as a validation error instead of attempting the allocation, which fails fatally.
+    public var maxDimension: Int?
 
     public init(flipY: Bool = false, premultiplyAlpha: Bool = false,
-                resize: (width: Int, height: Int)? = nil) {
+                resize: (width: Int, height: Int)? = nil, maxDimension: Int? = nil) {
         self.flipY = flipY
         self.premultiplyAlpha = premultiplyAlpha
         self.resize = resize
+        self.maxDimension = maxDimension
     }
 }
 

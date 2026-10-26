@@ -217,7 +217,15 @@ public final class WGPURenderPipelineObject {
             descriptor.layouts[bufferIndex].stepFunction = WGPUMetalMapping.stepFunction(layout.stepMode)
             descriptor.layouts[bufferIndex].stepRate = 1
             for attribute in layout.attributes {
-                let target = descriptor.attributes[attribute.shaderLocation]!
+                // The engine bounds `shaderLocation` to the advertised limit (16) under spec
+                // validation; this guard is what keeps a stray value from force-unwrapping nil
+                // (Metal's attribute table holds 31 entries) on any path.
+                guard attribute.shaderLocation >= 0,
+                      let target = descriptor.attributes[attribute.shaderLocation] else {
+                    throw WGPUError.validation(
+                        "shaderLocation \(attribute.shaderLocation) is outside the vertex attribute table — slot \(slot)"
+                    )
+                }
                 target.format = WGPUMetalMapping.vertexFormat(attribute.format)
                 target.offset = attribute.offset
                 target.bufferIndex = bufferIndex

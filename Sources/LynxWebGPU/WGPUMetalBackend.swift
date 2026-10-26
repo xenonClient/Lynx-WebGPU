@@ -528,7 +528,12 @@ public final class WGPUMetalBackend: WGPUBackend {
                 requiredVertexSlots: pipeline.requiredVertexSlots,
                 writesDepth: pipeline.writesDepth,
                 writesStencil: pipeline.writesStencil,
-                minimumBindingSizes: Self.minimumBindingSizes(stages: stages)
+                minimumBindingSizes: Self.minimumBindingSizes(stages: stages),
+                // The engine rejects a pipeline on a pass with other attachments — Metal's validation
+                // layer does not report that, it aborts.
+                colorFormats: descriptor.fragment?.targets.map(\.format) ?? [],
+                depthStencilFormat: descriptor.depthStencil?.format,
+                sampleCount: descriptor.multisample.count
             )
         )
     }
@@ -667,7 +672,11 @@ public final class WGPUMetalBackend: WGPUBackend {
         var emulatedResolves: [(texture: MTLTexture, resolve: MTLTexture)] = []
 
         for (index, attachment) in pass.colorAttachments.enumerated() {
-            let target = passDescriptor.colorAttachments[index]!
+            // Metal's descriptor holds 8 color attachments; the engine caps the count at the
+            // advertised `maxColorAttachments`, so this is a backstop against a nil unwrap only.
+            guard let target = passDescriptor.colorAttachments[index] else {
+                throw WGPUError.validation("at most 8 color attachments are supported (got \(pass.colorAttachments.count))")
+            }
             target.texture = attachment.view.texture
             target.loadAction = WGPUMetalMapping.loadAction(attachment.loadOp)
             target.storeAction = WGPUMetalMapping.storeAction(attachment.storeOp)
@@ -807,7 +816,9 @@ public final class WGPUMetalBackend: WGPUBackend {
             switch binding.resource {
             case .buffer(let buffer, let offset, let boundSize):
                 // Fill the size table `arrayLength()` will read (uploaded only when the shader uses it).
-                if metalIndex < bufferSizes.count { bufferSizes[metalIndex] = UInt32(boundSize) }
+                // `arrayLength()` reads a 32-bit table; a binding past 4 GiB (legal on Apple silicon
+                // Macs, where `maxBufferLength` exceeds it) saturates rather than trapping the conversion.
+                if metalIndex < bufferSizes.count { bufferSizes[metalIndex] = UInt32(clamping: boundSize) }
                 var finalOffset = offset
                 if binding.hasDynamicOffset {
                     guard offsetCursor < dynamicOffsets.count else {
@@ -1191,9 +1202,13 @@ public final class WGPUMetalBackend: WGPUBackend {
             "maxBindingsPerBindGroup": 1000,
             "maxSampledTexturesPerShaderStage": WGSLMetalLimits.textureSlotCount,
             "maxSamplersPerShaderStage": WGSLMetalLimits.samplerSlotCount,
-            "maxStorageBuffersPerShaderStage": WGSLMetalLimits.maxBindGroupBuffers,
+            // Uniform and storage buffers share **one** argument-table region (0…21,
+            // `WGSLMetalLimits.maxBindGroupBuffers`) across every group and both stages, so the two
+            // limits are advertised as a split of it — spec defaults 12 + 8, with the two spare slots
+            // given to storage. Advertising 22 for each promised a 12 + 12 layout the assigner rejects.
+            "maxStorageBuffersPerShaderStage": WGSLMetalLimits.maxBindGroupBuffers - 12,
             "maxStorageTexturesPerShaderStage": WGSLMetalLimits.textureSlotCount,
-            "maxUniformBuffersPerShaderStage": WGSLMetalLimits.maxBindGroupBuffers,
+            "maxUniformBuffersPerShaderStage": 12,
             "maxDynamicUniformBuffersPerPipelineLayout": 8,
             "maxDynamicStorageBuffersPerPipelineLayout": 4,
             // Buffers — offset alignment uses the spec default (256) as-is. It exceeds what Metal

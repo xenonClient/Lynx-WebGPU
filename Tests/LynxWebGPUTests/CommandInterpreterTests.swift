@@ -1587,4 +1587,125 @@ final class CommandInterpreterTests: XCTestCase {
         harness.executeExpectingSuccess([["op": "getCurrentTexture", "id": 63, "canvas": "test"]])
         XCTAssertEqual(harness.liveObjects, before + 2, "60 reclaimed, 63 acquired, 62 still alive")
     }
+
+    // MARK: - Spec validation that used to be a Metal assertion
+
+    private static let solidShader = """
+    @vertex fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f {
+        var positions = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
+        return vec4f(positions[index], 0.0, 1.0);
+    }
+    @fragment fn fs_main() -> @location(0) vec4f { return vec4f(1.0, 0.0, 0.0, 1.0); }
+    """
+
+    /// A resource-free rgba8unorm pipeline at `id` (its module at `id + 1`).
+    private static func solidPipelineSetup(id: Int) -> [[String: Any]] {
+        [
+            ["op": "createShaderModule", "id": id + 1, "code": solidShader],
+            ["op": "createRenderPipeline", "id": id, "layout": "auto",
+             "vertex": ["module": id + 1, "entryPoint": "vs_main"],
+             "fragment": ["module": id + 1, "entryPoint": "fs_main", "targets": [["format": "rgba8unorm"]]]],
+        ]
+    }
+
+    private func textureAndPass(size: Int = 4) -> [[String: Any]] {
+        [
+            ["op": "createTexture", "id": 1, "size": ["width": size, "height": size], "format": "rgba8unorm",
+             "usage": TestUsage.renderAttachment],
+            ["op": "createTextureView", "id": 2, "texture": 1],
+            ["op": "beginRenderPass", "colorAttachments": [[
+                "view": 2, "loadOp": "clear", "storeOp": "store",
+                "clearValue": ["r": 0, "g": 0, "b": 0, "a": 1],
+            ]]],
+        ]
+    }
+
+    /// A scissor or viewport past the attachments is a validation error, not the validation layer's
+    /// assertion. It is reachable from correct JS — the shim sizes them from the previous batch's
+    /// canvas report, and a layout shrink in between leaves them past the new drawable.
+    func test_aScissorOrViewportOutsideTheAttachmentsIsAValidationError() {
+        let result = harness.execute(textureAndPass() + [
+            ["op": "setScissorRect", "x": 0, "y": 0, "width": 1_000_000, "height": 1_000_000],
+            ["op": "setScissorRect", "x": -1, "y": 0, "width": 1, "height": 1],
+            ["op": "setViewport", "x": 0, "y": 0, "width": 8, "height": 8, "minDepth": 0, "maxDepth": 1],
+            ["op": "setViewport", "x": 0, "y": 0, "width": 4, "height": 4, "minDepth": 2, "maxDepth": 1],
+            // Inside the attachment — fine.
+            ["op": "setScissorRect", "x": 1, "y": 1, "width": 3, "height": 3],
+            ["op": "setViewport", "x": 0, "y": 0, "width": 4, "height": 4, "minDepth": 0, "maxDepth": 1],
+            ["op": "endPass"],
+        ])
+        XCTAssertEqual(errors(result).count, 4, harness.describeErrors(result))
+        for error in errors(result) { XCTAssertEqual(error["kind"] as? String, "validation") }
+    }
+
+    /// Negative or out-of-range draw arguments and index-buffer offsets used to cross into unsigned
+    /// Metal arguments — 2^64 primitives, or an assertion on the wrapped offset.
+    func test_badDrawArgumentsAndIndexOffsetsAreValidationErrors() {
+        let result = harness.execute(Self.solidPipelineSetup(id: 30) + textureAndPass() + [
+            ["op": "setPipeline", "pipeline": 30],
+            ["op": "draw", "vertexCount": -3],
+            ["op": "draw", "vertexCount": 3, "firstInstance": 1 << 40],
+            ["op": "createBuffer", "id": 10, "size": 12, "usage": TestUsage.index],
+            ["op": "setIndexBuffer", "buffer": 10, "format": "uint16", "offset": -2],
+            ["op": "setIndexBuffer", "buffer": 10, "format": "uint16", "offset": 3],
+            ["op": "setIndexBuffer", "buffer": 10, "format": "uint16", "offset": 4],
+            // 4 indices remain from offset 4; reading 5 runs past the buffer.
+            ["op": "drawIndexed", "indexCount": 5],
+            ["op": "drawIndexed", "indexCount": 4],
+            ["op": "endPass"],
+        ])
+        XCTAssertEqual(errors(result).count, 5, harness.describeErrors(result))
+        for error in errors(result) { XCTAssertEqual(error["kind"] as? String, "validation") }
+    }
+
+    /// A pipeline built for other attachments than the pass has is rejected at `setPipeline` — Metal
+    /// aborts on a pixel-format or sample-count mismatch instead of reporting it.
+    func test_aPipelineIncompatibleWithThePassIsRejectedAtSetPipeline() {
+        let result = harness.execute(Self.solidPipelineSetup(id: 30) + [   // rgba8unorm, single-sampled
+            ["op": "createTexture", "id": 1, "size": ["width": 4, "height": 4], "format": "bgra8unorm",
+             "usage": TestUsage.renderAttachment],
+            ["op": "createTextureView", "id": 2, "texture": 1],
+            ["op": "beginRenderPass", "colorAttachments": [[
+                "view": 2, "loadOp": "clear", "storeOp": "store",
+                "clearValue": ["r": 0, "g": 0, "b": 0, "a": 1],
+            ]]],
+            ["op": "setPipeline", "pipeline": 30],
+            ["op": "endPass"],
+        ])
+        XCTAssertEqual(errors(result).count, 1, harness.describeErrors(result))
+        XCTAssertTrue(
+            ((errors(result).first?["message"] as? String) ?? "").contains("do not match the render pass"),
+            harness.describeErrors(result)
+        )
+    }
+
+    /// Texture view ranges, bind group ranges, vertex attribute locations and texture limits — each
+    /// a `makeTextureView`/`setVertexBuffer`/`attributes[]!`/descriptor assertion before.
+    func test_subresourceRangesLocationsAndLimitsAreValidationErrors() throws {
+        let result = harness.execute([
+            ["op": "createTexture", "id": 1, "size": ["width": 4, "height": 4, "depthOrArrayLayers": 2],
+             "format": "rgba8unorm", "mipLevelCount": 2, "usage": TestUsage.textureBinding],
+            ["op": "createTextureView", "id": 2, "texture": 1, "baseMipLevel": 2],
+            ["op": "createTextureView", "id": 3, "texture": 1, "baseMipLevel": 1, "mipLevelCount": 2],
+            ["op": "createTextureView", "id": 4, "texture": 1, "baseArrayLayer": -1],
+            ["op": "createTextureView", "id": 5, "texture": 1, "dimension": "cube"],
+            ["op": "createTextureView", "id": 6, "texture": 1, "baseMipLevel": 1, "arrayLayerCount": 2],   // fine
+            ["op": "createBuffer", "id": 10, "size": 16, "usage": TestUsage.uniform],
+            ["op": "createBindGroupLayout", "id": 11, "entries": [[
+                "binding": 0, "visibility": 1, "buffer": ["type": "uniform"],
+            ]]],
+            ["op": "createBindGroup", "id": 12, "layout": 11, "entries": [[
+                "binding": 0, "resource": ["buffer": 10, "size": 4_294_967_296],
+            ]]],
+            ["op": "createBindGroup", "id": 13, "layout": 11, "entries": [[
+                "binding": 0, "resource": ["buffer": 10, "offset": 8, "size": 16],
+            ]]],
+            ["op": "createTexture", "id": 20, "size": ["width": 100_000, "height": 1], "format": "rgba8unorm",
+             "usage": TestUsage.textureBinding],
+            ["op": "createTexture", "id": 21, "size": ["width": 1, "height": 1], "format": "rgba8unorm",
+             "usage": 0],
+        ])
+        XCTAssertEqual(errors(result).count, 8, harness.describeErrors(result))
+        for error in errors(result) { XCTAssertEqual(error["kind"] as? String, "validation") }
+    }
 }

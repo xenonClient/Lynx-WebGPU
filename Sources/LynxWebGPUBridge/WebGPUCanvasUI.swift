@@ -70,6 +70,10 @@ public final class WebGPUCanvasView: UIView {
 /// `canvas-id` is settled and removes when that changes or the element goes away.
 public final class WebGPUCanvasUI: LynxUI<WebGPUCanvasView> {
     private var canvasIdentifier: String?
+    /// The identifier the runtime currently holds a surface for — re-attaching on **every** prop
+    /// update (a `pixel-ratio` change, say) rebuilt the surface and silently reset the format and
+    /// usage JS had configured, so attachment happens only when the identifier itself changes.
+    private var registeredCanvasIdentifier: String?
     private var pendingPixelRatio: CGFloat?
     private var propsDirty = false
 
@@ -113,6 +117,7 @@ public final class WebGPUCanvasUI: LynxUI<WebGPUCanvasView> {
         let next = requestReset ? nil : (value as String?)
         guard next != canvasIdentifier else { return }
         if let canvasIdentifier { host?.detachCanvas(identifier: canvasIdentifier) }
+        registeredCanvasIdentifier = nil
         canvasIdentifier = next
         propsDirty = true
     }
@@ -152,12 +157,17 @@ public final class WebGPUCanvasUI: LynxUI<WebGPUCanvasView> {
 
         guard let canvasIdentifier, let host else { return }
         // Hand over only the layer — the runtime picks the surface type (`WebGPURuntime.attachCanvas`).
-        host.attachCanvas(identifier: canvasIdentifier, layer: canvasView.metalLayer)
+        // Once per identifier: attaching again replaces the surface and with it the configuration
+        // JS already applied (`configure()`'s format, usage, color space).
+        if registeredCanvasIdentifier != canvasIdentifier {
+            host.attachCanvas(identifier: canvasIdentifier, layer: canvasView.metalLayer)
+            registeredCanvasIdentifier = canvasIdentifier
+            WGPULog.canvas.info("<webgpu-canvas> registered — \(canvasIdentifier, privacy: .public)")
+        }
         host.resizeCanvas(identifier: canvasIdentifier, drawableSize: CGSize(
             width: (canvasView.bounds.width * canvasView.pixelRatio).rounded(),
             height: (canvasView.bounds.height * canvasView.pixelRatio).rounded()
         ))
-        WGPULog.canvas.info("<webgpu-canvas> registered — \(canvasIdentifier, privacy: .public)")
     }
 
     // MARK: - UI methods

@@ -263,6 +263,7 @@ JS 스레드와 메인 스레드가 공유하므로, 컴파일러 격리 대신 
 | `WGPUObjectRegistry` (핸들 → 객체) | `NSLock` | JS(생성/조회), 메인(해제) |
 | `LynxWebGPUContext.surfaces` | `NSLock` | JS(조회), 메인(등록/해제) |
 | 커맨드 실행 | `executionLock` — 한 번에 하나 | JS |
+| 표면 동사 (`attachCanvas` · `attachOffscreenCanvas` · `resizeCanvas` · `detachCanvas` · `readCanvasPixels`) | 같은 `executionLock` — `WGPUBackend`의 "모든 동사는 실행 락 아래" 계약. 메인이 JS 배치 하나를 기다릴 수 있다 (`processEvents`만 `try()`로 건너뛴다) | 메인(등록·레이아웃·해제), JS·테스트(픽셀 읽기) |
 | `WGPUMetalLayerSurface.cachedSize` | `NSLock` | 메인(쓰기), JS(읽기) |
 | `WGPUFrameCoordinator` (캔버스별 in-flight) | `NSLock` | JS(커밋), GPU 완료 핸들러(완료), 메인(조회) |
 | `WGPUShaderModuleObject.libraryCache` | `NSLock` | JS |

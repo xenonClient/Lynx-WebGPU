@@ -64,11 +64,18 @@ public final class WGPUEngineTextureView<B: WGPUBackend> {
     public let raw: B.TextureView
     public let format: WGPUTextureFormat
     public let sampleCount: Int
+    /// The extent of the view's base mip level — what a render pass measures its attachments,
+    /// viewport and scissor against. Zero when unknown.
+    public let width: Int
+    public let height: Int
 
-    public init(raw: B.TextureView, format: WGPUTextureFormat, sampleCount: Int) {
+    public init(raw: B.TextureView, format: WGPUTextureFormat, sampleCount: Int,
+                width: Int = 0, height: Int = 0) {
         self.raw = raw
         self.format = format
         self.sampleCount = sampleCount
+        self.width = width
+        self.height = height
     }
 }
 

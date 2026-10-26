@@ -51,6 +51,17 @@ public enum WGPUImageDecoder {
         guard width > 0, height > 0 else {
             throw WGPUError.validation("image size is zero (\(width)x\(height))")
         }
+        // Before any allocation: `width * 4 * height` overflows `Int` for a 2^31 resize (a trap), and
+        // `Data(count:)` of a huge-but-representable size fails fatally rather than throwing. A
+        // texture that large could not be created anyway.
+        if let limit = options.maxDimension {
+            guard width <= limit, height <= limit else {
+                throw WGPUError.validation(
+                    "the image is larger than the device can hold in a texture "
+                    + "(\(width)x\(height), limit \(limit)x\(limit))"
+                )
+            }
+        }
         return try draw(image, width: width, height: height, options: options)
     }
 

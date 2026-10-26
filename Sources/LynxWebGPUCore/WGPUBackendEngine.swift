@@ -61,6 +61,23 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
     private var dirtyVertexSlots: Set<Int> = []
     /// The current render pass's attachment shape — used to decide whether a render bundle is valid here.
     private var passFormats: (color: [WGPUTextureFormat], depthStencil: WGPUTextureFormat?, sampleCount: Int)?
+    /// The current render pass's attachment extent — what `setViewport`/`setScissorRect` are bounded by.
+    private var passSize: (width: Int, height: Int)?
+
+    /// The limits the backend advertises (`adapterInfo()["limits"]`), read once under the execution
+    /// lock — the dictionary is rebuilt on every call. A limit the backend leaves out falls back to
+    /// the spec default the caller names.
+    private lazy var advertisedLimits: [String: Any] = {
+        backend.adapterInfo()["limits"] as? [String: Any] ?? [:]
+    }()
+
+    private func limit(_ key: String, default spec: Int) -> Int {
+        let value = advertisedLimits[key]
+        return (value as? Int) ?? (value as? NSNumber)?.intValue ?? spec
+    }
+
+    /// The largest `GPUSize32` / `GPUIntegerCoordinate` — WebIDL `[EnforceRange] unsigned long`.
+    private static var maxUnsigned32: Int { Int(UInt32.max) }
     /// Whether the current render pass declared it **will not write** depth/stencil (`depthReadOnly`/`stencilReadOnly`).
     private var passDepthReadOnly = false
     private var passStencilReadOnly = false
@@ -234,6 +251,7 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         vertexBindings.removeAll()
         dirtyVertexSlots.removeAll()
         passFormats = nil
+        passSize = nil
         passOcclusionQuerySet = nil
         passDepthReadOnly = false
         passStencilReadOnly = false
@@ -374,6 +392,7 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
             usedOcclusionQueries.removeAll()
             passOcclusionQuerySet = nil
             passFormats = nil
+            passSize = nil
             passDepthReadOnly = false
             passStencilReadOnly = false
         }
@@ -444,9 +463,11 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         case .setIndexBuffer(let c): try setIndexBuffer(c)
         case .setViewport(let c):
             try requireRenderPass()
+            try validateViewport(c)
             try backend.setViewport(c)
         case .setScissorRect(let c):
             try requireRenderPass()
+            try validateScissorRect(c)
             try backend.setScissorRect(c)
         case .setBlendConstant(let c):
             try requireRenderPass()
@@ -551,6 +572,20 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
     // MARK: - Resource creation
 
     private func createBuffer(_ command: WGPUCreateCommand<WGPUBufferDescriptor>) throws {
+        if specValidation {
+            // Spec: at least one usage, and no larger than `maxBufferSize`. Metal answers the latter
+            // with a nil buffer, which surfaces as out-of-memory — the wrong kind for a validation failure.
+            guard !command.descriptor.usage.isEmpty else {
+                throw WGPUError.validation("buffer usage must not be 0", path: command.fieldPath("usage"))
+            }
+            let maxBufferSize = limit("maxBufferSize", default: 268_435_456)
+            guard command.descriptor.size <= maxBufferSize else {
+                throw WGPUError.validation(
+                    "buffer size \(command.descriptor.size)B exceeds maxBufferSize (\(maxBufferSize)B)",
+                    path: command.fieldPath("size")
+                )
+            }
+        }
         let raw = try backend.makeBuffer(command.descriptor)
         let object = WGPUEngineBuffer<B>(
             raw: raw, size: command.descriptor.size, usage: command.descriptor.usage
@@ -680,6 +715,53 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
                     + "(\(size.width)x\(size.height)x\(size.depthOrArrayLayers))",
                 path: path("size")
             )
+        }
+        guard !descriptor.usage.isEmpty else {
+            throw WGPUError.validation("texture usage must not be 0", path: path("usage"))
+        }
+        // Spec limits per dimension. Past them Metal's validation layer asserts ("width greater than
+        // max") and a release build gets a nil texture reported as out-of-memory.
+        let maxWidth: Int, maxHeight: Int, maxDepth: Int
+        switch descriptor.dimension {
+        case .oneD:
+            maxWidth = limit("maxTextureDimension1D", default: 8192)
+            (maxHeight, maxDepth) = (1, 1)
+        case .twoD:
+            maxWidth = limit("maxTextureDimension2D", default: 8192)
+            maxHeight = maxWidth
+            maxDepth = limit("maxTextureArrayLayers", default: 256)
+        case .threeD:
+            maxWidth = limit("maxTextureDimension3D", default: 2048)
+            (maxHeight, maxDepth) = (maxWidth, maxWidth)
+        }
+        guard size.width <= maxWidth, size.height <= maxHeight, size.depthOrArrayLayers <= maxDepth else {
+            throw WGPUError.validation(
+                "texture size \(size.width)x\(size.height)x\(size.depthOrArrayLayers) exceeds the limit "
+                    + "for a \(descriptor.dimension.rawValue) texture (\(maxWidth)x\(maxHeight)x\(maxDepth))",
+                path: path("size")
+            )
+        }
+        // Spec: a 1d texture has one mip level, one sample and a plain color format; a 3d texture is
+        // single-sampled and not depth/stencil. Metal asserts on the descriptor otherwise.
+        if descriptor.dimension == .oneD {
+            guard descriptor.mipLevelCount == 1, descriptor.sampleCount == 1,
+                  !descriptor.format.isCompressed, !descriptor.format.isDepthOrStencil else {
+                throw WGPUError.validation(
+                    "a 1d texture has 1 mip level, 1 sample and an uncompressed color format "
+                        + "(mipLevelCount \(descriptor.mipLevelCount), sampleCount \(descriptor.sampleCount), "
+                        + "\(descriptor.format.rawValue))",
+                    path: path("dimension")
+                )
+            }
+        }
+        if descriptor.dimension == .threeD {
+            guard descriptor.sampleCount == 1, !descriptor.format.isDepthOrStencil else {
+                throw WGPUError.validation(
+                    "a 3d texture cannot be multisampled or use a depth/stencil format "
+                        + "(sampleCount \(descriptor.sampleCount), \(descriptor.format.rawValue))",
+                    path: path("dimension")
+                )
+            }
         }
         // Spec: 1 <= mipLevelCount <= the maximum number of levels this size can hold.
         let largest = descriptor.dimension == .threeD
@@ -966,14 +1048,19 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
                 + "— the GPU has no block encoder"
             )
         }
-        // The spec requires the source and destination byte widths to match. The decode result is
-        // RGBA8, so only 4-byte formats are accepted — better to stop here than to let the screen go
-        // quietly wrong.
-        guard target.format.bytesPerBlock == 4, !target.format.rawValue.hasPrefix("depth"),
-              !target.format.rawValue.hasPrefix("stencil") else {
-            throw WGPUError.validation(
-                "the destination of copyExternalImageToTexture must be a 4-byte color format "
-                + "(\(target.format.rawValue)) — upload anything else directly with writeTexture"
+        // The decode result is RGBA8 and goes up as bytes. The spec converts into every color format
+        // it lists; this path implements only the two 8-bit layouts it can produce — RGBA as it is
+        // and BGRA by swapping channels. Any other 4-byte format (`r32float`, `rg16float`,
+        // `rgba8uint`, `rgb10a2unorm`, …) used to receive raw RGBA8 bytes with no error: wrong pixels.
+        let swapsRedBlue: Bool
+        switch target.format {
+        case .rgba8unorm, .rgba8unormSRGB: swapsRedBlue = false
+        case .bgra8unorm, .bgra8unormSRGB: swapsRedBlue = true
+        default:
+            throw WGPUError.unsupported(
+                "copyExternalImageToTexture can upload into rgba8unorm(-srgb) and bgra8unorm(-srgb) only "
+                + "(\(target.format.rawValue)) — the spec's conversion to other formats is not implemented; "
+                + "upload converted bytes with writeTexture"
             )
         }
 
@@ -1053,7 +1140,16 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
                     let sourceRow = flipY ? (sourceOrigin.y + size.height - 1 - row)
                                           : (sourceOrigin.y + row)
                     let from = sourceRow * bitmap.bytesPerRow + sourceOrigin.x * 4
-                    memcpy(destinationBase + row * rowBytes, sourceBase + from, rowBytes)
+                    let rowStart = destinationBase + row * rowBytes
+                    memcpy(rowStart, sourceBase + from, rowBytes)
+                    if swapsRedBlue {
+                        let bytes = rowStart.assumingMemoryBound(to: UInt8.self)
+                        for pixel in stride(from: 0, to: rowBytes, by: 4) {
+                            let red = bytes[pixel]
+                            bytes[pixel] = bytes[pixel + 2]
+                            bytes[pixel + 2] = red
+                        }
+                    }
                 }
             }
         }
@@ -1177,15 +1273,131 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
     private func createTextureView(_ command: WGPUCreateTextureViewCommand) throws {
         let source = try texture(command.texture, path: command.fieldPath("texture"))
         let format = command.descriptor.format ?? source.format
+        try validateTextureViewRange(command.descriptor, texture: source, path: command.fieldPath)
         let raw = try backend.makeTextureView(source.raw, descriptor: command.descriptor, format: format)
+        let baseMipLevel = command.descriptor.baseMipLevel
         registry.insert(
-            WGPUEngineTextureView<B>(raw: raw, format: format, sampleCount: source.sampleCount),
+            WGPUEngineTextureView<B>(
+                raw: raw, format: format, sampleCount: source.sampleCount,
+                width: max(source.size.width >> baseMipLevel, 1),
+                height: max(source.size.height >> baseMipLevel, 1)
+            ),
             at: command.id
         )
         // Views of a drawable texture expire with the frame (the spec's "Expire the current texture") —
         // under the same canvas as their texture, so a per-canvas expiry takes them along.
         if let canvas = source.drawableCanvas {
             frameScopedHandles.append((command.id, canvas))
+        }
+    }
+
+    /// The spec's "validating GPUTextureViewDescriptor" — the sub-resource range lies inside the
+    /// texture, and the view dimension fits it.
+    ///
+    /// The range checks run regardless of `specValidation`: `baseMipLevel`/`mipLevelCount` and
+    /// `baseArrayLayer`/`arrayLayerCount` become unsigned Metal `makeTextureView(levels:slices:)`
+    /// ranges, where a negative or out-of-range value is an assertion. The dimension rules (a cube
+    /// view takes exactly six square layers, a 2d view one) are spec, and Metal assertions as well.
+    private func validateTextureViewRange(
+        _ descriptor: WGPUTextureViewDescriptor,
+        texture: WGPUEngineTexture<B>,
+        path: (String) -> String
+    ) throws {
+        let levels = texture.mipLevelCount
+        let layers = texture.dimension == .threeD ? 1 : texture.size.depthOrArrayLayers
+        guard descriptor.baseMipLevel >= 0, descriptor.baseMipLevel < levels else {
+            throw WGPUError.validation(
+                "baseMipLevel must be between 0 and \(levels - 1) (got \(descriptor.baseMipLevel))",
+                path: path("baseMipLevel")
+            )
+        }
+        if let count = descriptor.mipLevelCount {
+            guard count >= 1, count <= levels - descriptor.baseMipLevel else {
+                throw WGPUError.validation(
+                    "mipLevelCount \(count) from baseMipLevel \(descriptor.baseMipLevel) exceeds the texture's "
+                        + "\(levels) level(s)",
+                    path: path("mipLevelCount")
+                )
+            }
+        }
+        guard descriptor.baseArrayLayer >= 0, descriptor.baseArrayLayer < layers else {
+            throw WGPUError.validation(
+                "baseArrayLayer must be between 0 and \(layers - 1) (got \(descriptor.baseArrayLayer))",
+                path: path("baseArrayLayer")
+            )
+        }
+        let remainingLayers = layers - descriptor.baseArrayLayer
+        if let count = descriptor.arrayLayerCount {
+            guard count >= 1, count <= remainingLayers else {
+                throw WGPUError.validation(
+                    "arrayLayerCount \(count) from baseArrayLayer \(descriptor.baseArrayLayer) exceeds the "
+                        + "texture's \(layers) layer(s)",
+                    path: path("arrayLayerCount")
+                )
+            }
+        }
+        guard specValidation else { return }
+        // The spec's defaults: the dimension follows the texture (a layered 2d texture views as
+        // "2d-array"), and the layer count follows the dimension (1, 6, or the remainder).
+        let dimension: WGPUTextureViewDimension
+        if let explicit = descriptor.dimension {
+            dimension = explicit
+        } else {
+            switch texture.dimension {
+            case .oneD: dimension = .oneD
+            case .threeD: dimension = .threeD
+            case .twoD: dimension = (descriptor.arrayLayerCount ?? remainingLayers) == 1 ? .twoD : .twoDArray
+            }
+        }
+        let layerCount: Int
+        switch dimension {
+        case .oneD, .twoD, .threeD: layerCount = descriptor.arrayLayerCount ?? 1
+        case .cube: layerCount = descriptor.arrayLayerCount ?? 6
+        case .twoDArray, .cubeArray: layerCount = descriptor.arrayLayerCount ?? remainingLayers
+        }
+        guard layerCount <= remainingLayers else {
+            throw WGPUError.validation(
+                "a \(dimension.rawValue) view needs \(layerCount) layer(s) from baseArrayLayer "
+                    + "\(descriptor.baseArrayLayer), but the texture has \(layers)",
+                path: path("arrayLayerCount")
+            )
+        }
+        let textureDimensionFits: Bool
+        switch dimension {
+        case .oneD: textureDimensionFits = texture.dimension == .oneD
+        case .threeD: textureDimensionFits = texture.dimension == .threeD
+        case .twoD, .twoDArray, .cube, .cubeArray: textureDimensionFits = texture.dimension == .twoD
+        }
+        guard textureDimensionFits else {
+            throw WGPUError.validation(
+                "a \(dimension.rawValue) view cannot be made of a \(texture.dimension.rawValue) texture",
+                path: path("dimension")
+            )
+        }
+        switch dimension {
+        case .oneD, .twoD, .threeD:
+            guard layerCount == 1 else {
+                throw WGPUError.validation(
+                    "a \(dimension.rawValue) view covers exactly one layer (arrayLayerCount \(layerCount))",
+                    path: path("arrayLayerCount")
+                )
+            }
+        case .cube, .cubeArray:
+            guard dimension == .cube ? layerCount == 6 : layerCount % 6 == 0 else {
+                throw WGPUError.validation(
+                    "a \(dimension.rawValue) view takes \(dimension == .cube ? "exactly 6" : "a multiple of 6") "
+                        + "layers (arrayLayerCount \(layerCount))",
+                    path: path("arrayLayerCount")
+                )
+            }
+            guard texture.size.width == texture.size.height else {
+                throw WGPUError.validation(
+                    "a cube view needs a square texture (\(texture.size.width)x\(texture.size.height))",
+                    path: path("dimension")
+                )
+            }
+        case .twoDArray:
+            break
         }
     }
 
@@ -1253,6 +1465,30 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
                 let object = try registry.lookup(handle, as: WGPUEngineBuffer<B>.self, kind: "GPUBuffer")
                 buffers.append(object)
                 let boundSize = size ?? max(object.size - offset, 0)
+                if specValidation {
+                    // Spec: the bound range lies inside the buffer. Unchecked, Metal bound past the
+                    // end (an assertion at the first draw) — and the `arrayLength` size table's
+                    // 32-bit conversion trapped on a size past 4 GiB.
+                    guard offset <= object.size, boundSize <= object.size - offset else {
+                        throw WGPUError.validation(
+                            "binding \(entry.binding): the bound range exceeds the buffer — "
+                                + "offset \(offset) + \(boundSize)B > size \(object.size)B",
+                            path: command.fieldPath("entries[\(index)]")
+                        )
+                    }
+                    if case .buffer(let bufferLayout)? = layoutEntry?.layout {
+                        // Spec: a static offset obeys the same alignment a dynamic one does.
+                        let alignment = bufferLayout.type == .uniform
+                            ? dynamicOffsetAlignments.uniform : dynamicOffsetAlignments.storage
+                        guard offset % alignment == 0 else {
+                            throw WGPUError.validation(
+                                "binding \(entry.binding): a \(bufferLayout.type.rawValue) buffer offset must be "
+                                    + "a multiple of \(alignment) (got \(offset))",
+                                path: command.fieldPath("entries[\(index)]")
+                            )
+                        }
+                    }
+                }
                 if case .buffer(let bufferLayout)? = layoutEntry?.layout {
                     // The spec checks every buffer binding against its layout's `minBindingSize` here.
                     // (`layout: "auto"` layouts carry the shader's minimum, so they are caught here too.)
@@ -1373,6 +1609,9 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
                 path: command.fieldPath("fragment.module")
             )
         }
+        if specValidation {
+            try validateVertexLayouts(descriptor.vertex.buffers, path: command.fieldPath)
+        }
         let layout = try resolvePipelineLayout(descriptor.layout)
         let creation = try backend.makeRenderPipeline(
             descriptor,
@@ -1405,6 +1644,56 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         registry.insert(
             WGPUEngineComputePipeline<B>(raw: creation.pipeline, info: creation.info), at: command.id
         )
+    }
+
+    /// The spec's "validating GPUVertexBufferLayout" / "validating GPUVertexAttribute": locations
+    /// below `maxVertexAttributes` and unique, offsets aligned and inside the stride, strides
+    /// 4-aligned and within the limit. A `shaderLocation` past the Metal attribute table used to
+    /// force-unwrap nil in the backend.
+    private func validateVertexLayouts(_ buffers: [WGPUVertexBufferLayout], path: (String) -> String) throws {
+        let maxAttributes = limit("maxVertexAttributes", default: 16)
+        let maxStride = limit("maxVertexBufferArrayStride", default: 2048)
+        var seenLocations = Set<Int>()
+        for (slot, layout) in buffers.enumerated() {
+            let stride = layout.arrayStride
+            guard stride >= 0, stride <= maxStride, stride % 4 == 0 else {
+                throw WGPUError.validation(
+                    "arrayStride must be a multiple of 4 no larger than \(maxStride) (got \(stride))",
+                    path: path("vertex.buffers[\(slot)].arrayStride")
+                )
+            }
+            for (index, attribute) in layout.attributes.enumerated() {
+                let attributePath = path("vertex.buffers[\(slot)].attributes[\(index)]")
+                guard attribute.shaderLocation >= 0, attribute.shaderLocation < maxAttributes else {
+                    throw WGPUError.validation(
+                        "shaderLocation must be between 0 and \(maxAttributes - 1) (got \(attribute.shaderLocation))",
+                        path: attributePath
+                    )
+                }
+                guard seenLocations.insert(attribute.shaderLocation).inserted else {
+                    throw WGPUError.validation(
+                        "shaderLocation \(attribute.shaderLocation) is used by more than one attribute",
+                        path: attributePath
+                    )
+                }
+                let size = attribute.format.byteSize
+                guard attribute.offset >= 0, attribute.offset % min(4, size) == 0 else {
+                    throw WGPUError.validation(
+                        "attribute offset \(attribute.offset) must be a multiple of \(min(4, size)) "
+                            + "for \(attribute.format.rawValue)",
+                        path: attributePath
+                    )
+                }
+                let extent = stride > 0 ? stride : maxStride
+                guard attribute.offset + size <= extent else {
+                    throw WGPUError.validation(
+                        "attribute \(attribute.format.rawValue) at offset \(attribute.offset) runs past the "
+                            + "stride (\(stride)B)",
+                        path: attributePath
+                    )
+                }
+            }
+        }
     }
 
     /// The spec's "validating shader binding": an explicit layout's buffer entry with a non-zero
@@ -1539,13 +1828,68 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         var sampleCount = 1
         var colors: [WGPUResolvedRenderPass<B>.ColorAttachment] = []
 
-        for attachment in descriptor.colorAttachments {
+        // Regardless of who validates: Metal's pass descriptor holds eight color attachments, and the
+        // ninth is a nil unwrap in the backend.
+        let maxColorAttachments = limit("maxColorAttachments", default: 8)
+        guard descriptor.colorAttachments.count <= maxColorAttachments else {
+            throw WGPUError.validation(
+                "a render pass takes at most \(maxColorAttachments) color attachments "
+                    + "(got \(descriptor.colorAttachments.count))",
+                path: "colorAttachments"
+            )
+        }
+        // Spec: every attachment (color, resolve, depth/stencil) has the same extent and sample
+        // count. The extent is also what viewport and scissor are bounded by. Metal asserts on a
+        // mismatch instead of reporting it.
+        var extent: (width: Int, height: Int)?
+        var passSampleCount: Int?
+        func noteAttachment(_ view: WGPUEngineTextureView<B>, _ what: String) throws {
+            if let extent {
+                guard !specValidation || (view.width == extent.width && view.height == extent.height) else {
+                    throw WGPUError.validation(
+                        "render pass attachments must share one size — \(what) is \(view.width)x\(view.height), "
+                            + "the first attachment \(extent.width)x\(extent.height)"
+                    )
+                }
+            } else {
+                extent = (view.width, view.height)
+            }
+            if let passSampleCount {
+                guard !specValidation || view.sampleCount == passSampleCount else {
+                    throw WGPUError.validation(
+                        "render pass attachments must share one sampleCount — \(what) has \(view.sampleCount), "
+                            + "the first attachment \(passSampleCount)"
+                    )
+                }
+            } else {
+                passSampleCount = view.sampleCount
+            }
+        }
+
+        for (index, attachment) in descriptor.colorAttachments.enumerated() {
             let view = try textureView(attachment.view)
+            try noteAttachment(view, "colorAttachments[\(index)]")
             colorFormats.append(view.format)
             sampleCount = max(sampleCount, view.sampleCount)
             var resolveTarget: B.TextureView?
             if let resolveHandle = attachment.resolveTarget {
-                resolveTarget = try textureView(resolveHandle).raw
+                let resolveView = try textureView(resolveHandle)
+                if specValidation {
+                    guard view.sampleCount > 1 else {
+                        throw WGPUError.validation(
+                            "colorAttachments[\(index)]: a resolveTarget needs a multisampled attachment view"
+                        )
+                    }
+                    guard resolveView.sampleCount == 1, resolveView.width == view.width,
+                          resolveView.height == view.height else {
+                        throw WGPUError.validation(
+                            "colorAttachments[\(index)]: the resolveTarget must be single-sampled and the "
+                                + "attachment's size (\(resolveView.width)x\(resolveView.height), "
+                                + "sampleCount \(resolveView.sampleCount))"
+                        )
+                    }
+                }
+                resolveTarget = resolveView.raw
             }
             colors.append(WGPUResolvedRenderPass<B>.ColorAttachment(
                 view: view.raw,
@@ -1562,6 +1906,7 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         var depthStencil: WGPUResolvedRenderPass<B>.DepthStencilAttachment?
         if let depth = descriptor.depthStencilAttachment {
             let view = try textureView(depth.view)
+            try noteAttachment(view, "depthStencilAttachment")
             depthStencilFormat = view.format
             // The depth view feeds the pass layout's sampleCount too — omit it and an MSAA pass with no
             // color attachment (a shadow map or depth prepass) rejects a correctly declared bundle.
@@ -1602,6 +1947,14 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         if let writes = descriptor.timestampWrites {
             timestampWrites = try resolveTimestampWrites(writes)
         }
+        if specValidation {
+            guard !colors.isEmpty || depthStencil != nil else {
+                throw WGPUError.validation(
+                    "a render pass needs at least one color or depth/stencil attachment",
+                    path: "colorAttachments"
+                )
+            }
+        }
 
         try backend.beginRenderPass(WGPUResolvedRenderPass<B>(
             label: descriptor.label,
@@ -1612,6 +1965,7 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         ))
         passState = .render
         passFormats = (colorFormats, depthStencilFormat, sampleCount)
+        passSize = extent
         passOcclusionQuerySet = occlusionQuerySet
         passDepthReadOnly = depthReadOnly
         passStencilReadOnly = stencilReadOnly
@@ -1694,6 +2048,32 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
                     "a stencilReadOnly pass cannot use a pipeline that writes stencil "
                         + "(failOp, depthFailOp and passOp must all be \"keep\")"
                 )
+            }
+            // The spec's render pass compatibility: the pipeline's targets, depth/stencil format and
+            // sample count equal the pass's attachments. Metal's validation layer aborts on every
+            // one of these; they are reachable from well-formed code — `configure()` applies the
+            // layer format asynchronously, so a pipeline built for the configured format can meet a
+            // drawable that still has the old one. A backend giving no `sampleCount` validates itself.
+            if specValidation, let formats = passFormats, let pipelineSampleCount = pipeline.info.sampleCount {
+                let targets = pipeline.info.colorFormats ?? []
+                guard targets == formats.color else {
+                    throw WGPUError.validation(
+                        "the pipeline's color targets [\(targets.map(\.rawValue).joined(separator: ", "))] do not "
+                            + "match the render pass attachments [\(formats.color.map(\.rawValue).joined(separator: ", "))]"
+                    )
+                }
+                guard pipeline.info.depthStencilFormat == formats.depthStencil else {
+                    throw WGPUError.validation(
+                        "the pipeline's depthStencil format (\(pipeline.info.depthStencilFormat?.rawValue ?? "none")) "
+                            + "does not match the render pass's (\(formats.depthStencil?.rawValue ?? "none"))"
+                    )
+                }
+                guard pipelineSampleCount == formats.sampleCount else {
+                    throw WGPUError.validation(
+                        "the pipeline's multisample count (\(pipelineSampleCount)) does not match the render "
+                            + "pass's (\(formats.sampleCount))"
+                    )
+                }
             }
             backend.setRenderPipeline(pipeline.raw)
             currentRenderPipeline = pipeline
@@ -1937,7 +2317,90 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
     private func setIndexBuffer(_ command: WGPUSetIndexBufferCommand) throws {
         try requireRenderPass()
         let buffer = try unmappedBuffer(command.buffer, path: command.fieldPath("buffer"))
-        indexBinding = (buffer, command.offset, command.format, command.indexStride)
+        let offset = command.offset
+        // Sign and range regardless of who validates: at draw time the offset is folded into an
+        // unsigned Metal index-buffer offset (`offset + firstIndex × stride`), where a negative wraps.
+        guard offset >= 0, offset <= buffer.size else {
+            throw WGPUError.validation(
+                "index buffer offset (\(offset)) is outside the buffer size (\(buffer.size)B)",
+                path: command.fieldPath("offset")
+            )
+        }
+        if specValidation {
+            guard offset % command.indexStride == 0 else {
+                throw WGPUError.validation(
+                    "index buffer offset must be a multiple of the index size (\(command.indexStride)B) — got \(offset)",
+                    path: command.fieldPath("offset")
+                )
+            }
+        }
+        indexBinding = (buffer, offset, command.format, command.indexStride)
+    }
+
+    /// `[EnforceRange] GPUSize32` for draw arguments — regardless of who validates, since a negative
+    /// count or start crossing into the backend's unsigned draw arguments is 2^64 primitives or an
+    /// assertion, not an error.
+    private func validateDrawArguments(
+        _ arguments: [(name: String, value: Int)], label: String, path: (String) -> String
+    ) throws {
+        for argument in arguments {
+            guard argument.value >= 0, argument.value <= Self.maxUnsigned32 else {
+                throw WGPUError.validation(
+                    "\(label): \(argument.name) must be a non-negative 32-bit integer (got \(argument.value))",
+                    path: path(argument.name)
+                )
+            }
+        }
+    }
+
+    /// The spec's `setViewport` checks — finite values, inside the attachments, depth range in
+    /// [0, 1]. A viewport past the render target is a Metal validation assertion.
+    private func validateViewport(_ command: WGPUSetViewportCommand) throws {
+        let values = [command.x, command.y, command.width, command.height, command.minDepth, command.maxDepth]
+        guard values.allSatisfy({ $0.isFinite }) else {
+            throw WGPUError.validation("setViewport arguments must be finite numbers", path: command.path)
+        }
+        guard specValidation, let size = passSize else { return }
+        guard command.x >= 0, command.y >= 0, command.width >= 0, command.height >= 0,
+              command.x + command.width <= Double(size.width),
+              command.y + command.height <= Double(size.height) else {
+            throw WGPUError.validation(
+                "the viewport (\(command.x), \(command.y)) \(command.width)x\(command.height) lies outside "
+                    + "the render pass attachments (\(size.width)x\(size.height))",
+                path: command.path
+            )
+        }
+        guard command.minDepth >= 0, command.minDepth <= 1, command.maxDepth >= 0, command.maxDepth <= 1,
+              command.minDepth <= command.maxDepth else {
+            throw WGPUError.validation(
+                "setViewport depth range must satisfy 0 <= minDepth <= maxDepth <= 1 "
+                    + "(got \(command.minDepth)...\(command.maxDepth))",
+                path: command.path
+            )
+        }
+    }
+
+    /// The spec's `setScissorRect` checks. Sign regardless of who validates (the rect becomes an
+    /// unsigned Metal `MTLScissorRect`); the bound against the attachments under `specValidation`,
+    /// where a scissor past the render target is a Metal validation assertion. Reachable from correct
+    /// JS: the shim sizes the scissor from the previous batch's canvas report, and a layout shrink in
+    /// between leaves it past the new drawable — an error for that frame, not an abort.
+    private func validateScissorRect(_ command: WGPUSetScissorRectCommand) throws {
+        guard command.x >= 0, command.y >= 0, command.width >= 0, command.height >= 0 else {
+            throw WGPUError.validation(
+                "setScissorRect arguments must not be negative "
+                    + "(\(command.x), \(command.y), \(command.width)x\(command.height))",
+                path: command.path
+            )
+        }
+        guard specValidation, let size = passSize else { return }
+        guard command.x + command.width <= size.width, command.y + command.height <= size.height else {
+            throw WGPUError.validation(
+                "the scissor rect (\(command.x), \(command.y)) \(command.width)x\(command.height) lies outside "
+                    + "the render pass attachments (\(size.width)x\(size.height))",
+                path: command.path
+            )
+        }
     }
 
     private func resolvedIndexBinding(
@@ -1958,6 +2421,10 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         guard currentRenderPipeline != nil else {
             throw WGPUError.validation("setPipeline is required before draw")
         }
+        try validateDrawArguments([
+            ("vertexCount", command.vertexCount), ("instanceCount", command.instanceCount),
+            ("firstVertex", command.firstVertex), ("firstInstance", command.firstInstance),
+        ], label: "draw", path: command.fieldPath)
         try applyDrawState()
         // Validated like any draw, but nothing to rasterize — see `skipsEmptyWork`.
         if skipsEmptyWork, command.vertexCount == 0 || command.instanceCount == 0 { return }
@@ -1971,6 +2438,28 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         }
         guard let indexBinding else {
             throw WGPUError.validation("setIndexBuffer is required before drawIndexed")
+        }
+        try validateDrawArguments([
+            ("indexCount", command.indexCount), ("instanceCount", command.instanceCount),
+            ("firstIndex", command.firstIndex), ("firstInstance", command.firstInstance),
+        ], label: "drawIndexed", path: command.fieldPath)
+        // `baseVertex` is the one signed argument (`GPUSignedOffset32`).
+        guard command.baseVertex >= Int(Int32.min), command.baseVertex <= Int(Int32.max) else {
+            throw WGPUError.validation(
+                "drawIndexed: baseVertex must be a 32-bit integer (got \(command.baseVertex))",
+                path: command.fieldPath("baseVertex")
+            )
+        }
+        if specValidation {
+            // Spec: the indices read lie inside the bound index buffer.
+            let available = (indexBinding.buffer.size - indexBinding.offset) / indexBinding.stride
+            guard command.firstIndex + command.indexCount <= available else {
+                throw WGPUError.validation(
+                    "drawIndexed reads indices \(command.firstIndex)..<\(command.firstIndex + command.indexCount), "
+                        + "but the index buffer holds \(available) \(indexBinding.format.rawValue) indices from its offset",
+                    path: command.fieldPath("indexCount")
+                )
+            }
         }
         try applyDrawState()
         if skipsEmptyWork, command.indexCount == 0 || command.instanceCount == 0 { return }
@@ -2747,6 +3236,22 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         completion: @escaping ([String: Any]) -> Void
     ) {
         let fail = { (error: WGPUError) in completion(["ok": false, "errors": [error.payload]]) }
+        // The decoded size is capped at what a texture can hold — a resize to 2^31 overflowed the
+        // row arithmetic (a trap) and a decoder-bomb header made `Data(count:)` fail fatally.
+        var options = options
+        executionLock.lock()
+        let maxDimension = limit("maxTextureDimension2D", default: 8192)
+        executionLock.unlock()
+        if let resize = options.resize {
+            guard resize.width > 0, resize.height > 0,
+                  resize.width <= maxDimension, resize.height <= maxDimension else {
+                return fail(WGPUError.validation(
+                    "resizeWidth/resizeHeight must be between 1 and \(maxDimension) "
+                    + "(got \(resize.width)x\(resize.height))"
+                ))
+            }
+        }
+        options.maxDimension = maxDimension
         let finish = { [weak self] (bytes: Data) in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
@@ -2798,7 +3303,15 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
 
     private var canvases: [String: CanvasEntry] = [:]
 
+    // The surface verbs below take the execution lock like every other backend verb (the
+    // `WGPUBackend` contract — "a backend needs no lock of its own"). They arrive from the main
+    // thread (element registration, layout) while `execute` may be mid-batch on the JS thread; a
+    // backend that creates GPU objects in `resizeSurface` (Dawn's offscreen surface re-creates its
+    // texture) was racing the batch. The Metal layer surface survived only through a lock of its own.
+
     public func attachCanvas(identifier: String, layer: CAMetalLayer) {
+        executionLock.lock()
+        defer { executionLock.unlock() }
         let creation = backend.makeLayerSurface(identifier: identifier, layer: layer)
         registerSurface(creation.surface, identifier: identifier, pacesFrames: creation.pacesFrames)
     }
@@ -2809,6 +3322,8 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
                 "the offscreen canvas size is not valid (\(size.width)x\(size.height))"
             )
         }
+        executionLock.lock()
+        defer { executionLock.unlock() }
         let creation = try backend.makeOffscreenSurface(identifier: identifier, size: size)
         registerSurface(creation.surface, identifier: identifier, pacesFrames: creation.pacesFrames)
     }
@@ -2861,7 +3376,9 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
     public func resizeCanvas(identifier: String, drawableSize: CGSize) {
         guard Self.isUsableDrawableSize(drawableSize) else { return }
         guard let entry = surfaceEntry(for: identifier) else { return }
+        executionLock.lock()
         backend.resizeSurface(entry.raw, size: drawableSize)
+        executionLock.unlock()
     }
 
     public func surface(for identifier: String) -> B.Surface? {
@@ -2905,6 +3422,8 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
                 "canvas '\(identifier)' is not an offscreen surface — its pixels cannot be read"
             )
         }
+        executionLock.lock()
+        defer { executionLock.unlock() }
         return try backend.readPixels(entry.raw, identifier: identifier)
     }
 
