@@ -1532,4 +1532,59 @@ final class CommandInterpreterTests: XCTestCase {
         XCTAssertEqual(errors(result).count, 4, harness.describeErrors(result))
         for error in errors(result) { XCTAssertEqual(error["kind"] as? String, "validation") }
     }
+
+    // MARK: - Frame boundary with bookkeeping commands
+
+    /// The tick's closing flush carries **whatever was recorded after the frame's last `submit()`** —
+    /// a `destroy()` of a temporary, next frame's bind group. None of it makes GPU work, and the
+    /// closing batch used to present only when it had *no* commands at all, so the frame the
+    /// mid-frame submit had already drawn was never put out and the next acquisition threw it away.
+    func test_aClosingBatchWithOnlyBookkeepingCommandsStillPresentsTheDrawnFrame() {
+        harness.executeExpectingSuccess([
+            ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
+        ])
+        let before = harness.liveObjects
+
+        let midFrame = harness.execute([
+            ["op": "getCurrentTexture", "id": 60, "canvas": "test"],
+            ["op": "createTextureView", "id": 61, "texture": 60],
+            ["op": "beginRenderPass", "colorAttachments": [[
+                "view": 61, "loadOp": "clear", "storeOp": "store",
+                "clearValue": ["r": 0, "g": 1, "b": 0, "a": 1],
+            ]]],
+            ["op": "endPass"],
+            ["op": "createBuffer", "id": 62, "size": 16, "usage": TestUsage.uniform],
+        ], present: false)
+        XCTAssertEqual(midFrame["ok"] as? Bool, true, harness.describeErrors(midFrame))
+        XCTAssertEqual(harness.liveObjects, before + 3, "still mid-frame")
+
+        // The end of the tick — one bookkeeping command, no GPU work of its own.
+        let closing = harness.execute([["op": "destroy", "id": 62]], present: true)
+        XCTAssertEqual(closing["ok"] as? Bool, true, harness.describeErrors(closing))
+        XCTAssertEqual(
+            harness.liveObjects, before,
+            "the frame-scoped handles go only with a present — the drawn frame must have been put out"
+        )
+    }
+
+    /// The other side of the rule: a present batch whose drawable was **never drawn on** (acquired,
+    /// then a validation error before the first encoder) must not go out as a blank frame. It is
+    /// held, and reclaimed by the canvas's next acquisition.
+    func test_aClosingBatchDoesNotPresentAFrameThatWasNeverDrawn() {
+        harness.executeExpectingSuccess([
+            ["op": "configureCanvas", "canvas": "test", "format": "rgba8unorm"],
+        ])
+        let before = harness.liveObjects
+
+        let result = harness.execute([
+            ["op": "getCurrentTexture", "id": 60, "canvas": "test"],
+            ["op": "createBuffer", "id": 62, "size": 16, "usage": TestUsage.uniform],
+        ], present: true)
+        XCTAssertEqual(result["ok"] as? Bool, true, harness.describeErrors(result))
+        XCTAssertEqual(harness.liveObjects, before + 2, "the undrawn frame is held, not presented")
+
+        // The next acquisition reclaims it.
+        harness.executeExpectingSuccess([["op": "getCurrentTexture", "id": 63, "canvas": "test"]])
+        XCTAssertEqual(harness.liveObjects, before + 2, "60 reclaimed, 63 acquired, 62 still alive")
+    }
 }

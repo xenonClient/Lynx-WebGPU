@@ -78,6 +78,10 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
     /// tagged with its canvas — so reclaiming **one** canvas's failed frame (or a detach) does not
     /// tear down another canvas's frame still in flight.
     private var frameScopedHandles: [(handle: WGPUHandle, canvas: String)] = []
+    /// Canvases whose acquired drawable has had **GPU work submitted** since acquisition — by a
+    /// mid-frame batch (`present: false`). Such a frame is drawn and owed a present, whatever the
+    /// closing batch happens to carry (see `finish`).
+    private var drawnCanvases: Set<String> = []
     private var touchedCanvases: [String: B.Surface] = [:]
     private var errors: [WGPUError] = []
 
@@ -267,13 +271,23 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
             backend.popFrameDebugGroups(count: bufferDebugDepth)
         }
         bufferDebugDepth = 0
-        // A tick's closing batch must **put the drawable out** even with no commands — passing over
-        // it for lack of submittable work freezes the screen with nothing said.
+        // A tick's closing batch must **put the drawable out** even with no GPU work of its own —
+        // passing over it for lack of submittable work freezes the screen with nothing said.
         //
-        // Narrowing the condition to "no commands" matters. A batch that has commands but produced no
-        // GPU work (one that only acquired a drawable, say) does not present — putting out a drawable
-        // that was never drawn ships that frame as a blank screen.
-        if boundary.closesFrame, !backend.hasPendingWork, !acquiredFrames.isEmpty {
+        // Two shapes qualify. The empty present-only batch (`closesFrame`), and a present batch
+        // whose commands produced no GPU work **while a mid-frame batch already drew the frame** —
+        // `queue.submit()` inside the frame callback, then a `destroy()` or `createBindGroup` recorded
+        // after it, so the tick's closing flush carries one bookkeeping command. Keying on "no
+        // commands" alone dropped that drawn frame: no present, and the next acquisition reclaimed it
+        // unseen (the screen stayed on the previous frame).
+        //
+        // What must **not** present is a batch that only acquired a drawable and never drew on it
+        // (a validation error before the first encoder, say) — putting that one out ships a blank
+        // frame. `drawnCanvases` is what tells the two apart.
+        let drawnFrameAwaitsPresent = present
+            && acquiredFrames.contains { drawnCanvases.contains($0.canvas) }
+        if boundary.closesFrame || drawnFrameAwaitsPresent,
+           !backend.hasPendingWork, !acquiredFrames.isEmpty {
             backend.ensureSubmittableWork()
         }
         // With nothing to submit there is nothing to present. The acquired drawable **stays as it is**
@@ -282,6 +296,12 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         // `beginRenderPass` with a "missing handle". A drawable held this way is reclaimed by the
         // next frame's acquisition (see `getCurrentTexture`).
         guard backend.hasPendingWork else { return }
+
+        // A mid-frame submit draws on the acquired drawables — remember that, so the closing batch
+        // presents them even when it carries no GPU work itself (above).
+        if !present {
+            for acquired in acquiredFrames { drawnCanvases.insert(acquired.canvas) }
+        }
 
         // In-flight accounting — the frame ticker reads this count and skips a tick when saturated.
         // A batch that does not present is not a frame, so it is not counted.
@@ -312,6 +332,7 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         for entry in frameScopedHandles { registry.remove(entry.handle) }
         frameScopedHandles.removeAll()
         acquiredFrames.removeAll()
+        drawnCanvases.removeAll()
     }
 
     /// Expires **one canvas's** frame — the reclaim of a frame that will never be drawn (see
@@ -321,6 +342,7 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         for entry in frameScopedHandles where entry.canvas == canvas { registry.remove(entry.handle) }
         frameScopedHandles.removeAll { $0.canvas == canvas }
         acquiredFrames.removeAll { $0.canvas == canvas }
+        drawnCanvases.remove(canvas)
     }
 
     /// Canvases handed a drawable this frame (deduplicated — several acquisitions on one surface are still one frame).
@@ -2917,6 +2939,7 @@ public final class WGPUBackendEngine<B: WGPUBackend>: WebGPURuntime {
         // present a dead drawable.
         acquiredFrames.removeAll()
         frameScopedHandles.removeAll()
+        drawnCanvases.removeAll()
         _ = gpuFailures.drain()
         backend.reset()
         executionLock.unlock()
