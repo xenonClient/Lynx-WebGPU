@@ -25,12 +25,28 @@ public struct WGSLBindingAssignment: Equatable {
         self.indices = indices
     }
 
+    /// The slot kind each entry was assigned from (its layout entry's `metalSlotKind`). The emitter
+    /// checks the shader's own declaration against it — a layout saying `buffer` where the shader
+    /// declares a texture used to get `[[texture(k)]]` with `k` drawn from the buffer counter: the
+    /// wrong resource bound, silently.
+    public private(set) var kinds: [WGSLBindingKey: WGPUMetalSlotKind] = [:]
+
     public mutating func set(group: Int, binding: Int, index: Int) {
         indices[WGSLBindingKey(group: group, binding: binding)] = index
     }
 
+    public mutating func set(group: Int, binding: Int, index: Int, kind: WGPUMetalSlotKind) {
+        set(group: group, binding: binding, index: index)
+        kinds[WGSLBindingKey(group: group, binding: binding)] = kind
+    }
+
     public func index(group: Int, binding: Int) -> Int? {
         indices[WGSLBindingKey(group: group, binding: binding)]
+    }
+
+    /// Nil for an assignment built without kinds (hand-made tables).
+    public func kind(group: Int, binding: Int) -> WGPUMetalSlotKind? {
+        kinds[WGSLBindingKey(group: group, binding: binding)]
     }
 
     /// Cache key — the same assignment yields the same MSL, so the compile result can be reused.
@@ -97,7 +113,7 @@ public enum WGSLBindingAssigner {
                 default:
                     break
                 }
-                assignment.set(group: groupIndex, binding: entry.binding, index: index)
+                assignment.set(group: groupIndex, binding: entry.binding, index: index, kind: kind)
             }
         }
         return assignment

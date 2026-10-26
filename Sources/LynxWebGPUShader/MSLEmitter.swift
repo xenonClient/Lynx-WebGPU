@@ -91,6 +91,11 @@ struct MSLEmitter {
 
     /// Counter keeping infinite-loop guard variable names distinct (nested loops).
     private var loopGuardCounter = 0
+    /// While emitting the body of a `loop` that has a `continuing` block and uses `continue`, the
+    /// name of the flag a `break` must set (the body is wrapped in a `do { } while (false)`, where
+    /// a plain `break` would leave only the wrapper). Nil everywhere else — including inside any
+    /// nested loop or switch, whose `break` targets that construct.
+    private var breakFlag: String?
     private var output = ""
     private var indentLevel = 0
 
@@ -117,7 +122,10 @@ struct MSLEmitter {
         self.module = module
         self.reflection = reflection
         self.bindings = bindings
+        // A struct that a storage buffer also holds keeps the spec's address-space-independent layout
+        // (see `WGSLLayout.storageStructNames`).
         self.uniformStructs = WGSLLayout.uniformStructNames(module)
+            .subtracting(WGSLLayout.storageStructNames(module))
         self.usage = usage
         // The parser rejects duplicate module-scope names, but this table must never be what traps on
         // one — shader source comes from the bundle (JS), so a trap here would take the host down.
@@ -359,6 +367,33 @@ struct MSLEmitter {
         }
     }
 
+    /// Builtins whose result is a scalar of the argument's (float) component type.
+    private static let scalarResultBuiltins: Set<String> = ["length", "dot", "distance", "determinant"]
+    /// Builtins that keep the first argument's shape and make it float (`sqrt(4)` is f32).
+    private static let floatShapedBuiltins: Set<String> = [
+        "sqrt", "inverseSqrt", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh",
+        "exp", "exp2", "log", "log2", "pow", "floor", "ceil", "round", "trunc", "fract", "radians", "degrees",
+        "mix", "smoothstep", "step", "normalize", "fma", "saturate",
+    ]
+    /// Builtins that keep the first argument's type exactly.
+    private static let shapePreservingBuiltins: Set<String> = ["abs", "min", "max", "clamp", "sign"]
+
+    private static func componentScalar(of type: WGSLType) -> WGSLType {
+        if case .vector(_, let element) = type { return element }
+        return type
+    }
+
+    /// An integer scalar or vector read as its float counterpart (an AbstractInt argument to a float
+    /// builtin converts to AbstractFloat).
+    private static func floatened(_ type: WGSLType) -> WGSLType {
+        switch type {
+        case .scalar("i32"), .scalar("u32"): return .scalar("f32")
+        case .vector(let size, .scalar("i32")), .vector(let size, .scalar("u32")):
+            return .vector(size: size, element: .scalar("f32"))
+        default: return type
+        }
+    }
+
     /// Guesses the type from the initializer's **syntax** alone (reading constructor names, not inferring types).
     /// Used for module constants and for `array(…)` constructors with the element type omitted.
     private func inferredType(of expression: WGSLExpression) -> WGSLType? {
@@ -371,8 +406,45 @@ struct MSLEmitter {
             return .scalar("bool")
         case .paren(let inner), .unary(_, let inner):
             return inferredType(of: inner)
+        case .binary(let op, let left, let right):
+            // Enough shape inference to give an arithmetic constant a type — a typeless module
+            // constant becomes a `#define`, which is textually unhygienic: `const scale = 1.0 / 255.0;`
+            // then rewrote a struct member named `scale` into the expression.
+            let leftType = inferredType(of: left)
+            let rightType = inferredType(of: right)
+            if ["==", "!=", "<", "<=", ">", ">=", "&&", "||"].contains(op) {
+                if case .vector(let size, _)? = leftType ?? rightType {
+                    return .vector(size: size, element: .scalar("bool"))
+                }
+                return .scalar("bool")
+            }
+            if op == "<<" || op == ">>" { return leftType }
+            switch (leftType, rightType) {
+            case (.matrix?, _), (_, .matrix?):
+                return nil
+            case (.vector?, _):
+                return leftType
+            case (_, .vector?):
+                return rightType
+            case (.scalar(let leftScalar)?, .scalar(let rightScalar)?):
+                if leftScalar == rightScalar { return leftType }
+                // AbstractInt meets AbstractFloat and converts (`1.0 * 2`).
+                if leftScalar == "f32" || rightScalar == "f32" { return .scalar("f32") }
+                return nil
+            default:
+                return nil
+            }
         case .call(let callee, let typeArguments, let arguments):
             if structNames.contains(callee) { return .named(callee) }
+            if Self.scalarResultBuiltins.contains(callee), let first = arguments.first.flatMap(inferredType(of:)) {
+                return Self.floatened(Self.componentScalar(of: first))
+            }
+            if Self.floatShapedBuiltins.contains(callee), let first = arguments.first.flatMap(inferredType(of:)) {
+                return Self.floatened(first)
+            }
+            if Self.shapePreservingBuiltins.contains(callee), let first = arguments.first.flatMap(inferredType(of:)) {
+                return first
+            }
             if MSLTypeMapping.scalarConstructors.contains(callee) { return .scalar(callee) }
             if let shorthand = WGSLParser.shorthandType(callee) { return shorthand }
             if callee.hasPrefix("vec"), let size = Int(callee.dropFirst(3)) {
@@ -535,6 +607,12 @@ struct MSLEmitter {
             )
         }
         guard let layout = WGSLReflectionBuilder.bindingLayout(for: global) else { return "" }
+        if let expected = bindings.kind(group: group, binding: binding), expected != layout.metalSlotKind {
+            throw WGPUError.validation(
+                "@group(\(group)) @binding(\(binding)) (\(global.name)) is a \(layout.metalSlotKind) in the "
+                    + "shader but a \(expected) in the pipeline layout"
+            )
+        }
         switch layout.metalSlotKind {
         case .buffer: return " [[buffer(\(index))]]"
         case .texture: return " [[texture(\(index))]]"
@@ -949,6 +1027,8 @@ struct MSLEmitter {
             // A header declaration's rename scopes over the condition, increment and body — undone when the for ends.
             let savedRenames = localRenames
             let savedBindings = localBindings
+            let savedBreakFlag = breakFlag
+            breakFlag = nil   // a `break` inside targets this loop
             let initializerText = try initializer.map { try simpleStatement($0) } ?? ""
             let conditionText = try condition.map { try expression($0) } ?? ""
             let updateText = try update.map { try simpleStatement($0) } ?? ""
@@ -958,11 +1038,14 @@ struct MSLEmitter {
             line("}")
             localRenames = savedRenames
             localBindings = savedBindings
+            breakFlag = savedBreakFlag
 
         case .whileStatement(let condition, let body):
             let conditionText = try expression(condition)
             // A literal `true` condition looks like a non-terminating loop to the compiler — add a guard.
             let guardName = conditionText == "true" ? declareLoopGuard() : nil
+            let savedBreakFlag = breakFlag
+            breakFlag = nil
             line("while (\(conditionText))")
             line("{")
             try scoped { emitter in
@@ -970,24 +1053,46 @@ struct MSLEmitter {
                 try emitter.statements(body)
             }
             line("}")
+            breakFlag = savedBreakFlag
 
         case .loopStatement(let body, let continuing):
-            if continuing != nil, containsContinue(body) {
-                throw WGPUError.unsupported(
-                    "WGSL: a loop using both a `continuing` block and `continue` is not supported (docs/WGSL.md §4)"
-                )
-            }
             let guardName = declareLoopGuard()
+            let savedBreakFlag = breakFlag
+            breakFlag = nil
             line("while (true)")
             line("{")
             try scoped { emitter in
                 emitter.emitLoopGuardCheck(guardName)
-                try emitter.statements(body)
-                if let continuing { try emitter.statements(continuing) }
+                if let continuing, emitter.containsContinue(body) {
+                    // `continue` must run the `continuing` block, so the body goes into a
+                    // `do { … } while (false)`: a C++ `continue` there leaves the `do` and falls into
+                    // the continuing statements. A `break` would only leave the `do` as well, so the
+                    // body's own breaks set a flag that is checked right after it (`break` in a nested
+                    // loop or switch targets that construct and stays a plain `break`). This is the
+                    // shape Naga and Tint emit for every `for`/`while` that uses `continue`, so it
+                    // reaches here from any shader that went through wgpu, Bevy or SPIR-V.
+                    let flag = emitter.declareBreakFlag()
+                    emitter.line("do")
+                    emitter.line("{")
+                    emitter.breakFlag = flag
+                    try emitter.scoped { inner in try inner.statements(body) }
+                    emitter.breakFlag = nil
+                    emitter.line("} while (false);")
+                    emitter.line("if (\(flag)) { break; }")
+                    try emitter.statements(continuing)
+                } else {
+                    try emitter.statements(body)
+                    if let continuing { try emitter.statements(continuing) }
+                }
             }
             line("}")
+            breakFlag = savedBreakFlag
 
         case .switchStatement(let subject, let cases):
+            // A WGSL `break` inside a case leaves the switch, as in C++ — not the loop around it.
+            let savedBreakFlag = breakFlag
+            breakFlag = nil
+            defer { breakFlag = savedBreakFlag }
             line("switch (\(try expression(subject)))")
             line("{")
             try indented { emitter in
@@ -1017,7 +1122,12 @@ struct MSLEmitter {
             }
 
         case .breakStatement:
-            line("break;")
+            if let breakFlag {
+                // Inside the `do { … } while (false)` wrapper of a `loop` with `continuing` — see `.loopStatement`.
+                line("{ \(breakFlag) = true; break; }")
+            } else {
+                line("break;")
+            }
         case .continueStatement:
             line("continue;")
         case .discardStatement:
@@ -1073,6 +1183,14 @@ struct MSLEmitter {
         loopGuardCounter += 1
         let name = "wgpu_loop_guard_\(loopGuardCounter)"
         line("uint \(name) = 0u;")
+        return name
+    }
+
+    /// The flag a `loop { … continuing { … } }` body's `break` sets (see `.loopStatement`).
+    private mutating func declareBreakFlag() -> String {
+        loopGuardCounter += 1
+        let name = "wgpu_break_\(loopGuardCounter)"
+        line("bool \(name) = false;")
         return name
     }
 
@@ -1185,6 +1303,9 @@ struct MSLEmitter {
             if let renamed = localRenames[name] { return renamed }
             return MSLTypeMapping.identifier(name)
         case .unary(let op, let operand):
+            // A space between stacked prefix operators: `- -b` glued together is C++'s `--b`, a
+            // pre-decrement that mutates `b` and yields `b - 1` (`- - -b` is `-(--b)`).
+            if case .unary = operand { return "\(op) \(try self.expression(operand))" }
             return "\(op)\(try self.expression(operand))"
         case .binary(let op, let left, let right):
             // Operations WGSL defines but C++ leaves undefined — routed through a prelude helper.
@@ -1322,6 +1443,21 @@ struct MSLEmitter {
         if let reason = MSLTypeMapping.unsupportedBuiltins[callee] {
             throw WGPUError.unsupported("WGSL: \(callee)() — \(reason)")
         }
+        // A user function or struct constructor wins over every builtin spelling below. WGSL lets a
+        // module declare `fn textureBicubic(…)`, `fn atomicIncrement(…)` or `fn max(…)` and a
+        // `struct textureInfo`; dispatching on the name's prefix first rejected the former as
+        // "unsupported texture builtin" and handed the latter to the prelude's redirect.
+        if module.functionNamed(callee) != nil {
+            let emitted = try arguments.map { try expression($0) }
+            var extra = threadedGlobals(for: callee).map { MSLTypeMapping.identifier($0.name) }
+            if needsBufferSizes.contains(callee) { extra.append(Self.bufferSizesName) }
+            return "\(MSLTypeMapping.functionName(callee))(\((emitted + extra).joined(separator: ", ")))"
+        }
+        if structNames.contains(callee) {
+            // A struct constructor is aggregate initialization in MSL (C++).
+            return try structConstructor(callee, arguments: try arguments.map { try expression($0) })
+        }
+
         // Before anything below picks arguments out by index.
         try Self.checkArity(callee, count: arguments.count)
 
@@ -1356,10 +1492,6 @@ struct MSLEmitter {
 
         let emitted = try arguments.map { try expression($0) }
 
-        // A struct constructor is aggregate initialization in MSL (C++).
-        if structNames.contains(callee) {
-            return try structConstructor(callee, arguments: emitted)
-        }
         // A vector constructor with the component type omitted.
         if MSLPrelude.inferredVectorConstructors.contains(callee), typeArguments.isEmpty {
             // With every argument an integer literal there is no basis to infer. WGSL's AbstractInt
@@ -1402,13 +1534,6 @@ struct MSLEmitter {
         }
         if MSLTypeMapping.scalarConstructors.contains(callee) {
             return "\(MSLTypeMapping.scalar(callee))(\(emitted.joined(separator: ", ")))"
-        }
-
-        // User functions take the threaded resources appended at the end.
-        if module.functionNamed(callee) != nil {
-            var extra = threadedGlobals(for: callee).map { MSLTypeMapping.identifier($0.name) }
-            if needsBufferSizes.contains(callee) { extra.append(Self.bufferSizesName) }
-            return "\(MSLTypeMapping.functionName(callee))(\((emitted + extra).joined(separator: ", ")))"
         }
 
         // Anything else passes through by name (builtins, alias constructors) — through `identifier(_:)`

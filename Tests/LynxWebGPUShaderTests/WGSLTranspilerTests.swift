@@ -2350,6 +2350,156 @@ final class WGSLTranspilerTests: XCTestCase {
         XCTAssertNil(outcome.error, "\(String(describing: outcome.error))")
         XCTAssertNotNil(outcome.msl)
     }
+
+    // MARK: - Review follow-ups
+
+    /// A struct held by both a uniform and a storage buffer is laid out once, by the spec's
+    /// address-space-independent rules. The uniform rounding (stride and size up to 16) applied to
+    /// both made `array<Pair>` stride 16 in MSL while JS filled it at 8 — silent misreads.
+    func test_aStructSharedByUniformAndStorageKeepsTheSpecLayout() throws {
+        let msl = try translate("""
+        struct Pair { a: f32, b: f32 }
+        @group(0) @binding(0) var<uniform> one: Pair;
+        @group(0) @binding(1) var<storage, read> many: array<Pair>;
+
+        @compute @workgroup_size(1)
+        fn main() {
+            let n = arrayLength(&many);
+            let x = one.a + many[n - 1u].b;
+        }
+        """, entryPoints: ["main"])
+        XCTAssertTrue(msl.contains("struct alignas(4) Pair {\n    float a;\n    float b;\n};"), msl)
+    }
+
+    /// WGSL `round` is round-half-to-even — MSL's `round` is not, `rint` is.
+    func test_roundIsEmittedAsRint() throws {
+        let msl = try translate("""
+        @fragment fn fs(@location(0) x: f32) -> @location(0) vec4f { return vec4f(round(x)); }
+        """, entryPoints: ["fs"])
+        XCTAssertTrue(msl.contains("rint("), msl)
+        XCTAssertFalse(msl.contains("round("), msl)
+    }
+
+    /// A user function may be named like a builtin family — `textureBicubic`, `atomicIncrement`,
+    /// even `max`. Dispatching on the name's prefix first rejected it as an unsupported builtin.
+    func test_aUserFunctionNamedLikeABuiltinFamilyIsCalledAsAFunction() throws {
+        let msl = try translate("""
+        @group(0) @binding(0) var t: texture_2d<f32>;
+        @group(0) @binding(1) var s: sampler;
+        @group(0) @binding(2) var<storage, read_write> counter: atomic<u32>;
+
+        fn textureBicubic(uv: vec2f) -> vec4f { return textureSample(t, s, uv); }
+        fn atomicIncrement() -> u32 { return atomicAdd(&counter, 1u); }
+        fn max3(a: f32, b: f32, c: f32) -> f32 { return max(max(a, b), c); }
+
+        @fragment fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
+            let n = atomicIncrement();
+            return textureBicubic(uv) * max3(uv.x, uv.y, f32(n));
+        }
+        """, entryPoints: ["fs"])
+        XCTAssertTrue(msl.contains("textureBicubic("), msl)
+        XCTAssertTrue(msl.contains("atomicIncrement("), msl)
+    }
+
+    /// `- -b` glued together is C++'s pre-decrement.
+    func test_stackedPrefixOperatorsAreSeparated() throws {
+        let msl = try translate("""
+        @fragment fn fs(@location(0) x: f32) -> @location(0) vec4f {
+            var b = x;
+            let y = - -b;
+            return vec4f(y, - - -b, 0.0, 1.0);
+        }
+        """, entryPoints: ["fs"])
+        XCTAssertTrue(msl.contains("- -b"), msl)
+        XCTAssertFalse(msl.contains("--b"), msl)
+    }
+
+    /// `loop { … continuing { … } }` with `continue` and `break if` — the shape Naga and Tint emit
+    /// for every `for`/`while` that continues. The body goes into a `do { } while (false)` so a
+    /// `continue` falls into the continuing block, and the body's `break` sets a flag checked after it.
+    func test_aLoopWithContinuingContinueAndBreakIfTranslates() throws {
+        let msl = try translate("""
+        @group(0) @binding(0) var<storage, read_write> out: array<u32>;
+
+        @compute @workgroup_size(1)
+        fn main() {
+            var i = 0u;
+            var acc = 0u;
+            loop {
+                if i == 7u { break; }
+                if (i % 2u) == 0u { continue; }
+                switch i {
+                    case 5u: { break; }
+                    default: { acc = acc + i; }
+                }
+                continuing {
+                    i = i + 1u;
+                    break if i >= 10u;
+                }
+            }
+            out[0] = acc;
+        }
+        """, entryPoints: ["main"])
+        XCTAssertTrue(msl.contains("do\n"), msl)
+        XCTAssertTrue(msl.contains("} while (false);"), msl)
+        XCTAssertTrue(msl.contains("wgpu_break_"), msl)
+        // The switch's own break stays a plain break (it leaves the switch, not the loop).
+        XCTAssertTrue(msl.contains("case 5u:"), msl)
+    }
+
+    /// A typeless module constant became a `#define`, and a struct member of the same name was
+    /// rewritten into the expression. Arithmetic now infers a type, so it is a typed constant.
+    func test_anArithmeticModuleConstantIsATypedConstantNotAMacro() throws {
+        let msl = try translate("""
+        const scale = 1.0 / 255.0;
+        const half_turn = radians(180.0);
+        const r = 2 * 3;
+        struct Material { scale: f32, r: i32 }
+        @group(0) @binding(0) var<uniform> m: Material;
+
+        @fragment fn fs(@location(0) color: vec4f) -> @location(0) vec4f {
+            return vec4f(color.r * m.scale * scale * half_turn, f32(m.r + r), 0.0, 1.0);
+        }
+        """, entryPoints: ["fs"])
+        XCTAssertTrue(msl.contains("constant float scale = "), msl)
+        XCTAssertTrue(msl.contains("constant float half_turn = "), msl)
+        XCTAssertTrue(msl.contains("constant int r = "), msl)
+        XCTAssertFalse(msl.contains("#define scale"), msl)
+    }
+
+    /// `metal`, `matrix`, `float`… are plain identifiers in WGSL and collide with the namespace or
+    /// the scalar types under `using namespace metal;`.
+    func test_metalNamespaceAndScalarNamesAreRenamed() throws {
+        let msl = try translate("""
+        const metal: f32 = 0.5;
+        struct matrix { float: f32 }
+        @group(0) @binding(0) var<uniform> u: matrix;
+        @fragment fn fs() -> @location(0) vec4f { return vec4f(metal * u.float); }
+        """, entryPoints: ["fs"])
+        XCTAssertTrue(msl.contains("wgpu_id_metal"), msl)
+        XCTAssertTrue(msl.contains("wgpu_id_matrix"), msl)
+        XCTAssertTrue(msl.contains("wgpu_id_float"), msl)
+    }
+
+    /// A pipeline layout that calls a binding a buffer where the shader declares a texture used to
+    /// get `[[texture(k)]]` with `k` from the buffer counter — the wrong resource, no error.
+    func test_aLayoutSlotKindDisagreeingWithTheShaderIsRejected() throws {
+        let module = try WGSLShaderModule(source: """
+        @group(0) @binding(0) var t: texture_2d<f32>;
+        @group(0) @binding(1) var s: sampler;
+        @fragment fn fs(@location(0) uv: vec2f) -> @location(0) vec4f { return textureSample(t, s, uv); }
+        """)
+        let bindings = try WGSLBindingAssigner.assign(groups: [[
+            WGPUBindGroupLayoutEntry(binding: 0, visibility: .fragment,
+                                     layout: .buffer(WGPUBufferBindingLayout(type: .uniform))),
+            WGPUBindGroupLayoutEntry(binding: 1, visibility: .fragment,
+                                     layout: .sampler(WGPUSamplerBindingLayout(type: .filtering))),
+        ]])
+        XCTAssertThrowsError(try module.translateToMSL(entryPoints: ["fs"], bindings: bindings)) { error in
+            let message = (error as? WGPUError)?.message ?? "\(error)"
+            XCTAssertTrue(message.contains("pipeline layout"), message)
+        }
+    }
 }
 
 /// What a worker thread produced — handed back through a semaphore, so the access is ordered.

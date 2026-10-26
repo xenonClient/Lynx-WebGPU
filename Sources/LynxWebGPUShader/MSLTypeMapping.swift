@@ -149,8 +149,12 @@ enum MSLTypeMapping {
         "inline", "static", "extern", "register", "volatile", "mutable", "explicit",
         "export", "typedef", "sizeof", "alignof", "decltype", "auto", "constexpr", "nullptr",
         "goto", "do", "typeid", "and", "or", "not", "xor", "compl", "bitand", "bitor",
-        // MSL scalar/vector type names
-        "half", "uchar", "ushort", "size_t", "ptrdiff_t",
+        // MSL scalar/vector type names (`float`/`int`/`uint` are plain identifiers in WGSL, whose
+        // scalars are `f32`/`i32`/`u32` — a module-scope `const float = …` must not redefine the type).
+        "half", "uchar", "ushort", "size_t", "ptrdiff_t", "float", "int", "uint", "double", "bool",
+        // The namespace itself and its templates: a module-scope `const metal: f32` or a `struct
+        // matrix` collide with `metal::` under the prelude's `using namespace metal;`.
+        "metal", "matrix", "vec",
         // Names declared in the `metal` namespace — sampler options and sampling-coordinate structs.
         // The prelude's `using namespace metal;` makes a module-scope `constant int bias` ambiguous
         // with `metal::bias` at every use ("reference to 'bias' is ambiguous"). A function-local name
@@ -202,6 +206,9 @@ enum MSLTypeMapping {
 
     /// Those that differ only in name.
     static let renamedBuiltins: [String: String] = [
+        // WGSL `round` is round-half-to-even; MSL `round` is half away from zero (`round(2.5)` → 3,
+        // `round(-0.5)` → -1). `rint` is the even one — the same choice Tint makes.
+        "round": "rint",
         "inverseSqrt": "rsqrt",
         "dpdx": "dfdx",
         "dpdxCoarse": "dfdx",

@@ -635,9 +635,15 @@ struct WGSLParser {
 
         case "break":
             advance()
-            // `break if cond;` (continuing blocks only) — ignoring the condition changes meaning, so it is rejected.
-            if check("if") {
-                throw error("`break if` is not supported (docs/WGSL.md §4)")
+            // `break if cond;` (the last statement of a `continuing` block) means exactly
+            // `if cond { break; }` — it is parsed as that, so no later pass needs a new case. The
+            // `continuing` statements are emitted outside the body wrapper, where `break` leaves the loop.
+            if match("if") {
+                let condition = try parseExpression()
+                try expect(";", "break if")
+                return .ifStatement(
+                    clauses: [WGSLIfClause(condition: condition, body: [.breakStatement])], elseBody: nil
+                )
             }
             try expect(";", "break")
             return .breakStatement

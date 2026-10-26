@@ -310,8 +310,13 @@ WGSL에는 값이 정해져 있는데 MSL(C++)에서는 **정의되지 않은 �
 | `atomicCompareExchangeWeak` | 반환 구조체를 옮기지 못한다 |
 | `modf` / `frexp` | 반환 구조체를 옮기지 못한다. `floor`/`fract`로 나눠 쓸 것 |
 | `workgroupUniformLoad` | 미지원 |
-| `break if cond;` | `continuing` 블록 전용 구문. `if (cond) { break; }`로 바꿔 쓸 것 |
-| `continuing` + `continue` 조합 | `continue`가 `continuing` 블록을 건너뛰게 되어 의미가 달라진다. `for`로 바꿀 것 |
+| `textureGather` / `textureGatherCompare` | WGSL은 성분 인덱스가 첫 인자, MSL `gather()`는 템플릿 인자라 이름 그대로는 옮겨지지 않는다 — Metal 컴파일 오류로 드러난다 |
+| `firstLeadingBit` / `firstTrailingBit` · `dot4U8Packed` / `dot4I8Packed` · `pack4xI8` / `pack4xU8` / `pack4xI8Clamp` / `pack4xU8Clamp` / `unpack4xI8` / `unpack4xU8` | MSL 대응 이름이 없다 — Metal 컴파일 오류로 드러난다 |
+
+`loop { … continuing { … } }`에서 `continue`와 `break if`는 **지원한다** — 본문을 `do { … } while (false)`로
+감싸 `continue`가 `continuing`으로 떨어지게 하고, 본문의 `break`는 플래그를 세워 바깥 `while`을
+빠져나간다 (Naga·Tint가 모든 `for`/`while`에 뱉는 모양이라 wgpu·Bevy를 거친 셰이더가 전부 이 길을 밟는다).
+`round`는 WGSL대로 짝수 반올림(`rint`)이다 — MSL `round`(반올림 시 0에서 먼 쪽)와 다르다.
 | 재귀 타입 (`struct S { a: array<S, 2> }`, 별칭·다른 구조체를 거친 순환 포함) | WGSL이 금지한다(크기가 무한). **셰이더 모듈 생성 시** 선언 줄 번호와 순환 경로(`S → A → S`)를 담은 검증 오류 |
 | 타입·식·문장 중첩 128단 초과 (`((((…))))`, `array<array<…>>`, `{ { … } }`. `else if` 사슬의 길이는 중첩이 아니라 세지 않는다) | 파서가 재귀 하강이라 스택을 다 쓰지 않도록 묶는다 (Tint 파서와 같은 한도). 줄 번호를 단 검증 오류. 한도 안의 셰이더는 호출 스레드의 스택과 무관하게 번역된다 — 파싱·방출은 16MB 스택의 전용 스레드에서 돈다 (`WGSLDeepStack`) |
 | 식 트리 높이 1024단 초과 (`a + b + c + …` · `v.x.x.…` · `m[0][0]…`처럼 **평탄하게 긴 사슬**) | 중첩 한도는 파서 재귀만 세고 사슬은 루프로 만들어지는데, 그 트리를 리플렉션·방출기가 항마다 재귀로 걷는다 — 10만 항에서 방출기 스택이 넘쳐 **호스트가 죽었다.** 그래서 파서가 완성된 식의 높이를 (재귀 없이) 재어 `WGSLParser.maximumExpressionHeight`(1024)에서 끊는다. 줄 번호를 단 검증 오류. 실제 셰이더는 이 근처에도 오지 않는다 |

@@ -219,8 +219,23 @@ enum WGSLLayout {
 
     /// Names of structs used in the uniform address space — their layout rules are stricter than storage.
     static func uniformStructNames(_ module: WGSLModule) -> Set<String> {
+        structNames(inAddressSpace: "uniform", module: module)
+    }
+
+    /// Names of structs used in the storage address space.
+    ///
+    /// A struct reachable from **both** a uniform and a storage global must be laid out once, by the
+    /// address-space-independent rules (the uniform "mode" only rounds strides and struct sizes up
+    /// to 16, which a valid uniform struct already satisfies). Applying the uniform rounding to a
+    /// struct that a storage buffer also holds made `array<Pair>` stride 16 in MSL while JS filled it
+    /// at the spec's 8 — every element after the first read from the wrong place, with no error.
+    static func storageStructNames(_ module: WGSLModule) -> Set<String> {
+        structNames(inAddressSpace: "storage", module: module)
+    }
+
+    private static func structNames(inAddressSpace addressSpace: String, module: WGSLModule) -> Set<String> {
         var names = Set<String>()
-        for global in module.globals where global.addressSpace == "uniform" {
+        for global in module.globals where global.addressSpace == addressSpace {
             markStructs(in: global.type, module: module, into: &names)
         }
         return names
