@@ -21,7 +21,7 @@ GPU 코드는 "돌려 보고 눈으로 확인"에 기대기 쉽다. 이 저장�
 ## 2. 실행
 
 ```zsh
-swift test                                      # 전체 (541개, 약 25초 — 셰이더 테스트가 Metal 컴파일러를 부른다)
+swift test                                      # 전체 (543개, 약 25초 — 셰이더 테스트가 Metal 컴파일러를 부른다)
 swift test --filter LynxWebGPUCoreTests         # 디스크립터/핸들
 swift test --filter LynxWebGPUShaderTests       # 트랜스파일러 (+ Metal 컴파일 검증)
 swift test --filter LynxWebGPUTests             # GPU 렌더 + 해석기
@@ -329,7 +329,7 @@ try XCTSkipUnless(harness.supports(.indirectArguments), "this device does not su
 - 비동기 경로(`readBuffer`)는 `XCTestExpectation`으로 검증한다.
 - 테스트 더블은 손으로 만든다 (모킹 라이브러리 없음).
 
-## 6. 커버리지 대상 (Swift 541 + JS 175 — 테스트 **케이스** 수다)
+## 6. 커버리지 대상 (Swift 543 + JS 175 — 테스트 **케이스** 수다)
 
 | 영역 | 파일 | 주요 케이스 |
 |---|---|---|
@@ -357,7 +357,7 @@ try XCTSkipUnless(harness.supports(.indirectArguments), "this device does not su
 | 블록 압축 포맷 | `WGPUCompressedFormatTests` (GPU 불필요) + `CompressedTextureTests` | 블록 크기를 이름에서 읽는지(ASTC 전수), 블록당 바이트 8/16, **올림으로 세는 행 계산**, 손으로 인코딩한 BC1·ASTC 블록을 올려 **픽셀 단언**, 렌더 타깃/블록 경계 거부, `adapter.features`가 실제 기기 능력과 일치 |
 | 외부 이미지 | `ExternalImageTests` | PNG 디코딩(채널 순서·상하 방향·flipY·premultiply·resize), 깨진 데이터 거부, `copyExternalImageToTexture`(전체·부분·copySize 생략), **복사 시점 `flipY`**(디코딩 시점과 다른 층 — 둘 다 켜면 제자리, 부분 복사에서는 영역 안에서만), 4바이트 아닌 포맷과 압축 텍스처 거부, `destroy` 후 참조, **알파 상태 변환**(비트맵 premul/straight × destination `premultipliedAlpha` 네 조합의 텍셀 값), `colorSpace: 'display-p3'` 거부 |
 | 공유 텍스처 캐시 | `SharedTextureCacheTests` | 재요청은 같은 `MTLTexture`·make 1회, **동시 요청 합치기**(두 번째가 첫 make를 기다림), 실패는 모든 대기자에게 같은 오류·항목 없음·다음 요청이 재시도, **마지막 소유자와 함께 사라지는 항목**, 키 충돌 경고(라벨만 다르면 경고 없음 · 첫 내용 유지), 장치가 다르면 별개(장치가 둘 이상일 때만) |
-| 공유 텍스처 | `SharedTextureTests` | 컨텍스트 둘(= 뷰 둘)이 **디코드 1번·텍스처 1개**를 나눠 쓰고 둘 다 그린다, **한쪽 reset 뒤에도 다른 쪽이 샘플링**, 모두 놓으면 항목이 사라짐, 남은 뷰가 항목을 지킴, **쓰기 6가지 거부**(writeTexture · 복사 대상 둘 · 색 어태치먼트 · write-only 스토리지 · 포맷 바꾸는 뷰)와 read-only 스토리지 허용 · 거부 뒤에도 픽셀 그대로, 리사이즈(정확한 크기 · 비율 · 축소 후 방향), **premultiplied 텍셀**, 없는 애셋·깨진 바이트·장치 한계 초과, 캐시 히트에도 provider 범위 적용 |
+| 공유 텍스처 | `SharedTextureTests` | 컨텍스트 둘(= 뷰 둘)이 **디코드 1번·텍스처 1개**를 나눠 쓰고 둘 다 그린다, **한쪽 reset 뒤에도 다른 쪽이 샘플링**, 모두 놓으면 항목이 사라짐, 남은 뷰가 항목을 지킴, **쓰기 6가지 거부**(writeTexture · 복사 대상 둘 · 색 어태치먼트 · write-only 스토리지 · 포맷 바꾸는 뷰)와 read-only 스토리지 허용 · 거부 뒤에도 픽셀 그대로, 리사이즈(정확한 크기 · 비율 · 축소 후 방향), **premultiplied 텍셀**, 없는 애셋·깨진 바이트·장치 한계 초과(**요청 축을 파생 전에 검사** — `Int`를 넘을 한 축 리사이즈 · Swift 호출자의 0·음수·초과 축), 캐시 히트에도 provider 범위 적용 |
 | 애셋 제공자 | `AssetProviderTests` | 이름 등록·해제·파일보다 우선, 절대 경로·file URL, 없는 파일은 backend 오류, 허용 디렉토리 안/밖·상위로 오르는 경로·접두사만 같은 형제 디렉토리 차단, 번들 이름·하위 디렉토리, 번들 이름의 상위 경로·빈 이름 거부, 기본 제공자의 https 거부와 교체 제공자의 허용/차단, 오류 종류가 JS 페이로드까지 유지, 이름 없는 요청은 제공자 전에 거부 |
 | 스테이징 풀 | `StagingPoolTests` | 크기 클래스 반올림, 같은 인스턴스 재사용, 최적합 선택, 총량 상한, 프레임 반복 시 풀 크기 불변 |
 | 하네스 자신 | `RenderHarnessTests` | **동치성 단언이 다름을 실제로 잡는지**(§4-2), 동기 리드백의 실패 보고 |

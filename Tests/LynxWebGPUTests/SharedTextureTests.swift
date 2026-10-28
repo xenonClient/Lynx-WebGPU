@@ -325,6 +325,39 @@ final class SharedTextureTests: XCTestCase {
         XCTAssertTrue(message.contains("maxTextureDimension2D"), message)
     }
 
+    /// One huge size on a sliver of an image — the derived axis would be past `Int`. It used to trap the
+    /// process on the cache's queue; the requested axis is now checked against the device limit before
+    /// anything is derived, the error names that axis, and nothing is cached.
+    func test_aHugeOneAxisResizeOnASliverIsAValidationError() throws {
+        provider.register(try Self.png(width: 1, height: 2000, top: (255, 0, 0, 255), bottom: (0, 0, 255, 255)),
+                          for: "sliver.png")
+        let result = importShared(into: a, key: "sliver@huge", name: "sliver.png", resizeWidth: (1 << 53) - 1)
+        XCTAssertEqual(result["ok"] as? Bool, false)
+        let message = ((result["errors"] as? [[String: Any]])?.first?["message"] as? String) ?? ""
+        XCTAssertTrue(message.contains("maxTextureDimension2D"), message)
+        XCTAssertTrue(message.contains("resizeWidth"), message)
+        XCTAssertEqual(cache.liveEntryCount, 0)
+    }
+
+    /// A Swift caller skips the payload reader's `≥ 1` check — `makeTexture` applies the same bounds
+    /// itself, so a zero, negative or oversized axis is a validation error, not a trap or a zero-byte buffer.
+    func test_makeTextureRejectsARequestedAxisOutsideTheDeviceLimit() throws {
+        let data = try Self.png(width: 1, height: 2000, top: (255, 0, 0, 255), bottom: (0, 0, 255, 255))
+        let limit = WGPUDeviceCapability.maxTextureDimension2D(device)
+        for request in [
+            WGPUSharedTextureRequest(key: "k", name: "a", resizeWidth: Int.min),
+            WGPUSharedTextureRequest(key: "k", name: "a", resizeHeight: -1),
+            WGPUSharedTextureRequest(key: "k", name: "a", resizeWidth: 0, resizeHeight: 0),
+            WGPUSharedTextureRequest(key: "k", name: "a", resizeWidth: 4, resizeHeight: limit + 1),
+        ] {
+            XCTAssertThrowsError(try WGPUSharedTextureUpload.makeTexture(from: data, request: request, device: device)) {
+                let error = $0 as? WGPUError
+                XCTAssertEqual(error?.kind, .validation, "\(request.resizeWidth as Any)x\(request.resizeHeight as Any)")
+                XCTAssertTrue(error?.message.contains("maxTextureDimension2D") == true, error?.message ?? "")
+            }
+        }
+    }
+
     /// The provider's scope applies to every import, cache hit or not.
     func test_theProviderIsAskedEvenOnACacheHit() throws {
         importShared(into: a)

@@ -66,6 +66,10 @@ public struct WGPUSharedTextureRequest: Equatable {
     /// given: the other is derived from the source's aspect ratio and **rounded up** — the HTML
     /// `createImageBitmap` rule ("cropped to the source rectangle with formatting"), so a browser
     /// running the same request gets the same size. Neither: the source's size.
+    ///
+    /// The caller bounds a requested axis by its texture limit **before** calling, which keeps a derived
+    /// axis (at most the source's side × that limit) inside `Int`, and checks the result against the same
+    /// limit after — `WGPUSharedTextureUpload` does both.
     public func targetSize(sourceWidth: Int, sourceHeight: Int) -> (width: Int, height: Int) {
         switch (resizeWidth, resizeHeight) {
         case let (width?, height?):

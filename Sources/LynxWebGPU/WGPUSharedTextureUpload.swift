@@ -36,8 +36,17 @@ enum WGPUSharedTextureUpload {
                 "importSharedTexture could not decode '\(request.name)' (\(data.count)B — unsupported format or corrupt data)"
             )
         }
-        let target = request.targetSize(sourceWidth: sourceSize.width, sourceHeight: sourceSize.height)
+        // A requested axis is checked before anything is derived from it: bounded by the limit, the
+        // derived axis stays inside `Int` (`targetSize`), and the error names the axis the caller gave.
         let limit = WGPUDeviceCapability.maxTextureDimension2D(device)
+        for (field, value) in [("resizeWidth", request.resizeWidth), ("resizeHeight", request.resizeHeight)] {
+            if let value, value < 1 || value > limit {
+                throw WGPUError.validation(
+                    "importSharedTexture: \(field) must be between 1 and maxTextureDimension2D (\(limit)) — got \(value)"
+                )
+            }
+        }
+        let target = request.targetSize(sourceWidth: sourceSize.width, sourceHeight: sourceSize.height)
         guard target.width <= limit, target.height <= limit else {
             throw WGPUError.validation(
                 "importSharedTexture: \(target.width)x\(target.height) exceeds maxTextureDimension2D (\(limit)) "
